@@ -1,0 +1,11 @@
+Replace these 2 lines in routes/web.php:
+
+    Route::get('/register',               [AuthController::class, 'showRegister'])->name('register');
+    Route::post('/register',              [AuthController::class, 'register']);
+
+With these 4 lines:
+
+    Route::get('/register',               [AuthController::class, 'showRegister'])->name('register');
+    Route::post('/register/check-email',  [AuthController::class, 'checkEmail'])->name('register.checkEmail');
+    Route::get('/register/set-password',  [AuthController::class, 'showSetPassword'])->name('register.setPassword');
+    Route::post('/register',              [AuthController::class, 'register']);
