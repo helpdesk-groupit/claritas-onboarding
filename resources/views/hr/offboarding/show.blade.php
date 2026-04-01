@@ -82,10 +82,28 @@
                 <table class="table table-sm table-borderless mb-0" style="font-size:13.5px;">
                     <tr><td class="text-muted py-2" style="width:46%;padding-left:0;">Religion</td><td class="py-2">{{ $employee?->religion ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Race</td><td class="py-2">{{ $employee?->race ?? '—' }}</td></tr>
-                    <tr><td class="text-muted py-2">Contact Number</td><td class="py-2">{{ $employee?->personal_contact_number ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">Tel No. (H/phone)</td><td class="py-2">{{ $employee?->personal_contact_number ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">Tel No. (House)</td><td class="py-2">{{ $employee?->house_tel_no ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Personal Email</td><td class="py-2">{{ $employee?->personal_email ?? $offboarding->personal_email ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Bank Account No.</td><td class="py-2">{{ $employee?->bank_account_number ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">Bank Name</td><td class="py-2">{{ $employee?->bank_name ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">EPF No.</td><td class="py-2">{{ $employee?->epf_no ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">Income Tax No.</td><td class="py-2">{{ $employee?->income_tax_no ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">SOCSO No.</td><td class="py-2">{{ $employee?->socso_no ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">Disabled Person</td><td class="py-2">{{ $employee?->is_disabled ? 'Yes' : 'No' }}</td></tr>
                     <tr><td class="text-muted py-2 align-top">Residential Address</td><td class="py-2" style="white-space:pre-line;">{{ $employee?->residential_address ?? '—' }}</td></tr>
+                    @php $allNric = $employee?->nric_file_paths ?? ($employee?->nric_file_path ? [$employee->nric_file_path] : []); @endphp
+                    @if(!empty($allNric))
+                    <tr><td class="text-muted py-2">NRIC / Passport File(s)</td>
+                        <td class="py-2">
+                            @foreach($allNric as $idx => $path)
+                            <a href="{{ asset('storage/'.$path) }}" target="_blank"
+                               class="btn btn-sm btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:12px;">
+                                <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $idx+1 }}
+                            </a>
+                            @endforeach
+                        </td></tr>
+                    @endif
                 </table>
             </div>
         </div>
@@ -285,5 +303,82 @@
         </div>
     </div>
 </div>
+
+{{-- SECTIONS F–I + Declaration & Consent --}}
+@if($employee)
+@include('partials.employee-extra-sections-view', ['employee' => $employee, 'showConsent' => true])
+@endif
+
+{{-- Edit & Consent Acknowledgement Log --}}
+@if($employee && $employee->editLogs->isNotEmpty())
+<div class="card mb-4">
+    <div class="card-header bg-white py-3 d-flex align-items-center gap-2" style="border-left:4px solid #94a3b8;">
+        <h6 class="mb-0 fw-bold text-muted"><i class="bi bi-clock-history me-2"></i>Edit &amp; Consent Acknowledgement Log</h6>
+    </div>
+    <div style="overflow:hidden;">
+        <div style="overflow-x:auto;">
+            <table class="table table-sm align-middle mb-0" style="font-size:12.5px;min-width:900px;">
+                <thead style="background:#f8fafc;position:sticky;top:0;z-index:1;">
+                    <tr>
+                        <th class="ps-3">Date &amp; Time</th>
+                        <th>Edited By</th>
+                        <th>Sections Changed</th>
+                        <th>Sent To</th>
+                        <th>Consent Status</th>
+                        <th>Acknowledged By</th>
+                        <th class="pe-3">Acknowledged At</th>
+                    </tr>
+                </thead>
+            </table>
+        </div>
+        <div style="max-height:280px;overflow-y:auto;overflow-x:auto;">
+            <table class="table table-sm align-middle mb-0" style="font-size:12.5px;min-width:900px;">
+                <tbody>
+                    @foreach($employee->editLogs as $log)
+                    <tr>
+                        <td class="ps-3 text-muted" style="width:160px;">{{ $log->created_at->format('d M Y, h:i A') }}</td>
+                        <td style="width:160px;">
+                            <div class="fw-semibold">{{ $log->edited_by_name ?? '—' }}</div>
+                            <div class="text-muted" style="font-size:11px;">{{ ucfirst(str_replace('_',' ',$log->edited_by_role ?? '')) }}</div>
+                        </td>
+                        <td>
+                            @if(!empty($log->sections_changed))
+                                @foreach($log->sections_changed as $sec)
+                                <span class="badge bg-light text-dark border me-1 mb-1" style="font-size:11px;">{{ $sec }}</span>
+                                @endforeach
+                            @else
+                                <span class="text-muted">—</span>
+                            @endif
+                            @if($log->change_notes)
+                            <div class="text-muted mt-1" style="font-size:11px;"><i class="bi bi-chat-left-text me-1"></i>{{ $log->change_notes }}</div>
+                            @endif
+                        </td>
+                        <td class="text-muted" style="font-size:11px;">{{ $log->consent_sent_to_email ?? '—' }}</td>
+                        <td>
+                            @if(!$log->consent_required)
+                                <span class="badge bg-secondary" style="font-size:11px;">Not required</span>
+                            @elseif($log->isAcknowledged())
+                                <span class="badge bg-success" style="font-size:11px;"><i class="bi bi-check-circle me-1"></i>Acknowledged</span>
+                            @elseif($log->isTokenExpired())
+                                <span class="badge bg-warning text-dark" style="font-size:11px;"><i class="bi bi-exclamation-triangle me-1"></i>Expired</span>
+                            @else
+                                <span class="badge bg-danger" style="font-size:11px;"><i class="bi bi-clock me-1"></i>Pending</span>
+                            @endif
+                        </td>
+                        <td>{{ $log->acknowledged_by_name ?? '—' }}</td>
+                        <td class="pe-3 text-muted">
+                            {{ $log->acknowledged_at?->format('d M Y, h:i A') ?? '—' }}
+                            @if($log->acknowledgement_notes)
+                            <div style="font-size:11px;color:#64748b;"><i class="bi bi-chat-left-text me-1"></i>{{ $log->acknowledgement_notes }}</div>
+                            @endif
+                        </td>
+                    </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+@endif
 
 @endsection

@@ -93,25 +93,64 @@
         </div>
     </div>
 
-    {{-- Section E —Condition --}}
+    {{-- Section E — Condition & Status --}}
     <div class="col-md-6">
         <div class="card">
             <div class="card-header bg-white py-3">
                 <h6 class="mb-0 fw-bold"><i class="bi bi-clipboard-check me-2 text-primary"></i>Section E — Condition & Status</h6>
             </div>
             <div class="card-body">
+                @php
+                    $decommReason = \App\Models\DisposedAsset::where('asset_inventory_id', $asset->id)->value('reason');
+                @endphp
                 <table class="table table-sm table-borderless mb-0">
                     <tr><td class="text-muted" style="width:45%">Condition</td><td><span class="badge bg-danger">Not Good</span></td></tr>
-                    <tr><td class="text-muted">Maintenance Status</td><td>{{ $asset->maintenance_status ? ucfirst(str_replace('_',' ',$asset->maintenance_status)) : '—' }}</td></tr>
-                    <tr><td class="text-muted">Last Maintenance</td><td>{{ $asset->last_maintenance_date?->format('d M Y') ?? '—' }}</td></tr>
-                    @if($asset->asset_photo)
-                    <tr><td class="text-muted">Asset Photo</td><td>
-                        <a href="{{ asset('storage/'.$asset->asset_photo) }}" target="_blank" class="btn btn-sm btn-outline-secondary">
-                            <i class="bi bi-image me-1"></i>View Photo
-                        </a>
-                    </td></tr>
+                    @if($decommReason)
+                    <tr><td class="text-muted">Decommission Reason</td><td>{{ $decommReason }}</td></tr>
                     @endif
                 </table>
+
+                {{-- Asset Photos --}}
+                @php
+                    $photos = $asset->asset_photos ?? ($asset->asset_photo ? [$asset->asset_photo] : []);
+                @endphp
+                @if(!empty($photos))
+                <div class="border-top pt-3 mt-3">
+                    <span class="text-muted small d-block mb-2">
+                        <i class="bi bi-images me-1"></i>Photos ({{ count($photos) }})
+                    </span>
+                    <div class="d-flex flex-wrap gap-2">
+                        @foreach($photos as $idx => $photo)
+                        <a href="{{ asset('storage/'.$photo) }}" target="_blank"
+                           data-bs-toggle="modal" data-bs-target="#photoLightbox"
+                           data-photo-src="{{ asset('storage/'.$photo) }}"
+                           data-photo-idx="{{ $idx + 1 }}"
+                           data-photo-total="{{ count($photos) }}"
+                           onclick="openPhotoLightbox(this); return false;">
+                            <img src="{{ asset('storage/'.$photo) }}"
+                                 style="width:100px;height:80px;object-fit:cover;border-radius:6px;border:1px solid #dee2e6;cursor:pointer;"
+                                 title="Photo {{ $idx + 1 }}">
+                        </a>
+                        @endforeach
+                    </div>
+                </div>
+                @endif
+            </div>
+        </div>
+    </div>
+
+    {{-- Notes --}}
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-white py-3">
+                <h6 class="mb-0 fw-bold"><i class="bi bi-sticky me-2 text-primary"></i>Notes</h6>
+            </div>
+            <div class="card-body">
+                @if($asset->notes)
+                <p class="mb-0" style="font-size:13px;white-space:pre-wrap;">{{ $asset->notes }}</p>
+                @else
+                <p class="text-muted small mb-0">No notes added for this asset.</p>
+                @endif
             </div>
         </div>
     </div>
@@ -131,5 +170,32 @@
     </div>
     @endif
 </div>
+
+{{-- Photo Lightbox Modal --}}
+<div class="modal fade" id="photoLightbox" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content" style="background:#111;">
+            <div class="modal-header border-0 py-2" style="background:#111;">
+                <span class="text-white small" id="photoLightboxLabel"></span>
+                <button type="button" class="btn-close btn-close-white ms-auto" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body text-center p-2">
+                <img id="photoLightboxImg" src="" alt="Asset Photo"
+                     style="max-width:100%;max-height:70vh;object-fit:contain;border-radius:4px;">
+            </div>
+        </div>
+    </div>
+</div>
+
+@push('scripts')
+<script>
+function openPhotoLightbox(el) {
+    document.getElementById('photoLightboxImg').src = el.dataset.photoSrc;
+    document.getElementById('photoLightboxLabel').textContent =
+        'Photo ' + el.dataset.photoIdx + ' of ' + el.dataset.photoTotal;
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('photoLightbox')).show();
+}
+</script>
+@endpush
 
 @endsection

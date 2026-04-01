@@ -5,12 +5,15 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use App\Models\Employee;
+use App\Models\EmployeeEditLog;
 use App\Models\EmployeeEducationHistory;
 use App\Models\EmployeeSpouseDetail;
 use App\Models\EmployeeEmergencyContact;
 use App\Models\EmployeeChildRegistration;
 use App\Models\Onboarding;
+use App\Mail\EmployeeConsentRequestMail;
 
 class ProfileController extends Controller
 {
@@ -111,24 +114,35 @@ class ProfileController extends Controller
         $validated['bank_name']   = $bankName;
         $validated['is_disabled'] = $request->boolean('is_disabled');
 
-        // Handle NRIC file uploads
+        // Handle NRIC file keep/delete and new uploads
+        // nric_keep_paths[] carries the paths the user chose to keep; anything not in that list is removed.
+        // nric_keep_submitted sentinel is always present in the form, so we can distinguish
+        // "user removed all files" (empty keep list) from "form did not include the field at all".
+        $employee = $this->getOrCreateEmployee();
+        $existingNric = $employee->nric_file_paths ?? ($employee->nric_file_path ? [$employee->nric_file_path] : []);
+        $keepSubmitted = $request->has('nric_keep_submitted');
+        if ($keepSubmitted) {
+            $keptNric     = (array) $request->input('nric_keep_paths', []);
+            $existingNric = array_values(array_intersect($existingNric, $keptNric));
+        }
+        $newNricPaths = [];
         if ($request->hasFile('nric_files')) {
-            $nricPaths = [];
             foreach ($request->file('nric_files') as $file) {
                 if ($file && $file->isValid()) {
-                    $nricPaths[] = $file->store('nric_documents', 'public');
+                    $newNricPaths[] = $file->store('nric_documents', 'public');
                 }
             }
-            if (!empty($nricPaths)) {
-                $employee = $this->getOrCreateEmployee();
-                $existing = $employee->nric_file_paths ?? [];
-                $validated['nric_file_paths'] = array_merge($existing, $nricPaths);
-                $validated['nric_file_path']  = $validated['nric_file_paths'][0];
-            }
+        }
+        $mergedNric = array_values(array_merge($existingNric, $newNricPaths));
+        if (!empty($mergedNric)) {
+            $validated['nric_file_paths'] = $mergedNric;
+            $validated['nric_file_path']  = $mergedNric[0];
+        } elseif ($keepSubmitted) {
+            $validated['nric_file_paths'] = null;
+            $validated['nric_file_path']  = null;
         }
         unset($validated['nric_files']);
 
-        $employee = $this->getOrCreateEmployee();
         $employee->update($validated);
 
         $user = Auth::user();
@@ -136,7 +150,9 @@ class ProfileController extends Controller
             $user->update(['name' => $validated['full_name']]);
         }
 
-        return back()->with('success', 'Personal information updated.');
+        $this->triggerProfileEditConsent($employee, ['Section A — Personal Details']);
+
+        return back()->with('success', 'Personal information updated. A consent re-acknowledgement email has been sent to you.');
     }
 
     // ── Update work data ──────────────────────────────────────────────────
@@ -177,7 +193,8 @@ class ProfileController extends Controller
             'edu_institution.*'    => 'nullable|string|max:255',
             'edu_year.*'           => 'nullable|integer|min:1950|max:2099',
             'edu_experience_total' => 'nullable|string|max:10',
-            'edu_certificate.*'    => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'edu_certificate.*.*'  => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'edu_cert_keep.*.*'    => 'nullable|string',
             'edu_delete_ids'       => 'nullable|string',
         ]);
 
@@ -196,39 +213,68 @@ class ProfileController extends Controller
         foreach ($request->input('edu_qualification', []) as $i => $qual) {
             if (empty(trim((string)$qual))) continue;
 
-            $certPath = null;
-            if ($request->hasFile("edu_certificate.{$i}") && $request->file("edu_certificate.{$i}")->isValid()) {
-                $certPath = $request->file("edu_certificate.{$i}")->store('education_certificates', 'public');
+            $existingId = $request->input("edu_id.{$i}");
+            $yearsExp   = ($i === 0) ? $expTotal : null;
+
+            // Determine which existing cert paths to keep
+            $keepPaths = $request->input("edu_cert_keep.{$i}", null);
+            if ($existingId && $keepPaths !== null) {
+                $row = EmployeeEducationHistory::where('employee_id', $employee->id)->find($existingId);
+                $allExisting  = $row ? ($row->certificate_paths ?? ($row->certificate_path ? [$row->certificate_path] : [])) : [];
+                $keptExisting = array_values(array_intersect($allExisting, (array)$keepPaths));
+            } elseif ($existingId) {
+                $row = EmployeeEducationHistory::where('employee_id', $employee->id)->find($existingId);
+                $keptExisting = $row ? ($row->certificate_paths ?? ($row->certificate_path ? [$row->certificate_path] : [])) : [];
+            } else {
+                $keptExisting = [];
             }
 
-            $yearsExp = ($i === 0) ? $expTotal : null;
-            $existingId = $request->input("edu_id.{$i}");
+            // Upload new cert files for this entry (edu_certificate[i][])
+            $newCertPaths = [];
+            if ($request->hasFile("edu_certificate.{$i}")) {
+                foreach ((array)$request->file("edu_certificate.{$i}") as $certFile) {
+                    if ($certFile && $certFile->isValid()) {
+                        $newCertPaths[] = $certFile->store('education_certificates', 'public');
+                    }
+                }
+            }
+
+            $mergedCerts = array_values(array_merge($keptExisting, $newCertPaths));
+            $mergedCerts = array_slice($mergedCerts, 0, 5);
+
             if ($existingId) {
-                $row = EmployeeEducationHistory::where('employee_id', $employee->id)->find($existingId);
+                if (!isset($row)) {
+                    $row = EmployeeEducationHistory::where('employee_id', $employee->id)->find($existingId);
+                }
                 if ($row) {
                     $row->update([
-                        'qualification'    => $qual,
-                        'institution'      => $request->input("edu_institution.{$i}"),
-                        'year_graduated'   => $request->input("edu_year.{$i}"),
-                        'years_experience' => $yearsExp,
-                    ] + ($certPath ? ['certificate_path' => $certPath] : []));
+                        'qualification'     => $qual,
+                        'institution'       => $request->input("edu_institution.{$i}"),
+                        'year_graduated'    => $request->input("edu_year.{$i}"),
+                        'years_experience'  => $yearsExp,
+                        'certificate_path'  => $mergedCerts[0] ?? null,
+                        'certificate_paths' => !empty($mergedCerts) ? $mergedCerts : null,
+                    ]);
                 }
             } else {
                 EmployeeEducationHistory::create([
-                    'employee_id'      => $employee->id,
-                    'qualification'    => $qual,
-                    'institution'      => $request->input("edu_institution.{$i}"),
-                    'year_graduated'   => $request->input("edu_year.{$i}"),
-                    'years_experience' => $yearsExp,
-                    'certificate_path' => $certPath,
+                    'employee_id'       => $employee->id,
+                    'qualification'     => $qual,
+                    'institution'       => $request->input("edu_institution.{$i}"),
+                    'year_graduated'    => $request->input("edu_year.{$i}"),
+                    'years_experience'  => $yearsExp,
+                    'certificate_path'  => $mergedCerts[0] ?? null,
+                    'certificate_paths' => !empty($mergedCerts) ? $mergedCerts : null,
                 ]);
             }
         }
 
-        return back()->with('success', 'Education history updated.');
+        $this->triggerProfileEditConsent($employee, ['Section F — Education & Work History']);
+
+        return back()->with('success', 'Education history updated. A consent re-acknowledgement email has been sent to you.');
     }
 
-    // ── Update spouse details ─────────────────────────────────────────────
+    // ── Update spouse details (add new) ──────────────────────────────────
     public function updateSpouse(Request $request)
     {
         $validated = $request->validate([
@@ -255,7 +301,42 @@ class ProfileController extends Controller
             'is_disabled'   => $request->boolean('spouse_is_disabled'),
         ]);
 
-        return back()->with('success', 'Spouse information added.');
+        $this->triggerProfileEditConsent($employee, ['Section G — Spouse Information']);
+
+        return back()->with('success', 'Spouse information added. A consent re-acknowledgement email has been sent to you.');
+    }
+
+    // ── Edit an existing spouse record ───────────────────────────────────
+    public function editSpouse(Request $request, int $spouseId)
+    {
+        $validated = $request->validate([
+            'spouse_name'          => 'required|string|max:255',
+            'spouse_address'       => 'nullable|string',
+            'spouse_nric_no'       => 'nullable|string|max:50',
+            'spouse_tel_no'        => 'nullable|string|max:30',
+            'spouse_occupation'    => 'nullable|string|max:255',
+            'spouse_income_tax_no' => 'nullable|string|max:50',
+            'spouse_is_working'    => 'nullable|boolean',
+            'spouse_is_disabled'   => 'nullable|boolean',
+        ]);
+
+        $employee = $this->getOrCreateEmployee();
+        \App\Models\EmployeeSpouseDetail::where('employee_id', $employee->id)
+            ->where('id', $spouseId)
+            ->update([
+                'name'          => $validated['spouse_name'],
+                'address'       => $validated['spouse_address'] ?? null,
+                'nric_no'       => $validated['spouse_nric_no'] ?? null,
+                'tel_no'        => $validated['spouse_tel_no'] ?? null,
+                'occupation'    => $validated['spouse_occupation'] ?? null,
+                'income_tax_no' => $validated['spouse_income_tax_no'] ?? null,
+                'is_working'    => $request->boolean('spouse_is_working'),
+                'is_disabled'   => $request->boolean('spouse_is_disabled'),
+            ]);
+
+        $this->triggerProfileEditConsent($employee, ['Section G — Spouse Information']);
+
+        return back()->with('success', 'Spouse information updated. A consent re-acknowledgement email has been sent to you.');
     }
 
     // ── Delete a spouse record ────────────────────────────────────────────
@@ -264,7 +345,8 @@ class ProfileController extends Controller
         $employee = $this->getOrCreateEmployee();
         \App\Models\EmployeeSpouseDetail::where('employee_id', $employee->id)
             ->where('id', $spouseId)->delete();
-        return back()->with('success', 'Spouse record removed.');
+        $this->triggerProfileEditConsent($employee, ['Section G — Spouse Information']);
+        return back()->with('success', 'Spouse record removed. A consent re-acknowledgement email has been sent to you.');
     }
 
     // ── Update emergency contacts ─────────────────────────────────────────
@@ -292,7 +374,9 @@ class ProfileController extends Controller
             );
         }
 
-        return back()->with('success', 'Emergency contacts updated.');
+        $this->triggerProfileEditConsent($employee, ['Section H — Emergency Contacts']);
+
+        return back()->with('success', 'Emergency contacts updated. A consent re-acknowledgement email has been sent to you.');
     }
 
     // ── Update child registration ─────────────────────────────────────────
@@ -317,7 +401,9 @@ class ProfileController extends Controller
             array_map(fn($v) => (int)($v ?? 0), $validated)
         );
 
-        return back()->with('success', 'Child registration updated.');
+        $this->triggerProfileEditConsent($employee, ['Section I — Child Registration (LHDN Tax Relief)']);
+
+        return back()->with('success', 'Child registration updated. A consent re-acknowledgement email has been sent to you.');
     }
 
     // ── Upload AARF ───────────────────────────────────────────────────────
@@ -345,6 +431,43 @@ class ProfileController extends Controller
             'Content-Type'        => 'application/pdf',
             'Content-Disposition' => 'inline; filename="' . basename($files[$type]) . '"',
         ]);
+    }
+
+    // ── Helper: send consent request email for profile self-edits ────────
+    private function triggerProfileEditConsent(Employee $employee, array $sectionsChanged): void
+    {
+        $token     = EmployeeEditLog::generateToken();
+        $expiresAt = now()->addDays(7);
+
+        $recipients = array_filter(array_unique([
+            $employee->personal_email,
+            $employee->company_email,
+        ]));
+        $recipientStr = implode(', ', $recipients);
+
+        $log = EmployeeEditLog::create([
+            'employee_id'              => $employee->id,
+            'edited_by_user_id'        => Auth::id(),
+            'edited_by_name'           => Auth::user()->name,
+            'edited_by_role'           => Auth::user()->role ?? 'user',
+            'sections_changed'         => $sectionsChanged,
+            'change_notes'             => null,
+            'consent_required'         => true,
+            'consent_token'            => $token,
+            'consent_token_expires_at' => $expiresAt,
+            'consent_requested_at'     => now(),
+            'consent_sent_to_email'    => $recipientStr ?: null,
+        ]);
+
+        if (!empty($recipients)) {
+            foreach ($recipients as $email) {
+                try {
+                    Mail::to($email)->send(new EmployeeConsentRequestMail($employee, $log));
+                } catch (\Exception $e) {
+                    \Log::warning("Profile self-edit consent email failed for employee #{$employee->id} to {$email}: " . $e->getMessage());
+                }
+            }
+        }
     }
 
     private function getOrCreateEmployee(): Employee

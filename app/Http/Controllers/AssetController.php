@@ -198,13 +198,21 @@ class AssetController extends Controller
             $data['invoice_document'] = $request->file('invoice_document')->store('invoices', 'public');
         }
 
-        // Handle multi-photo upload — append to existing photos
+        // Handle photo keep/remove + new uploads
+        $existing = $asset->asset_photos ?? [];
+        if ($request->has('photo_keep_submitted')) {
+            $keep     = (array) $request->input('photo_keep_paths', []);
+            $existing = array_values(array_intersect($existing, $keep));
+        }
         if ($request->hasFile('asset_photos')) {
-            $folder    = 'asset_photos/' . \Illuminate\Support\Str::slug($asset->asset_tag);
-            $existing  = $asset->asset_photos ?? [];
+            $folder = 'asset_photos/' . \Illuminate\Support\Str::slug($asset->asset_tag);
             foreach ($request->file('asset_photos') as $photo) {
                 $existing[] = $photo->store($folder, 'public');
             }
+        }
+        if ($request->has('photo_keep_submitted')) {
+            $data['asset_photos'] = !empty($existing) ? $existing : null;
+        } elseif (!empty($existing)) {
             $data['asset_photos'] = $existing;
         }
 
@@ -221,8 +229,6 @@ class AssetController extends Controller
         foreach ($sectionABKeys as $k) {
             $oldSectionAB[$k] = (string)($asset->$k ?? '');
         }
-
-        unset($data['notes']); // never overwrite remarks log
 
         $asset->update($data);
 
@@ -430,12 +436,6 @@ class AssetController extends Controller
                     }
                 }
             }
-        }
-
-        // Manual note
-        $userNote = trim($request->input('remarks', ''));
-        if ($userNote) {
-            $asset->appendRemark("Note: {$userNote}");
         }
 
         if ($asset->asset_condition === 'not_good') {
@@ -1096,7 +1096,9 @@ class AssetController extends Controller
             'asset_type'       => $validated['asset_type'],
             'brand'            => $validated['brand'],
             'model'            => $validated['model'],
+            'asset_name'       => $validated['asset_name'] ?? null,
             'serial_number'    => $validated['serial_number'],
+            'notes'            => $validated['notes'] ?? null,
             'processor'        => $validated['processor'] ?? null,
             'ram_size'         => $validated['ram_size'] ?? null,
             'storage'          => $validated['storage'] ?? null,
@@ -1140,7 +1142,6 @@ class AssetController extends Controller
                 ? ($validated['maintenance_status'] ?? 'pending')
                 : null;
             $data['last_maintenance_date'] = $validated['last_maintenance_date'] ?? null;
-            $data['notes']                 = $validated['remarks'] ?? null;
 
             // Section D — assignment
             $newEmployeeId = $validated['assigned_employee_id'] ?? null;
@@ -1168,7 +1169,9 @@ class AssetController extends Controller
             'asset_type'       => 'required|in:laptop,monitor,converter,phone,sim_card,access_card,other',
             'brand'            => 'required|string|max:100',
             'model'            => 'required|string|max:100',
+            'asset_name'       => 'nullable|string|max:255',
             'serial_number'    => 'required|string|max:100',
+            'notes'            => 'nullable|string|max:500',
             'processor'        => 'nullable|string|max:255',
             'ram_size'         => 'nullable|string|max:100',
             'storage'          => 'nullable|string|max:100',

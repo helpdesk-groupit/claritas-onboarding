@@ -68,7 +68,6 @@
                         <th class="ps-2">Qualification</th>
                         <th>Institution</th>
                         <th>Year</th>
-                        <th>Exp (yrs)</th>
                         <th>Certificate</th>
                     </tr>
                 </thead>
@@ -78,7 +77,6 @@
                         <td class="ps-2 fw-semibold">{{ $e->qualification }}</td>
                         <td class="text-muted">{{ $e->institution ?? '—' }}</td>
                         <td>{{ $e->year_graduated ?? '—' }}</td>
-                        <td>{{ $e->years_experience !== null ? $e->years_experience.' yrs' : '—' }}</td>
                         <td>
                             @php
                                 $certFiles = $e->certificate_paths ?? ($e->certificate_path ? [$e->certificate_path] : []);
@@ -86,7 +84,7 @@
                             @if(!empty($certFiles))
                                 @foreach($certFiles as $ci => $certFile)
                                 <a href="{{ asset('storage/'.$certFile) }}" target="_blank"
-                                   class="btn btn-xs btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:11px;">
+                                   class="btn btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:11px;">
                                     <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci + 1 }}
                                 </a>
                                 @endforeach
@@ -99,6 +97,13 @@
                 </tbody>
             </table>
         </div>
+        @php $firstEdu = $edu->first(); @endphp
+        @if($firstEdu?->years_experience !== null && $firstEdu->years_experience !== '')
+        <div class="mt-2 pt-2 border-top" style="font-size:13px;">
+            <span class="text-muted">Years of Working Experience:</span>
+            <strong class="ms-1">{{ $firstEdu->years_experience }} {{ $firstEdu->years_experience == 1 ? 'year' : 'years' }}</strong>
+        </div>
+        @endif
         @endif
     </div>
 </div>

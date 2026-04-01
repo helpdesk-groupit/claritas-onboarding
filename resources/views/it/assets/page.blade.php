@@ -451,7 +451,64 @@
                 <div class="section-header mb-3">
                     <h6 class="mb-0"><i class="bi bi-person-check me-2 text-primary"></i>Section D — Assignment</h6>
                 </div>
+                @php
+                    $addPreselectedId = old('assigned_employee_id', '');
+                    $addPreselectedLabel = '';
+                    if ($addPreselectedId) {
+                        foreach ($employees as $emp) {
+                            if ($emp->id == $addPreselectedId) {
+                                $en  = $emp->onboarding?->personalDetail?->full_name ?? $emp->full_name ?? 'Employee #'.$emp->id;
+                                $ee  = $emp->company_email ?? $emp->personal_email ?? '';
+                                $addPreselectedLabel = $ee ? "{$en} — {$ee}" : $en;
+                                break;
+                            }
+                        }
+                    }
+                @endphp
                 <div class="row g-3 mb-4">
+                    <div class="col-md-3"><label class="form-label fw-semibold">Assigned Employee</label>
+                        <div class="position-relative">
+                            <input type="text" id="addEmpSearchInput" class="form-control"
+                                   placeholder="Search or select employee..."
+                                   autocomplete="off"
+                                   value="{{ $addPreselectedLabel }}"
+                                   oninput="addFilterEmp(this.value)"
+                                   onfocus="addShowEmpList()"
+                                   onblur="setTimeout(addHideEmpList, 200)">
+                            <ul id="addEmpList"
+                                class="list-unstyled border rounded bg-white shadow-sm position-absolute mb-0"
+                                style="z-index:1060;max-height:200px;overflow-y:auto;display:none;top:100%;left:0;min-width:100%;width:max-content;max-width:480px;">
+                                <li>
+                                    <button type="button" class="dropdown-item"
+                                            onmousedown="addSelectEmp('', '— Not Assigned —')">
+                                        — Not Assigned —
+                                    </button>
+                                </li>
+                                @foreach($employees as $emp)
+                                @php
+                                    $empName  = $emp->onboarding?->personalDetail?->full_name ?? $emp->full_name ?? 'Employee #'.$emp->id;
+                                    $empEmail = $emp->company_email ?? $emp->personal_email ?? '';
+                                    $empLabel = $empEmail ? "{$empName} — {$empEmail}" : $empName;
+                                @endphp
+                                <li>
+                                    <button type="button" class="dropdown-item"
+                                            onmousedown="addSelectEmp('{{ $emp->id }}', {{ json_encode($empLabel) }})"
+                                            data-empname="{{ strtolower($empLabel) }}"
+                                            style="white-space:normal;word-break:break-word;">
+                                        {{ $empLabel }}
+                                    </button>
+                                </li>
+                                @endforeach
+                            </ul>
+                            <input type="hidden" name="assigned_employee_id" id="addAssignedEmployeeId"
+                                   value="{{ old('assigned_employee_id', '') }}">
+                        </div>
+                        <div class="form-text text-muted small">Type to search by name or email.</div>
+                    </div>
+                    <div class="col-md-3"><label class="form-label fw-semibold">Assigned Date</label>
+                        <input type="date" name="asset_assigned_date" class="form-control" value="{{ old('asset_assigned_date') }}"></div>
+                    <div class="col-md-3"><label class="form-label fw-semibold">Expected Return</label>
+                        <input type="date" name="expected_return_date" class="form-control" value="{{ old('expected_return_date') }}"></div>
                     <div class="col-md-3"><label class="form-label fw-semibold">Status <span class="text-danger">*</span></label>
                         <select name="status" id="assetStatus" class="form-select" required>
                             <option value="available" selected>Available</option>
@@ -459,25 +516,6 @@
                         </select>
                         <div class="form-text text-muted small">Auto-set based on Section E condition.</div>
                     </div>
-                    <div class="col-md-3"><label class="form-label fw-semibold">Assigned Employee</label>
-                        <select name="assigned_employee_id" id="assignedEmployee" class="form-select" onchange="syncAssignmentStatus()">
-                            <option value="">— Not Assigned —</option>
-                            @foreach($employees as $emp)
-                                @php
-                                    $empName  = $emp->onboarding?->personalDetail?->full_name ?? $emp->full_name ?? 'Employee #'.$emp->id;
-                                    $empEmail = $emp->company_email ?? $emp->personal_email ?? '';
-                                    $empLabel = $empEmail ? "{$empName} — {$empEmail}" : $empName;
-                                @endphp
-                                <option value="{{ $emp->id }}" {{ old('assigned_employee_id')==$emp->id?'selected':'' }}>
-                                    {{ $empLabel }}
-                                </option>
-                            @endforeach
-                        </select>
-                    </div>
-                    <div class="col-md-3"><label class="form-label fw-semibold">Assigned Date</label>
-                        <input type="date" name="asset_assigned_date" class="form-control" value="{{ old('asset_assigned_date') }}"></div>
-                    <div class="col-md-3"><label class="form-label fw-semibold">Expected Return</label>
-                        <input type="date" name="expected_return_date" class="form-control" value="{{ old('expected_return_date') }}"></div>
                 </div>
 
                 <div class="section-header mb-3">
@@ -500,17 +538,35 @@
                             <option value="done">Done</option>
                         </select>
                     </div>
+                    <div class="col-md-6" id="addDecommissionReasonWrap" style="display:none;">
+                        <label class="form-label fw-semibold">Decommission Reason <span class="text-danger">*</span></label>
+                        <input type="text" name="decommission_reason" id="addDecommissionReason"
+                               class="form-control"
+                               value="{{ old('decommission_reason') }}"
+                               placeholder="e.g. Screen cracked beyond repair, Water damage, Hardware failure...">
+                        <div class="form-text">This reason will be shown in the Decommissioning Assets table.</div>
+                    </div>
                     <div class="col-md-3"><label class="form-label fw-semibold">Last Maintenance</label>
                         <input type="date" name="last_maintenance_date" class="form-control" value="{{ old('last_maintenance_date') }}"></div>
-                    <div class="col-md-12">
+                    <div class="col-12">
                         <label class="form-label fw-semibold">Asset Photos <span class="text-muted fw-normal">(up to 15 photos, JPG/PNG)</span></label>
-                        <input type="file" name="asset_photos[]" class="form-control" accept=".jpg,.jpeg,.png" multiple>
-                        <div class="form-text text-muted">You can select between 1 and 15 photos at once.</div>
+                        <div class="d-flex gap-2 mb-1" style="max-width:480px;">
+                            <input type="file" id="addPhotoNewFileInput" class="form-control" accept=".jpg,.jpeg,.png" style="max-width:340px;">
+                            <button type="button" class="btn btn-outline-secondary btn-sm flex-shrink-0" onclick="addFormPhotoFile()">
+                                <i class="bi bi-upload me-1"></i>Add
+                            </button>
+                        </div>
+                        <div id="addPhotoNewList" class="d-flex flex-wrap gap-2 mb-1"></div>
+                        <div id="addPhotoNewHidden"></div>
+                        <div class="form-text text-muted">Select a photo then click Add. Up to 15 photos.</div>
                         @error('asset_photos')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
                         @error('asset_photos.*')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
                     </div>
-                    <div class="col-12"><label class="form-label fw-semibold">Remarks</label>
-                        <textarea name="remarks" class="form-control" rows="3" placeholder="Optional notes. Assignment events will be automatically logged here.">{{ old('remarks') }}</textarea></div>
+                    <div class="col-12">
+                        <label class="form-label fw-semibold">Notes</label>
+                        <textarea name="notes" class="form-control" rows="2"
+                                  placeholder="Any notes about this asset...">{{ old('notes') }}</textarea>
+                    </div>
                 </div>
                 @else
                 <input type="hidden" name="status" value="available">
@@ -559,25 +615,99 @@ function toggleOwnership(value) {
 }
 
 function syncAssignmentStatus() {
-    const empSelect    = document.getElementById('assignedEmployee');
+    const empHidden    = document.getElementById('addAssignedEmployeeId');
     const statusSelect = document.getElementById('assetStatus');
-    if (!empSelect || !statusSelect) return;
+    if (!empHidden || !statusSelect) return;
     const current = statusSelect.value;
-    if (empSelect.value !== '') {
+    if (empHidden.value !== '') {
         statusSelect.value = 'assigned';
     } else if (current === 'assigned') {
         statusSelect.value = 'available';
     }
 }
 
+// ── Assigned Employee searchable dropdown (Add form) ──────────────────────
+function addShowEmpList() {
+    const el = document.getElementById('addEmpList');
+    if (el) el.style.display = '';
+}
+function addHideEmpList() {
+    const el = document.getElementById('addEmpList');
+    if (el) el.style.display = 'none';
+}
+function addFilterEmp(query) {
+    const q = query.toLowerCase().trim();
+    document.querySelectorAll('#addEmpList li').forEach(li => {
+        const btn = li.querySelector('button');
+        const name = btn?.dataset.empname ?? '';
+        li.style.display = (!q || name.includes(q)) ? '' : 'none';
+    });
+    addShowEmpList();
+}
+function addSelectEmp(id, label) {
+    const hidden = document.getElementById('addAssignedEmployeeId');
+    const search = document.getElementById('addEmpSearchInput');
+    if (hidden) hidden.value = id;
+    if (search) search.value = id ? label : '';
+    addHideEmpList();
+    syncAssignmentStatus();
+}
+
 function syncStatusFromConditionAdd(condition) {
-    const statusSelect = document.getElementById('assetStatus');
-    const maintWrap    = document.getElementById('addMaintenanceWrap');
+    const statusSelect  = document.getElementById('assetStatus');
+    const maintWrap     = document.getElementById('addMaintenanceWrap');
+    const reasonWrap    = document.getElementById('addDecommissionReasonWrap');
+    const reasonInput   = document.getElementById('addDecommissionReason');
     if (statusSelect) {
         statusSelect.value = (condition === 'good') ? 'available' : 'unavailable';
     }
     if (maintWrap) {
         maintWrap.style.display = condition === 'under_maintenance' ? '' : 'none';
+    }
+    if (reasonWrap) {
+        reasonWrap.style.display = condition === 'not_good' ? '' : 'none';
+        if (reasonInput) reasonInput.required = condition === 'not_good';
+    }
+}
+
+// ── Add form photo management ─────────────────────────────────────────────
+let addFormPhotoFiles = [];
+function addFormPhotoFile() {
+    const input = document.getElementById('addPhotoNewFileInput');
+    if (!input.files.length) { alert('Please select a photo first.'); return; }
+    if (addFormPhotoFiles.length >= 15) { alert('Maximum 15 photos allowed.'); return; }
+    addFormPhotoFiles.push(input.files[0]);
+    renderAddFormPhotoList();
+    input.value = '';
+}
+function removeAddFormPhoto(i) {
+    addFormPhotoFiles.splice(i, 1);
+    renderAddFormPhotoList();
+}
+function renderAddFormPhotoList() {
+    const list   = document.getElementById('addPhotoNewList');
+    const hidden = document.getElementById('addPhotoNewHidden');
+    list.innerHTML = '';
+    addFormPhotoFiles.forEach((f, i) => {
+        const url = URL.createObjectURL(f);
+        list.innerHTML += `<div class="d-flex flex-column align-items-center gap-1" style="width:80px;">
+            <img src="${url}" style="width:80px;height:70px;object-fit:cover;border-radius:4px;border:1px solid #dee2e6;">
+            <button type="button" class="btn btn-outline-danger btn-sm w-100 py-0"
+                    style="font-size:11px;" onclick="removeAddFormPhoto(${i})">
+                <i class="bi bi-x me-1"></i>Remove
+            </button>
+        </div>`;
+    });
+    const old = hidden.querySelector('input[data-add-photo]');
+    if (old) old.remove();
+    if (addFormPhotoFiles.length) {
+        const dt = new DataTransfer();
+        addFormPhotoFiles.forEach(f => dt.items.add(f));
+        const inp = document.createElement('input');
+        inp.type = 'file'; inp.name = 'asset_photos[]'; inp.multiple = true;
+        inp.setAttribute('data-add-photo', '1'); inp.style.display = 'none';
+        inp.files = dt.files;
+        hidden.appendChild(inp);
     }
 }
 

@@ -72,7 +72,11 @@ Both run every minute:
 - `offboarding:notify` (`OffboardingNotifications`) — sends time-based offboarding email reminders
 
 ### Mail
-8 Mailable classes in `app/Mail/`, each with a corresponding Blade template in `resources/views/emails/`. The default sender is `hr@claritas.com` (configured via `MAIL_FROM_ADDRESS`).
+12 Mailable classes in `app/Mail/`, each with a corresponding Blade template in `resources/views/emails/`. The default sender is `hr@claritas.com` (configured via `MAIL_FROM_ADDRESS`).
+
+Notable mail classes:
+- `OnboardingEditNotificationMail` — plain notification sent when HR edits an onboarding record (no acknowledgement required)
+- `EmployeeConsentRequestMail` / `ConsentRequestMail` — full re-acknowledgement flow with token link, used for **employee listing and profile** edits only
 
 ### Frontend
 - Blade templates under `resources/views/` organized by role (`hr/`, `it/`, `user/`, `superadmin/`)
@@ -89,6 +93,24 @@ Both run every minute:
 - MySQL in production/local (`claritas_onboarding`), SQLite in-memory for tests
 - 44 migrations; the first 4 (prefixed `2024_01_`) define the core schema, subsequent `2026_03_` migrations are incremental enhancements
 - Timezone: `Asia/Kuala_Lumpur` (set in `config/app.php`)
+
+### Onboarding Staging JSON (`invite_staging_json`)
+Sections F–I (Education, Spouse, Emergency Contacts, Children) submitted by a new hire via the public invite form are stored as a JSON blob in `personal_details.invite_staging_json`. They are **not** immediately written to their relationship tables. The `ActivateEmployees` command calls `populateFromOnboarding()` on the employee's start date to flush this staging data into the proper tables (`employee_education_histories`, `employee_spouse_details`, etc.).
+
+- When displaying Sections G/H/I for an employee whose relationship tables are still empty, `resources/views/partials/employee-extra-sections-view.blade.php` reads from `invite_staging_json` as a fallback.
+- When HR edits an onboarding record and only changes Sections B or C (Work/Asset), `buildStagingJson()` returns the existing JSON unchanged to prevent wiping staging data.
+
+### Consent & Edit Log Flows (two distinct flows)
+| Context | Log model | Flow |
+|---|---|---|
+| Onboarding record edits (pre-hire) | `OnboardingEditLog` | Notification email only — `consent_required = false`, no token |
+| Employee listing / profile edits | `EmployeeEditLog` | Full re-acknowledgement: token generated, expiry set, consent link emailed |
+
+Only Sections A, F, G, H, I trigger any email for onboarding edits. The employee consent flow is always triggered for relevant edits in `EmployeeController`.
+
+### Multi-file Storage Patterns
+- **NRIC/Passport:** `personal_details.nric_file_paths` (JSON array). In employee records, mirrored to `employees.nric_file_paths`. Keep/remove controlled via `nric_keep_paths[]` hidden inputs on edit forms.
+- **Education certificates:** `employee_education_histories.certificate_paths` (JSON array, max 5). Legacy single-file column `certificate_path` is kept as the first entry for backwards compatibility. Keep/remove controlled via `edu_cert_keep[i][]` hidden inputs; new files use the DataTransfer API to attach File objects to a hidden `<input type="file">`.
 
 ### Pending Route Change
 `web.php.routes-to-add.txt` documents a planned registration route split. The routes in `routes/web.php` already reflect this update — the `.txt` file can be ignored.

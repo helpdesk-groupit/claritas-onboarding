@@ -1121,10 +1121,10 @@
     <div class="card-header bg-white py-3 d-flex align-items-center gap-2" style="border-left:4px solid #94a3b8;">
         <h6 class="mb-0 fw-bold text-muted"><i class="bi bi-clock-history me-2"></i>Edit &amp; Consent Acknowledgement Log</h6>
     </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-sm align-middle mb-0" style="font-size:12.5px;">
-                <thead style="background:#f8fafc;">
+    <div style="overflow:hidden;">
+        <div style="overflow-x:auto;">
+            <table class="table table-sm align-middle mb-0" style="font-size:12.5px;min-width:900px;">
+                <thead style="background:#f8fafc;position:sticky;top:0;z-index:1;">
                     <tr>
                         <th class="ps-3">Date &amp; Time</th>
                         <th>Edited By</th>
@@ -1135,11 +1135,15 @@
                         <th class="pe-3">Acknowledged At</th>
                     </tr>
                 </thead>
+            </table>
+        </div>
+        <div style="max-height:280px;overflow-y:auto;overflow-x:auto;">
+            <table class="table table-sm align-middle mb-0" style="font-size:12.5px;min-width:900px;">
                 <tbody>
                     @foreach($employee->editLogs as $log)
                     <tr>
-                        <td class="ps-3 text-muted">{{ $log->created_at->format('d M Y, h:i A') }}</td>
-                        <td>
+                        <td class="ps-3 text-muted" style="width:160px;">{{ $log->created_at->format('d M Y, h:i A') }}</td>
+                        <td style="width:160px;">
                             <div class="fw-semibold">{{ $log->edited_by_name ?? '—' }}</div>
                             <div class="text-muted" style="font-size:11px;">{{ ucfirst(str_replace('_',' ',$log->edited_by_role ?? '')) }}</div>
                         </td>
@@ -1155,20 +1159,7 @@
                             <div class="text-muted mt-1" style="font-size:11px;"><i class="bi bi-chat-left-text me-1"></i>{{ $log->change_notes }}</div>
                             @endif
                         </td>
-                        <td class="text-muted" style="font-size:11px;">
-                            @if($log->consent_sent_to_email)
-                                {{ $log->consent_sent_to_email }}
-                            @else
-                                <span class="text-muted">—</span>
-                            @endif
-                        </td>
-                        <td class="text-muted" style="font-size:11px;">
-                            @if($log->consent_sent_to_email)
-                                {{ $log->consent_sent_to_email }}
-                            @else
-                                <span class="text-muted">—</span>
-                            @endif
-                        </td>
+                        <td class="text-muted" style="font-size:11px;">{{ $log->consent_sent_to_email ?? '—' }}</td>
                         <td>
                             @if(!$log->consent_required)
                                 <span class="badge bg-secondary" style="font-size:11px;">Not required</span>

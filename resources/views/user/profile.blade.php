@@ -511,17 +511,37 @@
                                 <span class="text-muted fw-normal small">(PDF/image, max 5 files)</span>
                             </label>
                             @php $existingNric = $emp?->nric_file_paths ?? ($emp?->nric_file_path ? [$emp->nric_file_path] : []); @endphp
-                            @if(!empty($existingNric))
-                            <div class="mb-1">
+                            {{-- Sentinel: always present so controller knows the keep list was explicitly submitted --}}
+                            <input type="hidden" name="nric_keep_submitted" value="1">
+                            {{-- Existing files — each with a remove button --}}
+                            <div id="profileNricExistingList" class="mb-2">
                                 @foreach($existingNric as $idx => $path)
-                                <a href="{{ asset('storage/'.$path) }}" target="_blank"
-                                   class="btn btn-sm btn-outline-primary me-1 mb-1" style="font-size:11px;">
-                                    <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $idx+1 }}
-                                </a>
+                                <div class="d-inline-flex align-items-center gap-1 me-1 mb-1" id="profileNricItem_{{ $idx }}">
+                                    <a href="{{ asset('storage/'.$path) }}" target="_blank"
+                                       class="btn btn-sm btn-outline-primary" style="font-size:12px;">
+                                        <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $idx+1 }}
+                                    </a>
+                                    <input type="hidden" name="nric_keep_paths[]" value="{{ $path }}" class="profile-nric-keep-input">
+                                    <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1"
+                                            style="font-size:12px;"
+                                            onclick="profileRemoveNricExisting(this)"
+                                            title="Remove this file">
+                                        <i class="bi bi-x"></i>
+                                    </button>
+                                </div>
                                 @endforeach
                             </div>
-                            @endif
-                            <input type="file" name="nric_files[]" class="form-control" accept=".jpg,.jpeg,.png,.pdf" multiple>
+                            {{-- New file upload --}}
+                            <div class="d-flex gap-2 mb-1">
+                                <input type="file" id="profileNricNewFileInput" class="form-control" accept=".jpg,.jpeg,.png,.pdf" style="max-width:340px;">
+                                <button type="button" class="btn btn-outline-secondary btn-sm flex-shrink-0"
+                                        onclick="profileAddNricFile()">
+                                    <i class="bi bi-upload me-1"></i>Add
+                                </button>
+                            </div>
+                            <div id="profileNricNewList"></div>
+                            <div id="profileNricNewHidden"></div>
+                            <div class="form-text">Max 5 files total. Click <i class="bi bi-x"></i> to remove a file.</div>
                         </div>
                         <div class="col-md-3">
                             <label class="form-label fw-semibold">Date of Birth</label>
@@ -688,11 +708,14 @@ document.addEventListener('DOMContentLoaded', function () {
                         <td class="text-muted">{{ $e->institution ?? '—' }}</td>
                         <td>{{ $e->year_graduated ?? '—' }}</td>
                         <td>
-                            @if($e->certificate_path)
-                                <a href="{{ asset('storage/'.$e->certificate_path) }}" target="_blank"
-                                   class="btn btn-outline-primary" style="padding:2px 8px;font-size:11px;">
-                                    <i class="bi bi-file-earmark-arrow-down me-1"></i>View
+                            @php $certPaths = $e->certificate_paths ?? ($e->certificate_path ? [$e->certificate_path] : []); @endphp
+                            @if(!empty($certPaths))
+                                @foreach($certPaths as $ci => $cp)
+                                <a href="{{ asset('storage/'.$cp) }}" target="_blank"
+                                   class="btn btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:11px;">
+                                    <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci+1 }}
                                 </a>
+                                @endforeach
                             @else
                                 <span class="text-muted small">—</span>
                             @endif
@@ -702,6 +725,13 @@ document.addEventListener('DOMContentLoaded', function () {
                 </tbody>
             </table>
         </div>
+        @php $firstEdu = $eduList->first(); @endphp
+        @if($firstEdu?->years_experience !== null && $firstEdu->years_experience !== '')
+        <div class="mt-2 pt-2 border-top" style="font-size:13px;">
+            <span class="text-muted">Years of Working Experience:</span>
+            <strong class="ms-1">{{ $firstEdu->years_experience }} {{ $firstEdu->years_experience == 1 ? 'year' : 'years' }}</strong>
+        </div>
+        @endif
         @endif
     </div>
 </div>
@@ -717,7 +747,7 @@ document.addEventListener('DOMContentLoaded', function () {
             <h6 class="mb-0 fw-bold"><i class="bi bi-people me-2 text-primary"></i>Spouse Information <span class="text-danger profile-spouse-required d-none">*</span></h6>
         </div>
         <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#editSpouseModal">
-            <i class="bi bi-plus-circle me-1"></i>Add
+            <i class="bi bi-plus-circle me-1"></i>Add Spouse
         </button>
     </div>
     <div class="card-body py-3">
@@ -726,14 +756,19 @@ document.addEventListener('DOMContentLoaded', function () {
         @else
         @foreach($spouses as $sp)
         <div class="border rounded p-3 mb-2" style="position:relative;">
-            <form action="{{ route('profile.spouse.delete', $sp->id) }}" method="POST" class="d-inline"
-                  onsubmit="return confirm('Remove this spouse record?')">
-                @csrf @method('DELETE')
-                <button type="submit" class="btn btn-sm btn-outline-danger"
-                        style="position:absolute;top:10px;right:10px;">
-                    <i class="bi bi-trash"></i>
+            <div style="position:absolute;top:10px;right:10px;display:flex;gap:6px;">
+                <button type="button" class="btn btn-sm btn-outline-primary"
+                        onclick="profileOpenEditSpouse({{ $sp->id }}, {{ json_encode($sp->name) }}, {{ json_encode($sp->nric_no) }}, {{ json_encode($sp->tel_no) }}, {{ json_encode($sp->occupation) }}, {{ json_encode($sp->income_tax_no) }}, {{ json_encode($sp->address) }}, {{ $sp->is_working ? 1 : 0 }}, {{ $sp->is_disabled ? 1 : 0 }})">
+                    <i class="bi bi-pencil"></i>
                 </button>
-            </form>
+                <form action="{{ route('profile.spouse.delete', $sp->id) }}" method="POST" class="d-inline"
+                      onsubmit="return confirm('Remove this spouse record?')">
+                    @csrf @method('DELETE')
+                    <button type="submit" class="btn btn-sm btn-outline-danger">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </form>
+            </div>
             <div class="row g-0">
                 <div class="col-md-6">
                     <table class="table table-sm table-borderless mb-0" style="font-size:13.5px;">
@@ -918,10 +953,10 @@ document.addEventListener('DOMContentLoaded', function () {
     <div class="card-header bg-white py-3 d-flex align-items-center gap-2" style="border-left:4px solid #94a3b8;">
         <h6 class="mb-0 fw-bold text-muted"><i class="bi bi-clock-history me-2"></i>Edit &amp; Consent Acknowledgement Log</h6>
     </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-sm align-middle mb-0" style="font-size:12.5px;">
-                <thead style="background:#f8fafc;">
+    <div style="overflow:hidden;">
+        <div style="overflow-x:auto;">
+            <table class="table table-sm align-middle mb-0" style="font-size:12.5px;min-width:900px;">
+                <thead style="background:#f8fafc;position:sticky;top:0;z-index:1;">
                     <tr>
                         <th class="ps-3">Date &amp; Time</th>
                         <th>Edited By</th>
@@ -932,11 +967,15 @@ document.addEventListener('DOMContentLoaded', function () {
                         <th class="pe-3">Acknowledged At</th>
                     </tr>
                 </thead>
+            </table>
+        </div>
+        <div style="max-height:280px;overflow-y:auto;overflow-x:auto;">
+            <table class="table table-sm align-middle mb-0" style="font-size:12.5px;min-width:900px;">
                 <tbody>
                     @foreach($editLogs as $log)
                     <tr>
-                        <td class="ps-3 text-muted">{{ $log->created_at->format('d M Y, h:i A') }}</td>
-                        <td>
+                        <td class="ps-3 text-muted" style="width:160px;">{{ $log->created_at->format('d M Y, h:i A') }}</td>
+                        <td style="width:160px;">
                             <div class="fw-semibold">{{ $log->edited_by_name ?? '—' }}</div>
                             <div class="text-muted" style="font-size:11px;">{{ ucfirst(str_replace('_',' ',$log->edited_by_role ?? '')) }}</div>
                         </td>
@@ -952,9 +991,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             <div class="text-muted mt-1" style="font-size:11px;"><i class="bi bi-chat-left-text me-1"></i>{{ $log->change_notes }}</div>
                             @endif
                         </td>
-                        <td class="text-muted" style="font-size:11px;">
-                            {{ $log->consent_sent_to_email ?? '—' }}
-                        </td>
+                        <td class="text-muted" style="font-size:11px;">{{ $log->consent_sent_to_email ?? '—' }}</td>
                         <td>
                             @if(!$log->consent_required)
                                 <span class="badge bg-secondary" style="font-size:11px;">Not required</span>
@@ -984,7 +1021,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 {{-- ═══════════ EDIT MODALS ═══════════ --}}
 
-{{-- Edit Education Modal (list-based) --}}
+{{-- Edit Education Modal (single form) --}}
 <div class="modal fade" id="editEducationModal" tabindex="-1" data-bs-backdrop="static">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
@@ -992,57 +1029,112 @@ document.addEventListener('DOMContentLoaded', function () {
                 <h5 class="modal-title text-white fw-bold"><i class="bi bi-mortarboard me-2"></i>Education &amp; Work History</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
+            <form action="{{ route('profile.education.update') }}" method="POST" enctype="multipart/form-data" id="profileEduForm">
+            @csrf
+            <input type="hidden" name="edu_delete_ids" id="profileEduDeleteIds" value="">
             <div class="modal-body">
-                {{-- Existing saved entries --}}
-                @if($eduList->isNotEmpty())
-                <p class="fw-semibold small text-muted mb-2">Saved Qualifications</p>
-                <form action="{{ route('profile.education.update') }}" method="POST" enctype="multipart/form-data" id="profileEduSaveForm">
-                @csrf
-                <input type="hidden" name="edu_delete_ids" id="profileEduDeleteIds" value="">
                 <div id="profileEduContainer">
-                    @foreach($eduList as $edu)
-                    <div class="border rounded p-3 mb-3 profile-edu-row" style="position:relative;">
-                        <button type="button" class="btn btn-sm btn-outline-danger"
-                                style="position:absolute;top:10px;right:10px;"
-                                onclick="profileMarkEduDelete(this, {{ $edu->id }})">
-                            <i class="bi bi-trash"></i>
-                        </button>
+                    @forelse($eduList as $edu)
+                    <div class="border rounded p-3 mb-3 profile-edu-row" data-edu-idx="{{ $loop->index }}">
                         <input type="hidden" name="edu_id[]" value="{{ $edu->id }}">
-                        <div class="fw-semibold mb-1">{{ $edu->qualification }}</div>
-                        <div class="text-muted small mb-2">
-                            {{ $edu->institution ?? '' }}
-                            {{ $edu->year_graduated ? '· '.$edu->year_graduated : '' }}
-                            @if($edu->certificate_path)
-                                · <a href="{{ asset('storage/'.$edu->certificate_path) }}" target="_blank">View cert</a>
-                            @endif
+                        {{-- Summary row --}}
+                        <div class="d-flex align-items-start justify-content-between">
+                            <div class="edu-summary">
+                                <div class="fw-semibold">{{ $edu->qualification }}</div>
+                                <div class="text-muted small">
+                                    {{ $edu->institution ?? '' }}{{ $edu->year_graduated ? ' · '.$edu->year_graduated : '' }}
+                                </div>
+                                @php $editCertFiles = $edu->certificate_paths ?? ($edu->certificate_path ? [$edu->certificate_path] : []); @endphp
+                                @if(!empty($editCertFiles))
+                                <div class="mt-1">
+                                    @foreach($editCertFiles as $cf)
+                                    <a href="{{ asset('storage/'.$cf) }}" target="_blank"
+                                       class="btn btn-outline-primary me-1" style="padding:2px 8px;font-size:11px;">
+                                        <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $loop->iteration }}
+                                    </a>
+                                    @endforeach
+                                </div>
+                                @endif
+                            </div>
+                            <div class="d-flex gap-1 ms-2 flex-shrink-0">
+                                <button type="button" class="btn btn-sm btn-outline-secondary"
+                                        onclick="profileToggleEduEdit(this)">
+                                    <i class="bi bi-pencil me-1"></i>Edit
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-danger"
+                                        onclick="profileMarkEduDelete(this, {{ $edu->id }})">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
                         </div>
-                        <div class="row g-2">
-                            <div class="col-md-6">
-                                <input type="text" name="edu_qualification[]" class="form-control form-control-sm"
-                                       value="{{ $edu->qualification }}" placeholder="Qualification" required>
-                            </div>
-                            <div class="col-md-6">
-                                <input type="text" name="edu_institution[]" class="form-control form-control-sm"
-                                       value="{{ $edu->institution }}" placeholder="Institution">
-                            </div>
-                            <div class="col-md-3">
-                                <input type="number" name="edu_year[]" class="form-control form-control-sm"
-                                       value="{{ $edu->year_graduated }}" placeholder="Year" min="1950" max="{{ date('Y')+5 }}">
-                            </div>
-                            <div class="col-md-9">
-                                <input type="file" name="edu_certificate[]" class="form-control form-control-sm"
-                                       accept=".jpg,.jpeg,.png,.pdf" multiple>
-                                <div class="form-text" style="font-size:11px;">Upload new cert (max 5 files, replaces current)</div>
+                        {{-- Inline edit fields (collapsed by default) --}}
+                        @php $inlineCerts = $edu->certificate_paths ?? ($edu->certificate_path ? [$edu->certificate_path] : []); @endphp
+                        <div class="profile-edu-fields mt-3 d-none" data-edu-idx="{{ $loop->index }}">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label class="form-label fw-semibold small">Qualification</label>
+                                    <input type="text" name="edu_qualification[]" class="form-control form-control-sm"
+                                           value="{{ $edu->qualification }}" required>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label fw-semibold small">Institution</label>
+                                    <input type="text" name="edu_institution[]" class="form-control form-control-sm"
+                                           value="{{ $edu->institution }}">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-semibold small">Year Graduated</label>
+                                    <input type="number" name="edu_year[]" class="form-control form-control-sm"
+                                           value="{{ $edu->year_graduated }}" min="1950" max="{{ date('Y')+5 }}">
+                                </div>
+                                <div class="col-md-9">
+                                    <label class="form-label fw-semibold small">Certificate(s)
+                                        <span class="text-muted fw-normal">(max 5 files)</span>
+                                    </label>
+                                    <div class="edu-cert-existing mb-2">
+                                        @foreach($inlineCerts as $ci => $cf)
+                                        <div class="d-inline-flex align-items-center gap-1 me-1 mb-1">
+                                            <a href="{{ asset('storage/'.$cf) }}" target="_blank"
+                                               class="btn btn-sm btn-outline-primary" style="font-size:11px;">
+                                                <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci+1 }}
+                                            </a>
+                                            <input type="hidden" name="edu_cert_keep[{{ $loop->parent->index }}][]"
+                                                   value="{{ $cf }}" class="edu-cert-keep-input">
+                                            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1"
+                                                    style="font-size:11px;"
+                                                    onclick="profileRemoveEduCert(this)"
+                                                    title="Remove this file">
+                                                <i class="bi bi-x"></i>
+                                            </button>
+                                        </div>
+                                        @endforeach
+                                    </div>
+                                    <div class="d-flex gap-2 mb-1">
+                                        <input type="file" class="profile-edu-cert-file-input form-control form-control-sm"
+                                               accept=".jpg,.jpeg,.png,.pdf" style="max-width:260px;"
+                                               data-idx="{{ $loop->index }}">
+                                        <button type="button" class="btn btn-outline-secondary btn-sm flex-shrink-0"
+                                                onclick="profileAddEduCertFile(this, {{ $loop->index }})">
+                                            <i class="bi bi-upload me-1"></i>Add
+                                        </button>
+                                    </div>
+                                    <div class="profile-edu-cert-new-list" data-idx="{{ $loop->index }}"></div>
+                                    <div class="profile-edu-cert-new-hidden" data-idx="{{ $loop->index }}"></div>
+                                    <div class="form-text" style="font-size:11px;">Click <i class="bi bi-x"></i> to mark for removal. Changes only apply after clicking "Save Education".</div>
+                                </div>
                             </div>
                         </div>
                     </div>
-                    @endforeach
+                    @empty
+                    <p class="text-muted small" id="profileNoEduMsg">No education history yet.</p>
+                    @endforelse
                 </div>
-                <div class="text-end mb-3">
-                    <button type="submit" class="btn btn-success btn-sm px-4">
-                        <i class="bi bi-check-circle me-1"></i>Save Changes to Existing
+
+                <div class="d-flex gap-2 mt-2 mb-3">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="profileAddEduRow()">
+                        <i class="bi bi-plus-circle me-1"></i>Add Qualification
                     </button>
                 </div>
+
                 @php $expTotal = $eduList->first()?->years_experience; @endphp
                 <div class="row g-3 mb-3">
                     <div class="col-md-6">
@@ -1061,54 +1153,14 @@ document.addEventListener('DOMContentLoaded', function () {
                         </select>
                     </div>
                 </div>
-                </form>
-                <hr>
-                @endif
-
-                {{-- Add new entry panel --}}
-                <p class="fw-semibold small text-muted mb-2">Add New Qualification</p>
-                <div id="profileNewEduList" class="mb-3"></div>
-                <div id="profileNewEduHidden"></div>
-                <div class="border rounded p-3" style="background:#f8fafc;">
-                    <div class="row g-3">
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold small">Qualification (Full Name)</label>
-                            <input type="text" id="pEduQual" class="form-control form-control-sm"
-                                   placeholder="e.g. Bachelor of Business Administration">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold small">Institution</label>
-                            <input type="text" id="pEduInst" class="form-control form-control-sm">
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold small">Year Graduated</label>
-                            <input type="number" id="pEduYear" class="form-control form-control-sm" min="1950" max="{{ date('Y')+5 }}">
-                        </div>
-                        <div class="col-md-9">
-                            <label class="form-label fw-semibold small">Certificate (max 5 files)</label>
-                            <input type="file" id="pEduCert" class="form-control form-control-sm"
-                                   accept=".jpg,.jpeg,.png,.pdf" multiple>
-                        </div>
-                    </div>
-                    <div class="mt-2 text-end">
-                        <button type="button" class="btn btn-primary btn-sm" onclick="pAddEduEntry()">
-                            <i class="bi bi-plus-circle me-1"></i>Add to List
-                        </button>
-                    </div>
-                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
-                <form action="{{ route('profile.education.update') }}" method="POST"
-                      enctype="multipart/form-data" id="profileNewEduForm">
-                @csrf
-                <input type="hidden" name="edu_delete_ids" value="">
-                <div id="profileNewEduFormFields"></div>
-                <button type="submit" class="btn btn-primary" id="profileNewEduSubmit" style="display:none;">
-                    <i class="bi bi-check-circle me-1"></i>Save New Entries
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-check-circle me-1"></i>Save Education
                 </button>
-                </form>
             </div>
+            </form>
         </div>
     </div>
 </div>
@@ -1173,6 +1225,133 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
     </div>
 </div>
+
+{{-- Edit Spouse Modal (edits an existing record) --}}
+<div class="modal fade" id="profileEditSpouseModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header" style="background:linear-gradient(135deg,#0052CC,#2684FE);">
+                <h5 class="modal-title text-white fw-bold"><i class="bi bi-pencil-square me-2"></i>Edit Spouse Information</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="profileEditSpouseForm" method="POST">
+            @csrf @method('PUT')
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
+                        <input type="text" name="spouse_name" id="editSpouseName" class="form-control" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold">NRIC No.</label>
+                        <input type="text" name="spouse_nric_no" id="editSpouseNric" class="form-control">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold">Tel No.</label>
+                        <input type="text" name="spouse_tel_no" id="editSpouseTel" class="form-control">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold">Occupation</label>
+                        <input type="text" name="spouse_occupation" id="editSpouseOccupation" class="form-control">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold">Income Tax No.</label>
+                        <input type="text" name="spouse_income_tax_no" id="editSpouseIncomeTax" class="form-control">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label fw-semibold">Address</label>
+                        <textarea name="spouse_address" id="editSpouseAddress" class="form-control" rows="2"></textarea>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-semibold">Working?</label>
+                        <select name="spouse_is_working" id="editSpouseIsWorking" class="form-select">
+                            <option value="0">No</option><option value="1">Yes</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-semibold">Disabled?</label>
+                        <select name="spouse_is_disabled" id="editSpouseIsDisabled" class="form-select">
+                            <option value="0">No</option><option value="1">Yes</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-check-circle me-1"></i>Save Changes
+                </button>
+            </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+{{-- Edit Children Modal --}}
+@php
+    $ch = $emp->childRegistration ?? null;
+    $catLabelsModal = [
+        'a' => 'a) Children under 18 years old',
+        'b' => 'b) Children aged 18 years and above (still studying at the certificate and matriculation level)',
+        'c' => 'c) Above 18 years (studying Diploma level or higher in Malaysia or elsewhere)',
+        'd' => 'd) Disabled Child below 18 years old',
+        'e' => 'e) Disabled Child (studying Diploma level or higher in Malaysia or elsewhere)',
+    ];
+@endphp
+<div class="modal fade" id="editChildrenModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header" style="background:linear-gradient(135deg,#0052CC,#2684FE);">
+                <h5 class="modal-title text-white fw-bold"><i class="bi bi-heart me-2"></i>Child Registration (LHDN Tax Relief)</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ route('profile.children.update') }}" method="POST">
+            @csrf
+            <div class="modal-body">
+                <p class="text-muted small mb-3">Enter the number of children in each category for LHDN tax relief purposes.</p>
+                <table class="table table-sm table-bordered align-middle" style="font-size:13px;">
+                    <thead style="background:#f8fafc;">
+                        <tr>
+                            <th style="width:60%;vertical-align:middle;" rowspan="2">Category</th>
+                            <th colspan="2" class="text-center">Number of Children</th>
+                        </tr>
+                        <tr>
+                            <th class="text-center" style="width:110px;">100%<br><small class="fw-normal">(self)</small></th>
+                            <th class="text-center" style="width:110px;">50%<br><small class="fw-normal">(shared)</small></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach($catLabelsModal as $key => $label)
+                        <tr>
+                            <td>{{ $label }}</td>
+                            <td class="text-center" style="padding:4px;">
+                                <input type="number" name="cat_{{ $key }}_100" class="form-control form-control-sm text-center"
+                                       style="width:70px;margin:auto;"
+                                       value="{{ old('cat_'.$key.'_100', $ch->{'cat_'.$key.'_100'} ?? 0) }}"
+                                       min="0" max="99">
+                            </td>
+                            <td class="text-center" style="padding:4px;">
+                                <input type="number" name="cat_{{ $key }}_50" class="form-control form-control-sm text-center"
+                                       style="width:70px;margin:auto;"
+                                       value="{{ old('cat_'.$key.'_50', $ch->{'cat_'.$key.'_50'} ?? 0) }}"
+                                       min="0" max="99">
+                            </td>
+                        </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-check-circle me-1"></i>Save Changes
+                </button>
+            </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 {{-- Edit Emergency Contacts Modal (list-based) --}}
 <div class="modal fade" id="editEmergencyModal" tabindex="-1" data-bs-backdrop="static">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -1268,98 +1447,191 @@ document.addEventListener('DOMContentLoaded', function() {
     if (b) toggleOtherBank(b, 'profileBankNameOther');
 });
 
-// ── Existing edu record inline-delete (for saved entries form) ────────────
-function profileMarkEduDelete(btn, id) {
-    const field = document.getElementById('profileEduDeleteIds');
-    const ids = field.value ? field.value.split(',') : [];
-    ids.push(id); field.value = ids.join(',');
-    btn.closest('.profile-edu-row').remove();
+// ── Section A — NRIC file management ──────────────────────────────────────
+function profileRemoveNricExisting(btn) {
+    const wrapper = btn.closest('.d-inline-flex');
+    const keepInput = wrapper.querySelector('.profile-nric-keep-input');
+    if (keepInput) keepInput.disabled = true;
+    wrapper.style.opacity = '0.4';
+    wrapper.style.pointerEvents = 'none';
+    btn.disabled = true;
 }
 
-// ═══════════════════════════════════════════════════════
-// EDUCATION — Add new entries list
-// ═══════════════════════════════════════════════════════
-let pEduEntries = [];
+let profileNricNewFiles = [];
 
-function pAddEduEntry() {
-    const qual = document.getElementById('pEduQual').value.trim();
-    if (!qual) { alert('Please enter a qualification name.'); return; }
-    const entry = {
-        qualification: qual,
-        institution:   document.getElementById('pEduInst').value.trim(),
-        year:          document.getElementById('pEduYear').value.trim(),
-        certFiles:     Array.from(document.getElementById('pEduCert').files),
-    };
-    pEduEntries.push(entry);
-    pRenderEduList();
-    ['pEduQual','pEduInst','pEduYear'].forEach(id => document.getElementById(id).value = '');
-    document.getElementById('pEduCert').value = '';
+function profileAddNricFile() {
+    const input = document.getElementById('profileNricNewFileInput');
+    if (!input.files.length) return;
+    const existing = document.querySelectorAll('.profile-nric-keep-input:not([disabled])').length;
+    const total    = existing + profileNricNewFiles.length + input.files.length;
+    if (total > 5) { alert('Maximum 5 NRIC/Passport files allowed.'); return; }
+    Array.from(input.files).forEach(f => profileNricNewFiles.push(f));
+    profileRenderNricNewList();
+    input.value = '';
 }
 
-function pRemoveEduEntry(i) {
-    pEduEntries.splice(i, 1);
-    pRenderEduList();
+function profileRemoveNricNew(i) {
+    profileNricNewFiles.splice(i, 1);
+    profileRenderNricNewList();
 }
 
-function pRenderEduList() {
-    const list = document.getElementById('profileNewEduList');
+function profileRenderNricNewList() {
+    const list   = document.getElementById('profileNricNewList');
+    const hidden = document.getElementById('profileNricNewHidden');
     if (!list) return;
     list.innerHTML = '';
-    pEduEntries.forEach((e, i) => {
-        const certNames = e.certFiles.map(f => f.name).join(', ') || '—';
-        list.innerHTML += `
-        <div class="border rounded p-2 mb-2" style="position:relative;background:#fff;">
-            <button type="button" class="btn btn-sm btn-outline-danger"
-                    style="position:absolute;top:8px;right:8px;"
-                    onclick="pRemoveEduEntry(${i})"><i class="bi bi-trash"></i></button>
-            <div class="fw-semibold small">${escH(e.qualification)}</div>
-            <div class="text-muted" style="font-size:12px;">
-                ${e.institution ? e.institution+' · ' : ''}
-                ${e.year ? e.year : ''}
-                ${e.certFiles.length ? ' · '+e.certFiles.length+' file(s)' : ''}
-            </div>
+    profileNricNewFiles.forEach((f, i) => {
+        list.innerHTML += `<div class="d-inline-flex align-items-center gap-1 me-1 mb-1">
+            <span class="btn btn-sm btn-outline-secondary" style="font-size:11px;pointer-events:none;">
+                <i class="bi bi-file-earmark me-1"></i>${escH(f.name)}
+            </span>
+            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1" style="font-size:11px;"
+                    onclick="profileRemoveNricNew(${i})"><i class="bi bi-x"></i></button>
         </div>`;
     });
-    pSyncEduHidden();
-}
-
-function pSyncEduHidden() {
-    const hidden = document.getElementById('profileNewEduFormFields');
-    const formHidden = document.getElementById('profileNewEduHidden');
-    if (!hidden && !formHidden) return;
-
-    let html = '';
-    pEduEntries.forEach((e) => {
-        html += `<input type="hidden" name="edu_qualification[]" value="${escH(e.qualification)}">`;
-        html += `<input type="hidden" name="edu_institution[]"   value="${escH(e.institution)}">`;
-        html += `<input type="hidden" name="edu_year[]"          value="${escH(e.year)}">`;
-        html += `<input type="hidden" name="edu_experience[]"    value="${escH(e.experience)}">`;
-    });
-    if (hidden) hidden.innerHTML = html;
-    if (formHidden) formHidden.innerHTML = html;
-
-    // Show/hide save button
-    const btn = document.getElementById('profileNewEduSubmit');
-    if (btn) btn.style.display = pEduEntries.length > 0 ? '' : 'none';
-
-    // Combine all cert files into a single multi-file input
-    const allFiles = pEduEntries.flatMap(e => e.certFiles);
-    const form = document.getElementById('profileNewEduForm');
-    if (form && allFiles.length > 0) {
-        let inp = form.querySelector('input[data-pEduCerts]');
-        if (!inp) {
-            inp = document.createElement('input');
-            inp.type = 'file'; inp.name = 'edu_certificate[]'; inp.multiple = true;
-            inp.setAttribute('data-pEduCerts', '1');
-            inp.style.display = 'none';
-            form.appendChild(inp);
+    // Sync a hidden file input named nric_files[]
+    if (hidden) {
+        hidden.innerHTML = '';
+        if (profileNricNewFiles.length > 0) {
+            const inp = document.createElement('input');
+            inp.type = 'file'; inp.name = 'nric_files[]'; inp.multiple = true; inp.style.display = 'none';
+            hidden.appendChild(inp);
+            const dt = new DataTransfer();
+            profileNricNewFiles.forEach(f => dt.items.add(f));
+            inp.files = dt.files;
         }
-        const dt = new DataTransfer();
-        allFiles.forEach(f => dt.items.add(f));
-        inp.files = dt.files;
     }
 }
 
+// ── Section F — Education cert per-file management ─────────────────────────
+function profileRemoveEduCert(btn) {
+    const wrapper = btn.closest('.d-inline-flex');
+    const keepInput = wrapper.querySelector('.edu-cert-keep-input');
+    if (keepInput) keepInput.disabled = true;
+    wrapper.style.opacity = '0.4';
+    wrapper.style.pointerEvents = 'none';
+    btn.disabled = true;
+}
+
+const profileEduCertNewFiles = {};
+
+function profileAddEduCertFile(btn, idx) {
+    const row   = btn.closest('.profile-edu-fields');
+    const input = row ? row.querySelector(`.profile-edu-cert-file-input[data-idx="${idx}"]`) : null;
+    if (!input || !input.files.length) { alert('Please select a file first.'); return; }
+    const keepCount = row.querySelectorAll('.edu-cert-keep-input:not([disabled])').length;
+    if (!profileEduCertNewFiles[idx]) profileEduCertNewFiles[idx] = [];
+    if (keepCount + profileEduCertNewFiles[idx].length >= 5) { alert('Maximum 5 files per entry.'); return; }
+    profileEduCertNewFiles[idx].push(input.files[0]);
+    profileRenderEduCertNewList(idx, row);
+    input.value = '';
+}
+
+function profileRemoveEduCertNew(idx, i) {
+    if (profileEduCertNewFiles[idx]) profileEduCertNewFiles[idx].splice(i, 1);
+    const row = document.querySelector(`.profile-edu-fields[data-edu-idx="${idx}"]`);
+    if (row) profileRenderEduCertNewList(idx, row);
+}
+
+function profileRenderEduCertNewList(idx, row) {
+    const list   = row.querySelector(`.profile-edu-cert-new-list[data-idx="${idx}"]`);
+    const hidden = row.querySelector(`.profile-edu-cert-new-hidden[data-idx="${idx}"]`);
+    if (!list || !hidden) return;
+    list.innerHTML = '';
+    (profileEduCertNewFiles[idx] || []).forEach((f, i) => {
+        list.innerHTML += `<div class="d-inline-flex align-items-center gap-1 me-1 mb-1">
+            <span class="btn btn-sm btn-outline-secondary disabled" style="font-size:11px;pointer-events:none;">
+                <i class="bi bi-file-earmark me-1"></i>${escH(f.name)}</span>
+            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1" style="font-size:11px;"
+                    onclick="profileRemoveEduCertNew(${idx},${i})"><i class="bi bi-x"></i></button>
+        </div>`;
+    });
+    const old = hidden.querySelector('input[data-edu-cert-new]');
+    if (old) old.remove();
+    if ((profileEduCertNewFiles[idx] || []).length) {
+        const dt = new DataTransfer();
+        profileEduCertNewFiles[idx].forEach(f => dt.items.add(f));
+        const inp = document.createElement('input');
+        inp.type = 'file'; inp.name = `edu_certificate[${idx}][]`; inp.multiple = true;
+        inp.setAttribute('data-edu-cert-new', '1'); inp.style.display = 'none';
+        inp.files = dt.files;
+        hidden.appendChild(inp);
+    }
+}
+
+function profileToggleEduEdit(btn) {
+    const row = btn.closest('.profile-edu-row');
+    const fields = row.querySelector('.profile-edu-fields');
+    const isHidden = fields.classList.contains('d-none');
+    fields.classList.toggle('d-none', !isHidden);
+    btn.innerHTML = isHidden
+        ? '<i class="bi bi-chevron-up me-1"></i>Collapse'
+        : '<i class="bi bi-pencil me-1"></i>Edit';
+}
+
+function profileMarkEduDelete(btn, id) {
+    const field = document.getElementById('profileEduDeleteIds');
+    const ids = field.value ? field.value.split(',') : [];
+    ids.push(id);
+    field.value = ids.join(',');
+    btn.closest('.profile-edu-row').remove();
+}
+
+function profileAddEduRow() {
+    const noMsg = document.getElementById('profileNoEduMsg');
+    if (noMsg) noMsg.remove();
+    const container = document.getElementById('profileEduContainer');
+    const allRows = container.querySelectorAll('.profile-edu-row');
+    const nextIdx = allRows.length;
+    const div = document.createElement('div');
+    div.className = 'border rounded p-3 mb-3 profile-edu-row';
+    div.innerHTML = `
+        <input type="hidden" name="edu_id[]" value="">
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label class="form-label fw-semibold small">Qualification</label>
+                <input type="text" name="edu_qualification[]" class="form-control form-control-sm" placeholder="e.g. Bachelor of Business Administration">
+            </div>
+            <div class="col-md-6">
+                <label class="form-label fw-semibold small">Institution</label>
+                <input type="text" name="edu_institution[]" class="form-control form-control-sm">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label fw-semibold small">Year Graduated</label>
+                <input type="number" name="edu_year[]" class="form-control form-control-sm" min="1950" max="${new Date().getFullYear()+5}">
+            </div>
+            <div class="col-md-9">
+                <label class="form-label fw-semibold small">Certificate (max 5 files)</label>
+                <input type="file" name="edu_certificate[${nextIdx}][]" class="form-control form-control-sm"
+                       accept=".jpg,.jpeg,.png,.pdf" multiple>
+            </div>
+        </div>
+        <div class="mt-2 text-end">
+            <button type="button" class="btn btn-sm btn-outline-danger"
+                    onclick="this.closest('.profile-edu-row').remove()">
+                <i class="bi bi-trash me-1"></i>Remove
+            </button>
+        </div>`;
+    container.appendChild(div);
+}
+
+// ═══════════════════════════════════════════════════════
+// SECTION G — Edit existing spouse record
+// ═══════════════════════════════════════════════════════
+function profileOpenEditSpouse(id, name, nric, tel, occupation, incomeTax, address, isWorking, isDisabled) {
+    document.getElementById('editSpouseName').value       = name || '';
+    document.getElementById('editSpouseNric').value       = nric || '';
+    document.getElementById('editSpouseTel').value        = tel || '';
+    document.getElementById('editSpouseOccupation').value = occupation || '';
+    document.getElementById('editSpouseIncomeTax').value  = incomeTax || '';
+    document.getElementById('editSpouseAddress').value    = address || '';
+    document.getElementById('editSpouseIsWorking').value  = isWorking ? '1' : '0';
+    document.getElementById('editSpouseIsDisabled').value = isDisabled ? '1' : '0';
+
+    const form = document.getElementById('profileEditSpouseForm');
+    form.action = `/profile/spouse/${id}`;
+
+    new bootstrap.Modal(document.getElementById('profileEditSpouseModal')).show();
 }
 
 // ═══════════════════════════════════════════════════════

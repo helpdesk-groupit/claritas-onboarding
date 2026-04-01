@@ -90,7 +90,15 @@ class OffboardingController extends Controller
         $employee = $offboarding->employee;
 
         if ($employee) {
-            $employee->load(['contracts.uploader']);
+            $employee->load([
+                'contracts.uploader',
+                'educationHistories',
+                'spouseDetails',
+                'emergencyContacts',
+                'childRegistration',
+                'editLogs',
+                'onboarding.personalDetail',
+            ]);
             $directAssets    = \App\Models\AssetInventory::where('assigned_employee_id', $employee->id)
                 ->whereIn('status', ['assigned', 'unavailable'])->orderBy('asset_type')->get();
             $availableAssets = collect();
@@ -114,7 +122,15 @@ class OffboardingController extends Controller
         $employee = $offboarding->employee;
 
         if ($employee) {
-            $employee->load(['contracts.uploader']);
+            $employee->load([
+                'contracts.uploader',
+                'educationHistories',
+                'spouseDetails',
+                'emergencyContacts',
+                'childRegistration',
+                'editLogs',
+                'onboarding.personalDetail',
+            ]);
             $directAssets = \App\Models\AssetInventory::where('assigned_employee_id', $employee->id)
                 ->whereIn('status', ['assigned', 'unavailable'])->orderBy('asset_type')->get();
             $aarf         = $employee->resolveAarf();
@@ -145,9 +161,20 @@ class OffboardingController extends Controller
             'religion'               => 'nullable|string|max:100',
             'race'                   => 'nullable|string|max:100',
             'personal_contact_number'=> 'nullable|string|max:50',
+            'house_tel_no'           => 'nullable|string|max:50',
             'personal_email'         => 'nullable|email',
             'bank_account_number'    => 'nullable|string|max:100',
+            'bank_name'              => 'nullable|string|max:100',
+            'bank_name_other'        => 'nullable|string|max:100',
+            'epf_no'                 => 'nullable|string|max:100',
+            'income_tax_no'          => 'nullable|string|max:100',
+            'socso_no'               => 'nullable|string|max:100',
+            'is_disabled'            => 'nullable|boolean',
             'residential_address'    => 'nullable|string',
+            // NRIC files
+            'nric_files'             => 'nullable|array',
+            'nric_files.*'           => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'nric_keep_paths'        => 'nullable|array',
             // Work
             'employment_type'        => 'nullable|in:permanent,intern,contract',
             'employment_status'      => 'nullable|in:active,resigned,terminated,contract_ended',
@@ -164,24 +191,52 @@ class OffboardingController extends Controller
             'remarks'                => 'nullable|string',
             // Role
             'work_role'              => 'nullable|string|max:50',
+            // Section F — Education
+            'edu_qualification.*'    => 'nullable|string|max:255',
+            'edu_institution.*'      => 'nullable|string|max:255',
+            'edu_year.*'             => 'nullable|integer|min:1950|max:2099',
+            'edu_certificate.*.*'    => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'edu_cert_keep.*.*'      => 'nullable|string',
+            'edu_delete_ids'         => 'nullable|string',
         ]);
+
+        // Merge bank_name_other when "Other" is selected
+        if (($validated['bank_name'] ?? '') === 'Other' && !empty($validated['bank_name_other'])) {
+            $validated['bank_name'] = $validated['bank_name_other'];
+        }
 
         // Update offboarding record fields
         $offboarding->update([
-            'full_name'    => $validated['full_name']    ?? $offboarding->full_name,
-            'designation'  => $validated['designation']  ?? $offboarding->designation,
-            'department'   => $validated['department']   ?? $offboarding->department,
-            'company'      => $validated['company']      ?? $offboarding->company,
-            'company_email'=> $validated['company_email']?? $offboarding->company_email,
+            'full_name'     => $validated['full_name']     ?? $offboarding->full_name,
+            'designation'   => $validated['designation']   ?? $offboarding->designation,
+            'department'    => $validated['department']    ?? $offboarding->department,
+            'company'       => $validated['company']       ?? $offboarding->company,
+            'company_email' => $validated['company_email'] ?? $offboarding->company_email,
             'personal_email'=> $validated['personal_email'] ?? $offboarding->personal_email,
-            'exit_date'    => $validated['exit_date']    ?? $offboarding->exit_date,
-            'reason'       => $validated['reason']       ?? $offboarding->reason,
-            'remarks'      => $validated['remarks']      ?? $offboarding->remarks,
+            'exit_date'     => $validated['exit_date']     ?? $offboarding->exit_date,
+            'reason'        => $validated['reason']        ?? $offboarding->reason,
+            'remarks'       => $validated['remarks']       ?? $offboarding->remarks,
         ]);
 
         // Update employee record if linked
         if ($offboarding->employee) {
             $emp = $offboarding->employee;
+
+            // NRIC file handling (sentinel pattern)
+            $existingNric  = $emp->nric_file_paths ?? ($emp->nric_file_path ? [$emp->nric_file_path] : []);
+            $keepSubmitted = $request->has('nric_keep_submitted');
+            if ($keepSubmitted) {
+                $keptNric     = (array) $request->input('nric_keep_paths', []);
+                $existingNric = array_values(array_intersect($existingNric, $keptNric));
+            }
+            $newNricPaths = [];
+            if ($request->hasFile('nric_files')) {
+                foreach ($request->file('nric_files') as $file) {
+                    $newNricPaths[] = $file->store('employees/nric', 'public');
+                }
+            }
+            $allNric = array_merge($existingNric, $newNricPaths);
+
             $empData = array_filter([
                 'full_name'               => $validated['full_name'] ?? null,
                 'preferred_name'          => $validated['preferred_name'] ?? null,
@@ -192,8 +247,13 @@ class OffboardingController extends Controller
                 'religion'                => $validated['religion'] ?? null,
                 'race'                    => $validated['race'] ?? null,
                 'personal_contact_number' => $validated['personal_contact_number'] ?? null,
+                'house_tel_no'            => $validated['house_tel_no'] ?? null,
                 'personal_email'          => $validated['personal_email'] ?? null,
                 'bank_account_number'     => $validated['bank_account_number'] ?? null,
+                'bank_name'               => $validated['bank_name'] ?? null,
+                'epf_no'                  => $validated['epf_no'] ?? null,
+                'income_tax_no'           => $validated['income_tax_no'] ?? null,
+                'socso_no'                => $validated['socso_no'] ?? null,
                 'residential_address'     => $validated['residential_address'] ?? null,
                 'employment_type'         => $validated['employment_type'] ?? null,
                 'employment_status'       => $validated['employment_status'] ?? null,
@@ -209,8 +269,88 @@ class OffboardingController extends Controller
                 'work_role'               => $validated['work_role'] ?? null,
             ], fn($v) => $v !== null);
 
+            // is_disabled handled separately (falsy 0/false should not be filtered out)
+            if (isset($validated['is_disabled'])) {
+                $empData['is_disabled'] = (bool) $validated['is_disabled'];
+            }
+
+            // Apply NRIC changes
+            if (!empty($allNric)) {
+                $empData['nric_file_paths'] = $allNric;
+                $empData['nric_file_path']  = $allNric[0];
+            } elseif ($keepSubmitted) {
+                $empData['nric_file_paths'] = null;
+                $empData['nric_file_path']  = null;
+            }
+
             if (!empty($empData)) {
                 $emp->update($empData);
+            }
+        }
+
+        // ── Section F — Education History ──────────────────────────────────
+        $employee = $offboarding->employee;
+        if ($employee && $request->has('edu_qualification')) {
+            $deleteIds = array_filter(explode(',', $request->input('edu_delete_ids', '')));
+            if (!empty($deleteIds)) {
+                \App\Models\EmployeeEducationHistory::where('employee_id', $employee->id)
+                    ->whereIn('id', $deleteIds)->delete();
+            }
+
+            foreach ($request->input('edu_qualification', []) as $i => $qual) {
+                if (empty(trim((string)$qual))) continue;
+
+                $existingId = $request->input("edu_id.{$i}");
+                $keepPaths  = $request->input("edu_cert_keep.{$i}", null);
+
+                // FIX: use the sentinel field to distinguish "user submitted cert section
+                // with zero keeps (all deleted)" from "edit panel was never opened (keep all)".
+                if ($existingId && $request->has("edu_cert_keep_submitted.{$i}")) {
+                    $row          = \App\Models\EmployeeEducationHistory::where('employee_id', $employee->id)->find($existingId);
+                    $allExisting  = $row ? ($row->certificate_paths ?? ($row->certificate_path ? [$row->certificate_path] : [])) : [];
+                    $keptExisting = array_values(array_intersect($allExisting, (array)$keepPaths));
+                } elseif ($existingId) {
+                    $row          = \App\Models\EmployeeEducationHistory::where('employee_id', $employee->id)->find($existingId);
+                    $keptExisting = $row ? ($row->certificate_paths ?? ($row->certificate_path ? [$row->certificate_path] : [])) : [];
+                } else {
+                    $keptExisting = [];
+                }
+
+                $newCertPaths = [];
+                if ($request->hasFile("edu_certificate.{$i}")) {
+                    foreach ((array)$request->file("edu_certificate.{$i}") as $certFile) {
+                        if ($certFile && $certFile->isValid()) {
+                            $newCertPaths[] = $certFile->store('education_certificates', 'public');
+                        }
+                    }
+                }
+
+                $mergedCerts = array_values(array_merge($keptExisting, $newCertPaths));
+                $mergedCerts = array_slice($mergedCerts, 0, 5);
+
+                if ($existingId) {
+                    if (!isset($row)) {
+                        $row = \App\Models\EmployeeEducationHistory::where('employee_id', $employee->id)->find($existingId);
+                    }
+                    if ($row) {
+                        $row->update([
+                            'qualification'     => $qual,
+                            'institution'       => $request->input("edu_institution.{$i}"),
+                            'year_graduated'    => $request->input("edu_year.{$i}"),
+                            'certificate_path'  => $mergedCerts[0] ?? null,
+                            'certificate_paths' => !empty($mergedCerts) ? $mergedCerts : null,
+                        ]);
+                    }
+                } else {
+                    \App\Models\EmployeeEducationHistory::create([
+                        'employee_id'       => $employee->id,
+                        'qualification'     => $qual,
+                        'institution'       => $request->input("edu_institution.{$i}"),
+                        'year_graduated'    => $request->input("edu_year.{$i}"),
+                        'certificate_path'  => $mergedCerts[0] ?? null,
+                        'certificate_paths' => !empty($mergedCerts) ? $mergedCerts : null,
+                    ]);
+                }
             }
         }
 

@@ -33,11 +33,43 @@
     {{-- Body --}}
     <tr>
         <td style="padding:28px 32px;">
+            @php
+                $editorRole = $editLog->edited_by_role ?? 'user';
+                $editorName = $editLog->edited_by_name ?? null;
+                $isSelf     = $editLog->edited_by_user_id && $employee->user_id
+                              && $editLog->edited_by_user_id === $employee->user_id;
+
+                if ($isSelf) {
+                    $editorLabel   = 'you';
+                    $updatedByLine = 'You updated your own profile information on';
+                    $noteLabel     = 'Your note:';
+                } elseif (in_array($editorRole, ['superadmin', 'system_admin'])) {
+                    $displayName   = $editorName ? $editorName . ' (Superadmin)' : 'a Superadmin';
+                    $editorLabel   = $displayName;
+                    $updatedByLine = 'Your employee record has been updated by ' . $displayName . ' on';
+                    $noteLabel     = 'Note from Superadmin:';
+                } elseif (in_array($editorRole, ['hr_manager', 'hr_executive', 'hr_intern'])) {
+                    $roleDisplay   = match($editorRole) {
+                        'hr_manager'   => 'HR Manager',
+                        'hr_executive' => 'HR Executive',
+                        'hr_intern'    => 'HR Intern',
+                        default        => 'HR',
+                    };
+                    $displayName   = $editorName ? $editorName . ' (' . $roleDisplay . ')' : 'the ' . $roleDisplay;
+                    $editorLabel   = $displayName;
+                    $updatedByLine = 'Your employee record has been updated by ' . $displayName . ' on';
+                    $noteLabel     = 'Note from ' . $roleDisplay . ':';
+                } else {
+                    $editorLabel   = $editorName ?? 'an administrator';
+                    $updatedByLine = 'Your employee record has been updated by ' . $editorLabel . ' on';
+                    $noteLabel     = 'Note:';
+                }
+            @endphp
             <p style="margin:0 0 16px;color:#1e293b;font-size:15px;">
                 Dear <strong>{{ $employee->full_name ?? 'Employee' }}</strong>,
             </p>
             <p style="margin:0 0 16px;color:#475569;font-size:14px;line-height:1.7;">
-                Your employee record has been updated by HR on
+                {{ $updatedByLine }}
                 <strong>{{ $editLog->created_at->format('d M Y, h:i A') }}</strong>.
                 As required under our PDPA policy, you must log in to the Employee Portal and re-acknowledge the Declaration &amp; Consent on your profile page.
             </p>
@@ -51,7 +83,7 @@
                     @endforeach
                 </ul>
                 @if($editLog->change_notes)
-                <p style="margin:10px 0 0;font-size:13px;color:#64748b;"><strong>Note from HR:</strong> {{ $editLog->change_notes }}</p>
+                <p style="margin:10px 0 0;font-size:13px;color:#64748b;"><strong>{{ $noteLabel }}</strong> {{ $editLog->change_notes }}</p>
                 @endif
             </div>
             @endif
@@ -62,7 +94,13 @@
                 <table cellpadding="0" cellspacing="0" style="font-size:13px;color:#0369a1;line-height:1.7;">
                     <tr><td style="padding-right:8px;vertical-align:top;">1.</td><td>Click the button below to go to the Employee Portal login page.</td></tr>
                     <tr><td style="padding-right:8px;vertical-align:top;">2.</td><td>Log in using your work email and password. If you do not have an account yet, click <strong>"Register"</strong> to create one.</td></tr>
-                    <tr><td style="padding-right:8px;vertical-align:top;">3.</td><td>You will be directed to your Profile page — scroll to the <strong>"Declaration &amp; Consent"</strong> section and click <strong>"I Acknowledge"</strong>.</td></tr>
+                    <tr><td style="padding-right:8px;vertical-align:top;">3.</td><td>
+                        @if($isSelf)
+                            You will be directed to your Profile page — scroll to the <strong>"Declaration &amp; Consent"</strong> section and click <strong>"I Acknowledge"</strong> to confirm your changes.
+                        @else
+                            You will be directed to your Profile page — scroll to the <strong>"Declaration &amp; Consent"</strong> section and click <strong>"I Acknowledge"</strong> to confirm you have reviewed the updates.
+                        @endif
+                    </td></tr>
                 </table>
             </div>
 

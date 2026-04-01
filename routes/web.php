@@ -63,6 +63,7 @@ Route::middleware('auth')->group(function () {
     Route::put('/profile/work',                 [ProfileController::class, 'updateWork'])->name('profile.work.update');
     Route::post('/profile/education',           [ProfileController::class, 'updateEducation'])->name('profile.education.update');
     Route::post('/profile/spouse',              [ProfileController::class, 'updateSpouse'])->name('profile.spouse.update');
+    Route::put('/profile/spouse/{spouse}',      [ProfileController::class, 'editSpouse'])->name('profile.spouse.edit');
     Route::delete('/profile/spouse/{spouse}',   [ProfileController::class, 'deleteSpouse'])->name('profile.spouse.delete');
     Route::post('/profile/emergency',           [ProfileController::class, 'updateEmergency'])->name('profile.emergency.update');
     Route::post('/profile/children',            [ProfileController::class, 'updateChildren'])->name('profile.children.update');
