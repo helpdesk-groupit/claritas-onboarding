@@ -79,7 +79,61 @@ $canEditAll = Auth::user()->canEditAllOnboardingSections();
                 </div>
                 <div class="col-md-3">
                     <label class="form-label fw-semibold">Date of Birth <span class="text-danger">*</span></label>
-                    <input type="date" name="date_of_birth" class="form-control" value="{{ old('date_of_birth', $p?->date_of_birth?->format('Y-m-d')) }}" required>
+                    @php $ob_dob = old('date_of_birth', $p?->date_of_birth?->format('Y-m-d')); @endphp
+                    <input type="hidden" name="date_of_birth" id="ob_dob_combined" value="{{ $ob_dob }}">
+                    @error('date_of_birth')<div class="text-danger small mb-1">{{ $message }}</div>@enderror
+                    <div class="d-flex gap-1">
+                        <select id="ob_dob_day" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                            <option value="">Day</option>
+                            @for($d = 1; $d <= 31; $d++)
+                                <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $ob_dob && (int)explode('-',$ob_dob)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                            @endfor
+                        </select>
+                        <select id="ob_dob_month" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                            <option value="">Month</option>
+                            @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $ob_dob && (int)explode('-',$ob_dob)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                            @endforeach
+                        </select>
+                        <select id="ob_dob_year" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                            <option value="">Year</option>
+                            @for($y = date('Y'); $y >= 1940; $y--)
+                                <option value="{{ $y }}"
+                                    {{ $ob_dob && (int)explode('-',$ob_dob)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                            @endfor
+                        </select>
+                    </div>
+                    <script>
+                    (function(){
+                        function calcObAge(dob){
+                            var el=document.getElementById('ob_age'); if(!el) return;
+                            if(!dob){el.value='';return;}
+                            var p=dob.split('-'),t=new Date();
+                            var a=t.getFullYear()-+p[0];
+                            el.value=(a>=0&&a<150)?a:'';
+                        }
+                        function sync(){
+                            var d=document.getElementById('ob_dob_day').value,
+                                m=document.getElementById('ob_dob_month').value,
+                                y=document.getElementById('ob_dob_year').value;
+                            var dob=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                            document.getElementById('ob_dob_combined').value=dob;
+                            calcObAge(dob);
+                        }
+                        ['ob_dob_day','ob_dob_month','ob_dob_year'].forEach(function(id){
+                            document.getElementById(id).addEventListener('change',sync);
+                        });
+                        document.addEventListener('DOMContentLoaded',function(){
+                            calcObAge(document.getElementById('ob_dob_combined').value);
+                        });
+                    })();
+                    </script>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label fw-semibold">Age</label>
+                    <input type="text" id="ob_age" class="form-control bg-light" readonly placeholder="—">
                 </div>
                 <div class="col-md-3">
                     <label class="form-label fw-semibold">Sex <span class="text-danger">*</span></label>
@@ -159,7 +213,7 @@ $canEditAll = Auth::user()->canEditAllOnboardingSections();
 
                 <div class="col-12">
                     <label class="form-label fw-semibold">Residential Address <span class="text-danger">*</span></label>
-                    <textarea name="residential_address" class="form-control" rows="2" required>{{ old('residential_address', $p?->residential_address) }}</textarea>
+                    <textarea name="residential_address" id="obEditResAddress" class="form-control" rows="2" required>{{ old('residential_address', $p?->residential_address) }}</textarea>
                 </div>
             </div>
         </div>
@@ -193,8 +247,9 @@ $canEditAll = Auth::user()->canEditAllOnboardingSections();
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Staff Status <span class="text-danger">*</span></label>
                     <select name="staff_status" class="form-select" required>
-                        <option value="new" {{ old('staff_status', $w?->staff_status) == 'new' ? 'selected' : '' }}>New</option>
+                        <option value="new"      {{ old('staff_status', $w?->staff_status) == 'new'      ? 'selected' : '' }}>New</option>
                         <option value="existing" {{ old('staff_status', $w?->staff_status) == 'existing' ? 'selected' : '' }}>Existing</option>
+                        <option value="rehire"   {{ old('staff_status', $w?->staff_status) == 'rehire'   ? 'selected' : '' }}>Rehire</option>
                     </select>
                 </div>
                 <div class="col-md-4">
@@ -217,7 +272,7 @@ $canEditAll = Auth::user()->canEditAllOnboardingSections();
                     <label class="form-label fw-semibold">Company <span class="text-danger">*</span></label>
                     <select name="company" id="editOBCompanySelect"
                             class="form-control" required
-                            onchange="autofillOfficeLocation(this, 'editOBOfficeLocation')">
+                            onchange="autofillOfficeLocation(this, 'editOBOfficeLocation'); filterManagersByCompany(this.value, 'edit_reporting_manager')">
                         <option value="">Select company...</option>
                         @foreach($companies as $c)
                             <option value="{{ $c->name }}"
@@ -238,14 +293,32 @@ $canEditAll = Auth::user()->canEditAllOnboardingSections();
                     <select name="reporting_manager" id="edit_reporting_manager"
                             class="form-select @error('reporting_manager') is-invalid @enderror"
                             onchange="fetchManagerEmailEdit(this.value)" required>
+                        @php
+                            $roleLabels = [
+                                'hr_manager'          => 'HR Manager',
+                                'hr_executive'        => 'HR Executive',
+                                'hr_intern'           => 'HR Intern',
+                                'it_manager'          => 'IT Manager',
+                                'it_executive'        => 'IT Executive',
+                                'it_intern'           => 'IT Intern',
+                                'superadmin'          => 'SuperAdmin',
+                                'system_admin'        => 'System Admin',
+                                'manager'             => 'Manager',
+                                'senior_executive'    => 'Senior Executive',
+                                'executive_associate' => 'Executive / Associate',
+                                'director_hod'        => 'Director / HOD',
+                                'others'              => 'Others',
+                            ];
+                        @endphp
                         <option value="">Select manager...</option>
                         @foreach($managers as $mgr)
                             <option value="{{ $mgr->full_name }}"
                                 data-email="{{ $mgr->company_email }}"
+                                data-company="{{ $mgr->company }}"
                                 {{ old('reporting_manager', $onboarding->workDetail?->reporting_manager)==$mgr->full_name?'selected':'' }}>
                                 {{ $mgr->full_name }}
                                 @if($mgr->designation) — {{ $mgr->designation }} @endif
-                                ({{ ucfirst(str_replace('_',' ',$mgr->work_role ?? '')) }})
+                                ({{ $roleLabels[$mgr->work_role ?? ''] ?? ucfirst(str_replace('_',' ',$mgr->work_role ?? '')) }})
                             </option>
                         @endforeach
                     </select>
@@ -262,11 +335,132 @@ $canEditAll = Auth::user()->canEditAllOnboardingSections();
                 </div>
                 <div class="col-md-3">
                     <label class="form-label fw-semibold">Start Date <span class="text-danger">*</span></label>
-                    <input type="date" name="start_date" class="form-control" value="{{ old('start_date', $w?->start_date?->format('Y-m-d')) }}" required>
+                    @php $ob_sd = old('start_date', $w?->start_date?->format('Y-m-d')); @endphp
+                    <input type="hidden" name="start_date" id="ob_sd_combined" value="{{ $ob_sd }}">
+                    @error('start_date')<div class="text-danger small mb-1">{{ $message }}</div>@enderror
+                    <div class="d-flex gap-1">
+                        <select id="ob_sd_day" class="form-select @error('start_date') is-invalid @enderror" style="min-width:0">
+                            <option value="">Day</option>
+                            @for($d = 1; $d <= 31; $d++)
+                                <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $ob_sd && (int)explode('-',$ob_sd)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                            @endfor
+                        </select>
+                        <select id="ob_sd_month" class="form-select @error('start_date') is-invalid @enderror" style="min-width:0">
+                            <option value="">Month</option>
+                            @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $ob_sd && (int)explode('-',$ob_sd)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                            @endforeach
+                        </select>
+                        <select id="ob_sd_year" class="form-select @error('start_date') is-invalid @enderror" style="min-width:0">
+                            <option value="">Year</option>
+                            @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                <option value="{{ $y }}"
+                                    {{ $ob_sd && (int)explode('-',$ob_sd)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                            @endfor
+                        </select>
+                    </div>
+                    <script>
+                    (function(){
+                        function sync(){
+                            var d=document.getElementById('ob_sd_day').value,
+                                m=document.getElementById('ob_sd_month').value,
+                                y=document.getElementById('ob_sd_year').value;
+                            document.getElementById('ob_sd_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                        }
+                        ['ob_sd_day','ob_sd_month','ob_sd_year'].forEach(function(id){
+                            document.getElementById(id).addEventListener('change',sync);
+                        });
+                    })();
+                    </script>
                 </div>
                 <div class="col-md-3">
                     <label class="form-label fw-semibold">Exit Date</label>
-                    <input type="date" name="exit_date" class="form-control" value="{{ old('exit_date', $w?->exit_date?->format('Y-m-d')) }}">
+                    @php $ob_ed = old('exit_date', $w?->exit_date?->format('Y-m-d')); @endphp
+                    <input type="hidden" name="exit_date" id="ob_ed_combined" value="{{ $ob_ed }}">
+                    <div class="d-flex gap-1">
+                        <select id="ob_ed_day" class="form-select" style="min-width:0">
+                            <option value="">Day</option>
+                            @for($d = 1; $d <= 31; $d++)
+                                <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $ob_ed && (int)explode('-',$ob_ed)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                            @endfor
+                        </select>
+                        <select id="ob_ed_month" class="form-select" style="min-width:0">
+                            <option value="">Month</option>
+                            @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $ob_ed && (int)explode('-',$ob_ed)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                            @endforeach
+                        </select>
+                        <select id="ob_ed_year" class="form-select" style="min-width:0">
+                            <option value="">Year</option>
+                            @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                <option value="{{ $y }}"
+                                    {{ $ob_ed && (int)explode('-',$ob_ed)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                            @endfor
+                        </select>
+                    </div>
+                    <script>
+                    (function(){
+                        function sync(){
+                            var d=document.getElementById('ob_ed_day').value,
+                                m=document.getElementById('ob_ed_month').value,
+                                y=document.getElementById('ob_ed_year').value;
+                            document.getElementById('ob_ed_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                        }
+                        ['ob_ed_day','ob_ed_month','ob_ed_year'].forEach(function(id){
+                            document.getElementById(id).addEventListener('change',sync);
+                        });
+                    })();
+                    </script>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Last Salary Date</label>
+                    @if(Auth::user()->isHrManager())
+                        @php $ob_lsd = old('last_salary_date', $w?->last_salary_date?->format('Y-m-d')); @endphp
+                        <input type="hidden" name="last_salary_date" id="ob_lsd_combined" value="{{ $ob_lsd }}">
+                        <div class="d-flex gap-1">
+                            <select id="ob_lsd_day" class="form-select" style="min-width:0">
+                                <option value="">Day</option>
+                                @for($d = 1; $d <= 31; $d++)
+                                    <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                        {{ $ob_lsd && (int)explode('-',$ob_lsd)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                                @endfor
+                            </select>
+                            <select id="ob_lsd_month" class="form-select" style="min-width:0">
+                                <option value="">Month</option>
+                                @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                    <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                        {{ $ob_lsd && (int)explode('-',$ob_lsd)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                                @endforeach
+                            </select>
+                            <select id="ob_lsd_year" class="form-select" style="min-width:0">
+                                <option value="">Year</option>
+                                @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                    <option value="{{ $y }}"
+                                        {{ $ob_lsd && (int)explode('-',$ob_lsd)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                                @endfor
+                            </select>
+                        </div>
+                        <script>
+                        (function(){
+                            function sync(){
+                                var d=document.getElementById('ob_lsd_day').value,
+                                    m=document.getElementById('ob_lsd_month').value,
+                                    y=document.getElementById('ob_lsd_year').value;
+                                document.getElementById('ob_lsd_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                            }
+                            ['ob_lsd_day','ob_lsd_month','ob_lsd_year'].forEach(function(id){
+                                document.getElementById(id).addEventListener('change',sync);
+                            });
+                        })();
+                        </script>
+                    @else
+                        @php $lsdDisplay = $w?->last_salary_date?->format('d M Y'); @endphp
+                        <input type="text" class="form-control bg-light" readonly value="{{ $lsdDisplay ?: '—' }}">
+                    @endif
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Company Email</label>
@@ -542,7 +736,7 @@ $canEditAll = Auth::user()->canEditAllOnboardingSections();
                 <div class="ob-spouse-edit-fields mt-2 d-none" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:.75rem;">
                     <div class="row g-2">
                         <div class="col-md-6">
-                            <label class="form-label fw-semibold small mb-1">Full Name</label>
+                            <label class="form-label fw-semibold small mb-1">Full Name <span class="text-danger">*</span></label>
                             <input type="text" class="ob-sp-name form-control form-control-sm" placeholder="Full Name" value="{{ $sp['name'] }}">
                         </div>
                         <div class="col-md-6">
@@ -550,7 +744,7 @@ $canEditAll = Auth::user()->canEditAllOnboardingSections();
                             <input type="text" class="ob-sp-nric form-control form-control-sm" placeholder="e.g. 900101-10-1234" value="{{ $sp['nric_no'] ?? '' }}">
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label fw-semibold small mb-1">Tel No.</label>
+                            <label class="form-label fw-semibold small mb-1">Tel No. <span class="text-danger">*</span></label>
                             <input type="text" class="ob-sp-tel form-control form-control-sm" placeholder="e.g. 012-3456789" value="{{ $sp['tel_no'] ?? '' }}">
                         </div>
                         <div class="col-md-4">
@@ -560,6 +754,10 @@ $canEditAll = Auth::user()->canEditAllOnboardingSections();
                         <div class="col-md-4">
                             <label class="form-label fw-semibold small mb-1">Income Tax No.</label>
                             <input type="text" class="ob-sp-tax form-control form-control-sm" placeholder="Income Tax No." value="{{ $sp['income_tax_no'] ?? '' }}">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-semibold small mb-1">Address</label>
+                            <textarea class="ob-sp-addr form-control form-control-sm" rows="2" placeholder="Address">{{ $sp['address'] ?? '' }}</textarea>
                         </div>
                         <div class="col-12 text-end">
                             <button type="button" class="btn btn-sm btn-primary py-0 px-3"
@@ -574,20 +772,23 @@ $canEditAll = Auth::user()->canEditAllOnboardingSections();
                 <input type="hidden" class="ob-sp-h-tel"      name="spouses[{{ $i }}][tel_no]"        value="{{ $sp['tel_no'] ?? '' }}">
                 <input type="hidden" class="ob-sp-h-occ"      name="spouses[{{ $i }}][occupation]"    value="{{ $sp['occupation'] ?? '' }}">
                 <input type="hidden" class="ob-sp-h-tax"      name="spouses[{{ $i }}][income_tax_no]" value="{{ $sp['income_tax_no'] ?? '' }}">
+                <input type="hidden" class="ob-sp-h-addr"     name="spouses[{{ $i }}][address]"       value="{{ $sp['address'] ?? '' }}">
                 <input type="hidden" class="ob-sp-h-working"  name="spouses[{{ $i }}][is_working]"    value="{{ $sp['is_working'] ?? 0 }}">
                 <input type="hidden" class="ob-sp-h-disabled" name="spouses[{{ $i }}][is_disabled]"   value="{{ $sp['is_disabled'] ?? 0 }}">
             </div>
             @endforeach
             <div style="background:#f8fafc;border:1px solid #e9ecef;border-radius:8px;padding:1rem;" id="editOBSpousePanel">
                 <div class="row g-3">
-                    <div class="col-md-4"><label class="form-label fw-semibold small">Name</label>
+                    <div class="col-md-4"><label class="form-label fw-semibold small">Name <span class="text-danger">*</span></label>
                         <input type="text" id="editOBSpName" class="form-control form-control-sm"></div>
                     <div class="col-md-4"><label class="form-label fw-semibold small">NRIC No.</label>
                         <input type="text" id="editOBSpNric" class="form-control form-control-sm"></div>
-                    <div class="col-md-4"><label class="form-label fw-semibold small">Tel No.</label>
+                    <div class="col-md-4"><label class="form-label fw-semibold small">Tel No. <span class="text-danger">*</span></label>
                         <input type="text" id="editOBSpTel" class="form-control form-control-sm"></div>
                     <div class="col-md-4"><label class="form-label fw-semibold small">Occupation</label>
                         <input type="text" id="editOBSpOccupation" class="form-control form-control-sm"></div>
+                    <div class="col-12"><label class="form-label fw-semibold small">Address</label>
+                        <textarea id="editOBSpAddress" class="form-control form-control-sm" rows="2"></textarea></div>
                     <div class="col-md-4"><label class="form-label fw-semibold small">Working?</label>
                         <select id="editOBSpWorking" class="form-select form-select-sm"><option value="0">No</option><option value="1">Yes</option></select></div>
                     <div class="col-md-4"><label class="form-label fw-semibold small">Disabled?</label>
@@ -812,5 +1013,136 @@ $canEditAll = Auth::user()->canEditAllOnboardingSections();
     </div>
 </div>
 @endif
+
+@push('scripts')
+<script>
+function autofillOfficeLocation(selectEl, targetId) {
+    const selected = selectEl.options[selectEl.selectedIndex];
+    const target   = document.getElementById(targetId);
+    if (!target || !selected || !selected.value) return;
+    target.value = selected.dataset.address || '-';
+}
+
+function filterManagersByCompany(companyName, mgrSelectId) {
+    const sel = document.getElementById(mgrSelectId);
+    if (!sel) return;
+    Array.from(sel.options).forEach(function(opt) {
+        if (!opt.value || !opt.dataset.company) return;
+        var match = !companyName || opt.dataset.company === companyName;
+        opt.hidden   = !match;
+        opt.disabled = !match;
+    });
+    var chosen = sel.options[sel.selectedIndex];
+    if (chosen && chosen.value && chosen.hidden) sel.value = '';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    var editCo = document.getElementById('editOBCompanySelect');
+    if (editCo && editCo.value) filterManagersByCompany(editCo.value, 'edit_reporting_manager');
+    var ms = document.getElementById('obEditMaritalStatus');
+    if (ms) obEditToggleSpouse(ms.value);
+});
+
+// ── Section G spouse functions ────────────────────────────────────────────
+function obEditToggleSpouse(val) {
+    const section = document.getElementById('obEditSpouseSection');
+    const star    = document.querySelector('.ob-edit-spouse-required');
+    if (!section) return;
+    const isMarried = val === 'married';
+    section.querySelectorAll('input, select, textarea, button').forEach(el => {
+        el.disabled = !isMarried;
+    });
+    section.style.opacity = isMarried ? '1' : '0.4';
+    if (star) star.classList.toggle('d-none', !isMarried);
+    if (isMarried) {
+        const addr   = document.getElementById('obEditResAddress');
+        const spAddr = document.getElementById('editOBSpAddress');
+        if (addr && spAddr && !spAddr.value.trim()) spAddr.value = addr.value;
+    }
+}
+
+function toggleOBSpouseEdit(btn) {
+    const card   = btn.closest('.ob-spouse-card');
+    const fields = card.querySelector('.ob-spouse-edit-fields');
+    const hidden = fields.classList.contains('d-none');
+    fields.classList.toggle('d-none', !hidden);
+    btn.innerHTML = hidden ? '<i class="bi bi-chevron-up"></i>' : '<i class="bi bi-pencil"></i>';
+}
+
+function removeOBSpouse(btn) {
+    if (!confirm('Remove this spouse entry?')) return;
+    btn.closest('.ob-spouse-card').remove();
+}
+
+function saveOBSpouseEdit(btn) {
+    const card = btn.closest('.ob-spouse-card');
+    const name = card.querySelector('.ob-sp-name').value;
+    const tel  = card.querySelector('.ob-sp-tel').value;
+    const occ  = card.querySelector('.ob-sp-occ').value;
+    card.querySelector('.ob-sp-h-name').value = name;
+    card.querySelector('.ob-sp-h-nric').value = card.querySelector('.ob-sp-nric').value;
+    card.querySelector('.ob-sp-h-tel').value  = tel;
+    card.querySelector('.ob-sp-h-occ').value  = occ;
+    card.querySelector('.ob-sp-h-tax').value  = card.querySelector('.ob-sp-tax').value;
+    card.querySelector('.ob-sp-h-addr').value = card.querySelector('.ob-sp-addr').value;
+    card.querySelector('.fw-semibold.small').textContent = name;
+    card.querySelector('.text-muted.small.ms-2').textContent = tel + (occ ? ' · ' + occ : '');
+    card.querySelector('.ob-spouse-edit-fields').classList.add('d-none');
+    btn.closest('.ob-spouse-card').querySelector('button[onclick*="toggleOBSpouseEdit"]').innerHTML = '<i class="bi bi-pencil"></i>';
+}
+
+let _editOBNewCount = 0;
+function editOBAddSpouse() {
+    const name = document.getElementById('editOBSpName').value.trim();
+    if (!name) { alert('Please enter the spouse name.'); return; }
+    const marital = document.getElementById('obEditMaritalStatus');
+    const tel = document.getElementById('editOBSpTel').value.trim();
+    if (marital && marital.value === 'married' && !tel) {
+        alert('Tel No. is required when Marital Status is Married.');
+        document.getElementById('editOBSpTel').focus();
+        return;
+    }
+    const idx = document.querySelectorAll('.ob-sp-h-name').length + _editOBNewCount;
+    _editOBNewCount++;
+    const nric = document.getElementById('editOBSpNric').value.trim();
+    const occ  = document.getElementById('editOBSpOccupation').value.trim();
+    const addr = document.getElementById('editOBSpAddress').value.trim();
+    const working  = document.getElementById('editOBSpWorking').value;
+    const disabled = document.getElementById('editOBSpDisabled').value;
+    const list = document.getElementById('editOBSpouseList');
+    list.insertAdjacentHTML('beforeend',
+        '<div class="border rounded p-2 mb-1 bg-light d-flex justify-content-between align-items-center">' +
+        '<span class="fw-semibold small">' + escHtml(name) + '</span>' +
+        '<span class="text-muted small ms-2">' + escHtml(tel) + (occ ? ' · ' + escHtml(occ) : '') + '</span>' +
+        '</div>');
+    const hidden = document.getElementById('editOBSpouseHidden');
+    const fields = {name, nric_no: nric, tel_no: tel, occupation: occ, income_tax_no: '', address: addr, is_working: working, is_disabled: disabled};
+    Object.entries(fields).forEach(([k, v]) => {
+        const inp = document.createElement('input');
+        inp.type = 'hidden'; inp.name = 'spouses[' + idx + '][' + k + ']'; inp.value = v;
+        hidden.appendChild(inp);
+    });
+    ['editOBSpName','editOBSpNric','editOBSpTel','editOBSpOccupation','editOBSpAddress'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('editOBSpWorking').value  = '0';
+    document.getElementById('editOBSpDisabled').value = '0';
+}
+
+function escHtml(s) {
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function toggleAssetLabel(checkbox) {
+    var label = document.getElementById('label_' + checkbox.id);
+    var icon  = label ? label.querySelector('i') : null;
+    if (checkbox.checked) {
+        if (label) { label.classList.add('border-primary', 'bg-primary', 'bg-opacity-10'); }
+        if (icon)  { icon.style.color = '#2563eb'; }
+    } else {
+        if (label) { label.classList.remove('border-primary', 'bg-primary', 'bg-opacity-10'); }
+        if (icon)  { icon.style.color = '#94a3b8'; }
+    }
+}
+</script>
+@endpush
 
 @endsection

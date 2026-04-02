@@ -54,12 +54,12 @@ class User extends Authenticatable
 
     public function canAddOnboarding(): bool
     {
-        return in_array($this->role, ['hr_manager','hr_executive','superadmin','system_admin']);
+        return in_array($this->role, ['hr_manager','superadmin','system_admin']);
     }
 
     public function canEditOnboarding(): bool
     {
-        return in_array($this->role, ['hr_manager','hr_executive','superadmin','system_admin']);
+        return in_array($this->role, ['hr_manager','superadmin','system_admin']);
     }
 
     public function canEditAllOnboardingSections(): bool
@@ -69,22 +69,22 @@ class User extends Authenticatable
 
     public function canViewAssets(): bool
     {
-        return in_array($this->role, ['it_manager','it_executive','it_intern','superadmin','system_admin']);
+        return in_array($this->role, ['hr_manager','hr_executive','it_manager','it_executive','it_intern','superadmin','system_admin']);
     }
 
     public function canAddAsset(): bool
     {
-        return in_array($this->role, ['it_manager','it_executive','superadmin','system_admin']);
+        return in_array($this->role, ['hr_manager','hr_executive','it_manager','it_executive','superadmin','system_admin']);
     }
 
     public function canEditAsset(): bool
     {
-        return in_array($this->role, ['it_manager','it_executive','superadmin']);
+        return in_array($this->role, ['hr_manager','hr_executive','it_manager','it_executive','superadmin']);
     }
 
     public function canEditAllAssetSections(): bool
     {
-        return in_array($this->role, ['it_manager', 'superadmin']);
+        return in_array($this->role, ['hr_manager','hr_executive','it_manager', 'superadmin']);
     }
 
     public function canEditAarf(Aarf $aarf): bool
@@ -99,4 +99,32 @@ class User extends Authenticatable
     }
 
     public function employee() { return $this->hasOne(Employee::class); }
+
+    public function permissions() { return $this->hasMany(UserPermission::class); }
+
+    /**
+     * Return the custom access level for a resource, or null if none is set.
+     * Access levels: 'full', 'view', 'edit', 'none'
+     */
+    public function customPermission(string $resource): ?string
+    {
+        if ($this->relationLoaded('permissions')) {
+            return $this->permissions->where('resource', $resource)->first()?->access_level;
+        }
+        return $this->permissions()->where('resource', $resource)->value('access_level');
+    }
+
+    /** Custom permission grants view access (full / view / edit all imply view). */
+    public function canViewResource(string $resource): bool
+    {
+        $p = $this->customPermission($resource);
+        return $p !== null && $p !== 'none';
+    }
+
+    /** Custom permission grants edit access (full / edit). */
+    public function canEditResource(string $resource): bool
+    {
+        $p = $this->customPermission($resource);
+        return in_array($p, ['full', 'edit']);
+    }
 }

@@ -9,13 +9,14 @@ class WorkDetail extends Model
     protected $fillable = [
         'onboarding_id', 'employee_status', 'staff_status', 'employment_type',
         'designation', 'company', 'office_location', 'reporting_manager',
-        'reporting_manager_email', 'start_date', 'exit_date',
+        'reporting_manager_email', 'start_date', 'exit_date', 'last_salary_date',
         'company_email', 'google_id', 'department', 'role',
     ];
 
     protected $casts = [
-        'start_date' => 'date',
-        'exit_date'  => 'date',
+        'start_date'       => 'date',
+        'exit_date'        => 'date',
+        'last_salary_date' => 'date',
     ];
 
     public function onboarding() { return $this->belongsTo(Onboarding::class); }

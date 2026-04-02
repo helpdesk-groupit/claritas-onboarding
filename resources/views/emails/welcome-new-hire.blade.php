@@ -16,7 +16,7 @@
   .info-label { color:#64748b; font-weight:600; }
   .asset-box { background:#f0fdf4; border-left:4px solid #22c55e; border-radius:0 8px 8px 0; padding:14px 20px; margin:4px 0 16px; font-size:14px; color:#1e293b; }
   .asset-item { display:inline-block; background:#dcfce7; color:#15803d; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; margin:2px; }
-  .btn { display:inline-block; background:linear-gradient(135deg,#1e3a5f,#2563eb); color:#fff; padding:13px 30px; border-radius:8px; text-decoration:none; font-weight:600; font-size:14px; margin-top:8px; }
+  .btn { display:inline-block; background:#F5A623; color:#000; padding:13px 30px; border-radius:8px; text-decoration:none; font-weight:600; font-size:14px; margin-top:8px; }
   .aarf-box { background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:20px; margin:20px 0; text-align:center; }
   .footer { background:#f8fafc; padding:20px 30px; text-align:center; font-size:12px; color:#94a3b8; border-top:1px solid #e2e8f0; }
 </style>
@@ -65,7 +65,7 @@ if ($prov) {
     <div class="greeting">Dear {{ $p?->full_name ?? 'New Team Member' }}{{ $preferredStr }},</div>
     <p style="color:#475569;font-size:15px;line-height:1.6;">
       We are delighted to welcome you to <strong>{{ $w?->company ?? 'our company' }}</strong>.
-      Your onboarding has been completed.Below are your onboarding details for your reference.
+      Your onboarding has been completed. Below are your onboarding details for your reference.
     </p>
 
     {{-- Personal Info --}}
@@ -114,9 +114,9 @@ if ($prov) {
       <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
         href="{{ url('/aarf/' . $aarf->acknowledgement_token) }}"
         style="height:44px;v-text-anchor:middle;width:260px;" arcsize="10%"
-        fillcolor="#1e3a5f" strokecolor="#1e3a5f">
+        fillcolor="#F5A623" strokecolor="#F5A623">
         <w:anchorlock/>
-        <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">
+        <center style="color:#000000;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">
           View &amp; Acknowledge AARF
         </center>
       </v:roundrect>

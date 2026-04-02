@@ -185,6 +185,7 @@ class AarfController extends Controller
 
             $asset->appendRemark("Assigned to {$empName} via AARF [{$aarf->aarf_reference}] by {$actorName}.");
             $aarf->appendAssetChange("[{$asset->asset_tag}] {$asset->asset_name} — Added to AARF for {$empName} by {$actorName}.");
+            $aarf->addPendingAsset($asset->id);
 
             $added[] = "[{$asset->asset_tag}] {$asset->asset_name}";
         }
@@ -246,6 +247,8 @@ class AarfController extends Controller
         // Log to AARF
         $oldTag = $oldAsset ? "[{$oldAsset->asset_tag}] {$oldAsset->asset_name}" : 'previous asset';
         $aarf->appendAssetChange("{$oldTag} — Replaced with [{$newAsset->asset_tag}] {$newAsset->asset_name} for {$empName} by {$actorName}.");
+        if ($oldAsset) $aarf->removePendingAsset($oldAsset->id);
+        $aarf->addPendingAsset($newAsset->id);
 
         return back()->with('success', "Asset replaced: [{$oldAsset?->asset_tag}] → [{$newAsset->asset_tag}].");
     }
@@ -279,6 +282,7 @@ class AarfController extends Controller
         // Log to AARF
         $tag = $asset ? "[{$asset->asset_tag}] {$asset->asset_name}" : 'Asset';
         $aarf->appendAssetChange("{$tag} — Removed from AARF assignment for {$empName} by {$actorName}.");
+        if ($asset) $aarf->removePendingAsset($asset->id);
 
         return back()->with('success', "Asset [{$asset?->asset_tag}] removed from AARF.");
     }
@@ -342,28 +346,15 @@ class AarfController extends Controller
         // Log to asset_changes — include the name clearly
         $aarf->appendAssetChange("AARF acknowledged by {$empName}. All assets confirmed received.");
 
-        // Log to each asset's remarks — cover both onboarding and direct employee assignments
-        $assignments = collect();
-        if ($aarf->onboarding) {
-            $assignments = $aarf->onboarding->assetAssignments ?? collect();
-        }
-        // Also include assets assigned directly via employee_id
-        if ($aarf->employee_id || ($aarf->onboarding?->employee?->id)) {
-            $empId = $aarf->employee_id ?? $aarf->onboarding->employee?->id;
-            if ($empId) {
-                $directAssets = \App\Models\AssetInventory::where('assigned_employee_id', $empId)
-                    ->whereIn('status', ['assigned', 'unavailable'])->get();
-                foreach ($directAssets as $asset) {
-                    $asset->appendRemark("Asset receipt confirmed by {$empName} via AARF [{$aarf->aarf_reference}] acknowledgement.");
-                }
-            }
-        }
-        foreach ($assignments as $assignment) {
-            $asset = $assignment->asset;
-            if ($asset) {
+        // Log receipt confirmation only on assets pending since the last AARF reset
+        $pendingIds = $aarf->pending_asset_ids ?? [];
+        if (!empty($pendingIds)) {
+            $pendingAssets = \App\Models\AssetInventory::whereIn('id', $pendingIds)->get();
+            foreach ($pendingAssets as $asset) {
                 $asset->appendRemark("Asset receipt confirmed by {$empName} via AARF [{$aarf->aarf_reference}] acknowledgement.");
             }
         }
+        $aarf->clearPendingAssets();
 
         return redirect()->route('aarf.view', $token)
             ->with('success', 'Thank you! Your Asset Acceptance form has been acknowledged successfully.');

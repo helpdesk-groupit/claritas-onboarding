@@ -15,7 +15,7 @@
         .info-box table { width:100%; border-collapse:collapse; }
         .info-box td { padding:5px 0; font-size:14px; }
         .info-box td:first-child { color:#64748b; width:140px; font-weight:600; }
-        .btn-ack { display:inline-block; background:linear-gradient(135deg,#16a34a,#22c55e); color:#fff;
+        .btn-ack { display:inline-block; background:#F5A623; color:#000;
                    text-decoration:none; padding:13px 28px; border-radius:8px; font-weight:700;
                    font-size:15px; margin:20px 0; }
         .footer { background:#f8fafc; padding:16px 30px; font-size:12px; color:#94a3b8; text-align:center; border-top:1px solid #e2e8f0; }
@@ -172,9 +172,9 @@
         <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
           href="{{ route('aarf.view', $aarf->acknowledgement_token) }}"
           style="height:44px;v-text-anchor:middle;width:220px;" arcsize="10%"
-          fillcolor="#16a34a" strokecolor="#16a34a">
+          fillcolor="#F5A623" strokecolor="#F5A623">
           <w:anchorlock/>
-          <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">View AARF</center>
+          <center style="color:#000000;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">View AARF</center>
         </v:roundrect>
         <![endif]-->
         <!--[if !mso]><!-->
@@ -191,9 +191,9 @@
         <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
           href="{{ route('aarf.view', $aarf->acknowledgement_token) }}"
           style="height:44px;v-text-anchor:middle;width:280px;" arcsize="10%"
-          fillcolor="#16a34a" strokecolor="#16a34a">
+          fillcolor="#F5A623" strokecolor="#F5A623">
           <w:anchorlock/>
-          <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">View &amp; Acknowledge AARF</center>
+          <center style="color:#000000;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">View &amp; Acknowledge AARF</center>
         </v:roundrect>
         <![endif]-->
         <!--[if !mso]><!-->

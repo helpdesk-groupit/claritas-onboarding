@@ -13,7 +13,7 @@
     $canManageAssets = false;
 
     $canSeePersonal  = $isHr || $isIt;
-    $canViewContracts= $isHr; // IT cannot view/download contract documents
+    $canViewContracts= $isHrManager; // Only HR Manager can download/view restricted documents
     $canEdit         = $isHrManager;
 
     $empName       = $employee->full_name ?? $employee->user?->name ?? 'Employee';
@@ -39,9 +39,9 @@
         <i class="bi bi-file-earmark-check me-1"></i>View AARF
     </a>
     @endif
-    @if($isIt)
+    @if(!$canEdit)
     <span class="badge bg-info text-dark ms-auto" style="font-size:12px;">
-        <i class="bi bi-eye me-1"></i>View Only — IT cannot edit employee records
+        <i class="bi bi-eye me-1"></i>View Only
     </span>
     @endif
 </div>
@@ -102,6 +102,8 @@
                         <td class="py-2">{{ $employee->official_document_id ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Date of Birth</td>
                         <td class="py-2">{{ $employee->date_of_birth?->format('d M Y') ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">Age</td>
+                        <td class="py-2">{{ $employee->date_of_birth ? now()->year - $employee->date_of_birth->year : '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Sex</td>
                         <td class="py-2">{{ $employee->sex ? ucfirst($employee->sex) : '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Marital Status</td>
@@ -191,6 +193,8 @@
                         <td class="py-2">{{ $employee->start_date?->format('d M Y') ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Exit Date</td>
                         <td class="py-2">{{ $employee->exit_date?->format('d M Y') ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">Last Salary Date</td>
+                        <td class="py-2">{{ $employee->last_salary_date?->format('d M Y') ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Company Email</td>
                         <td class="py-2">{{ $employee->company_email ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Google ID</td>
@@ -420,7 +424,7 @@
                     @if($employee->handbook_path)
                         <div class="d-flex align-items-center justify-content-between gap-2 p-2 rounded-2" style="background:#dcfce7;font-size:12px;">
                             <span><i class="bi bi-file-earmark-check-fill text-success me-1"></i>Personalised handbook uploaded</span>
-                            @if(!$isIt)
+                            @if($canViewContracts)
                             <a href="{{ asset('storage/' . $employee->handbook_path) }}" target="_blank"
                                class="btn btn-outline-success btn-sm" style="padding:2px 7px;" title="View">
                                 <i class="bi bi-eye" style="font-size:12px;"></i>
@@ -454,7 +458,7 @@
                     @if($employee->orientation_path)
                         <div class="d-flex align-items-center justify-content-between gap-2 p-2 rounded-2" style="background:#fef3c7;font-size:12px;">
                             <span><i class="bi bi-file-earmark-check-fill text-warning me-1"></i>Personalised slide uploaded</span>
-                            @if(!$isIt)
+                            @if($canViewContracts)
                             <a href="{{ asset('storage/' . $employee->orientation_path) }}" target="_blank"
                                class="btn btn-outline-warning btn-sm" style="padding:2px 7px;" title="View">
                                 <i class="bi bi-eye" style="font-size:12px;"></i>

@@ -4,8 +4,9 @@
 @section('content')
 
 @php
-    $authUser    = Auth::user();
-    $isHrManager = $authUser->isHrManager() || $authUser->isSuperadmin();
+    $authUser        = Auth::user();
+    $isHrManager     = $authUser->isHrManager() || $authUser->isSuperadmin();
+    $canViewContracts= $isHrManager;
     $statusColors = ['active'=>'success','resigned'=>'danger','terminated'=>'danger','contract_ended'=>'secondary'];
     $empName = $employee?->full_name ?? $offboarding->full_name ?? 'Employee';
     $profilePicUrl = $employee?->user?->profile_picture_url
@@ -25,6 +26,11 @@
     <a href="{{ route('aarf.view', $aarf->acknowledgement_token) }}" target="_blank" class="btn btn-sm btn-outline-primary">
         <i class="bi bi-file-earmark-check me-1"></i>View AARF
     </a>
+    @endif
+    @if(!$isHrManager)
+    <span class="badge bg-info text-dark ms-auto" style="font-size:12px;">
+        <i class="bi bi-eye me-1"></i>View Only
+    </span>
     @endif
 </div>
 
@@ -74,6 +80,7 @@
                     <tr><td class="text-muted py-2">Preferred Name</td><td class="py-2">{{ $employee?->preferred_name ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Document ID (IC / Passport)</td><td class="py-2">{{ $employee?->official_document_id ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Date of Birth</td><td class="py-2">{{ $employee?->date_of_birth?->format('d M Y') ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">Age</td><td class="py-2">{{ $employee?->date_of_birth ? now()->year - $employee->date_of_birth->year : '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Sex</td><td class="py-2">{{ $employee?->sex ? ucfirst($employee->sex) : '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Marital Status</td><td class="py-2">{{ $employee?->marital_status ? ucfirst($employee->marital_status) : '—' }}</td></tr>
                 </table>
@@ -136,6 +143,7 @@
                     <tr><td class="text-muted py-2" style="width:46%;padding-left:0;">Reporting Manager</td><td class="py-2">{{ $employee?->reporting_manager ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Start Date</td><td class="py-2">{{ $employee?->start_date?->format('d M Y') ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Exit Date</td><td class="py-2 fw-semibold text-danger">{{ $offboarding->exit_date?->format('d M Y') ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">Last Salary Date</td><td class="py-2">{{ $employee?->last_salary_date?->format('d M Y') ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Reason for Leaving</td><td class="py-2">{{ $offboarding->reason ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Company Email</td><td class="py-2">{{ $offboarding->company_email ?? $employee?->company_email ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Google ID</td><td class="py-2">{{ $employee?->google_id ?? '—' }}</td></tr>
@@ -243,10 +251,16 @@
                                 <span title="{{ $contract->original_filename }}">{{ $contract->original_filename }}</span>
                                 <div class="text-muted" style="font-size:11px;">{{ $contract->file_size_label }} &middot; {{ $contract->created_at->format('d M Y') }}@if($contract->notes)<br>{{ $contract->notes }}@endif</div>
                             </div>
+                            @if($canViewContracts)
                             <a href="{{ route('employees.contracts.download', [$employee, $contract]) }}"
                                class="btn btn-outline-primary btn-sm flex-shrink-0" style="padding:3px 8px;" title="Download">
                                 <i class="bi bi-download" style="font-size:12px;"></i>
                             </a>
+                            @else
+                            <span class="badge bg-light border text-secondary flex-shrink-0" style="font-size:10px;">
+                                <i class="bi bi-lock me-1"></i>HR only
+                            </span>
+                            @endif
                         </div>
                         @endforeach
                     @endif
@@ -267,9 +281,15 @@
                     @if($employee?->handbook_path)
                         <div class="d-flex align-items-center justify-content-between gap-2 p-2 rounded-2" style="background:#dcfce7;font-size:12px;">
                             <span><i class="bi bi-file-earmark-check-fill text-success me-1"></i>Personalised handbook uploaded</span>
+                            @if($canViewContracts)
                             <a href="{{ asset('storage/'.$employee->handbook_path) }}" target="_blank" class="btn btn-outline-success btn-sm" style="padding:2px 7px;">
                                 <i class="bi bi-eye" style="font-size:12px;"></i>
                             </a>
+                            @else
+                            <span class="badge bg-light border text-secondary" style="font-size:10px;">
+                                <i class="bi bi-lock me-1"></i>HR only
+                            </span>
+                            @endif
                         </div>
                     @else
                         <p class="text-muted small mb-0">Default company handbook will be used.</p>
@@ -291,9 +311,15 @@
                     @if($employee?->orientation_path)
                         <div class="d-flex align-items-center justify-content-between gap-2 p-2 rounded-2" style="background:#fef3c7;font-size:12px;">
                             <span><i class="bi bi-file-earmark-check-fill text-warning me-1"></i>Personalised slide uploaded</span>
+                            @if($canViewContracts)
                             <a href="{{ asset('storage/'.$employee->orientation_path) }}" target="_blank" class="btn btn-outline-warning btn-sm" style="padding:2px 7px;">
                                 <i class="bi bi-eye" style="font-size:12px;"></i>
                             </a>
+                            @else
+                            <span class="badge bg-light border text-secondary" style="font-size:10px;">
+                                <i class="bi bi-lock me-1"></i>HR only
+                            </span>
+                            @endif
                         </div>
                     @else
                         <p class="text-muted small mb-0">Default orientation slide will be used.</p>

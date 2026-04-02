@@ -305,10 +305,62 @@
                     </div>
                     <div class="col-md-4">
                         <label class="form-label fw-semibold">Date of Birth <span class="text-danger">*</span></label>
-                        <input type="date" name="date_of_birth"
-                               class="form-control @error('date_of_birth') is-invalid @enderror"
-                               value="{{ old('date_of_birth') }}" required>
-                        @error('date_of_birth')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                        <input type="hidden" name="date_of_birth" id="hr_dob_combined">
+                        @error('date_of_birth')<div class="text-danger small mb-1">{{ $message }}</div>@enderror
+                        <div class="d-flex gap-1">
+                            <select id="hr_dob_day" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                                <option value="">Day</option>
+                                @for($d = 1; $d <= 31; $d++)
+                                    <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}">{{ $d }}</option>
+                                @endfor
+                            </select>
+                            <select id="hr_dob_month" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                                <option value="">Month</option>
+                                @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                    <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}">{{ $mn }}</option>
+                                @endforeach
+                            </select>
+                            <select id="hr_dob_year" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                                <option value="">Year</option>
+                                @for($y = date('Y'); $y >= 1940; $y--)
+                                    <option value="{{ $y }}">{{ $y }}</option>
+                                @endfor
+                            </select>
+                        </div>
+                        <script>
+                        (function(){
+                            function calcHrAge(dob){
+                                var el=document.getElementById('hr_age'); if(!el) return;
+                                if(!dob){el.value='';return;}
+                                var p=dob.split('-'),t=new Date();
+                                var a=t.getFullYear()-+p[0];
+                                el.value=(a>=0&&a<150)?a:'';
+                            }
+                            var old = '{{ old('date_of_birth') }}';
+                            if(old){ var p=old.split('-');
+                                document.getElementById('hr_dob_year').value=p[0];
+                                document.getElementById('hr_dob_month').value=p[1];
+                                document.getElementById('hr_dob_day').value=p[2];
+                                document.getElementById('hr_dob_combined').value=old;
+                                document.addEventListener('DOMContentLoaded',function(){ calcHrAge(old); });
+                            }
+                            function sync(){
+                                var d=document.getElementById('hr_dob_day').value,
+                                    m=document.getElementById('hr_dob_month').value,
+                                    y=document.getElementById('hr_dob_year').value;
+                                var dob=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                                document.getElementById('hr_dob_combined').value=dob;
+                                calcHrAge(dob);
+                            }
+                            ['hr_dob_day','hr_dob_month','hr_dob_year'].forEach(function(id){
+                                document.getElementById(id).addEventListener('change',sync);
+                            });
+                        })();
+                        </script>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label fw-semibold">Age</label>
+                        <input type="text" id="hr_age" class="form-control bg-light" readonly placeholder="—">
                     </div>
                     <div class="col-md-3">
                         <label class="form-label fw-semibold">Sex <span class="text-danger">*</span></label>
@@ -345,7 +397,7 @@
                     </div>
                     <div class="col-12">
                         <label class="form-label fw-semibold">Residential Address <span class="text-danger">*</span></label>
-                        <textarea name="residential_address"
+                        <textarea name="residential_address" id="obResAddress"
                                   class="form-control @error('residential_address') is-invalid @enderror"
                                   rows="2" required>{{ old('residential_address') }}</textarea>
                         @error('residential_address')<div class="invalid-feedback">{{ $message }}</div>@enderror
@@ -439,6 +491,7 @@
                             <option value="">Select...</option>
                             <option value="new"      {{ old('staff_status')=='new'      ?'selected':'' }}>New</option>
                             <option value="existing" {{ old('staff_status')=='existing' ?'selected':'' }}>Existing</option>
+                            <option value="rehire"   {{ old('staff_status')=='rehire'   ?'selected':'' }}>Rehire</option>
                         </select>
                         @error('staff_status')<div class="invalid-feedback">{{ $message }}</div>@enderror
                     </div>
@@ -463,7 +516,7 @@
                         <label class="form-label fw-semibold">Company <span class="text-danger">*</span></label>
                         <select name="company" id="addOBCompanySelect"
                                 class="form-select @error('company') is-invalid @enderror"
-                                onchange="autofillOfficeLocation(this, 'addOBOfficeLocation')" required>
+                                onchange="autofillOfficeLocation(this, 'addOBOfficeLocation'); filterManagersByCompany(this.value, 'reporting_manager')" required>
                             <option value="">Select company...</option>
                             @foreach($companies as $c)
                             <option value="{{ $c->name }}"
@@ -492,13 +545,31 @@
                                 class="form-select @error('reporting_manager') is-invalid @enderror"
                                 onchange="fetchManagerEmail(this.value)" required>
                             <option value="">Select manager...</option>
+                            @php
+                                $roleLabels = [
+                                    'hr_manager'          => 'HR Manager',
+                                    'hr_executive'        => 'HR Executive',
+                                    'hr_intern'           => 'HR Intern',
+                                    'it_manager'          => 'IT Manager',
+                                    'it_executive'        => 'IT Executive',
+                                    'it_intern'           => 'IT Intern',
+                                    'superadmin'          => 'SuperAdmin',
+                                    'system_admin'        => 'System Admin',
+                                    'manager'             => 'Manager',
+                                    'senior_executive'    => 'Senior Executive',
+                                    'executive_associate' => 'Executive / Associate',
+                                    'director_hod'        => 'Director / HOD',
+                                    'others'              => 'Others',
+                                ];
+                            @endphp
                             @foreach($managers as $mgr)
                                 <option value="{{ $mgr->full_name }}"
                                     data-email="{{ $mgr->company_email }}"
+                                    data-company="{{ $mgr->company }}"
                                     {{ old('reporting_manager')==$mgr->full_name?'selected':'' }}>
                                     {{ $mgr->full_name }}
                                     @if($mgr->designation) — {{ $mgr->designation }} @endif
-                                    ({{ ucfirst(str_replace('_',' ',$mgr->work_role ?? '')) }})
+                                    ({{ $roleLabels[$mgr->work_role ?? ''] ?? ucfirst(str_replace('_',' ',$mgr->work_role ?? '')) }})
                                 </option>
                             @endforeach
                         </select>
@@ -514,14 +585,140 @@
                     </div>
                     <div class="col-md-4">
                         <label class="form-label fw-semibold">Start Date <span class="text-danger">*</span></label>
-                        <input type="date" name="start_date"
-                               class="form-control @error('start_date') is-invalid @enderror"
-                               value="{{ old('start_date') }}" required>
-                        @error('start_date')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                        <input type="hidden" name="start_date" id="hr_sd_combined">
+                        @error('start_date')<div class="text-danger small mb-1">{{ $message }}</div>@enderror
+                        <div class="d-flex gap-1">
+                            <select id="hr_sd_day" class="form-select @error('start_date') is-invalid @enderror" style="min-width:0">
+                                <option value="">Day</option>
+                                @for($d = 1; $d <= 31; $d++)
+                                    <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}">{{ $d }}</option>
+                                @endfor
+                            </select>
+                            <select id="hr_sd_month" class="form-select @error('start_date') is-invalid @enderror" style="min-width:0">
+                                <option value="">Month</option>
+                                @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                    <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}">{{ $mn }}</option>
+                                @endforeach
+                            </select>
+                            <select id="hr_sd_year" class="form-select @error('start_date') is-invalid @enderror" style="min-width:0">
+                                <option value="">Year</option>
+                                @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                    <option value="{{ $y }}">{{ $y }}</option>
+                                @endfor
+                            </select>
+                        </div>
+                        <script>
+                        (function(){
+                            var old='{{ old('start_date') }}';
+                            if(old){var p=old.split('-');
+                                document.getElementById('hr_sd_year').value=p[0];
+                                document.getElementById('hr_sd_month').value=p[1];
+                                document.getElementById('hr_sd_day').value=p[2];
+                                document.getElementById('hr_sd_combined').value=old;
+                            }
+                            function sync(){
+                                var d=document.getElementById('hr_sd_day').value,
+                                    m=document.getElementById('hr_sd_month').value,
+                                    y=document.getElementById('hr_sd_year').value;
+                                document.getElementById('hr_sd_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                            }
+                            ['hr_sd_day','hr_sd_month','hr_sd_year'].forEach(function(id){
+                                document.getElementById(id).addEventListener('change',sync);
+                            });
+                        })();
+                        </script>
                     </div>
                     <div class="col-md-4">
                         <label class="form-label fw-semibold">Exit Date</label>
-                        <input type="date" name="exit_date" class="form-control" value="{{ old('exit_date') }}">
+                        <input type="hidden" name="exit_date" id="hr_ed_combined">
+                        <div class="d-flex gap-1">
+                            <select id="hr_ed_day" class="form-select" style="min-width:0">
+                                <option value="">Day</option>
+                                @for($d = 1; $d <= 31; $d++)
+                                    <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}">{{ $d }}</option>
+                                @endfor
+                            </select>
+                            <select id="hr_ed_month" class="form-select" style="min-width:0">
+                                <option value="">Month</option>
+                                @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                    <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}">{{ $mn }}</option>
+                                @endforeach
+                            </select>
+                            <select id="hr_ed_year" class="form-select" style="min-width:0">
+                                <option value="">Year</option>
+                                @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                    <option value="{{ $y }}">{{ $y }}</option>
+                                @endfor
+                            </select>
+                        </div>
+                        <script>
+                        (function(){
+                            var old='{{ old('exit_date') }}';
+                            if(old){var p=old.split('-');
+                                document.getElementById('hr_ed_year').value=p[0];
+                                document.getElementById('hr_ed_month').value=p[1];
+                                document.getElementById('hr_ed_day').value=p[2];
+                                document.getElementById('hr_ed_combined').value=old;
+                            }
+                            function sync(){
+                                var d=document.getElementById('hr_ed_day').value,
+                                    m=document.getElementById('hr_ed_month').value,
+                                    y=document.getElementById('hr_ed_year').value;
+                                document.getElementById('hr_ed_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                            }
+                            ['hr_ed_day','hr_ed_month','hr_ed_year'].forEach(function(id){
+                                document.getElementById(id).addEventListener('change',sync);
+                            });
+                        })();
+                        </script>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold">Last Salary Date</label>
+                        @if(Auth::user()->isHrManager())
+                            <input type="hidden" name="last_salary_date" id="hr_lsd_combined">
+                            <div class="d-flex gap-1">
+                                <select id="hr_lsd_day" class="form-select" style="min-width:0">
+                                    <option value="">Day</option>
+                                    @for($d = 1; $d <= 31; $d++)
+                                        <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}">{{ $d }}</option>
+                                    @endfor
+                                </select>
+                                <select id="hr_lsd_month" class="form-select" style="min-width:0">
+                                    <option value="">Month</option>
+                                    @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                        <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}">{{ $mn }}</option>
+                                    @endforeach
+                                </select>
+                                <select id="hr_lsd_year" class="form-select" style="min-width:0">
+                                    <option value="">Year</option>
+                                    @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                        <option value="{{ $y }}">{{ $y }}</option>
+                                    @endfor
+                                </select>
+                            </div>
+                            <script>
+                            (function(){
+                                var old='{{ old('last_salary_date') }}';
+                                if(old){var p=old.split('-');
+                                    document.getElementById('hr_lsd_year').value=p[0];
+                                    document.getElementById('hr_lsd_month').value=p[1];
+                                    document.getElementById('hr_lsd_day').value=p[2];
+                                    document.getElementById('hr_lsd_combined').value=old;
+                                }
+                                function sync(){
+                                    var d=document.getElementById('hr_lsd_day').value,
+                                        m=document.getElementById('hr_lsd_month').value,
+                                        y=document.getElementById('hr_lsd_year').value;
+                                    document.getElementById('hr_lsd_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                                }
+                                ['hr_lsd_day','hr_lsd_month','hr_lsd_year'].forEach(function(id){
+                                    document.getElementById(id).addEventListener('change',sync);
+                                });
+                            })();
+                            </script>
+                        @else
+                            <input type="text" class="form-control bg-light" readonly value="—">
+                        @endif
                     </div>
                     <div class="col-md-4">
                         <label class="form-label fw-semibold">Company Email</label>
@@ -708,7 +905,7 @@
                     <div style="background:#f8fafc;border:1px solid #e9ecef;border-radius:8px;padding:1rem;" id="obSpousePanel">
                         <div class="row g-3">
                             <div class="col-md-6">
-                                <label class="form-label fw-semibold small">Name</label>
+                                <label class="form-label fw-semibold small">Name <span class="text-danger">*</span></label>
                                 <input type="text" id="obSpName" class="form-control form-control-sm">
                             </div>
                             <div class="col-md-6">
@@ -716,7 +913,7 @@
                                 <input type="text" id="obSpNric" class="form-control form-control-sm">
                             </div>
                             <div class="col-md-4">
-                                <label class="form-label fw-semibold small">Tel No.</label>
+                                <label class="form-label fw-semibold small">Tel No. <span class="text-danger">*</span></label>
                                 <input type="text" id="obSpTel" class="form-control form-control-sm">
                             </div>
                             <div class="col-md-4">
@@ -726,6 +923,10 @@
                             <div class="col-md-4">
                                 <label class="form-label fw-semibold small">Income Tax No.</label>
                                 <input type="text" id="obSpIncomeTax" class="form-control form-control-sm">
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label fw-semibold small">Address</label>
+                                <textarea id="obSpAddress" class="form-control form-control-sm" rows="2"></textarea>
                             </div>
                             <div class="col-md-3">
                                 <label class="form-label fw-semibold small">Working?</label>
@@ -919,13 +1120,28 @@
 <link href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 <script>
+// ── Filter Reporting Manager by Company ──────────────────────────────────
+function filterManagersByCompany(companyName, mgrSelectId) {
+    const sel = document.getElementById(mgrSelectId);
+    if (!sel) return;
+    Array.from(sel.options).forEach(function(opt) {
+        if (!opt.value || !opt.dataset.company) return;
+        var match = !companyName || opt.dataset.company === companyName;
+        opt.hidden   = !match;
+        opt.disabled = !match;
+    });
+    var chosen = sel.options[sel.selectedIndex];
+    if (chosen && chosen.value && chosen.hidden) sel.value = '';
+}
+
 // ── Company → Office Location autofill ───────────────────────────────────
 function autofillOfficeLocation(selectEl, targetId) {
     const selected = selectEl.options[selectEl.selectedIndex];
-    const address  = selected ? (selected.dataset.address || '') : '';
     const target   = document.getElementById(targetId);
-    if (target && address) target.value = address;
+    if (!target || !selected || !selected.value) return;
+    target.value = selected.dataset.address || '-';
 }
+
 
 // ── Google ID mirrors Company Email ──────────────────────────────────────
 function syncGoogleId(val) {
@@ -951,6 +1167,10 @@ document.addEventListener('DOMContentLoaded', function () {
     if (ce && gid && ce.value && !gid.value) {
         gid.value = ce.value;
     }
+    // Filter managers by pre-selected company (on validation error re-open)
+    const addCo = document.getElementById('addOBCompanySelect');
+    if (addCo && addCo.value) filterManagersByCompany(addCo.value, 'reporting_manager');
+
     // Pre-fill manager email if manager is already selected (on validation error re-open)
     const mgr = document.getElementById('reporting_manager');
     const mgrEmail = document.getElementById('reporting_manager_email');
@@ -1039,16 +1259,24 @@ let obSpouseEntries = [];
 function obAddSpouseEntry() {
     const name = document.getElementById('obSpName').value.trim();
     if (!name) { alert('Please enter the spouse name.'); return; }
+    const marital = document.getElementById('obMaritalStatus');
+    const tel = document.getElementById('obSpTel').value.trim();
+    if (marital && marital.value === 'married' && !tel) {
+        alert('Tel No. is required when Marital Status is Married.');
+        document.getElementById('obSpTel').focus();
+        return;
+    }
     obSpouseEntries.push({
         name, nric: document.getElementById('obSpNric').value.trim(),
         tel:  document.getElementById('obSpTel').value.trim(),
         occupation: document.getElementById('obSpOccupation').value.trim(),
         incomeTax:  document.getElementById('obSpIncomeTax').value.trim(),
+        address:    document.getElementById('obSpAddress').value.trim(),
         working:    document.getElementById('obSpWorking').value,
         disabled:   document.getElementById('obSpDisabled').value,
     });
     obRenderSpouseList();
-    ['obSpName','obSpNric','obSpTel','obSpOccupation','obSpIncomeTax'].forEach(id=>document.getElementById(id).value='');
+    ['obSpName','obSpNric','obSpTel','obSpOccupation','obSpIncomeTax','obSpAddress'].forEach(id=>document.getElementById(id).value='');
 }
 function obRemoveSpouseEntry(i) { obSpouseEntries.splice(i,1); obRenderSpouseList(); }
 function obRenderSpouseList() {
@@ -1067,6 +1295,7 @@ function obRenderSpouseList() {
             <input type="hidden" name="spouses[${i}][tel_no]" value="${obEsc(e.tel)}">
             <input type="hidden" name="spouses[${i}][occupation]" value="${obEsc(e.occupation)}">
             <input type="hidden" name="spouses[${i}][income_tax_no]" value="${obEsc(e.incomeTax)}">
+            <input type="hidden" name="spouses[${i}][address]" value="${obEsc(e.address||'')}">
             <input type="hidden" name="spouses[${i}][is_working]" value="${e.working}">
             <input type="hidden" name="spouses[${i}][is_disabled]" value="${e.disabled}">`;
     });
@@ -1110,17 +1339,19 @@ function obEsc(s){return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot
 
 // ── Marital Status → Spouse Section toggle (HR full form) ───────────────
 function obToggleSpouseSection(val) {
-    const section  = document.getElementById('obSpouseSection');
-    const star     = document.querySelector('.ob-spouse-required');
+    const section = document.getElementById('obSpouseSection');
+    const star    = document.querySelector('.ob-spouse-required');
     if (!section) return;
-    if (val === 'married') {
-        section.style.opacity = '1';
-        section.style.pointerEvents = 'auto';
-        if (star) star.classList.remove('d-none');
-    } else {
-        section.style.opacity = '0.4';
-        section.style.pointerEvents = 'none';
-        if (star) star.classList.add('d-none');
+    const isMarried = val === 'married';
+    section.querySelectorAll('input, select, textarea, button').forEach(el => {
+        el.disabled = !isMarried;
+    });
+    section.style.opacity = isMarried ? '1' : '0.4';
+    if (star) star.classList.toggle('d-none', !isMarried);
+    if (isMarried) {
+        const addr   = document.getElementById('obResAddress');
+        const spAddr = document.getElementById('obSpAddress');
+        if (addr && spAddr && !spAddr.value.trim()) spAddr.value = addr.value;
     }
 }
 document.addEventListener('DOMContentLoaded', function() {

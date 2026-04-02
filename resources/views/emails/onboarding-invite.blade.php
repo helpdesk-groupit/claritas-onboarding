@@ -49,18 +49,18 @@
             <!-- CTA Button -->
             <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
               <tr>
-                <td style="background:#2684FE;border-radius:8px;">
+                <td style="background:#F5A623;border-radius:8px;">
                   <!--[if mso]>
                   <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
-                    href="{{ $inviteUrl }}" style="height:48px;v-text-anchor:middle;width:220px;" arcsize="17%" fillcolor="#2684FE" strokecolor="#2684FE">
+                    href="{{ $inviteUrl }}" style="height:48px;v-text-anchor:middle;width:220px;" arcsize="17%" fillcolor="#F5A623" strokecolor="#F5A623">
                     <w:anchorlock/>
-                    <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:700;">
+                    <center style="color:#000000;font-family:Arial,sans-serif;font-size:15px;font-weight:700;">
                       Complete My Details
                     </center>
                   </v:roundrect>
                   <![endif]-->
                   <a href="{{ $inviteUrl }}"
-                     style="display:inline-block;padding:14px 28px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;border-radius:8px;mso-hide:all;">
+                     style="display:inline-block;padding:14px 28px;color:#000000;font-size:15px;font-weight:700;text-decoration:none;border-radius:8px;mso-hide:all;">
                     Complete My Details
                   </a>
                 </td>

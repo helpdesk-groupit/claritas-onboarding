@@ -234,6 +234,23 @@ class OnboardingInviteController extends Controller
             'cat_e_50'  => 'nullable|integer|min:0|max:99',
         ]);
 
+        // Spouse name + tel required when married
+        if ($request->input('marital_status') === 'married') {
+            $spouses = array_filter($request->input('spouses', []), fn($s) => !empty($s['name']));
+            if (empty($spouses)) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'spouses' => ['At least one spouse entry is required when Marital Status is Married.'],
+                ]);
+            }
+            foreach (array_values($spouses) as $i => $sp) {
+                if (empty($sp['tel_no'])) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        "spouses.{$i}.tel_no" => ['Spouse Tel No. is required when Marital Status is Married.'],
+                    ]);
+                }
+            }
+        }
+
         // Resolve bank name (Other fallback)
         $bankName = (in_array($validated['bank_name'] ?? '', ['Other', 'other']))
             ? ($validated['bank_name_other'] ?? null)

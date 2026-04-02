@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Company;
 use App\Models\Offboarding;
 use App\Models\Employee;
 use App\Models\User;
@@ -139,9 +140,10 @@ class OffboardingController extends Controller
             $aarf         = null;
         }
 
-        $managers = User::whereIn('role', ['hr_manager','it_manager','superadmin'])->orderBy('name')->get();
+        $managers  = User::whereIn('role', ['hr_manager','it_manager','superadmin','manager'])->orderBy('name')->with('employee')->get();
+        $companies = Company::orderBy('name')->get(['name', 'address']);
 
-        return view('hr.offboarding.edit', compact('offboarding', 'employee', 'directAssets', 'aarf', 'managers'));
+        return view('hr.offboarding.edit', compact('offboarding', 'employee', 'directAssets', 'aarf', 'managers', 'companies'));
     }
 
     // ── HR Manager: update offboarding ───────────────────────────────────
@@ -185,6 +187,7 @@ class OffboardingController extends Controller
             'reporting_manager'      => 'nullable|string|max:255',
             'start_date'             => 'nullable|date',
             'exit_date'              => 'nullable|date',
+            'last_salary_date'       => 'nullable|date',
             'company_email'          => 'nullable|email',
             'google_id'              => 'nullable|string|max:255',
             'reason'                 => 'nullable|string|max:500',
@@ -268,6 +271,9 @@ class OffboardingController extends Controller
                 'google_id'               => $validated['google_id'] ?? null,
                 'work_role'               => $validated['work_role'] ?? null,
             ], fn($v) => $v !== null);
+            if ($u->isHrManager()) {
+                $empData['last_salary_date'] = $validated['last_salary_date'] ?? null;
+            }
 
             // is_disabled handled separately (falsy 0/false should not be filtered out)
             if (isset($validated['is_disabled'])) {
@@ -285,6 +291,48 @@ class OffboardingController extends Controller
 
             if (!empty($empData)) {
                 $emp->update($empData);
+            }
+
+            // ── Sync employee changes back to linked onboarding ───────────
+            $emp->refresh();
+            if ($emp->onboarding_id) {
+                $ob = \App\Models\Onboarding::with(['personalDetail', 'workDetail'])->find($emp->onboarding_id);
+                if ($ob?->personalDetail) {
+                    $ob->personalDetail->update([
+                        'full_name'               => $emp->full_name,
+                        'preferred_name'          => $emp->preferred_name,
+                        'official_document_id'    => $emp->official_document_id,
+                        'date_of_birth'           => $emp->date_of_birth,
+                        'sex'                     => $emp->sex,
+                        'marital_status'          => $emp->marital_status,
+                        'religion'                => $emp->religion,
+                        'race'                    => $emp->race,
+                        'is_disabled'             => $emp->is_disabled,
+                        'residential_address'     => $emp->residential_address,
+                        'personal_contact_number' => $emp->personal_contact_number,
+                        'house_tel_no'            => $emp->house_tel_no,
+                        'personal_email'          => $emp->personal_email,
+                        'bank_account_number'     => $emp->bank_account_number,
+                        'bank_name'               => $emp->bank_name,
+                        'epf_no'                  => $emp->epf_no,
+                        'income_tax_no'           => $emp->income_tax_no,
+                        'socso_no'                => $emp->socso_no,
+                    ]);
+                }
+                if ($ob?->workDetail) {
+                    $ob->workDetail->update([
+                        'designation'       => $emp->designation,
+                        'department'        => $emp->department,
+                        'company'           => $emp->company,
+                        'office_location'   => $emp->office_location,
+                        'reporting_manager' => $emp->reporting_manager,
+                        'company_email'     => $emp->company_email,
+                        'google_id'         => $emp->google_id,
+                        'employment_type'   => $emp->employment_type,
+                        'start_date'        => $emp->start_date,
+                        'exit_date'         => $emp->exit_date,
+                    ]);
+                }
             }
         }
 
@@ -396,6 +444,12 @@ class OffboardingController extends Controller
         $employee = $offboarding->employee;
 
         if ($employee) {
+            $employee->load([
+                'educationHistories',
+                'spouseDetails',
+                'emergencyContacts',
+                'childRegistration',
+            ]);
             $directAssets = \App\Models\AssetInventory::where('assigned_employee_id', $employee->id)
                 ->whereIn('status', ['assigned', 'unavailable'])->orderBy('asset_type')->get();
             $aarf         = $employee->resolveAarf();

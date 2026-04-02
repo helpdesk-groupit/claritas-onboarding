@@ -46,25 +46,6 @@
             <div class="alert alert-danger"><i class="bi bi-exclamation-circle me-2"></i>{{ session('error') }}</div>
         @endif
 
-        {{-- Acknowledgement status summary --}}
-        <div class="row g-3 mb-4">
-            <div class="col-md-6">
-                <div class="p-3 rounded {{ $aarf->acknowledged ? 'bg-success bg-opacity-10 border border-success' : 'bg-light border' }}">
-                    <div class="d-flex align-items-center gap-2">
-                        <i class="bi bi-{{ $aarf->acknowledged ? 'check-circle-fill text-success' : 'clock text-secondary' }}" style="font-size:20px;"></i>
-                        <div>
-                            <div class="fw-semibold small">Employee Acknowledgement</div>
-                            @if($aarf->acknowledged)
-                                <small class="text-success">Acknowledged {{ $aarf->acknowledged_at?->format('d M Y') }}</small>
-                            @else
-                                <small class="text-muted">Pending acknowledgement</small>
-                            @endif
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
         @php
             $p           = $aarf->onboarding?->personalDetail;
             $w           = $aarf->onboarding?->workDetail;
@@ -109,6 +90,27 @@
                 }
             }
         @endphp
+
+        {{-- Acknowledgement status summary — only shown when assets are assigned --}}
+        @if(!$assignments->isEmpty())
+        <div class="row g-3 mb-4">
+            <div class="col-md-6">
+                <div class="p-3 rounded {{ $aarf->acknowledged ? 'bg-success bg-opacity-10 border border-success' : 'bg-light border' }}">
+                    <div class="d-flex align-items-center gap-2">
+                        <i class="bi bi-{{ $aarf->acknowledged ? 'check-circle-fill text-success' : 'clock text-secondary' }}" style="font-size:20px;"></i>
+                        <div>
+                            <div class="fw-semibold small">Employee Acknowledgement</div>
+                            @if($aarf->acknowledged)
+                                <small class="text-success">Acknowledged {{ $aarf->acknowledged_at?->format('d M Y') }}</small>
+                            @else
+                                <small class="text-muted">Pending acknowledgement</small>
+                            @endif
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        @endif
 
         {{-- Employee info --}}
         <h6 class="fw-bold mb-3" style="color:#1e3a5f;border-bottom:2px solid #dbeafe;padding-bottom:8px;">

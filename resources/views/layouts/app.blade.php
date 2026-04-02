@@ -183,6 +183,22 @@
             </a>
         </div>
 
+        {{-- Asset Listing + Company Registration (HR Manager + HR Executive) --}}
+        @if(Auth::user()->isHrManager() || Auth::user()->isHrExecutive())
+        <div class="nav-item">
+            <a href="{{ route('assets.index') }}"
+               class="nav-link {{ request()->routeIs('assets.*') ? 'active' : '' }}">
+                <i class="bi bi-laptop"></i> Asset Listing
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('superadmin.companies.index') }}"
+               class="nav-link {{ request()->routeIs('superadmin.companies.*') ? 'active' : '' }}">
+                <i class="bi bi-building"></i> Company Registration
+            </a>
+        </div>
+        @endif
+
         {{-- Superadmin extras (above Profile, below Employee Listing) --}}
         @if(Auth::user()->isSuperadmin())
         <div class="nav-item">

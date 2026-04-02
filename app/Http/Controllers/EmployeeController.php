@@ -53,6 +53,54 @@ class EmployeeController extends Controller
         return view('superadmin.role-management', compact('employees', 'companies'));
     }
 
+    public function getPermissions(Employee $employee)
+    {
+        if (!Auth::user()->isSuperadmin()) abort(403);
+
+        $user = $employee->user;
+        if (!$user) {
+            return response()->json(['permissions' => [], 'has_account' => false]);
+        }
+
+        $perms = $user->permissions()->pluck('access_level', 'resource');
+        return response()->json(['permissions' => $perms, 'has_account' => true]);
+    }
+
+    public function updatePermissions(Request $request, Employee $employee)
+    {
+        if (!Auth::user()->isSuperadmin()) abort(403);
+
+        $user = $employee->user;
+        if (!$user) {
+            return back()->with('error', ($employee->full_name ?? 'Employee') . ' has no user account linked.');
+        }
+
+        $submitted   = $request->input('permissions', []);
+        $validKeys   = \App\Models\UserPermission::validResources();
+        $validLevels = ['full', 'view', 'edit', 'none'];
+
+        foreach ($submitted as $resource => $level) {
+            if (!in_array($resource, $validKeys)) continue;
+
+            if ($level === '' || $level === null) {
+                // Empty = remove custom override (fall back to role)
+                \App\Models\UserPermission::where('user_id', $user->id)
+                    ->where('resource', $resource)->delete();
+            } elseif (in_array($level, $validLevels)) {
+                \App\Models\UserPermission::updateOrCreate(
+                    ['user_id' => $user->id, 'resource' => $resource],
+                    ['access_level' => $level]
+                );
+            }
+        }
+
+        // Remove any saved rows for resources not present in the submission
+        \App\Models\UserPermission::where('user_id', $user->id)
+            ->whereNotIn('resource', array_keys($submitted))->delete();
+
+        return back()->with('success', ($employee->full_name ?? 'Employee') . '\'s access permissions updated.');
+    }
+
     public function roleUpdate(Request $request, Employee $employee)
     {
         if (!Auth::user()->isSuperadmin() && !Auth::user()->isItManager()) abort(403);
@@ -485,6 +533,7 @@ class EmployeeController extends Controller
 
         // Reset acknowledgement so employee must re-sign
         $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+        $aarf->addPendingAsset($asset->id);
 
         // Send AARF acknowledgement email
         $recipientEmail = $employee->company_email
@@ -545,6 +594,7 @@ class EmployeeController extends Controller
 
             // Reset acknowledgement so employee must re-sign the updated AARF
             $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+            $aarf->removePendingAsset($asset->id);
 
             $recipientEmail = $employee->company_email
                            ?? $employee->personal_email
@@ -568,9 +618,9 @@ class EmployeeController extends Controller
     public function edit(Employee $employee)
     {
         $u = Auth::user();
-        if (!in_array($u->role, ['hr_manager', 'hr_executive', 'superadmin'])) abort(403);
+        if (!in_array($u->role, ['hr_manager', 'superadmin'])) abort(403);
         $employee->load(['onboarding.personalDetail', 'contracts', 'educationHistories', 'spouseDetails', 'emergencyContacts', 'childRegistration', 'editLogs']);
-        $managers  = \App\Models\User::whereIn('role', ['hr_manager','it_manager','superadmin'])->orderBy('name')->get();
+        $managers  = \App\Models\User::whereIn('role', ['hr_manager','it_manager','superadmin','manager'])->orderBy('name')->with('employee')->get();
         $companies = Company::orderBy('name')->get(['name','address']);
 
         // Match the same directAssets logic as show() — includes auto-assigned (onboarding) assets
@@ -633,7 +683,7 @@ class EmployeeController extends Controller
     public function update(Request $request, Employee $employee)
     {
         $u = Auth::user();
-        if (!in_array($u->role, ['hr_manager', 'hr_executive', 'superadmin'])) abort(403);
+        if (!in_array($u->role, ['hr_manager', 'superadmin'])) abort(403);
 
         $rules = [
             // Personal
@@ -671,6 +721,7 @@ class EmployeeController extends Controller
             'work_role'               => 'nullable|string',
             'start_date'              => 'nullable|date',
             'exit_date'               => 'nullable|date|after_or_equal:start_date',
+            'last_salary_date'        => 'nullable|date',
             'employment_status'       => 'nullable|in:active,resigned,terminated,contract_ended',
             'remarks'                 => 'nullable|string|max:2000',
         ];
@@ -741,6 +792,10 @@ class EmployeeController extends Controller
         // work_role can only be changed by superadmin
         if (!$u->isSuperadmin()) {
             unset($data['work_role']);
+        }
+        // last_salary_date can only be set by HR Manager
+        if (!$u->isHrManager()) {
+            unset($data['last_salary_date']);
         }
 
         // Auto-sync google_id from company_email if not explicitly set
@@ -909,6 +964,28 @@ class EmployeeController extends Controller
             }
         }
 
+        // ── Sync to existing offboarding record ──────────────────────────
+        $existingOffboarding = \App\Models\Offboarding::where(function ($q) use ($employee) {
+            $q->where('employee_id', $employee->id);
+            if ($employee->onboarding_id) {
+                $q->orWhere('onboarding_id', $employee->onboarding_id);
+            }
+        })->first();
+        if ($existingOffboarding) {
+            $offSyncData = [
+                'full_name'      => $employee->full_name,
+                'company'        => $employee->company,
+                'department'     => $employee->department,
+                'designation'    => $employee->designation,
+                'company_email'  => $employee->company_email,
+                'personal_email' => $employee->personal_email,
+            ];
+            if ($employee->exit_date) {
+                $offSyncData['exit_date'] = $employee->exit_date;
+            }
+            $existingOffboarding->update($offSyncData);
+        }
+
         // ── Section A change detection — trigger consent if HR Manager/Superadmin ──
         $newSectionA = [
             'full_name'               => $employee->full_name,
@@ -953,7 +1030,7 @@ class EmployeeController extends Controller
     public function updateEducation(Request $request, Employee $employee)
     {
         $u = Auth::user();
-        if (!in_array($u->role, ['hr_manager','hr_executive','superadmin'])) abort(403);
+        if (!in_array($u->role, ['hr_manager','superadmin'])) abort(403);
 
         $request->validate([
             'edu_qualification.*'    => 'nullable|string|max:255',
@@ -1045,13 +1122,13 @@ class EmployeeController extends Controller
     public function updateSpouse(Request $request, Employee $employee)
     {
         $u = Auth::user();
-        if (!in_array($u->role, ['hr_manager','hr_executive','superadmin'])) abort(403);
+        if (!in_array($u->role, ['hr_manager','superadmin'])) abort(403);
 
         $validated = $request->validate([
             'spouse_name'          => 'required|string|max:255',
             'spouse_address'       => 'nullable|string',
             'spouse_nric_no'       => 'nullable|string|max:50',
-            'spouse_tel_no'        => 'nullable|string|max:30',
+            'spouse_tel_no'        => $employee->marital_status === 'married' ? 'required|string|max:30' : 'nullable|string|max:30',
             'spouse_occupation'    => 'nullable|string|max:255',
             'spouse_income_tax_no' => 'nullable|string|max:50',
             'spouse_is_working'    => 'nullable|boolean',
@@ -1082,13 +1159,13 @@ class EmployeeController extends Controller
     public function editSpouse(Request $request, Employee $employee, int $spouseId)
     {
         $u = Auth::user();
-        if (!in_array($u->role, ['hr_manager','hr_executive','superadmin'])) abort(403);
+        if (!in_array($u->role, ['hr_manager','superadmin'])) abort(403);
 
         $validated = $request->validate([
             'spouse_name'          => 'required|string|max:255',
             'spouse_address'       => 'nullable|string',
             'spouse_nric_no'       => 'nullable|string|max:50',
-            'spouse_tel_no'        => 'nullable|string|max:30',
+            'spouse_tel_no'        => $employee->marital_status === 'married' ? 'required|string|max:30' : 'nullable|string|max:30',
             'spouse_occupation'    => 'nullable|string|max:255',
             'spouse_income_tax_no' => 'nullable|string|max:50',
             'spouse_is_working'    => 'nullable|boolean',
@@ -1120,7 +1197,7 @@ class EmployeeController extends Controller
     public function deleteSpouse(Request $request, Employee $employee, int $spouseId)
     {
         $u = Auth::user();
-        if (!in_array($u->role, ['hr_manager','hr_executive','superadmin'])) abort(403);
+        if (!in_array($u->role, ['hr_manager','superadmin'])) abort(403);
         \App\Models\EmployeeSpouseDetail::where('employee_id', $employee->id)
             ->where('id', $spouseId)->delete();
 
@@ -1136,7 +1213,7 @@ class EmployeeController extends Controller
     public function updateEmergency(Request $request, Employee $employee)
     {
         $u = Auth::user();
-        if (!in_array($u->role, ['hr_manager','hr_executive','superadmin'])) abort(403);
+        if (!in_array($u->role, ['hr_manager','superadmin'])) abort(403);
 
         $request->validate([
             'emergency.1.name'         => 'required|string|max:255',
@@ -1167,7 +1244,7 @@ class EmployeeController extends Controller
     public function updateChildren(Request $request, Employee $employee)
     {
         $u = Auth::user();
-        if (!in_array($u->role, ['hr_manager','hr_executive','superadmin'])) abort(403);
+        if (!in_array($u->role, ['hr_manager','superadmin'])) abort(403);
 
         $validated = $request->validate([
             'cat_a_100'=>'nullable|integer|min:0|max:99','cat_a_50'=>'nullable|integer|min:0|max:99',

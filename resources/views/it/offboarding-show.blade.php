@@ -272,4 +272,9 @@
     </div>
 </div>
 
+{{-- SECTIONS F–I --}}
+@if($employee)
+@include('partials.employee-extra-sections-view', ['employee' => $employee, 'showConsent' => false])
+@endif
+
 @endsection

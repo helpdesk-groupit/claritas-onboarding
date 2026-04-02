@@ -150,6 +150,48 @@ class ProfileController extends Controller
             $user->update(['name' => $validated['full_name']]);
         }
 
+        // ── Sync to onboarding personal_details ──────────────────────────
+        $employee->refresh();
+        if ($employee->onboarding_id) {
+            $ob = \App\Models\Onboarding::with('personalDetail')->find($employee->onboarding_id);
+            if ($ob?->personalDetail) {
+                $ob->personalDetail->update([
+                    'full_name'               => $employee->full_name,
+                    'preferred_name'          => $employee->preferred_name,
+                    'official_document_id'    => $employee->official_document_id,
+                    'date_of_birth'           => $employee->date_of_birth,
+                    'sex'                     => $employee->sex,
+                    'marital_status'          => $employee->marital_status,
+                    'religion'                => $employee->religion,
+                    'race'                    => $employee->race,
+                    'is_disabled'             => $employee->is_disabled,
+                    'residential_address'     => $employee->residential_address,
+                    'personal_contact_number' => $employee->personal_contact_number,
+                    'house_tel_no'            => $employee->house_tel_no,
+                    'personal_email'          => $employee->personal_email,
+                    'bank_account_number'     => $employee->bank_account_number,
+                    'bank_name'               => $employee->bank_name,
+                    'epf_no'                  => $employee->epf_no,
+                    'income_tax_no'           => $employee->income_tax_no,
+                    'socso_no'                => $employee->socso_no,
+                ]);
+            }
+        }
+
+        // ── Sync to existing offboarding record ──────────────────────────
+        $existingOffboarding = \App\Models\Offboarding::where(function ($q) use ($employee) {
+            $q->where('employee_id', $employee->id);
+            if ($employee->onboarding_id) {
+                $q->orWhere('onboarding_id', $employee->onboarding_id);
+            }
+        })->first();
+        if ($existingOffboarding) {
+            $existingOffboarding->update([
+                'full_name'      => $employee->full_name,
+                'personal_email' => $employee->personal_email,
+            ]);
+        }
+
         $this->triggerProfileEditConsent($employee, ['Section A — Personal Details']);
 
         return back()->with('success', 'Personal information updated. A consent re-acknowledgement email has been sent to you.');
@@ -180,6 +222,40 @@ class ProfileController extends Controller
                 $user->update(['work_email' => $validated['company_email']]);
                 Auth::setUser($user->fresh());
             }
+        }
+
+        // ── Sync to onboarding work_details ──────────────────────────────
+        $employee->refresh();
+        if ($employee->onboarding_id) {
+            $ob = \App\Models\Onboarding::with('workDetail')->find($employee->onboarding_id);
+            if ($ob?->workDetail) {
+                $ob->workDetail->update([
+                    'designation'       => $employee->designation,
+                    'department'        => $employee->department,
+                    'company'           => $employee->company,
+                    'office_location'   => $employee->office_location,
+                    'reporting_manager' => $employee->reporting_manager,
+                    'company_email'     => $employee->company_email,
+                    'employment_type'   => $employee->employment_type,
+                    'start_date'        => $employee->start_date,
+                ]);
+            }
+        }
+
+        // ── Sync to existing offboarding record ──────────────────────────
+        $existingOffboarding = \App\Models\Offboarding::where(function ($q) use ($employee) {
+            $q->where('employee_id', $employee->id);
+            if ($employee->onboarding_id) {
+                $q->orWhere('onboarding_id', $employee->onboarding_id);
+            }
+        })->first();
+        if ($existingOffboarding) {
+            $existingOffboarding->update([
+                'company'     => $employee->company,
+                'department'  => $employee->department,
+                'designation' => $employee->designation,
+                'company_email' => $employee->company_email,
+            ]);
         }
 
         return back()->with('success', 'Work information updated.');

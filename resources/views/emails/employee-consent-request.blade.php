@@ -107,7 +107,7 @@
             {{-- CTA Button --}}
             <div style="text-align:center;margin:24px 0;">
                 <a href="{{ route('login') }}?redirect=profile-consent"
-                   style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;font-weight:600;font-size:15px;padding:13px 32px;border-radius:8px;">
+                   style="display:inline-block;background:#F5A623;color:#000;text-decoration:none;font-weight:600;font-size:15px;padding:13px 32px;border-radius:8px;">
                     Log In to Acknowledge
                 </a>
             </div>

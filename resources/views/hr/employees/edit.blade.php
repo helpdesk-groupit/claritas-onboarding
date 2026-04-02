@@ -56,8 +56,61 @@
                 {{-- Row 2: DOB, Sex, Marital Status, Religion --}}
                 <div class="col-md-3">
                     <label class="form-label fw-semibold">Date of Birth <span class="text-danger">*</span></label>
-                    <input type="date" name="date_of_birth" class="form-control"
-                           value="{{ old('date_of_birth', $employee->date_of_birth?->format('Y-m-d')) }}" required>
+                    @php $emp_dob = old('date_of_birth', $employee->date_of_birth?->format('Y-m-d')); @endphp
+                    <input type="hidden" name="date_of_birth" id="emp_dob_combined" value="{{ $emp_dob }}">
+                    @error('date_of_birth')<div class="text-danger small mb-1">{{ $message }}</div>@enderror
+                    <div class="d-flex gap-1">
+                        <select id="emp_dob_day" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                            <option value="">Day</option>
+                            @for($d = 1; $d <= 31; $d++)
+                                <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $emp_dob && (int)explode('-',$emp_dob)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                            @endfor
+                        </select>
+                        <select id="emp_dob_month" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                            <option value="">Month</option>
+                            @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $emp_dob && (int)explode('-',$emp_dob)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                            @endforeach
+                        </select>
+                        <select id="emp_dob_year" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                            <option value="">Year</option>
+                            @for($y = date('Y'); $y >= 1940; $y--)
+                                <option value="{{ $y }}"
+                                    {{ $emp_dob && (int)explode('-',$emp_dob)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                            @endfor
+                        </select>
+                    </div>
+                    <script>
+                    (function(){
+                        function calcEmpAge(dob){
+                            var el=document.getElementById('emp_age'); if(!el) return;
+                            if(!dob){el.value='';return;}
+                            var p=dob.split('-'),t=new Date();
+                            var a=t.getFullYear()-+p[0];
+                            el.value=(a>=0&&a<150)?a:'';
+                        }
+                        function sync(){
+                            var d=document.getElementById('emp_dob_day').value,
+                                m=document.getElementById('emp_dob_month').value,
+                                y=document.getElementById('emp_dob_year').value;
+                            var dob=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                            document.getElementById('emp_dob_combined').value=dob;
+                            calcEmpAge(dob);
+                        }
+                        ['emp_dob_day','emp_dob_month','emp_dob_year'].forEach(function(id){
+                            document.getElementById(id).addEventListener('change',sync);
+                        });
+                        document.addEventListener('DOMContentLoaded',function(){
+                            calcEmpAge(document.getElementById('emp_dob_combined').value);
+                        });
+                    })();
+                    </script>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label fw-semibold">Age</label>
+                    <input type="text" id="emp_age" class="form-control bg-light" readonly placeholder="—">
                 </div>
                 <div class="col-md-3">
                     <label class="form-label fw-semibold">Sex <span class="text-danger">*</span></label>
@@ -192,7 +245,7 @@
                 {{-- Row 8: Address --}}
                 <div class="col-12">
                     <label class="form-label fw-semibold">Residential Address <span class="text-danger">*</span></label>
-                    <textarea name="residential_address" class="form-control" rows="2" required>{{ old('residential_address', $employee->residential_address) }}</textarea>
+                    <textarea name="residential_address" id="empResAddress" class="form-control" rows="2" required>{{ old('residential_address', $employee->residential_address) }}</textarea>
                 </div>
             </div>
         </div>
@@ -247,7 +300,7 @@
                     <label class="form-label fw-semibold">Company <span class="text-danger">*</span></label>
                     <select name="company" id="empCompanySelect"
                             class="form-control" required
-                            onchange="autofillOfficeLocation(this, 'empOfficeLocation')">
+                            onchange="autofillOfficeLocation(this, 'empOfficeLocation'); filterManagersByCompany(this.value, 'edit_reporting_manager')">
                         <option value="">Select company...</option>
                         @foreach($companies as $c)
                             <option value="{{ $c->name }}"
@@ -278,9 +331,27 @@
                             <option value="{{ $currentMgr }}" selected>{{ $currentMgr }} (current)</option>
                         @endif
                         @foreach($managers as $mgr)
+                            @php
+                                $roleLabelsEmp = [
+                                    'hr_manager'          => 'HR Manager',
+                                    'hr_executive'        => 'HR Executive',
+                                    'hr_intern'           => 'HR Intern',
+                                    'it_manager'          => 'IT Manager',
+                                    'it_executive'        => 'IT Executive',
+                                    'it_intern'           => 'IT Intern',
+                                    'superadmin'          => 'SuperAdmin',
+                                    'system_admin'        => 'System Admin',
+                                    'manager'             => 'Manager',
+                                    'senior_executive'    => 'Senior Executive',
+                                    'executive_associate' => 'Executive / Associate',
+                                    'director_hod'        => 'Director / HOD',
+                                    'others'              => 'Others',
+                                ];
+                            @endphp
                             <option value="{{ $mgr->name }}"
+                                data-company="{{ $mgr->employee?->company }}"
                                 {{ $currentMgr == $mgr->name ? 'selected' : '' }}>
-                                {{ $mgr->name }} ({{ ucfirst(str_replace('_',' ',$mgr->role)) }})
+                                {{ $mgr->name }} ({{ $roleLabelsEmp[$mgr->role ?? ''] ?? ucfirst(str_replace('_',' ',$mgr->role ?? '')) }})
                             </option>
                         @endforeach
                     </select>
@@ -288,14 +359,133 @@
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Start Date <span class="text-danger">*</span></label>
-                    <input type="date" name="start_date" class="form-control"
-                           value="{{ old('start_date', $employee->start_date?->format('Y-m-d')) }}" required>
+                    @php $emp_sd = old('start_date', $employee->start_date?->format('Y-m-d')); @endphp
+                    <input type="hidden" name="start_date" id="emp_sd_combined" value="{{ $emp_sd }}">
+                    @error('start_date')<div class="text-danger small mb-1">{{ $message }}</div>@enderror
+                    <div class="d-flex gap-1">
+                        <select id="emp_sd_day" class="form-select @error('start_date') is-invalid @enderror" style="min-width:0">
+                            <option value="">Day</option>
+                            @for($d = 1; $d <= 31; $d++)
+                                <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $emp_sd && (int)explode('-',$emp_sd)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                            @endfor
+                        </select>
+                        <select id="emp_sd_month" class="form-select @error('start_date') is-invalid @enderror" style="min-width:0">
+                            <option value="">Month</option>
+                            @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $emp_sd && (int)explode('-',$emp_sd)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                            @endforeach
+                        </select>
+                        <select id="emp_sd_year" class="form-select @error('start_date') is-invalid @enderror" style="min-width:0">
+                            <option value="">Year</option>
+                            @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                <option value="{{ $y }}"
+                                    {{ $emp_sd && (int)explode('-',$emp_sd)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                            @endfor
+                        </select>
+                    </div>
+                    <script>
+                    (function(){
+                        function sync(){
+                            var d=document.getElementById('emp_sd_day').value,
+                                m=document.getElementById('emp_sd_month').value,
+                                y=document.getElementById('emp_sd_year').value;
+                            document.getElementById('emp_sd_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                        }
+                        ['emp_sd_day','emp_sd_month','emp_sd_year'].forEach(function(id){
+                            document.getElementById(id).addEventListener('change',sync);
+                        });
+                    })();
+                    </script>
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Exit Date</label>
-                    <input type="date" name="exit_date" class="form-control"
-                           value="{{ old('exit_date', $employee->exit_date?->format('Y-m-d')) }}">
+                    @php $emp_ed = old('exit_date', $employee->exit_date?->format('Y-m-d')); @endphp
+                    <input type="hidden" name="exit_date" id="emp_ed_combined" value="{{ $emp_ed }}">
+                    <div class="d-flex gap-1">
+                        <select id="emp_ed_day" class="form-select" style="min-width:0">
+                            <option value="">Day</option>
+                            @for($d = 1; $d <= 31; $d++)
+                                <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $emp_ed && (int)explode('-',$emp_ed)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                            @endfor
+                        </select>
+                        <select id="emp_ed_month" class="form-select" style="min-width:0">
+                            <option value="">Month</option>
+                            @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $emp_ed && (int)explode('-',$emp_ed)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                            @endforeach
+                        </select>
+                        <select id="emp_ed_year" class="form-select" style="min-width:0">
+                            <option value="">Year</option>
+                            @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                <option value="{{ $y }}"
+                                    {{ $emp_ed && (int)explode('-',$emp_ed)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                            @endfor
+                        </select>
+                    </div>
                     <div class="form-text">Optional. Triggers offboarding on exit date.</div>
+                    <script>
+                    (function(){
+                        function sync(){
+                            var d=document.getElementById('emp_ed_day').value,
+                                m=document.getElementById('emp_ed_month').value,
+                                y=document.getElementById('emp_ed_year').value;
+                            document.getElementById('emp_ed_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                        }
+                        ['emp_ed_day','emp_ed_month','emp_ed_year'].forEach(function(id){
+                            document.getElementById(id).addEventListener('change',sync);
+                        });
+                    })();
+                    </script>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold">Last Salary Date</label>
+                    @if(Auth::user()->isHrManager())
+                        @php $emp_lsd = old('last_salary_date', $employee->last_salary_date?->format('Y-m-d')); @endphp
+                        <input type="hidden" name="last_salary_date" id="emp_lsd_combined" value="{{ $emp_lsd }}">
+                        <div class="d-flex gap-1">
+                            <select id="emp_lsd_day" class="form-select" style="min-width:0">
+                                <option value="">Day</option>
+                                @for($d = 1; $d <= 31; $d++)
+                                    <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                        {{ $emp_lsd && (int)explode('-',$emp_lsd)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                                @endfor
+                            </select>
+                            <select id="emp_lsd_month" class="form-select" style="min-width:0">
+                                <option value="">Month</option>
+                                @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                    <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                        {{ $emp_lsd && (int)explode('-',$emp_lsd)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                                @endforeach
+                            </select>
+                            <select id="emp_lsd_year" class="form-select" style="min-width:0">
+                                <option value="">Year</option>
+                                @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                    <option value="{{ $y }}"
+                                        {{ $emp_lsd && (int)explode('-',$emp_lsd)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                                @endfor
+                            </select>
+                        </div>
+                        <script>
+                        (function(){
+                            function sync(){
+                                var d=document.getElementById('emp_lsd_day').value,
+                                    m=document.getElementById('emp_lsd_month').value,
+                                    y=document.getElementById('emp_lsd_year').value;
+                                document.getElementById('emp_lsd_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                            }
+                            ['emp_lsd_day','emp_lsd_month','emp_lsd_year'].forEach(function(id){
+                                document.getElementById(id).addEventListener('change',sync);
+                            });
+                        })();
+                        </script>
+                    @else
+                        @php $lsdDisplay = $employee->last_salary_date?->format('d M Y'); @endphp
+                        <input type="text" class="form-control bg-light" readonly value="{{ $lsdDisplay ?: '—' }}">
+                    @endif
                 </div>
                 <div class="col-md-6">
                     <label class="form-label fw-semibold">Company Email</label>
@@ -853,7 +1043,7 @@
             </div>
             {{-- Inline edit form (hidden by default) --}}
             <div class="spouse-edit-fields mt-3 d-none">
-                <form action="{{ route('employees.spouse.edit', [$employee, $sp->id]) }}" method="POST">
+                <form action="{{ route('employees.spouse.edit', [$employee, $sp->id]) }}" method="POST" onsubmit="return empValidateSpouseTel(this)">
                 @csrf @method('PUT')
                 <div class="row g-3">
                     <div class="col-md-6">
@@ -865,7 +1055,7 @@
                         <input type="text" name="spouse_nric_no" class="form-control form-control-sm" value="{{ $sp->nric_no }}">
                     </div>
                     <div class="col-md-4">
-                        <label class="form-label fw-semibold small">Tel No.</label>
+                        <label class="form-label fw-semibold small">Tel No. <span class="text-danger">*</span></label>
                         <input type="text" name="spouse_tel_no" class="form-control form-control-sm" value="{{ $sp->tel_no }}">
                     </div>
                     <div class="col-md-4">
@@ -907,7 +1097,7 @@
 
         {{-- Add new spouse --}}
         <p class="fw-semibold small text-muted mb-2">Add {{ $spouses->isEmpty() ? 'Spouse' : 'Another Spouse' }}</p>
-        <form action="{{ route('employees.spouse.update', $employee) }}" method="POST">
+        <form id="empAddSpouseForm" action="{{ route('employees.spouse.update', $employee) }}" method="POST" onsubmit="return empValidateSpouseTel(this)">
         @csrf
         <div class="row g-3">
             <div class="col-md-6">
@@ -919,7 +1109,7 @@
                 <input type="text" name="spouse_nric_no" class="form-control">
             </div>
             <div class="col-md-4">
-                <label class="form-label fw-semibold">Tel No.</label>
+                <label class="form-label fw-semibold">Tel No. <span class="text-danger">*</span></label>
                 <input type="text" name="spouse_tel_no" class="form-control">
             </div>
             <div class="col-md-4">
@@ -1385,13 +1575,28 @@ document.addEventListener('DOMContentLoaded', function () {
     const gid = document.getElementById('edit_google_id');
     if (ce && gid && ce.value && !gid.value) gid.value = ce.value;
     toggleOffboardingHint();
+    var empCo = document.getElementById('empCompanySelect');
+    if (empCo && empCo.value) filterManagersByCompany(empCo.value, 'edit_reporting_manager');
 });
 
 function autofillOfficeLocation(selectEl, targetId) {
     const selected = selectEl.options[selectEl.selectedIndex];
-    const address  = selected ? (selected.dataset.address || '') : '';
     const target   = document.getElementById(targetId);
-    if (target && address) target.value = address;
+    if (!target || !selected || !selected.value) return;
+    target.value = selected.dataset.address || '-';
+}
+
+function filterManagersByCompany(companyName, mgrSelectId) {
+    const sel = document.getElementById(mgrSelectId);
+    if (!sel) return;
+    Array.from(sel.options).forEach(function(opt) {
+        if (!opt.value || !opt.dataset.company) return;
+        var match = !companyName || opt.dataset.company === companyName;
+        opt.hidden   = !match;
+        opt.disabled = !match;
+    });
+    var chosen = sel.options[sel.selectedIndex];
+    if (chosen && chosen.value && chosen.hidden) sel.value = '';
 }
 
 // ── Marital Status → Spouse Section toggle (employee edit) ──────────────
@@ -1399,20 +1604,35 @@ function empToggleSpouse(val) {
     const section = document.getElementById('empSpouseSection');
     const star    = document.querySelector('.emp-spouse-required');
     if (!section) return;
-    if (val === 'married') {
-        section.style.opacity = '1';
-        section.style.pointerEvents = 'auto';
-        if (star) star.classList.remove('d-none');
-    } else {
-        section.style.opacity = '0.4';
-        section.style.pointerEvents = 'none';
-        if (star) star.classList.add('d-none');
+    const isMarried = val === 'married';
+    section.querySelectorAll('input, select, textarea, button[type="submit"]').forEach(el => {
+        el.disabled = !isMarried;
+    });
+    section.style.opacity = isMarried ? '' : '0.45';
+    if (star) star.classList.toggle('d-none', !isMarried);
+    if (isMarried) {
+        const addr   = document.getElementById('empResAddress');
+        const form   = document.getElementById('empAddSpouseForm');
+        const spAddr = form ? form.querySelector('[name="spouse_address"]') : null;
+        if (addr && spAddr && !spAddr.value.trim()) spAddr.value = addr.value;
     }
 }
 document.addEventListener('DOMContentLoaded', function() {
     const sel = document.getElementById('empMaritalStatus');
     if (sel) empToggleSpouse(sel.value);
 });
+
+function empValidateSpouseTel(form) {
+    const marital = document.getElementById('empMaritalStatus');
+    if (!marital || marital.value !== 'married') return true;
+    const telInput = form.querySelector('[name="spouse_tel_no"]');
+    if (telInput && !telInput.value.trim()) {
+        alert('Tel No. is required when Marital Status is Married.');
+        telInput.focus();
+        return false;
+    }
+    return true;
+}
 
 </script>
 @endpush

@@ -19,7 +19,7 @@ class Employee extends Model
         'consent_given_at', 'consent_ip',
         // Work info (official record)
         'designation', 'department', 'company', 'office_location',
-        'reporting_manager', 'company_email', 'start_date', 'exit_date',
+        'reporting_manager', 'company_email', 'start_date', 'exit_date', 'last_salary_date',
         'employment_type', 'work_role', 'google_id',
         // AARF document
         'aarf_file_path',
@@ -35,6 +35,7 @@ class Employee extends Model
         'date_of_birth'    => 'date',
         'start_date'       => 'date',
         'exit_date'        => 'date',
+        'last_salary_date' => 'date',
         'is_disabled'      => 'boolean',
         'consent_given_at' => 'datetime',
         'nric_file_paths'  => 'array',

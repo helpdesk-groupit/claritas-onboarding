@@ -157,6 +157,7 @@ class AssetController extends Controller
             // Reset acknowledgement and send email
             if ($aarf) {
                 $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+                $aarf->addPendingAsset($asset->id);
                 $this->sendAarfEmail($aarf, $employee, $empName, 'assigned');
             }
         }
@@ -282,6 +283,7 @@ class AssetController extends Controller
                 );
                 if ($aarf) {
                     $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+                    $aarf->addPendingAsset($asset->id);
                     $this->sendAarfEmail($aarf, $emp, $name, 'assigned');
                 }
             }
@@ -307,6 +309,7 @@ class AssetController extends Controller
                 );
                 if ($aarf) {
                     $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+                    $aarf->removePendingAsset($asset->id);
                     $this->sendAarfEmail($aarf, $emp, $name, 'returned');
                 }
             }
@@ -338,6 +341,7 @@ class AssetController extends Controller
                 );
                 if ($oldAarf) {
                     $oldAarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+                    $oldAarf->removePendingAsset($asset->id);
                     $this->sendAarfEmail($oldAarf, $oldEmp, $oldName, 'returned');
                 }
             }
@@ -349,6 +353,7 @@ class AssetController extends Controller
                 );
                 if ($newAarf) {
                     $newAarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+                    $newAarf->addPendingAsset($asset->id);
                     $this->sendAarfEmail($newAarf, $newEmp, $newName, 'assigned');
                 }
             }
@@ -476,9 +481,10 @@ class AssetController extends Controller
         if (!$oldEmployee) {
             $assignment = AssetAssignment::where('asset_inventory_id', $asset->id)
                 ->where('status', 'assigned')
-                ->whereNotNull('onboarding_id')
                 ->first();
-            if ($assignment?->onboarding_id) {
+            if ($assignment?->employee_id) {
+                $oldEmployee = Employee::find($assignment->employee_id);
+            } elseif ($assignment?->onboarding_id) {
                 $oldEmployee = Employee::where('onboarding_id', $assignment->onboarding_id)->first();
             }
         }
@@ -507,6 +513,7 @@ class AssetController extends Controller
 
             if ($aarf) {
                 $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+                $aarf->removePendingAsset($asset->id);
                 $this->sendAarfEmail($aarf, $oldEmployee, $oldName, 'returned');
             }
         }
@@ -569,6 +576,16 @@ class AssetController extends Controller
         $newEmployee = Employee::findOrFail($request->new_employee_id);
         $newName     = $newEmployee->full_name ?? "Employee #{$newEmployee->id}";
         $oldEmployee = $asset->assigned_employee_id ? Employee::find($asset->assigned_employee_id) : null;
+        if (!$oldEmployee) {
+            $assignment = AssetAssignment::where('asset_inventory_id', $asset->id)
+                ->where('status', 'assigned')
+                ->first();
+            if ($assignment?->employee_id) {
+                $oldEmployee = Employee::find($assignment->employee_id);
+            } elseif ($assignment?->onboarding_id) {
+                $oldEmployee = Employee::where('onboarding_id', $assignment->onboarding_id)->first();
+            }
+        }
         $oldName     = $oldEmployee?->full_name ?? 'previous assignee';
 
         AssetAssignment::where('asset_inventory_id', $asset->id)
@@ -596,6 +613,7 @@ class AssetController extends Controller
             );
             if ($oldAarf) {
                 $oldAarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+                $oldAarf->removePendingAsset($asset->id);
                 $this->sendAarfEmail($oldAarf, $oldEmployee, $oldName, 'returned');
             }
         }
@@ -606,6 +624,7 @@ class AssetController extends Controller
         );
         if ($newAarf) {
             $newAarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+            $newAarf->addPendingAsset($asset->id);
             $this->sendAarfEmail($newAarf, $newEmployee, $newName, 'assigned');
         }
 
@@ -620,6 +639,16 @@ class AssetController extends Controller
         $actor       = Auth::user();
         $actorName   = $actor->name ?? $actor->work_email ?? 'IT Team';
         $oldEmployee = $asset->assigned_employee_id ? Employee::find($asset->assigned_employee_id) : null;
+        if (!$oldEmployee) {
+            $assignment = AssetAssignment::where('asset_inventory_id', $asset->id)
+                ->where('status', 'assigned')
+                ->first();
+            if ($assignment?->employee_id) {
+                $oldEmployee = Employee::find($assignment->employee_id);
+            } elseif ($assignment?->onboarding_id) {
+                $oldEmployee = Employee::where('onboarding_id', $assignment->onboarding_id)->first();
+            }
+        }
         $oldName     = $oldEmployee?->full_name ?? 'previous assignee';
 
         AssetAssignment::where('asset_inventory_id', $asset->id)
@@ -646,6 +675,7 @@ class AssetController extends Controller
             );
             if ($aarf) {
                 $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+                $aarf->removePendingAsset($asset->id);
                 $this->sendAarfEmail($aarf, $oldEmployee, $oldName, 'returned');
             }
         }
@@ -988,6 +1018,7 @@ class AssetController extends Controller
                 $this->createAssignmentForEmployee($employee, $asset->id, $asset->asset_assigned_date ?? now()->toDateString());
                 $aarf = $this->ensureAarfForEmployee($employee);
                 $aarf?->appendAssetChange("[{$asset->asset_tag}] assigned to {$employee->full_name} (imported from CSV).");
+                $aarf?->addPendingAsset($asset->id);
             }
 
             $imported++;
@@ -1166,12 +1197,12 @@ class AssetController extends Controller
     {
         $rules = [
             'asset_tag'        => 'required|string|max:50' . ($isUpdate ? '' : '|unique:asset_inventories,asset_tag'),
-            'asset_type'       => 'required|in:laptop,monitor,converter,phone,sim_card,access_card,other',
+            'asset_type'       => 'required|in:laptop,monitor,converter,phone,sim_card,access_card,petty_cash,accessories,furniture,equipment,other',
             'brand'            => 'required|string|max:100',
             'model'            => 'required|string|max:100',
             'asset_name'       => 'nullable|string|max:255',
             'serial_number'    => 'required|string|max:100',
-            'notes'            => 'nullable|string|max:500',
+            'notes'            => 'nullable|string|max:1500',
             'processor'        => 'nullable|string|max:255',
             'ram_size'         => 'nullable|string|max:100',
             'storage'          => 'nullable|string|max:100',
@@ -1213,7 +1244,7 @@ class AssetController extends Controller
 
     private function authorizeItAccess(): void
     {
-        if (!Auth::user()->isIt() && !Auth::user()->isSuperadmin()) abort(403, 'IT access only.');
+        if (!Auth::user()->canViewAssets()) abort(403);
     }
 
     private function authorizeCanAdd(): void

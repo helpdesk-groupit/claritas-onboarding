@@ -51,8 +51,61 @@
                 </div>
                 <div class="col-md-3">
                     <label class="form-label fw-semibold">Date of Birth <span class="text-danger">*</span></label>
-                    <input type="date" name="date_of_birth" class="form-control"
-                           value="{{ old('date_of_birth', $employee?->date_of_birth?->format('Y-m-d')) }}" required>
+                    @php $off_dob = old('date_of_birth', $employee?->date_of_birth?->format('Y-m-d')); @endphp
+                    <input type="hidden" name="date_of_birth" id="off_dob_combined" value="{{ $off_dob }}">
+                    @error('date_of_birth')<div class="text-danger small mb-1">{{ $message }}</div>@enderror
+                    <div class="d-flex gap-1">
+                        <select id="off_dob_day" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                            <option value="">Day</option>
+                            @for($d = 1; $d <= 31; $d++)
+                                <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $off_dob && (int)explode('-',$off_dob)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                            @endfor
+                        </select>
+                        <select id="off_dob_month" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                            <option value="">Month</option>
+                            @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $off_dob && (int)explode('-',$off_dob)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                            @endforeach
+                        </select>
+                        <select id="off_dob_year" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                            <option value="">Year</option>
+                            @for($y = date('Y'); $y >= 1940; $y--)
+                                <option value="{{ $y }}"
+                                    {{ $off_dob && (int)explode('-',$off_dob)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                            @endfor
+                        </select>
+                    </div>
+                    <script>
+                    (function(){
+                        function calcOffAge(dob){
+                            var el=document.getElementById('off_age'); if(!el) return;
+                            if(!dob){el.value='';return;}
+                            var p=dob.split('-'),t=new Date();
+                            var a=t.getFullYear()-+p[0];
+                            el.value=(a>=0&&a<150)?a:'';
+                        }
+                        function sync(){
+                            var d=document.getElementById('off_dob_day').value,
+                                m=document.getElementById('off_dob_month').value,
+                                y=document.getElementById('off_dob_year').value;
+                            var dob=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                            document.getElementById('off_dob_combined').value=dob;
+                            calcOffAge(dob);
+                        }
+                        ['off_dob_day','off_dob_month','off_dob_year'].forEach(function(id){
+                            document.getElementById(id).addEventListener('change',sync);
+                        });
+                        document.addEventListener('DOMContentLoaded',function(){
+                            calcOffAge(document.getElementById('off_dob_combined').value);
+                        });
+                    })();
+                    </script>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label fw-semibold">Age</label>
+                    <input type="text" id="off_age" class="form-control bg-light" readonly placeholder="—">
                 </div>
                 <div class="col-md-3">
                     <label class="form-label fw-semibold">Sex <span class="text-danger">*</span></label>
@@ -171,7 +224,7 @@
                 </div>
                 <div class="col-12">
                     <label class="form-label fw-semibold">Residential Address <span class="text-danger">*</span></label>
-                    <textarea name="residential_address" class="form-control" rows="2" required>{{ old('residential_address', $employee?->residential_address) }}</textarea>
+                    <textarea name="residential_address" id="offResAddress" class="form-control" rows="2" required>{{ old('residential_address', $employee?->residential_address) }}</textarea>
                 </div>
             </div>
         </div>
@@ -214,39 +267,191 @@
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Company <span class="text-danger">*</span></label>
-                    <input type="text" name="company" class="form-control"
-                           value="{{ old('company', $offboarding->company ?? $employee?->company) }}" required>
+                    @php $offCurrentCompany = old('company', $offboarding->company ?? $employee?->company); @endphp
+                    <select name="company" id="offCompanySelect"
+                            class="form-select @error('company') is-invalid @enderror"
+                            onchange="autofillOfficeLocation(this, 'offOfficeLocation'); filterManagersByCompany(this.value, 'offMgrSelect')" required>
+                        <option value="">Select company...</option>
+                        @foreach($companies as $c)
+                            <option value="{{ $c->name }}"
+                                    data-address="{{ $c->address }}"
+                                    {{ $offCurrentCompany == $c->name ? 'selected' : '' }}>
+                                {{ $c->name }}
+                            </option>
+                        @endforeach
+                        @if($offCurrentCompany && !$companies->pluck('name')->contains($offCurrentCompany))
+                            <option value="{{ $offCurrentCompany }}" selected>{{ $offCurrentCompany }}</option>
+                        @endif
+                    </select>
+                    @error('company')<div class="invalid-feedback">{{ $message }}</div>@enderror
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Office Location</label>
-                    <input type="text" name="office_location" class="form-control"
+                    <input type="text" name="office_location" id="offOfficeLocation" class="form-control"
                            value="{{ old('office_location', $employee?->office_location) }}">
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Reporting Manager</label>
-                    <select name="reporting_manager" class="form-select">
+                    <select name="reporting_manager" id="offMgrSelect" class="form-select">
                         <option value="">— Select manager —</option>
                         @php $currentMgr = old('reporting_manager', $employee?->reporting_manager); @endphp
                         @if($currentMgr && !$managers->pluck('name')->contains($currentMgr))
                             <option value="{{ $currentMgr }}" selected>{{ $currentMgr }} (current)</option>
                         @endif
                         @foreach($managers as $mgr)
-                            <option value="{{ $mgr->name }}" {{ $currentMgr == $mgr->name ? 'selected' : '' }}>
-                                {{ $mgr->name }} ({{ ucfirst(str_replace('_',' ',$mgr->role)) }})
+                            @php
+                                $roleLabelsOff = [
+                                    'hr_manager'          => 'HR Manager',
+                                    'hr_executive'        => 'HR Executive',
+                                    'hr_intern'           => 'HR Intern',
+                                    'it_manager'          => 'IT Manager',
+                                    'it_executive'        => 'IT Executive',
+                                    'it_intern'           => 'IT Intern',
+                                    'superadmin'          => 'SuperAdmin',
+                                    'system_admin'        => 'System Admin',
+                                    'manager'             => 'Manager',
+                                    'senior_executive'    => 'Senior Executive',
+                                    'executive_associate' => 'Executive / Associate',
+                                    'director_hod'        => 'Director / HOD',
+                                    'others'              => 'Others',
+                                ];
+                            @endphp
+                            <option value="{{ $mgr->name }}"
+                                data-company="{{ $mgr->employee?->company }}"
+                                {{ $currentMgr == $mgr->name ? 'selected' : '' }}>
+                                {{ $mgr->name }} ({{ $roleLabelsOff[$mgr->role ?? ''] ?? ucfirst(str_replace('_',' ',$mgr->role ?? '')) }})
                             </option>
                         @endforeach
                     </select>
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Start Date</label>
-                    <input type="date" name="start_date" class="form-control"
-                           value="{{ old('start_date', $employee?->start_date?->format('Y-m-d')) }}">
+                    @php $off_sd = old('start_date', $employee?->start_date?->format('Y-m-d')); @endphp
+                    <input type="hidden" name="start_date" id="off_sd_combined" value="{{ $off_sd }}">
+                    <div class="d-flex gap-1">
+                        <select id="off_sd_day" class="form-select" style="min-width:0">
+                            <option value="">Day</option>
+                            @for($d = 1; $d <= 31; $d++)
+                                <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $off_sd && (int)explode('-',$off_sd)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                            @endfor
+                        </select>
+                        <select id="off_sd_month" class="form-select" style="min-width:0">
+                            <option value="">Month</option>
+                            @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $off_sd && (int)explode('-',$off_sd)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                            @endforeach
+                        </select>
+                        <select id="off_sd_year" class="form-select" style="min-width:0">
+                            <option value="">Year</option>
+                            @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                <option value="{{ $y }}"
+                                    {{ $off_sd && (int)explode('-',$off_sd)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                            @endfor
+                        </select>
+                    </div>
+                    <script>
+                    (function(){
+                        function sync(){
+                            var d=document.getElementById('off_sd_day').value,
+                                m=document.getElementById('off_sd_month').value,
+                                y=document.getElementById('off_sd_year').value;
+                            document.getElementById('off_sd_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                        }
+                        ['off_sd_day','off_sd_month','off_sd_year'].forEach(function(id){
+                            document.getElementById(id).addEventListener('change',sync);
+                        });
+                    })();
+                    </script>
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Exit Date</label>
-                    <input type="date" name="exit_date" class="form-control"
-                           value="{{ old('exit_date', $offboarding->exit_date?->format('Y-m-d')) }}">
+                    @php $off_ed = old('exit_date', $offboarding->exit_date?->format('Y-m-d')); @endphp
+                    <input type="hidden" name="exit_date" id="off_ed_combined" value="{{ $off_ed }}">
+                    <div class="d-flex gap-1">
+                        <select id="off_ed_day" class="form-select" style="min-width:0">
+                            <option value="">Day</option>
+                            @for($d = 1; $d <= 31; $d++)
+                                <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $off_ed && (int)explode('-',$off_ed)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                            @endfor
+                        </select>
+                        <select id="off_ed_month" class="form-select" style="min-width:0">
+                            <option value="">Month</option>
+                            @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                    {{ $off_ed && (int)explode('-',$off_ed)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                            @endforeach
+                        </select>
+                        <select id="off_ed_year" class="form-select" style="min-width:0">
+                            <option value="">Year</option>
+                            @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                <option value="{{ $y }}"
+                                    {{ $off_ed && (int)explode('-',$off_ed)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                            @endfor
+                        </select>
+                    </div>
                     <div class="form-text">Changing this resets pending notification emails.</div>
+                    <script>
+                    (function(){
+                        function sync(){
+                            var d=document.getElementById('off_ed_day').value,
+                                m=document.getElementById('off_ed_month').value,
+                                y=document.getElementById('off_ed_year').value;
+                            document.getElementById('off_ed_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                        }
+                        ['off_ed_day','off_ed_month','off_ed_year'].forEach(function(id){
+                            document.getElementById(id).addEventListener('change',sync);
+                        });
+                    })();
+                    </script>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold">Last Salary Date</label>
+                    @if(Auth::user()->isHrManager())
+                        @php $off_lsd = old('last_salary_date', $employee?->last_salary_date?->format('Y-m-d')); @endphp
+                        <input type="hidden" name="last_salary_date" id="off_lsd_combined" value="{{ $off_lsd }}">
+                        <div class="d-flex gap-1">
+                            <select id="off_lsd_day" class="form-select" style="min-width:0">
+                                <option value="">Day</option>
+                                @for($d = 1; $d <= 31; $d++)
+                                    <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}"
+                                        {{ $off_lsd && (int)explode('-',$off_lsd)[2] === $d ? 'selected' : '' }}>{{ $d }}</option>
+                                @endfor
+                            </select>
+                            <select id="off_lsd_month" class="form-select" style="min-width:0">
+                                <option value="">Month</option>
+                                @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                                    <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}"
+                                        {{ $off_lsd && (int)explode('-',$off_lsd)[1] === $mi+1 ? 'selected' : '' }}>{{ $mn }}</option>
+                                @endforeach
+                            </select>
+                            <select id="off_lsd_year" class="form-select" style="min-width:0">
+                                <option value="">Year</option>
+                                @for($y = date('Y') + 2; $y >= 1990; $y--)
+                                    <option value="{{ $y }}"
+                                        {{ $off_lsd && (int)explode('-',$off_lsd)[0] === $y ? 'selected' : '' }}>{{ $y }}</option>
+                                @endfor
+                            </select>
+                        </div>
+                        <script>
+                        (function(){
+                            function sync(){
+                                var d=document.getElementById('off_lsd_day').value,
+                                    m=document.getElementById('off_lsd_month').value,
+                                    y=document.getElementById('off_lsd_year').value;
+                                document.getElementById('off_lsd_combined').value=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                            }
+                            ['off_lsd_day','off_lsd_month','off_lsd_year'].forEach(function(id){
+                                document.getElementById(id).addEventListener('change',sync);
+                            });
+                        })();
+                        </script>
+                    @else
+                        @php $lsdDisplay = $employee?->last_salary_date?->format('d M Y'); @endphp
+                        <input type="text" class="form-control bg-light" readonly value="{{ $lsdDisplay ?: '—' }}">
+                    @endif
                 </div>
                 <div class="col-md-6">
                     <label class="form-label fw-semibold">Company Email</label>
@@ -653,14 +858,14 @@
                 </div>
             </div>
             <div class="off-spouse-edit-fields mt-3 d-none">
-                <form action="{{ route('employees.spouse.edit', [$employee, $sp->id]) }}" method="POST">
+                <form action="{{ route('employees.spouse.edit', [$employee, $sp->id]) }}" method="POST" onsubmit="return offValidateSpouseTel(this)">
                 @csrf @method('PUT')
                 <div class="row g-3">
                     <div class="col-md-6"><label class="form-label fw-semibold small">Name <span class="text-danger">*</span></label>
                         <input type="text" name="spouse_name" class="form-control form-control-sm" value="{{ $sp->name }}" required></div>
                     <div class="col-md-6"><label class="form-label fw-semibold small">NRIC No.</label>
                         <input type="text" name="spouse_nric_no" class="form-control form-control-sm" value="{{ $sp->nric_no }}"></div>
-                    <div class="col-md-4"><label class="form-label fw-semibold small">Tel No.</label>
+                    <div class="col-md-4"><label class="form-label fw-semibold small">Tel No. <span class="text-danger">*</span></label>
                         <input type="text" name="spouse_tel_no" class="form-control form-control-sm" value="{{ $sp->tel_no }}"></div>
                     <div class="col-md-4"><label class="form-label fw-semibold small">Occupation</label>
                         <input type="text" name="spouse_occupation" class="form-control form-control-sm" value="{{ $sp->occupation }}"></div>
@@ -689,14 +894,14 @@
         </div>
         @endforeach
         <p class="fw-semibold small text-muted mb-2">Add {{ $spouses->isEmpty() ? 'Spouse' : 'Another Spouse' }}</p>
-        <form action="{{ route('employees.spouse.update', $employee) }}" method="POST">
+        <form id="offAddSpouseForm" action="{{ route('employees.spouse.update', $employee) }}" method="POST" onsubmit="return offValidateSpouseTel(this)">
         @csrf
         <div class="row g-3">
             <div class="col-md-6"><label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
                 <input type="text" name="spouse_name" class="form-control" required></div>
             <div class="col-md-6"><label class="form-label fw-semibold">NRIC No.</label>
                 <input type="text" name="spouse_nric_no" class="form-control"></div>
-            <div class="col-md-4"><label class="form-label fw-semibold">Tel No.</label>
+            <div class="col-md-4"><label class="form-label fw-semibold">Tel No. <span class="text-danger">*</span></label>
                 <input type="text" name="spouse_tel_no" class="form-control"></div>
             <div class="col-md-4"><label class="form-label fw-semibold">Occupation</label>
                 <input type="text" name="spouse_occupation" class="form-control"></div>
@@ -955,6 +1160,26 @@
 
 @push('scripts')
 <script>
+function autofillOfficeLocation(selectEl, targetId) {
+    const selected = selectEl.options[selectEl.selectedIndex];
+    const target   = document.getElementById(targetId);
+    if (!target || !selected || !selected.value) return;
+    target.value = selected.dataset.address || '-';
+}
+
+function filterManagersByCompany(companyName, mgrSelectId) {
+    const sel = document.getElementById(mgrSelectId);
+    if (!sel) return;
+    Array.from(sel.options).forEach(function(opt) {
+        if (!opt.value || !opt.dataset.company) return;
+        var match = !companyName || opt.dataset.company === companyName;
+        opt.hidden   = !match;
+        opt.disabled = !match;
+    });
+    var chosen = sel.options[sel.selectedIndex];
+    if (chosen && chosen.value && chosen.hidden) sel.value = '';
+}
+
 function syncGoogleId(val) {
     const g = document.getElementById('edit_google_id');
     if (g) g.value = val;
@@ -972,6 +1197,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const b = document.getElementById('offBankName');
     if (b) toggleOtherBank(b, 'offBankNameOther');
+
+    var offCo = document.getElementById('offCompanySelect');
+    if (offCo && offCo.value) filterManagersByCompany(offCo.value, 'offMgrSelect');
 });
 
 // ── NRIC file management ──────────────────────────────────────────────────
@@ -1153,6 +1381,12 @@ function offToggleSpouseSection(value) {
     });
     const body = section.querySelector('.card-body');
     if (body) body.style.opacity = isMarried ? '' : '0.45';
+    if (isMarried) {
+        const addr   = document.getElementById('offResAddress');
+        const form   = document.getElementById('offAddSpouseForm');
+        const spAddr = form ? form.querySelector('[name="spouse_address"]') : null;
+        if (addr && spAddr && !spAddr.value.trim()) spAddr.value = addr.value;
+    }
 }
 
 // ── Spouse management ─────────────────────────────────────────────────────
@@ -1172,5 +1406,17 @@ document.addEventListener('DOMContentLoaded', function () {
     const ms = document.getElementById('offMaritalStatus');
     if (ms) offToggleSpouseSection(ms.value);
 });
+
+function offValidateSpouseTel(form) {
+    const marital = document.getElementById('offMaritalStatus');
+    if (!marital || marital.value !== 'married') return true;
+    const telInput = form.querySelector('[name="spouse_tel_no"]');
+    if (telInput && !telInput.value.trim()) {
+        alert('Tel No. is required when Marital Status is Married.');
+        telInput.focus();
+        return false;
+    }
+    return true;
+}
 </script>
 @endpush

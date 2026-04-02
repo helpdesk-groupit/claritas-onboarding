@@ -96,8 +96,7 @@ class OnboardingController extends Controller
             ->whereNotNull('full_name')
             ->whereNotNull('work_role')
             ->whereIn('work_role', [
-                'hr_manager','hr_executive','it_manager','it_executive',
-                'superadmin','system_admin','manager','director_hod','senior_executive',
+                'hr_manager','it_manager','superadmin','manager',
             ])
             ->orderBy('full_name')
             ->get();
@@ -151,6 +150,19 @@ class OnboardingController extends Controller
     {
         $this->authorizeCanAdd();
         $validated = $this->validateOnboarding($request);
+
+        // Spouse name + tel required when married
+        if ($request->input('marital_status') === 'married') {
+            $spouses = array_filter($request->input('spouses', []), fn($s) => !empty($s['name']));
+            if (empty($spouses)) {
+                return back()->withErrors(['spouses' => 'At least one spouse entry is required when Marital Status is Married.'])->withInput();
+            }
+            foreach (array_values($spouses) as $i => $sp) {
+                if (empty($sp['tel_no'])) {
+                    return back()->withErrors(["spouses.{$i}.tel_no" => 'Spouse Tel No. is required when Marital Status is Married.'])->withInput();
+                }
+            }
+        }
 
         // Handle NRIC file uploads before transaction
         $nricPath = null; $nricPaths = [];
@@ -214,6 +226,7 @@ class OnboardingController extends Controller
                 'reporting_manager_email' => $validated['reporting_manager_email'] ?? null,
                 'start_date'              => $validated['start_date'],
                 'exit_date'               => $validated['exit_date'] ?? null,
+                'last_salary_date'        => Auth::user()->isHrManager() ? ($validated['last_salary_date'] ?? null) : null,
                 'company_email'           => $validated['company_email'] ?? null,
                 'google_id'               => $googleId,
                 'department'              => $validated['department'] ?? null,
@@ -277,11 +290,11 @@ class OnboardingController extends Controller
         $itUsers  = Employee::whereNull('active_until')->whereNotNull('full_name')->whereNotNull('company_email')
             ->whereIn('work_role', ['it_manager','it_executive','it_intern'])->orderBy('full_name')->get();
         $managers = Employee::whereNull('active_until')->whereNotNull('full_name')->whereNotNull('work_role')
-            ->whereIn('work_role', ['hr_manager','hr_executive','it_manager','it_executive',
-                'superadmin','system_admin','manager','director_hod','senior_executive'])
+            ->whereIn('work_role', ['hr_manager','it_manager','superadmin','manager'])
             ->orderBy('full_name')->get();
-        $companies = Company::orderBy('name')->get(['name','address']);
-        return view('hr.onboarding.edit', compact('onboarding', 'hrUsers', 'itUsers', 'managers', 'companies'));
+        $companies  = Company::orderBy('name')->get(['name','address']);
+        $canEditAll = Auth::user()->canEditAllOnboardingSections();
+        return view('hr.onboarding.edit', compact('onboarding', 'hrUsers', 'itUsers', 'managers', 'companies', 'canEditAll'));
     }
 
     public function update(Request $request, Onboarding $onboarding)
@@ -289,6 +302,19 @@ class OnboardingController extends Controller
         $this->authorizeCanEdit();
         $user      = Auth::user();
         $validated = $this->validateOnboarding($request, isUpdate: true, user: $user);
+
+        // Spouse name + tel required when married
+        if ($request->input('marital_status') === 'married') {
+            $spouses = array_filter($request->input('spouses', []), fn($s) => !empty($s['name']));
+            if (empty($spouses)) {
+                return back()->withErrors(['spouses' => 'At least one spouse entry is required when Marital Status is Married.'])->withInput();
+            }
+            foreach (array_values($spouses) as $i => $sp) {
+                if (empty($sp['tel_no'])) {
+                    return back()->withErrors(["spouses.{$i}.tel_no" => 'Spouse Tel No. is required when Marital Status is Married.'])->withInput();
+                }
+            }
+        }
 
         // Capture old values for change detection (Sections A, F, G, H, I)
         $oldPersonal = $onboarding->personalDetail ? [
@@ -375,6 +401,9 @@ class OnboardingController extends Controller
                 'google_id'               => $googleId,
                 'department'              => $validated['department'] ?? null,
             ];
+            if ($user->isHrManager()) {
+                $workData['last_salary_date'] = $validated['last_salary_date'] ?? null;
+            }
             if ($canEditAll) {
                 $workData['role'] = $validated['role'] ?? $onboarding->workDetail->role;
             }
@@ -775,6 +804,7 @@ class OnboardingController extends Controller
                     // Log to AARF so it appears in the remarks section of the AARF
                     if ($aarf) {
                         $aarf->appendAssetChange("Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) auto-assigned to {$employeeName} via onboarding.");
+                        $aarf->addPendingAsset($asset->id);
                     }
                 }
             }
@@ -807,11 +837,12 @@ class OnboardingController extends Controller
             'nric_files'=>'nullable|array|max:5','nric_files.*'=>'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
             'edu_certificate'=>'nullable|array','edu_certificate.*'=>'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
             'edu_existing_cert_paths'=>'nullable|array','edu_existing_cert_paths.*'=>'nullable|string',
-            'employee_status'=>'required|in:active,resigned','staff_status'=>'required|in:existing,new',
+            'employee_status'=>'required|in:active,resigned','staff_status'=>'required|in:existing,new,rehire',
             'employment_type'=>'required|in:permanent,intern,contract','designation'=>'required|string|max:255',
             'company'=>'required|string|max:255','office_location'=>'required|string|max:255',
             'reporting_manager'=>'required|string|max:255','reporting_manager_email'=>'nullable|email',
             'start_date'=>'required|date','exit_date'=>'nullable|date|after_or_equal:start_date',
+            'last_salary_date'=>'nullable|date',
             'company_email'=>'nullable|email','google_id'=>'nullable|string|max:255',
             'department'=>'nullable|string|max:255',
             'hr_emails'=>'nullable|array','hr_emails.*'=>'email',

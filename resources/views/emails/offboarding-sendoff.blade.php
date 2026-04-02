@@ -18,7 +18,7 @@
         .farewell-box { background:#f0fdf4; border:1px solid #86efac; border-radius:8px; padding:18px 20px; margin:20px 0; font-size:14px; color:#166534; }
         .notice { background:#fffbeb; border:1px solid #fcd34d; border-radius:8px; padding:14px 18px; font-size:13px; color:#92400e; margin-top:16px; }
         .aarf-box { background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:18px 20px; margin:20px 0; text-align:center; }
-        .btn { display:inline-block; background:linear-gradient(135deg,#1e3a5f,#2563eb); color:#fff; padding:12px 28px; border-radius:8px; text-decoration:none; font-weight:600; font-size:14px; margin-top:8px; }
+        .btn { display:inline-block; background:#F5A623; color:#000; padding:12px 28px; border-radius:8px; text-decoration:none; font-weight:600; font-size:14px; margin-top:8px; }
         .footer { background:#f8fafc; padding:16px 30px; font-size:12px; color:#94a3b8; text-align:center; border-top:1px solid #e2e8f0; }
     </style>
 </head>
@@ -84,9 +84,9 @@
             <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
               href="{{ url('/aarf/' . $aarf->acknowledgement_token) }}"
               style="height:44px;v-text-anchor:middle;width:180px;" arcsize="10%"
-              fillcolor="#1e3a5f" strokecolor="#1e3a5f">
+              fillcolor="#F5A623" strokecolor="#F5A623">
               <w:anchorlock/>
-              <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">View AARF</center>
+              <center style="color:#000000;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">View AARF</center>
             </v:roundrect>
             <![endif]-->
             <!--[if !mso]><!-->

@@ -23,7 +23,7 @@
 @php
     $authUser       = Auth::user();
     $profileOwnerId = $onboarding->employee?->user_id;
-    $canSeePersonal = in_array($authUser->role, ['hr_manager','it_manager','superadmin','system_admin'])
+    $canSeePersonal = in_array($authUser->role, ['hr_manager','hr_executive','hr_intern','it_manager','it_executive','it_intern','superadmin','system_admin'])
                       || ($profileOwnerId && $authUser->id === $profileOwnerId);
     $p = $onboarding->personalDetail;
     $w = $onboarding->workDetail;
@@ -57,6 +57,7 @@
                     <tr><td class="text-muted py-2" style="width:46%;padding-left:0;">Full Name</td><td class="fw-semibold py-2">{{ $p->full_name }}</td></tr>
                     <tr><td class="text-muted py-2">NRIC / Passport No.</td><td class="py-2">{{ $p->official_document_id }}</td></tr>
                     <tr><td class="text-muted py-2">Date of Birth</td><td class="py-2">{{ $p->date_of_birth?->format('d M Y') }}</td></tr>
+                    <tr><td class="text-muted py-2">Age</td><td class="py-2">{{ $p->date_of_birth ? now()->year - $p->date_of_birth->year : '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Sex</td><td class="py-2">{{ ucfirst($p->sex ?? '') }}</td></tr>
                     <tr><td class="text-muted py-2">Marital Status</td><td class="py-2">{{ ucfirst($p->marital_status ?? '') }}</td></tr>
                     <tr><td class="text-muted py-2">Religion</td><td class="py-2">{{ $p->religion }}</td></tr>
@@ -86,12 +87,16 @@
                     @php $allNric = $p->nric_file_paths ?? ($p->nric_file_path ? [$p->nric_file_path] : []); @endphp
                     @if(!empty($allNric))
                     <tr><td class="text-muted py-2">NRIC / Passport Copy</td><td class="py-2">
+                        @if(in_array($authUser->role, ['hr_manager','it_manager','superadmin','system_admin']) || ($profileOwnerId && $authUser->id === $profileOwnerId))
                         @foreach($allNric as $idx => $path)
                         <a href="{{ asset('storage/'.$path) }}" target="_blank"
                            class="btn btn-sm btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:12px;">
                             <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $idx+1 }}
                         </a>
                         @endforeach
+                        @else
+                        <span class="text-muted small"><i class="bi bi-lock me-1"></i>{{ count($allNric) }} file(s) — view restricted</span>
+                        @endif
                     </td></tr>
                     @endif
                 </table>
@@ -125,12 +130,16 @@
                                 $certPaths = $edu['certificate_paths'] ?? (isset($edu['certificate_path']) && $edu['certificate_path'] ? [$edu['certificate_path']] : []);
                             @endphp
                             @if(!empty($certPaths))
+                                @if(in_array($authUser->role, ['hr_manager','it_manager','superadmin','system_admin']) || ($profileOwnerId && $authUser->id === $profileOwnerId))
                                 @foreach($certPaths as $ci => $certPath)
                                 <a href="{{ asset('storage/'.$certPath) }}" target="_blank"
                                    class="btn btn-sm btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:11px;">
                                     <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci + 1 }}
                                 </a>
                                 @endforeach
+                                @else
+                                <span class="text-muted small"><i class="bi bi-lock me-1"></i>{{ count($certPaths) }} file(s) — view restricted</span>
+                                @endif
                             @else
                                 <span class="text-muted">—</span>
                             @endif
@@ -281,6 +290,7 @@
                     <tr><td class="text-muted py-2">Reporting Manager</td><td class="py-2">{{ $w->reporting_manager }}</td></tr>
                     <tr><td class="text-muted py-2">Start Date</td><td class="py-2">{{ $w->start_date?->format('d M Y') }}</td></tr>
                     <tr><td class="text-muted py-2">Exit Date</td><td class="py-2">{{ $w->exit_date?->format('d M Y') ?? '—' }}</td></tr>
+                    <tr><td class="text-muted py-2">Last Salary Date</td><td class="py-2">{{ $w->last_salary_date?->format('d M Y') ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Company Email</td><td class="py-2">{{ $w->company_email ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Google ID</td><td class="py-2">{{ $w->google_id ?? '—' }}</td></tr>
                 </table>

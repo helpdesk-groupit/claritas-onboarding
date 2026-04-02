@@ -31,13 +31,13 @@
             @error('asset_tag')<div class="invalid-feedback">{{ $message }}</div>@enderror</div>
         <div class="col-md-2"><label class="form-label fw-semibold">Asset Type <span class="text-danger">*</span></label>
             <select name="asset_type" class="form-select" required>
-                @foreach(['laptop'=>'Laptop','monitor'=>'Monitor','converter'=>'Converter','phone'=>'Company Phone','sim_card'=>'SIM Card','access_card'=>'Access Card','other'=>'Other'] as $v=>$l)
+                @foreach(['laptop'=>'Laptop','monitor'=>'Monitor','converter'=>'Converter','phone'=>'Company Phone','sim_card'=>'SIM Card','access_card'=>'Access Card','petty_cash'=>'Petty Cash','accessories'=>'Accessories','furniture'=>'Furniture','equipment'=>'Equipment','other'=>'Other'] as $v=>$l)
                     <option value="{{ $v }}" {{ old('asset_type',$asset->asset_type)==$v?'selected':'' }}>{{ $l }}</option>
                 @endforeach
             </select></div>
         <div class="col-md-2"><label class="form-label fw-semibold">Brand <span class="text-danger">*</span></label>
             <select name="brand" class="form-select" required>
-                @foreach(['Dell','HP','Lenovo','Apple','Asus','Acer','Maxis','Internal','Anker','Other'] as $b)
+                @foreach(['Dell','HP','Lenovo','Apple','Asus','Acer','Maxis','Internal','Anker','Petty Cash','Accessories','Furniture','Equipment','Access Card','Office Keys','Other'] as $b)
                     <option value="{{ $b }}" {{ old('brand',$asset->brand)==$b?'selected':'' }}>{{ $b }}</option>
                 @endforeach
             </select></div>
@@ -329,7 +329,7 @@
         <div class="col-12">
             <label class="form-label fw-semibold">Notes</label>
             <textarea name="notes" class="form-control" rows="2"
-                      placeholder="Any notes about this asset...">{{ old('notes', $asset->notes) }}</textarea>
+                      maxlength="1500" placeholder="Any notes about this asset...">{{ old('notes', $asset->notes) }}</textarea>
         </div>
         <div class="col-12">
             <label class="form-label fw-semibold">Remarks / Assignment Log</label>

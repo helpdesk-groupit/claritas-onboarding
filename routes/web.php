@@ -92,8 +92,10 @@ Route::middleware('auth')->group(function () {
     Route::post('/onboarding/{onboarding}/re-consent',      [OnboardingController::class, 'storeReConsent'])->name('onboarding.re-consent.store');
 
     // HR: Employee Listing
-    Route::get('/superadmin/roles',                [EmployeeController::class, 'roleManagement'])->name('superadmin.roles.index');
-    Route::put('/superadmin/roles/{employee}',     [EmployeeController::class, 'roleUpdate'])->name('superadmin.roles.update');
+    Route::get('/superadmin/roles',                          [EmployeeController::class, 'roleManagement'])->name('superadmin.roles.index');
+    Route::put('/superadmin/roles/{employee}',               [EmployeeController::class, 'roleUpdate'])->name('superadmin.roles.update');
+    Route::get('/superadmin/roles/{employee}/permissions',   [EmployeeController::class, 'getPermissions'])->name('superadmin.permissions.get');
+    Route::post('/superadmin/roles/{employee}/permissions',  [EmployeeController::class, 'updatePermissions'])->name('superadmin.permissions.update');
 
     Route::get('/superadmin/companies',            [CompanyController::class, 'index'])->name('superadmin.companies.index');
     Route::post('/superadmin/companies',           [CompanyController::class, 'store'])->name('superadmin.companies.store');

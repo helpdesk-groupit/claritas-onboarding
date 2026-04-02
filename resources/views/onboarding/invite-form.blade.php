@@ -22,7 +22,6 @@ body { background:#f1f5f9; min-height:100vh; }
 <div class="brand-header py-3 px-4 mb-4">
     <div class="container">
         <h5 class="text-white mb-0 fw-bold"><i class="bi bi-person-plus me-2"></i>Employee Portal — Onboarding</h5>
-        <p class="text-white-50 mb-0 small">Claritas Asia Sdn. Bhd.</p>
     </div>
 </div>
 
@@ -111,10 +110,62 @@ body { background:#f1f5f9; min-height:100vh; }
 
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Date of Birth <span class="text-danger">*</span></label>
-                <input type="date" name="date_of_birth"
-                       class="form-control @error('date_of_birth') is-invalid @enderror"
-                       value="{{ old('date_of_birth') }}" required>
-                @error('date_of_birth')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                <input type="hidden" name="date_of_birth" id="inv_dob_combined">
+                @error('date_of_birth')<div class="text-danger small mb-1">{{ $message }}</div>@enderror
+                <div class="d-flex gap-1">
+                    <select id="inv_dob_day" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                        <option value="">Day</option>
+                        @for($d = 1; $d <= 31; $d++)
+                            <option value="{{ str_pad($d,2,'0',STR_PAD_LEFT) }}">{{ $d }}</option>
+                        @endfor
+                    </select>
+                    <select id="inv_dob_month" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                        <option value="">Month</option>
+                        @foreach(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as $mi => $mn)
+                            <option value="{{ str_pad($mi+1,2,'0',STR_PAD_LEFT) }}">{{ $mn }}</option>
+                        @endforeach
+                    </select>
+                    <select id="inv_dob_year" class="form-select @error('date_of_birth') is-invalid @enderror" style="min-width:0">
+                        <option value="">Year</option>
+                        @for($y = date('Y'); $y >= 1940; $y--)
+                            <option value="{{ $y }}">{{ $y }}</option>
+                        @endfor
+                    </select>
+                </div>
+                <script>
+                (function(){
+                    function calcInvAge(dob){
+                        var el=document.getElementById('inv_age'); if(!el) return;
+                        if(!dob){el.value='';return;}
+                        var p=dob.split('-'),b=new Date(+p[0],+p[1]-1,+p[2]),t=new Date();
+                        var a=t.getFullYear()-+p[0];
+                        el.value=(a>=0&&a<150)?a:'';
+                    }
+                    var old = '{{ old('date_of_birth') }}';
+                    if(old){ var p=old.split('-');
+                        document.getElementById('inv_dob_year').value=p[0];
+                        document.getElementById('inv_dob_month').value=p[1];
+                        document.getElementById('inv_dob_day').value=p[2];
+                        document.getElementById('inv_dob_combined').value=old;
+                        document.addEventListener('DOMContentLoaded',function(){ calcInvAge(old); });
+                    }
+                    function sync(){
+                        var d=document.getElementById('inv_dob_day').value,
+                            m=document.getElementById('inv_dob_month').value,
+                            y=document.getElementById('inv_dob_year').value;
+                        var dob=(y&&m&&d)?y+'-'+m+'-'+d:'';
+                        document.getElementById('inv_dob_combined').value=dob;
+                        calcInvAge(dob);
+                    }
+                    ['inv_dob_day','inv_dob_month','inv_dob_year'].forEach(function(id){
+                        document.getElementById(id).addEventListener('change',sync);
+                    });
+                })();
+                </script>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label fw-semibold">Age</label>
+                <input type="text" id="inv_age" class="form-control bg-light" readonly placeholder="—">
             </div>
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Sex <span class="text-danger">*</span></label>
@@ -177,7 +228,7 @@ body { background:#f1f5f9; min-height:100vh; }
 
             <div class="col-12">
                 <label class="form-label fw-semibold">Residential Address <span class="text-danger">*</span></label>
-                <textarea name="residential_address"
+                <textarea name="residential_address" id="invResAddress"
                           class="form-control @error('residential_address') is-invalid @enderror"
                           rows="2" required>{{ old('residential_address') }}</textarea>
                 @error('residential_address')<div class="invalid-feedback">{{ $message }}</div>@enderror
@@ -308,7 +359,7 @@ body { background:#f1f5f9; min-height:100vh; }
         <div class="input-panel" id="spousePanel">
             <div class="row g-3">
                 <div class="col-md-6">
-                    <label class="form-label fw-semibold">Name</label>
+                    <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
                     <input type="text" id="spName" class="form-control">
                 </div>
                 <div class="col-md-6">
@@ -316,7 +367,7 @@ body { background:#f1f5f9; min-height:100vh; }
                     <input type="text" id="spNric" class="form-control">
                 </div>
                 <div class="col-md-4">
-                    <label class="form-label fw-semibold">Tel No.</label>
+                    <label class="form-label fw-semibold">Tel No. <span class="text-danger">*</span></label>
                     <input type="text" id="spTel" class="form-control">
                 </div>
                 <div class="col-md-4">
@@ -667,6 +718,13 @@ let spouseEntries = [];
 function addSpouseEntry() {
     const name = document.getElementById('spName').value.trim();
     if (!name) { alert('Please enter the spouse name.'); return; }
+    const marital = document.getElementById('maritalStatus');
+    const tel = document.getElementById('spTel').value.trim();
+    if (marital && marital.value === 'married' && !tel) {
+        alert('Tel No. is required when Marital Status is Married.');
+        document.getElementById('spTel').focus();
+        return;
+    }
     spouseEntries.push({
         name,
         nric:       document.getElementById('spNric').value.trim(),
@@ -849,24 +907,24 @@ function escH(s) {
 // ── Marital Status → Spouse Section toggle ──────────────────────────────
 function toggleSpouseSection(val) {
     const section = document.getElementById('spouseSection');
-    const panel   = document.getElementById('spousePanel');
-    const addBtn  = panel ? panel.querySelector('button[onclick="addSpouseEntry()"]') : null;
     if (!section) return;
-    if (val === 'married') {
-        section.style.opacity = '1';
-        section.style.pointerEvents = 'auto';
-        if (panel) panel.style.opacity = '1';
-        // Update header to show required
-        const hdr = section.querySelector('.card-header h6');
+    const isMarried = val === 'married';
+    section.querySelectorAll('input, select, textarea, button').forEach(el => {
+        el.disabled = !isMarried;
+    });
+    section.style.opacity = isMarried ? '1' : '0.4';
+    const hdr = section.querySelector('.card-header h6');
+    if (isMarried) {
         if (hdr && !hdr.querySelector('.spouse-required')) {
             hdr.insertAdjacentHTML('beforeend', ' <span class="text-danger spouse-required" style="font-size:13px;">*</span>');
         }
         const note = section.querySelector('.card-header p');
         if (note) note.textContent = 'Required — please add at least one spouse entry.';
+        // Auto-fill address from Section A if empty
+        const addr = document.getElementById('invResAddress');
+        const spAddr = document.getElementById('spAddress');
+        if (addr && spAddr && !spAddr.value.trim()) spAddr.value = addr.value;
     } else {
-        section.style.opacity = '0.4';
-        section.style.pointerEvents = 'none';
-        const hdr = section.querySelector('.card-header h6');
         if (hdr) { const star = hdr.querySelector('.spouse-required'); if (star) star.remove(); }
         const note = section.querySelector('.card-header p');
         if (note) note.textContent = 'Not applicable — spouse information is only required when marital status is Married.';

@@ -16,7 +16,7 @@
   .sections-list li::before { content:"• "; color:#f59e0b; font-weight:700; }
   .consent-box { background:#f8fafc; border-left:4px solid #2563eb; border-radius:0 8px 8px 0; padding:16px 20px; margin:16px 0; font-size:13.5px; color:#334155; line-height:1.7; }
   .action-box { background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:20px; margin:20px 0; text-align:center; }
-  .btn { display:inline-block; background:linear-gradient(135deg,#1e3a5f,#2563eb); color:#fff; padding:13px 30px; border-radius:8px; text-decoration:none; font-weight:600; font-size:14px; margin-top:8px; }
+  .btn { display:inline-block; background:#F5A623; color:#000; padding:13px 30px; border-radius:8px; text-decoration:none; font-weight:600; font-size:14px; margin-top:8px; }
   .footer { background:#f8fafc; padding:20px 30px; text-align:center; font-size:12px; color:#94a3b8; border-top:1px solid #e2e8f0; }
 </style>
 </head>

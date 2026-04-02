@@ -11,7 +11,7 @@ class CompanyController extends Controller
 {
     private function authorizeSuperadmin(): void
     {
-        if (!Auth::user()->isSuperadmin()) abort(403);
+        if (!Auth::user()->isSuperadmin() && !Auth::user()->isHrManager() && !Auth::user()->isHrExecutive()) abort(403);
     }
 
     public function index()
