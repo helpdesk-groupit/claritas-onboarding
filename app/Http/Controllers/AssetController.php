@@ -525,7 +525,10 @@ class AssetController extends Controller
     // ── Download CSV export ─────────────────────────────────────────────────
     public function export(Request $request)
     {
-        $this->authorizeItAccess();
+        $u = Auth::user();
+        if (!$u->isSuperadmin() && !$u->isHrManager() && !$u->isHrExecutive() && !$u->isItManager() && !$u->isItExecutive()) {
+            abort(403);
+        }
         $query = AssetInventory::with('assignedEmployee.onboarding.personalDetail');
         if ($request->filled('status'))    $query->where('status', $request->status);
         if ($request->filled('type'))      $query->where('asset_type', $request->type);

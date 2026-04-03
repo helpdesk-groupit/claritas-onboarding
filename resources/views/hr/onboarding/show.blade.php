@@ -27,6 +27,17 @@
                       || ($profileOwnerId && $authUser->id === $profileOwnerId);
     $p = $onboarding->personalDetail;
     $w = $onboarding->workDetail;
+
+    $obShowName       = $p?->full_name ?? $onboarding->employee?->full_name ?? 'New Employee';
+    $obShowPicUrl     = $onboarding->employee?->user?->profile_picture_url
+                      ?? 'https://ui-avatars.com/api/?name=' . urlencode($obShowName) . '&background=2563eb&color=fff&size=200';
+    $obStatusColors   = ['active'=>'success','resigned'=>'danger','terminated'=>'danger','contract_ended'=>'secondary'];
+    $obStatus         = $onboarding->employee?->employment_status ?? 'pending';
+    $obStatusBg       = match($obStatus) {
+        'active'         => 'success',
+        'resigned','terminated','contract_ended' => 'danger',
+        default          => 'warning text-dark',
+    };
     $a = $onboarding->assetProvisioning;
 
     $staging         = ($p && $p->invite_staging_json) ? json_decode($p->invite_staging_json, true) : [];
@@ -43,6 +54,41 @@
         'e' => 'e) Disabled Child (studying Diploma level or higher in Malaysia or elsewhere)',
     ];
 @endphp
+
+{{-- ── Profile Header ────────────────────────────────────────────────────── --}}
+<div class="card mb-4">
+    <div class="card-body d-flex align-items-center gap-4 py-3">
+        <img src="{{ $obShowPicUrl }}" alt="{{ $obShowName }}"
+             class="rounded-circle border shadow-sm flex-shrink-0"
+             style="width:80px;height:80px;object-fit:cover;">
+        <div class="flex-fill">
+            <h5 class="fw-bold mb-1">{{ $obShowName }}</h5>
+            @if($p?->preferred_name && $p->preferred_name !== $p->full_name)
+                <p class="text-muted mb-1 small">Known as: <em>{{ $p->preferred_name }}</em></p>
+            @endif
+            <p class="text-muted mb-2 small">{{ $onboarding->employee?->designation ?? $w?->designation ?? '—' }}</p>
+            <div class="d-flex flex-wrap gap-1">
+                @if($w?->company)
+                    <span class="badge bg-primary">{{ $w->company }}</span>
+                @endif
+                @if($w?->department)
+                    <span class="badge bg-secondary">{{ $w->department }}</span>
+                @endif
+                <span class="badge bg-{{ $obStatusBg }}">
+                    {{ ucfirst(str_replace('_', ' ', $obStatus)) }}
+                </span>
+            </div>
+        </div>
+        <div class="text-end text-muted small flex-shrink-0 d-none d-md-block">
+            @if($p?->personal_email)
+                <div><i class="bi bi-envelope me-1"></i>{{ $p->personal_email }}</div>
+            @endif
+            @if($w?->start_date)
+                <div class="mt-1"><i class="bi bi-calendar me-1"></i>Start: {{ \Carbon\Carbon::parse($w->start_date)->format('d M Y') }}</div>
+            @endif
+        </div>
+    </div>
+</div>
 
 {{-- ── Section A — Personal Details ── --}}
 @if($canSeePersonal && $p)

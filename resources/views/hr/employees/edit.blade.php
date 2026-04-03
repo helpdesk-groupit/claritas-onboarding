@@ -11,6 +11,92 @@
     <span class="text-muted small">/ Edit #{{ $employee->id }}</span>
 </div>
 
+@php
+    $editEmpName       = $employee->full_name ?? $employee->user?->name ?? 'Employee';
+    $editProfilePicUrl = $employee->user?->profile_picture_url
+                       ?? 'https://ui-avatars.com/api/?name=' . urlencode($editEmpName) . '&background=2563eb&color=fff&size=200';
+    $editStatusColors  = ['active'=>'success','resigned'=>'danger','terminated'=>'danger','contract_ended'=>'secondary'];
+    $editCanPhoto      = in_array(Auth::user()->role, ['hr_manager','superadmin','system_admin']);
+@endphp
+
+{{-- ── Profile Header ────────────────────────────────────────────────────── --}}
+<div class="card mb-4">
+    <div class="card-body d-flex align-items-center gap-4 py-3">
+        <div class="d-flex flex-column align-items-center flex-shrink-0 gap-1">
+            <img src="{{ $editProfilePicUrl }}" alt="{{ $editEmpName }}"
+                 class="rounded-circle border shadow-sm"
+                 style="width:80px;height:80px;object-fit:cover;">
+            @if($editCanPhoto)
+            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
+                    style="font-size:11px;" data-bs-toggle="modal" data-bs-target="#changePhotoModalEmpEdit">
+                <i class="bi bi-camera me-1"></i>Change
+            </button>
+            @endif
+        </div>
+        <div class="flex-fill">
+            <h5 class="fw-bold mb-1">{{ $editEmpName }}</h5>
+            @if($employee->preferred_name && $employee->preferred_name !== $employee->full_name)
+                <p class="text-muted mb-1 small">Known as: <em>{{ $employee->preferred_name }}</em></p>
+            @endif
+            <p class="text-muted mb-2 small">{{ $employee->designation ?? '—' }}</p>
+            <div class="d-flex flex-wrap gap-1">
+                @if($employee->company)
+                    <span class="badge bg-primary">{{ $employee->company }}</span>
+                @endif
+                @if($employee->department)
+                    <span class="badge bg-secondary">{{ $employee->department }}</span>
+                @endif
+                <span class="badge bg-{{ $editStatusColors[$employee->employment_status ?? 'active'] ?? 'success' }}">
+                    {{ ucfirst(str_replace('_',' ', $employee->employment_status ?? 'active')) }}
+                </span>
+            </div>
+        </div>
+        <div class="text-end text-muted small flex-shrink-0 d-none d-md-block">
+            @if($employee->company_email)
+                <div><i class="bi bi-envelope me-1"></i>{{ $employee->company_email }}</div>
+            @endif
+            @if($employee->start_date)
+                <div class="mt-1"><i class="bi bi-calendar me-1"></i>Since {{ $employee->start_date->format('d M Y') }}</div>
+            @endif
+        </div>
+    </div>
+</div>
+
+{{-- ── Change Photo Modal ──────────────────────────────────────────────── --}}
+@if($editCanPhoto)
+<div class="modal fade" id="changePhotoModalEmpEdit" tabindex="-1" aria-labelledby="changePhotoModalEmpEditLabel" aria-hidden="true">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h6 class="modal-title fw-bold" id="changePhotoModalEmpEditLabel">
+                    <i class="bi bi-camera me-2"></i>Change Profile Photo
+                </h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ route('employees.avatar', $employee) }}" method="POST" enctype="multipart/form-data">
+                @csrf
+                <div class="modal-body">
+                    <div class="text-center mb-3">
+                        <img src="{{ $editProfilePicUrl }}" alt="{{ $editEmpName }}"
+                             class="rounded-circle border shadow-sm"
+                             style="width:80px;height:80px;object-fit:cover;">
+                    </div>
+                    <label class="form-label fw-semibold">New Photo</label>
+                    <input type="file" name="avatar" class="form-control" accept="image/*" required>
+                    <div class="form-text">JPEG, PNG, GIF or WebP. Max 2 MB.</div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-sm btn-primary">
+                        <i class="bi bi-upload me-1"></i>Upload
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+@endif
+
 @if($errors->any())
     <div class="alert alert-danger">
         <ul class="mb-0">@foreach($errors->all() as $e)<li>{{ $e }}</li>@endforeach</ul>
@@ -649,21 +735,409 @@
             </div>
         </div>
     </div>
-    {{-- ── Remarks row ──────────────────────────────────────────────────── --}}
-    <div class="card mb-3">
-        <div class="card-body">
-            <label class="form-label fw-semibold">Remarks <span class="text-muted fw-normal">(optional — appended to record)</span></label>
-            <textarea name="remarks" class="form-control" rows="2"
-                      placeholder="Reason for update or any notes..."></textarea>
+
+{{-- ══════════════════════════════════════════════════════════════════════ --}}
+{{-- SECTION F — Education & Work History                                  --}}
+{{-- ══════════════════════════════════════════════════════════════════════ --}}
+@php $eduList = $employee->educationHistories ?? collect(); @endphp
+<div class="card mb-3">
+    <div class="card-header bg-white py-3 d-flex align-items-center gap-2" style="border-left:4px solid #2563eb;">
+        <span class="badge bg-primary rounded-pill fw-bold" style="font-size:12px;min-width:26px;padding:4px 8px;">F</span>
+        <h6 class="mb-0 fw-bold"><i class="bi bi-mortarboard me-2 text-primary"></i>Education &amp; Work History</h6>
+    </div>
+    <div class="card-body">
+        <input type="hidden" name="edu_delete_ids" id="eduDeleteIds" value="">
+        <div id="eduEditContainer">
+            @forelse($eduList as $edu)
+            <div class="border rounded p-3 mb-3 edu-edit-row" data-id="{{ $edu->id }}">
+                <input type="hidden" name="edu_id[]" value="{{ $edu->id }}">
+                {{-- Summary line --}}
+                <div class="d-flex align-items-start justify-content-between">
+                    <div class="edu-summary">
+                        <div class="fw-semibold">{{ $edu->qualification }}</div>
+                        <div class="text-muted small">
+                            {{ $edu->institution ?? '' }}{{ $edu->year_graduated ? ' · '.$edu->year_graduated : '' }}
+                        </div>
+                        @php $editCertFiles = $edu->certificate_paths ?? ($edu->certificate_path ? [$edu->certificate_path] : []); @endphp
+                        @if(!empty($editCertFiles))
+                        <div class="mt-1">
+                            @foreach($editCertFiles as $ci => $cf)
+                            <a href="{{ asset('storage/'.$cf) }}" target="_blank"
+                               class="btn btn-xs btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:11px;">
+                                <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci + 1 }}
+                            </a>
+                            @endforeach
+                        </div>
+                        @endif
+                    </div>
+                    <div class="d-flex gap-1 ms-2 flex-shrink-0">
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                onclick="toggleEduEditFields(this)">
+                            <i class="bi bi-pencil me-1"></i>Edit
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-danger"
+                                onclick="markEduDelete(this, {{ $edu->id }})">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </div>
+                {{-- Inline edit fields (hidden by default) --}}
+                @php
+                    $inlineCerts = $edu->certificate_paths ?? ($edu->certificate_path ? [$edu->certificate_path] : []);
+                    $eduIdx = $loop->index;
+                @endphp
+                <div class="edu-fields mt-3 d-none" data-edu-idx="{{ $eduIdx }}">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Qualification</label>
+                            <input type="text" name="edu_qualification[]" class="form-control" value="{{ $edu->qualification }}" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Institution</label>
+                            <input type="text" name="edu_institution[]" class="form-control" value="{{ $edu->institution }}">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold">Year Graduated</label>
+                            <input type="number" name="edu_year[]" class="form-control" value="{{ $edu->year_graduated }}" min="1950" max="{{ date('Y')+5 }}">
+                        </div>
+                        <div class="col-md-9">
+                            <label class="form-label fw-semibold">Certificate(s)
+                                <span class="text-muted fw-normal small">(max 5 files)</span>
+                            </label>
+                            {{-- Existing cert files with individual remove buttons --}}
+                            <div class="edu-cert-existing mb-2">
+                                @foreach($inlineCerts as $ci => $cf)
+                                <div class="d-inline-flex align-items-center gap-1 me-1 mb-1">
+                                    <a href="{{ asset('storage/'.$cf) }}" target="_blank"
+                                       class="btn btn-sm btn-outline-primary" style="font-size:11px;">
+                                        <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci+1 }}
+                                    </a>
+                                    <input type="hidden" name="edu_cert_keep[{{ $eduIdx }}][]"
+                                           value="{{ $cf }}" class="edu-cert-keep-input">
+                                    <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1"
+                                            style="font-size:11px;"
+                                            onclick="removeEduCert(this)"
+                                            title="Remove this file">
+                                        <i class="bi bi-x"></i>
+                                    </button>
+                                </div>
+                                @endforeach
+                            </div>
+                            {{-- Add new cert file --}}
+                            <div class="d-flex gap-2 mb-1">
+                                <input type="file" class="edu-cert-file-input form-control form-control-sm"
+                                       accept=".jpg,.jpeg,.png,.pdf" style="max-width:280px;"
+                                       data-idx="{{ $eduIdx }}">
+                                <button type="button" class="btn btn-outline-secondary btn-sm flex-shrink-0"
+                                        onclick="addEduCertFile(this, {{ $eduIdx }})">
+                                    <i class="bi bi-upload me-1"></i>Add
+                                </button>
+                            </div>
+                            <div class="edu-cert-new-list" data-idx="{{ $eduIdx }}"></div>
+                            <div class="edu-cert-new-hidden" data-idx="{{ $eduIdx }}"></div>
+                            <div class="form-text">Click <i class="bi bi-x"></i> to remove a file. Existing files are kept unless removed.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            @empty
+            <p class="text-muted small" id="noEduMsg">No education history yet.</p>
+            @endforelse
+        </div>
+        <div class="d-flex gap-2 mt-2 mb-3">
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addEduEditRow()">
+                <i class="bi bi-plus-circle me-1"></i>Add Qualification
+            </button>
+        </div>
+
+        {{-- Total Years of Experience (separate, matching public form) --}}
+        @php
+            $expTotal = $employee->educationHistories->first()?->years_experience ?? null;
+        @endphp
+        <div class="row g-3 mb-3">
+            <div class="col-md-5">
+                <label class="form-label fw-semibold">
+                    No. of Years of Working Experience
+                    <span class="text-muted fw-normal small">(not incl. part-time)</span>
+                </label>
+                <select name="edu_experience_total" class="form-select">
+                    <option value="">— Select —</option>
+                    @for($y = 0; $y <= 40; $y++)
+                    <option value="{{ $y }}" {{ old('edu_experience_total', $expTotal) == $y ? 'selected' : '' }}>
+                        {{ $y }} {{ $y == 1 ? 'year' : 'years' }}
+                    </option>
+                    @endfor
+                    <option value="40+" {{ old('edu_experience_total', $expTotal) === '40+' ? 'selected' : '' }}>40+ years</option>
+                </select>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+{{-- ══════════════════════════════════════════════════════════════════════ --}}
+{{-- SECTION G — Spouse Information                                        --}}
+{{-- ══════════════════════════════════════════════════════════════════════ --}}
+@php $spouses = $employee->spouseDetails ?? collect(); @endphp
+<input type="hidden" name="del_spouse_ids" id="empDelSpouseIds" value="">
+<div class="card mb-3" id="empSpouseSection">
+    <div class="card-header bg-white py-3 d-flex align-items-center gap-2" style="border-left:4px solid #2563eb;">
+        <span class="badge bg-primary rounded-pill fw-bold" style="font-size:12px;min-width:26px;padding:4px 8px;">G</span>
+        <h6 class="mb-0 fw-bold"><i class="bi bi-people me-2 text-primary"></i>Spouse Information <span class="text-danger emp-spouse-required d-none">*</span></h6>
+    </div>
+    <div class="card-body">
+
+        {{-- Existing spouse records as hidden inputs + display cards --}}
+        @foreach($spouses as $spIdx => $sp)
+        <div class="border rounded p-3 mb-3 spouse-card" style="background:#f8fafc;" data-spouse-id="{{ $sp->id }}">
+            {{-- Hidden inputs carrying current values --}}
+            <input type="hidden" name="spouses[{{ $spIdx }}][id]"           value="{{ $sp->id }}">
+            <input type="hidden" name="spouses[{{ $spIdx }}][name]"         value="{{ $sp->name }}" class="sp-h-name">
+            <input type="hidden" name="spouses[{{ $spIdx }}][nric_no]"      value="{{ $sp->nric_no }}" class="sp-h-nric">
+            <input type="hidden" name="spouses[{{ $spIdx }}][tel_no]"       value="{{ $sp->tel_no }}" class="sp-h-tel">
+            <input type="hidden" name="spouses[{{ $spIdx }}][occupation]"   value="{{ $sp->occupation }}" class="sp-h-occ">
+            <input type="hidden" name="spouses[{{ $spIdx }}][income_tax_no]" value="{{ $sp->income_tax_no }}" class="sp-h-tax">
+            <input type="hidden" name="spouses[{{ $spIdx }}][address]"      value="{{ $sp->address }}" class="sp-h-addr">
+            <input type="hidden" name="spouses[{{ $spIdx }}][is_working]"   value="{{ $sp->is_working ? 1 : 0 }}" class="sp-h-working">
+            <input type="hidden" name="spouses[{{ $spIdx }}][is_disabled]"  value="{{ $sp->is_disabled ? 1 : 0 }}" class="sp-h-disabled">
+
+            {{-- Summary row --}}
+            <div class="d-flex align-items-start justify-content-between">
+                <div>
+                    <div class="fw-semibold sp-display-name">{{ $sp->name }}</div>
+                    <div class="text-muted small sp-display-sub">
+                        {{ $sp->nric_no ? 'NRIC: '.$sp->nric_no.' · ' : '' }}{{ $sp->tel_no ? 'Tel: '.$sp->tel_no : '' }}{{ $sp->occupation ? ' · '.$sp->occupation : '' }}
+                    </div>
+                </div>
+                <div class="d-flex gap-1 ms-2 flex-shrink-0">
+                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                            onclick="empToggleSpouseEdit(this)">
+                        <i class="bi bi-pencil me-1"></i>Edit
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-danger"
+                            onclick="markEmpSpouseDelete(this, {{ $sp->id }})">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </div>
+            </div>
+            {{-- Inline edit fields (hidden by default) --}}
+            <div class="spouse-edit-fields mt-3 d-none">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold small">Name <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control form-control-sm sp-inp-name" value="{{ $sp->name }}">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold small">NRIC No.</label>
+                        <input type="text" class="form-control form-control-sm sp-inp-nric" value="{{ $sp->nric_no }}">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold small">Tel No. <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control form-control-sm sp-inp-tel" value="{{ $sp->tel_no }}">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold small">Occupation</label>
+                        <input type="text" class="form-control form-control-sm sp-inp-occ" value="{{ $sp->occupation }}">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold small">Income Tax No.</label>
+                        <input type="text" class="form-control form-control-sm sp-inp-tax" value="{{ $sp->income_tax_no }}">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label fw-semibold small">Address</label>
+                        <textarea class="form-control form-control-sm sp-inp-addr" rows="2">{{ $sp->address }}</textarea>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-semibold small">Working?</label>
+                        <select class="form-select form-select-sm sp-inp-working">
+                            <option value="0" {{ !$sp->is_working ? 'selected' : '' }}>No</option>
+                            <option value="1" {{ $sp->is_working ? 'selected' : '' }}>Yes</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-semibold small">Disabled?</label>
+                        <select class="form-select form-select-sm sp-inp-disabled">
+                            <option value="0" {{ !$sp->is_disabled ? 'selected' : '' }}>No</option>
+                            <option value="1" {{ $sp->is_disabled ? 'selected' : '' }}>Yes</option>
+                        </select>
+                    </div>
+                    <div class="col-12 text-end">
+                        <button type="button" class="btn btn-primary btn-sm px-4"
+                                onclick="saveEmpSpouseEdit(this)">
+                            <i class="bi bi-check-circle me-1"></i>Update
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        @endforeach
+
+        {{-- Add new spouse panel --}}
+        <div id="empAddSpousePanel">
+            <p class="fw-semibold small text-muted mb-2">Add {{ $spouses->isEmpty() ? 'Spouse' : 'Another Spouse' }}</p>
+            <div id="empNewSpouseList"></div>
+            <div class="row g-3" id="empAddSpouseFields">
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
+                    <input type="text" id="empNewSpName" class="form-control">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold">NRIC No.</label>
+                    <input type="text" id="empNewSpNric" class="form-control">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Tel No. <span class="text-danger">*</span></label>
+                    <input type="text" id="empNewSpTel" class="form-control">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Occupation</label>
+                    <input type="text" id="empNewSpOcc" class="form-control">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Income Tax No.</label>
+                    <input type="text" id="empNewSpTax" class="form-control">
+                </div>
+                <div class="col-12">
+                    <label class="form-label fw-semibold">Address</label>
+                    <textarea id="empNewSpAddr" class="form-control" rows="2"></textarea>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label fw-semibold">Working?</label>
+                    <select id="empNewSpWorking" class="form-select">
+                        <option value="0">No</option>
+                        <option value="1">Yes</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label fw-semibold">Disabled?</label>
+                    <select id="empNewSpDisabled" class="form-select">
+                        <option value="0">No</option>
+                        <option value="1">Yes</option>
+                    </select>
+                </div>
+            </div>
+            <div class="text-end mt-3">
+                <button type="button" class="btn btn-outline-primary btn-sm px-4"
+                        onclick="addEmpNewSpouse()">
+                    <i class="bi bi-plus-circle me-1"></i>Add to List
+                </button>
+            </div>
+        </div>
+        {{-- Hidden container for new spouse hidden inputs --}}
+        <div id="empNewSpouseHidden"></div>
+    </div>
+</div>
+
+{{-- ══════════════════════════════════════════════════════════════════════ --}}
+{{-- SECTION H — Emergency Contacts                                        --}}
+{{-- ══════════════════════════════════════════════════════════════════════ --}}
+@php $ec = $employee->emergencyContacts->keyBy('contact_order'); @endphp
+<div class="card mb-3">
+    <div class="card-header bg-white py-3 d-flex align-items-center gap-2" style="border-left:4px solid #2563eb;">
+        <span class="badge bg-primary rounded-pill fw-bold" style="font-size:12px;min-width:26px;padding:4px 8px;">H</span>
+        <h6 class="mb-0 fw-bold"><i class="bi bi-telephone-fill me-2 text-primary"></i>Emergency Contacts</h6>
+        <span class="text-muted small ms-1">(2 required)</span>
+    </div>
+    <div class="card-body">
+        @foreach([1,2] as $n)
+        @php $contact = $ec[$n] ?? null; @endphp
+        <div class="{{ $n==2 ? 'mt-3 pt-3 border-top' : '' }}">
+            <p class="fw-semibold small text-muted mb-2">Contact {{ $n }}</p>
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
+                    <input type="text" name="emergency[{{ $n }}][name]" class="form-control"
+                           value="{{ old("emergency.{$n}.name", $contact?->name) }}" required>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Tel No. <span class="text-danger">*</span></label>
+                    <input type="text" name="emergency[{{ $n }}][tel_no]" class="form-control"
+                           value="{{ old("emergency.{$n}.tel_no", $contact?->tel_no) }}" required>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold">Relationship <span class="text-danger">*</span></label>
+                    <select name="emergency[{{ $n }}][relationship]" class="form-select" required>
+                        <option value="">— Select —</option>
+                        @foreach(['Spouse','Parent','Sibling','Child','Friend','Colleague','Other'] as $rel)
+                        <option value="{{ $rel }}"
+                            {{ old("emergency.{$n}.relationship", $contact?->relationship) === $rel ? 'selected' : '' }}>
+                            {{ $rel }}
+                        </option>
+                        @endforeach
+                    </select>
+                </div>
+            </div>
+        </div>
+        @endforeach
+    </div>
+</div>
+
+{{-- ══════════════════════════════════════════════════════════════════════ --}}
+{{-- SECTION I — Child Registration                                        --}}
+{{-- ══════════════════════════════════════════════════════════════════════ --}}
+@php
+    $ch = $employee->childRegistration;
+    $catLabels = [
+        'a' => 'a) Children under 18 years old',
+        'b' => 'b) Children aged 18 years and above (still studying at the certificate and matriculation level)',
+        'c' => 'c) Above 18 years (studying Diploma level or higher in Malaysia or elsewhere)',
+        'd' => 'd) Disabled Child below 18 years old',
+        'e' => 'e) Disabled Child (studying Diploma level or higher in Malaysia or elsewhere)',
+    ];
+@endphp
+<div class="card mb-4">
+    <div class="card-header bg-white py-3 d-flex align-items-center gap-2" style="border-left:4px solid #2563eb;">
+        <span class="badge bg-primary rounded-pill fw-bold" style="font-size:12px;min-width:26px;padding:4px 8px;">I</span>
+        <h6 class="mb-0 fw-bold"><i class="bi bi-heart me-2 text-primary"></i>Child Registration (LHDN Tax Relief)</h6>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle" style="font-size:13px;">
+                <thead style="background:#f8fafc;">
+                    <tr>
+                        <th rowspan="2" style="width:55%;vertical-align:middle;">Number of children according to the category below for tax relief purpose</th>
+                        <th colspan="2" class="text-center">Number of children</th>
+                    </tr>
+                    <tr>
+                        <th class="text-center">100%<br><small class="fw-normal">(tax relief by self)</small></th>
+                        <th class="text-center">50%<br><small class="fw-normal">(tax relief shared with spouse)</small></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach($catLabels as $key => $label)
+                    <tr>
+                        <td>{{ $label }}</td>
+                        <td class="text-center" style="width:120px;">
+                            <input type="number" name="cat_{{ $key }}_100" class="form-control form-control-sm text-center"
+                                   value="{{ old("cat_{$key}_100", $ch?->{"cat_{$key}_100"} ?? 0) }}" min="0" max="99" style="width:70px;margin:auto;">
+                        </td>
+                        <td class="text-center" style="width:120px;">
+                            <input type="number" name="cat_{{ $key }}_50" class="form-control form-control-sm text-center"
+                                   value="{{ old("cat_{$key}_50", $ch?->{"cat_{$key}_50"} ?? 0) }}" min="0" max="99" style="width:70px;margin:auto;">
+                        </td>
+                    </tr>
+                    @endforeach
+                </tbody>
+            </table>
         </div>
     </div>
+</div>
 
-    <div class="d-flex gap-2 justify-content-end mb-4">
-        <a href="{{ route('employees.show', $employee) }}" class="btn btn-outline-secondary">Cancel</a>
-        <button type="submit" class="btn btn-primary px-4">
-            <i class="bi bi-check-circle me-2"></i>Save Changes
-        </button>
+{{-- ── Remarks row ──────────────────────────────────────────────────── --}}
+<div class="card mb-3">
+    <div class="card-body">
+        <label class="form-label fw-semibold">Remarks <span class="text-muted fw-normal">(optional — appended to record)</span></label>
+        <textarea name="remarks" class="form-control" rows="2"
+                  placeholder="Reason for update or any notes..."></textarea>
     </div>
+</div>
+
+<div class="d-flex gap-2 justify-content-end mb-4">
+    <a href="{{ route('employees.show', $employee) }}" class="btn btn-outline-secondary">Cancel</a>
+    <button type="submit" class="btn btn-primary px-4">
+        <i class="bi bi-check-circle me-2"></i>Save Changes
+    </button>
+</div>
 </form>
 
 {{-- ══════════════════════════════════════════════════════════════════════ --}}
@@ -859,403 +1333,6 @@
 </div>
 
 {{-- ══════════════════════════════════════════════════════════════════════ --}}
-{{-- SECTION F — Education & Work History                                  --}}
-{{-- ══════════════════════════════════════════════════════════════════════ --}}
-@php $eduList = $employee->educationHistories ?? collect(); @endphp
-<div class="card mb-3">
-    <div class="card-header bg-white py-3 d-flex align-items-center gap-2" style="border-left:4px solid #2563eb;">
-        <span class="badge bg-primary rounded-pill fw-bold" style="font-size:12px;min-width:26px;padding:4px 8px;">F</span>
-        <h6 class="mb-0 fw-bold"><i class="bi bi-mortarboard me-2 text-primary"></i>Education &amp; Work History</h6>
-    </div>
-    <div class="card-body">
-        <form action="{{ route('employees.education.update', $employee) }}" method="POST" enctype="multipart/form-data">
-        @csrf
-        <input type="hidden" name="edu_delete_ids" id="eduDeleteIds" value="">
-        <div id="eduEditContainer">
-            @forelse($eduList as $edu)
-            <div class="border rounded p-3 mb-3 edu-edit-row" data-id="{{ $edu->id }}">
-                <input type="hidden" name="edu_id[]" value="{{ $edu->id }}">
-                {{-- Summary line --}}
-                <div class="d-flex align-items-start justify-content-between">
-                    <div class="edu-summary">
-                        <div class="fw-semibold">{{ $edu->qualification }}</div>
-                        <div class="text-muted small">
-                            {{ $edu->institution ?? '' }}{{ $edu->year_graduated ? ' · '.$edu->year_graduated : '' }}
-                        </div>
-                        @php $editCertFiles = $edu->certificate_paths ?? ($edu->certificate_path ? [$edu->certificate_path] : []); @endphp
-                        @if(!empty($editCertFiles))
-                        <div class="mt-1">
-                            @foreach($editCertFiles as $ci => $cf)
-                            <a href="{{ asset('storage/'.$cf) }}" target="_blank"
-                               class="btn btn-xs btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:11px;">
-                                <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci + 1 }}
-                            </a>
-                            @endforeach
-                        </div>
-                        @endif
-                    </div>
-                    <div class="d-flex gap-1 ms-2 flex-shrink-0">
-                        <button type="button" class="btn btn-sm btn-outline-secondary"
-                                onclick="toggleEduEditFields(this)">
-                            <i class="bi bi-pencil me-1"></i>Edit
-                        </button>
-                        <button type="button" class="btn btn-sm btn-outline-danger"
-                                onclick="markEduDelete(this, {{ $edu->id }})">
-                            <i class="bi bi-trash"></i>
-                        </button>
-                    </div>
-                </div>
-                {{-- Inline edit fields (hidden by default) --}}
-                @php $inlineCerts = $edu->certificate_paths ?? ($edu->certificate_path ? [$edu->certificate_path] : []); @endphp
-                <div class="edu-fields mt-3 d-none" data-edu-idx="{{ $loop->index }}">
-                    <div class="row g-3">
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold">Qualification</label>
-                            <input type="text" name="edu_qualification[]" class="form-control" value="{{ $edu->qualification }}" required>
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold">Institution</label>
-                            <input type="text" name="edu_institution[]" class="form-control" value="{{ $edu->institution }}">
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label fw-semibold">Year Graduated</label>
-                            <input type="number" name="edu_year[]" class="form-control" value="{{ $edu->year_graduated }}" min="1950" max="{{ date('Y')+5 }}">
-                        </div>
-                        <div class="col-md-9">
-                            <label class="form-label fw-semibold">Certificate(s)
-                                <span class="text-muted fw-normal small">(max 5 files)</span>
-                            </label>
-                            {{-- Existing cert files with individual remove buttons --}}
-                            <div class="edu-cert-existing mb-2">
-                                @foreach($inlineCerts as $ci => $cf)
-                                <div class="d-inline-flex align-items-center gap-1 me-1 mb-1">
-                                    <a href="{{ asset('storage/'.$cf) }}" target="_blank"
-                                       class="btn btn-sm btn-outline-primary" style="font-size:11px;">
-                                        <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci+1 }}
-                                    </a>
-                                    <input type="hidden" name="edu_cert_keep[{{ $loop->parent->index }}][]"
-                                           value="{{ $cf }}" class="edu-cert-keep-input">
-                                    <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1"
-                                            style="font-size:11px;"
-                                            onclick="removeEduCert(this)"
-                                            title="Remove this file">
-                                        <i class="bi bi-x"></i>
-                                    </button>
-                                </div>
-                                @endforeach
-                            </div>
-                            {{-- Add new cert file --}}
-                            <div class="d-flex gap-2 mb-1">
-                                <input type="file" class="edu-cert-file-input form-control form-control-sm"
-                                       accept=".jpg,.jpeg,.png,.pdf" style="max-width:280px;"
-                                       data-idx="{{ $loop->index }}">
-                                <button type="button" class="btn btn-outline-secondary btn-sm flex-shrink-0"
-                                        onclick="addEduCertFile(this, {{ $loop->index }})">
-                                    <i class="bi bi-upload me-1"></i>Add
-                                </button>
-                            </div>
-                            <div class="edu-cert-new-list" data-idx="{{ $loop->index }}"></div>
-                            <div class="edu-cert-new-hidden" data-idx="{{ $loop->index }}"></div>
-                            <div class="form-text">Click <i class="bi bi-x"></i> to remove a file. Existing files are kept unless removed.</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            @empty
-            <p class="text-muted small" id="noEduMsg">No education history yet.</p>
-            @endforelse
-        </div>
-        <div class="d-flex gap-2 mt-2 mb-3">
-            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addEduEditRow()">
-                <i class="bi bi-plus-circle me-1"></i>Add Qualification
-            </button>
-        </div>
-
-        {{-- Total Years of Experience (separate, matching public form) --}}
-        @php
-            $expTotal = $employee->educationHistories->first()?->years_experience ?? null;
-        @endphp
-        <div class="row g-3 mb-3">
-            <div class="col-md-5">
-                <label class="form-label fw-semibold">
-                    No. of Years of Working Experience
-                    <span class="text-muted fw-normal small">(not incl. part-time)</span>
-                </label>
-                <select name="edu_experience_total" class="form-select">
-                    <option value="">— Select —</option>
-                    @for($y = 0; $y <= 40; $y++)
-                    <option value="{{ $y }}" {{ old('edu_experience_total', $expTotal) == $y ? 'selected' : '' }}>
-                        {{ $y }} {{ $y == 1 ? 'year' : 'years' }}
-                    </option>
-                    @endfor
-                    <option value="40+" {{ old('edu_experience_total', $expTotal) === '40+' ? 'selected' : '' }}>40+ years</option>
-                </select>
-            </div>
-        </div>
-
-        <div class="text-end">
-            <button type="submit" class="btn btn-primary btn-sm px-4">
-                <i class="bi bi-check-circle me-1"></i>Save Education
-            </button>
-        </div>
-        </form>
-    </div>
-</div>
-
-{{-- ══════════════════════════════════════════════════════════════════════ --}}
-{{-- SECTION G — Spouse Information                                        --}}
-{{-- ══════════════════════════════════════════════════════════════════════ --}}
-@php $spouses = $employee->spouseDetails ?? collect(); @endphp
-<div class="card mb-3" id="empSpouseSection">
-    <div class="card-header bg-white py-3 d-flex align-items-center gap-2" style="border-left:4px solid #2563eb;">
-        <span class="badge bg-primary rounded-pill fw-bold" style="font-size:12px;min-width:26px;padding:4px 8px;">G</span>
-        <h6 class="mb-0 fw-bold"><i class="bi bi-people me-2 text-primary"></i>Spouse Information <span class="text-danger emp-spouse-required d-none">*</span></h6>
-    </div>
-    <div class="card-body">
-
-        {{-- Existing spouse records --}}
-        @foreach($spouses as $sp)
-        <div class="border rounded p-3 mb-3 spouse-card" style="background:#f8fafc;">
-            {{-- Summary row --}}
-            <div class="d-flex align-items-start justify-content-between">
-                <div>
-                    <div class="fw-semibold">{{ $sp->name }}</div>
-                    <div class="text-muted small">
-                        {{ $sp->nric_no ? 'NRIC: '.$sp->nric_no.' · ' : '' }}
-                        {{ $sp->tel_no ? 'Tel: '.$sp->tel_no.' · ' : '' }}
-                        {{ $sp->occupation ?? '' }}
-                        {{ $sp->is_working ? ' · Working' : '' }}
-                    </div>
-                </div>
-                <div class="d-flex gap-1 ms-2 flex-shrink-0">
-                    <button type="button" class="btn btn-sm btn-outline-secondary"
-                            onclick="toggleSpouseEdit(this)">
-                        <i class="bi bi-pencil me-1"></i>Edit
-                    </button>
-                    <form action="{{ route('employees.spouse.delete', [$employee, $sp->id]) }}" method="POST"
-                          class="d-inline" onsubmit="return confirm('Remove this spouse record?')">
-                        @csrf @method('DELETE')
-                        <button type="submit" class="btn btn-sm btn-outline-danger">
-                            <i class="bi bi-trash"></i>
-                        </button>
-                    </form>
-                </div>
-            </div>
-            {{-- Inline edit form (hidden by default) --}}
-            <div class="spouse-edit-fields mt-3 d-none">
-                <form action="{{ route('employees.spouse.edit', [$employee, $sp->id]) }}" method="POST" onsubmit="return empValidateSpouseTel(this)">
-                @csrf @method('PUT')
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="form-label fw-semibold small">Name <span class="text-danger">*</span></label>
-                        <input type="text" name="spouse_name" class="form-control form-control-sm" value="{{ $sp->name }}" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label fw-semibold small">NRIC No.</label>
-                        <input type="text" name="spouse_nric_no" class="form-control form-control-sm" value="{{ $sp->nric_no }}">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label fw-semibold small">Tel No. <span class="text-danger">*</span></label>
-                        <input type="text" name="spouse_tel_no" class="form-control form-control-sm" value="{{ $sp->tel_no }}">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label fw-semibold small">Occupation</label>
-                        <input type="text" name="spouse_occupation" class="form-control form-control-sm" value="{{ $sp->occupation }}">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label fw-semibold small">Income Tax No.</label>
-                        <input type="text" name="spouse_income_tax_no" class="form-control form-control-sm" value="{{ $sp->income_tax_no }}">
-                    </div>
-                    <div class="col-12">
-                        <label class="form-label fw-semibold small">Address</label>
-                        <textarea name="spouse_address" class="form-control form-control-sm" rows="2">{{ $sp->address }}</textarea>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label fw-semibold small">Working?</label>
-                        <select name="spouse_is_working" class="form-select form-select-sm">
-                            <option value="0" {{ !$sp->is_working ? 'selected' : '' }}>No</option>
-                            <option value="1" {{ $sp->is_working ? 'selected' : '' }}>Yes</option>
-                        </select>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label fw-semibold small">Disabled?</label>
-                        <select name="spouse_is_disabled" class="form-select form-select-sm">
-                            <option value="0" {{ !$sp->is_disabled ? 'selected' : '' }}>No</option>
-                            <option value="1" {{ $sp->is_disabled ? 'selected' : '' }}>Yes</option>
-                        </select>
-                    </div>
-                    <div class="col-12 text-end">
-                        <button type="submit" class="btn btn-primary btn-sm px-4">
-                            <i class="bi bi-check-circle me-1"></i>Save Changes
-                        </button>
-                    </div>
-                </div>
-                </form>
-            </div>
-        </div>
-        @endforeach
-
-        {{-- Add new spouse --}}
-        <p class="fw-semibold small text-muted mb-2">Add {{ $spouses->isEmpty() ? 'Spouse' : 'Another Spouse' }}</p>
-        <form id="empAddSpouseForm" action="{{ route('employees.spouse.update', $employee) }}" method="POST" onsubmit="return empValidateSpouseTel(this)">
-        @csrf
-        <div class="row g-3">
-            <div class="col-md-6">
-                <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
-                <input type="text" name="spouse_name" class="form-control" required>
-            </div>
-            <div class="col-md-6">
-                <label class="form-label fw-semibold">NRIC No.</label>
-                <input type="text" name="spouse_nric_no" class="form-control">
-            </div>
-            <div class="col-md-4">
-                <label class="form-label fw-semibold">Tel No. <span class="text-danger">*</span></label>
-                <input type="text" name="spouse_tel_no" class="form-control">
-            </div>
-            <div class="col-md-4">
-                <label class="form-label fw-semibold">Occupation</label>
-                <input type="text" name="spouse_occupation" class="form-control">
-            </div>
-            <div class="col-md-4">
-                <label class="form-label fw-semibold">Income Tax No.</label>
-                <input type="text" name="spouse_income_tax_no" class="form-control">
-            </div>
-            <div class="col-12">
-                <label class="form-label fw-semibold">Address</label>
-                <textarea name="spouse_address" class="form-control" rows="2"></textarea>
-            </div>
-            <div class="col-md-3">
-                <label class="form-label fw-semibold">Working?</label>
-                <select name="spouse_is_working" class="form-select">
-                    <option value="0">No</option>
-                    <option value="1">Yes</option>
-                </select>
-            </div>
-            <div class="col-md-3">
-                <label class="form-label fw-semibold">Disabled?</label>
-                <select name="spouse_is_disabled" class="form-select">
-                    <option value="0">No</option>
-                    <option value="1">Yes</option>
-                </select>
-            </div>
-        </div>
-        <div class="text-end mt-3">
-            <button type="submit" class="btn btn-primary btn-sm px-4">
-                <i class="bi bi-plus-circle me-1"></i>Add Spouse
-            </button>
-        </div>
-        </form>
-    </div>
-</div>
-
-{{-- ══════════════════════════════════════════════════════════════════════ --}}
-{{-- SECTION H — Emergency Contacts                                        --}}
-{{-- ══════════════════════════════════════════════════════════════════════ --}}
-@php $ec = $employee->emergencyContacts->keyBy('contact_order'); @endphp
-<div class="card mb-3">
-    <div class="card-header bg-white py-3 d-flex align-items-center gap-2" style="border-left:4px solid #2563eb;">
-        <span class="badge bg-primary rounded-pill fw-bold" style="font-size:12px;min-width:26px;padding:4px 8px;">H</span>
-        <h6 class="mb-0 fw-bold"><i class="bi bi-telephone-fill me-2 text-primary"></i>Emergency Contacts</h6>
-        <span class="text-muted small ms-1">(2 required)</span>
-    </div>
-    <div class="card-body">
-        <form action="{{ route('employees.emergency.update', $employee) }}" method="POST">
-        @csrf
-        @foreach([1,2] as $n)
-        @php $contact = $ec[$n] ?? null; @endphp
-        <div class="{{ $n==2 ? 'mt-3 pt-3 border-top' : '' }}">
-            <p class="fw-semibold small text-muted mb-2">Contact {{ $n }}</p>
-            <div class="row g-3">
-                <div class="col-md-4">
-                    <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
-                    <input type="text" name="emergency[{{ $n }}][name]" class="form-control"
-                           value="{{ old("emergency.{$n}.name", $contact?->name) }}" required>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label fw-semibold">Tel No. <span class="text-danger">*</span></label>
-                    <input type="text" name="emergency[{{ $n }}][tel_no]" class="form-control"
-                           value="{{ old("emergency.{$n}.tel_no", $contact?->tel_no) }}" required>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label fw-semibold">Relationship <span class="text-danger">*</span></label>
-                    <select name="emergency[{{ $n }}][relationship]" class="form-select" required>
-                        <option value="">— Select —</option>
-                        @foreach(['Spouse','Parent','Sibling','Child','Friend','Colleague','Other'] as $rel)
-                        <option value="{{ $rel }}"
-                            {{ old("emergency.{$n}.relationship", $contact?->relationship) === $rel ? 'selected' : '' }}>
-                            {{ $rel }}
-                        </option>
-                        @endforeach
-                    </select>
-                </div>
-            </div>
-        </div>
-        @endforeach
-        <div class="text-end mt-3">
-            <button type="submit" class="btn btn-primary btn-sm px-4"><i class="bi bi-check-circle me-1"></i>Save Emergency Contacts</button>
-        </div>
-        </form>
-    </div>
-</div>
-
-{{-- ══════════════════════════════════════════════════════════════════════ --}}
-{{-- SECTION I — Child Registration                                        --}}
-{{-- ══════════════════════════════════════════════════════════════════════ --}}
-@php
-    $ch = $employee->childRegistration;
-    $catLabels = [
-        'a' => 'a) Children under 18 years old',
-        'b' => 'b) Children aged 18 years and above (still studying at the certificate and matriculation level)',
-        'c' => 'c) Above 18 years (studying Diploma level or higher in Malaysia or elsewhere)',
-        'd' => 'd) Disabled Child below 18 years old',
-        'e' => 'e) Disabled Child (studying Diploma level or higher in Malaysia or elsewhere)',
-    ];
-@endphp
-<div class="card mb-4">
-    <div class="card-header bg-white py-3 d-flex align-items-center gap-2" style="border-left:4px solid #2563eb;">
-        <span class="badge bg-primary rounded-pill fw-bold" style="font-size:12px;min-width:26px;padding:4px 8px;">I</span>
-        <h6 class="mb-0 fw-bold"><i class="bi bi-heart me-2 text-primary"></i>Child Registration (LHDN Tax Relief)</h6>
-    </div>
-    <div class="card-body">
-        <form action="{{ route('employees.children.update', $employee) }}" method="POST">
-        @csrf
-        <div class="table-responsive">
-            <table class="table table-sm table-bordered align-middle" style="font-size:13px;">
-                <thead style="background:#f8fafc;">
-                    <tr>
-                        <th rowspan="2" style="width:55%;vertical-align:middle;">Number of children according to the category below for tax relief purpose</th>
-                        <th colspan="2" class="text-center">Number of children</th>
-                    </tr>
-                    <tr>
-                        <th class="text-center">100%<br><small class="fw-normal">(tax relief by self)</small></th>
-                        <th class="text-center">50%<br><small class="fw-normal">(tax relief shared with spouse)</small></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach($catLabels as $key => $label)
-                    <tr>
-                        <td>{{ $label }}</td>
-                        <td class="text-center" style="width:120px;">
-                            <input type="number" name="cat_{{ $key }}_100" class="form-control form-control-sm text-center"
-                                   value="{{ old("cat_{$key}_100", $ch?->{"cat_{$key}_100"} ?? 0) }}" min="0" max="99" style="width:70px;margin:auto;">
-                        </td>
-                        <td class="text-center" style="width:120px;">
-                            <input type="number" name="cat_{{ $key }}_50" class="form-control form-control-sm text-center"
-                                   value="{{ old("cat_{$key}_50", $ch?->{"cat_{$key}_50"} ?? 0) }}" min="0" max="99" style="width:70px;margin:auto;">
-                        </td>
-                    </tr>
-                    @endforeach
-                </tbody>
-            </table>
-        </div>
-        <div class="text-end mt-2">
-            <button type="submit" class="btn btn-primary btn-sm px-4"><i class="bi bi-check-circle me-1"></i>Save Child Registration</button>
-        </div>
-        </form>
-    </div>
-</div>
-
-{{-- ══════════════════════════════════════════════════════════════════════ --}}
 {{-- Declaration & Consent                                                  --}}
 {{-- ══════════════════════════════════════════════════════════════════════ --}}
 @php $consentAt = $employee->consent_given_at; @endphp
@@ -1390,16 +1467,6 @@ document.addEventListener('DOMContentLoaded', function() {
     if (b) toggleOtherBank(b, 'empBankNameOther');
 });
 
-function toggleSpouseEdit(btn) {
-    const card = btn.closest('.spouse-card');
-    const fields = card.querySelector('.spouse-edit-fields');
-    const isHidden = fields.classList.contains('d-none');
-    fields.classList.toggle('d-none', !isHidden);
-    btn.innerHTML = isHidden
-        ? '<i class="bi bi-chevron-up me-1"></i>Close'
-        : '<i class="bi bi-pencil me-1"></i>Edit';
-}
-
 function toggleEduEditFields(btn) {
     const row = btn.closest('.edu-edit-row');
     const fields = row.querySelector('.edu-fields');
@@ -1422,26 +1489,39 @@ function addEduEditRow() {
     const noMsg = document.getElementById('noEduMsg');
     if (noMsg) noMsg.remove();
     const container = document.getElementById('eduEditContainer');
+    const idx = container.querySelectorAll('.edu-edit-row').length;
     const div = document.createElement('div');
     div.className = 'border rounded p-3 mb-3 edu-edit-row';
     div.innerHTML = `
         <input type="hidden" name="edu_id[]" value="">
-        <div class="row g-3">
-            <div class="col-md-6">
-                <label class="form-label fw-semibold">Qualification</label>
-                <input type="text" name="edu_qualification[]" class="form-control">
-            </div>
-            <div class="col-md-6">
-                <label class="form-label fw-semibold">Institution</label>
-                <input type="text" name="edu_institution[]" class="form-control">
-            </div>
-            <div class="col-md-3">
-                <label class="form-label fw-semibold">Year Graduated</label>
-                <input type="number" name="edu_year[]" class="form-control" min="1950" max="${new Date().getFullYear()+5}">
-            </div>
-            <div class="col-md-9">
-                <label class="form-label fw-semibold">Certificate</label>
-                <input type="file" name="edu_certificate[]" class="form-control" accept=".jpg,.jpeg,.png,.pdf" multiple>
+        <div class="edu-fields" data-edu-idx="${idx}">
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold">Qualification</label>
+                    <input type="text" name="edu_qualification[]" class="form-control">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold">Institution</label>
+                    <input type="text" name="edu_institution[]" class="form-control">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label fw-semibold">Year Graduated</label>
+                    <input type="number" name="edu_year[]" class="form-control" min="1950" max="${new Date().getFullYear()+5}">
+                </div>
+                <div class="col-md-9">
+                    <label class="form-label fw-semibold">Certificate(s) <span class="text-muted fw-normal small">(max 5 files)</span></label>
+                    <div class="d-flex gap-2 mb-1">
+                        <input type="file" class="edu-cert-file-input form-control form-control-sm"
+                               accept=".jpg,.jpeg,.png,.pdf" style="max-width:280px;" data-idx="${idx}">
+                        <button type="button" class="btn btn-outline-secondary btn-sm flex-shrink-0"
+                                onclick="addEduCertFile(this, ${idx})">
+                            <i class="bi bi-upload me-1"></i>Add
+                        </button>
+                    </div>
+                    <div class="edu-cert-new-list" data-idx="${idx}"></div>
+                    <div class="edu-cert-new-hidden" data-idx="${idx}"></div>
+                    <div class="form-text">Select a file then click Add. You can add up to 5 files.</div>
+                </div>
             </div>
         </div>
         <div class="mt-2 text-end">
@@ -1605,33 +1685,217 @@ function empToggleSpouse(val) {
     const star    = document.querySelector('.emp-spouse-required');
     if (!section) return;
     const isMarried = val === 'married';
-    section.querySelectorAll('input, select, textarea, button[type="submit"]').forEach(el => {
+    section.style.opacity = isMarried ? '' : '0.45';
+    const panel = document.getElementById('empAddSpousePanel');
+    if (panel) panel.style.pointerEvents = isMarried ? '' : 'none';
+    section.querySelectorAll('.spouse-card button').forEach(el => {
         el.disabled = !isMarried;
     });
-    section.style.opacity = isMarried ? '' : '0.45';
     if (star) star.classList.toggle('d-none', !isMarried);
     if (isMarried) {
         const addr   = document.getElementById('empResAddress');
-        const form   = document.getElementById('empAddSpouseForm');
-        const spAddr = form ? form.querySelector('[name="spouse_address"]') : null;
+        const spAddr = document.getElementById('empNewSpAddr');
         if (addr && spAddr && !spAddr.value.trim()) spAddr.value = addr.value;
     }
 }
 document.addEventListener('DOMContentLoaded', function() {
     const sel = document.getElementById('empMaritalStatus');
     if (sel) empToggleSpouse(sel.value);
+
+    // Auto-fill spouse address from Section A residential address
+    const resAddr   = document.getElementById('empResAddress');
+    const spAddr    = document.getElementById('empNewSpAddr');
+    if (resAddr && spAddr && !spAddr.value.trim()) {
+        spAddr.value = resAddr.value.trim();
+    }
+    // Keep spouse address in sync when Section A address changes (if not yet manually edited)
+    if (resAddr && spAddr) {
+        resAddr.addEventListener('input', function() {
+            spAddr.dataset.manuallyEdited = spAddr.dataset.manuallyEdited || '';
+            if (!spAddr.dataset.manuallyEdited) {
+                spAddr.value = resAddr.value;
+            }
+        });
+        spAddr.addEventListener('input', function() {
+            spAddr.dataset.manuallyEdited = '1';
+        });
+    }
 });
 
-function empValidateSpouseTel(form) {
-    const marital = document.getElementById('empMaritalStatus');
-    if (!marital || marital.value !== 'married') return true;
-    const telInput = form.querySelector('[name="spouse_tel_no"]');
-    if (telInput && !telInput.value.trim()) {
-        alert('Tel No. is required when Marital Status is Married.');
-        telInput.focus();
-        return false;
-    }
-    return true;
+function empToggleSpouseEdit(btn) {
+    const card   = btn.closest('.spouse-card');
+    const fields = card.querySelector('.spouse-edit-fields');
+    const hidden = fields.classList.contains('d-none');
+    fields.classList.toggle('d-none', !hidden);
+    btn.innerHTML = hidden ? '<i class="bi bi-chevron-up me-1"></i>Close' : '<i class="bi bi-pencil me-1"></i>Edit';
+}
+
+function saveEmpSpouseEdit(btn) {
+    const card = btn.closest('.spouse-card');
+    const name = card.querySelector('.sp-inp-name').value.trim();
+    if (!name) { alert('Please enter the spouse name.'); return; }
+    const tel = card.querySelector('.sp-inp-tel').value.trim();
+    if (!tel) { alert('Please enter the spouse tel no.'); return; }
+    card.querySelector('.sp-h-name').value    = name;
+    card.querySelector('.sp-h-nric').value    = card.querySelector('.sp-inp-nric').value;
+    card.querySelector('.sp-h-tel').value     = card.querySelector('.sp-inp-tel').value;
+    card.querySelector('.sp-h-occ').value     = card.querySelector('.sp-inp-occ').value;
+    card.querySelector('.sp-h-tax').value     = card.querySelector('.sp-inp-tax').value;
+    card.querySelector('.sp-h-addr').value    = card.querySelector('.sp-inp-addr').value;
+    card.querySelector('.sp-h-working').value  = card.querySelector('.sp-inp-working').value;
+    card.querySelector('.sp-h-disabled').value = card.querySelector('.sp-inp-disabled').value;
+    const displayName = card.querySelector('.sp-display-name');
+    const displaySub  = card.querySelector('.sp-display-sub');
+    const occ = card.querySelector('.sp-inp-occ').value;
+    if (displayName) displayName.textContent = name;
+    if (displaySub)  displaySub.textContent  = (tel ? 'Tel: ' + tel : '') + (occ ? ' · ' + occ : '');
+    card.querySelector('.spouse-edit-fields').classList.add('d-none');
+    const editBtn = card.querySelector('button[onclick*="empToggleSpouseEdit"]');
+    if (editBtn) editBtn.innerHTML = '<i class="bi bi-pencil me-1"></i>Edit';
+}
+
+function markEmpSpouseDelete(btn, id) {
+    const field = document.getElementById('empDelSpouseIds');
+    const ids   = field.value ? field.value.split(',') : [];
+    ids.push(id);
+    field.value = ids.join(',');
+    btn.closest('.spouse-card').remove();
+}
+
+let _empNewSpouseCount = 0;
+function addEmpNewSpouse() {
+    const name = document.getElementById('empNewSpName').value.trim();
+    if (!name) { alert('Please enter the spouse name.'); return; }
+    const nric     = document.getElementById('empNewSpNric').value.trim();
+    const tel      = document.getElementById('empNewSpTel').value.trim();
+    if (!tel) { alert('Please enter the spouse tel no.'); return; }
+    const occ      = document.getElementById('empNewSpOcc').value.trim();
+    const tax      = document.getElementById('empNewSpTax').value.trim();
+    const addr     = document.getElementById('empNewSpAddr').value.trim();
+    const working  = document.getElementById('empNewSpWorking').value;
+    const disabled = document.getElementById('empNewSpDisabled').value;
+    const existingCount = document.querySelectorAll('.spouse-card, .new-spouse-card').length;
+    const idx  = existingCount;
+    _empNewSpouseCount++;
+    const list   = document.getElementById('empNewSpouseList');
+    const hidden = document.getElementById('empNewSpouseHidden');
+    list.insertAdjacentHTML('beforeend',
+        `<div class="border rounded p-3 mb-3 new-spouse-card" style="background:#f8fafc;" data-new-sp-idx="${idx}">
+            <div class="d-flex align-items-start justify-content-between">
+                <div>
+                    <div class="fw-semibold new-sp-display-name">${escHtml(name)}</div>
+                    <div class="text-muted small new-sp-display-sub">${nric ? 'NRIC: ' + escHtml(nric) + ' · ' : ''}${tel ? 'Tel: ' + escHtml(tel) : ''}${occ ? ' · ' + escHtml(occ) : ''}</div>
+                </div>
+                <div class="d-flex gap-1 ms-2 flex-shrink-0">
+                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                            onclick="empToggleNewSpouseEdit(this)">
+                        <i class="bi bi-pencil me-1"></i>Edit
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-danger"
+                            onclick="removeEmpNewSpouse(this, ${idx})"><i class="bi bi-trash"></i></button>
+                </div>
+            </div>
+            <div class="new-spouse-edit-fields mt-3 d-none">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold small">Name <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control form-control-sm nsp-inp-name" value="${escHtml(name)}">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold small">NRIC No.</label>
+                        <input type="text" class="form-control form-control-sm nsp-inp-nric" value="${escHtml(nric)}">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold small">Tel No. <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control form-control-sm nsp-inp-tel" value="${escHtml(tel)}">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold small">Occupation</label>
+                        <input type="text" class="form-control form-control-sm nsp-inp-occ" value="${escHtml(occ)}">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold small">Income Tax No.</label>
+                        <input type="text" class="form-control form-control-sm nsp-inp-tax" value="${escHtml(tax)}">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label fw-semibold small">Address</label>
+                        <textarea class="form-control form-control-sm nsp-inp-addr" rows="2">${escHtml(addr)}</textarea>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-semibold small">Working?</label>
+                        <select class="form-select form-select-sm nsp-inp-working">
+                            <option value="0" ${working === '0' ? 'selected' : ''}>No</option>
+                            <option value="1" ${working === '1' ? 'selected' : ''}>Yes</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-semibold small">Disabled?</label>
+                        <select class="form-select form-select-sm nsp-inp-disabled">
+                            <option value="0" ${disabled === '0' ? 'selected' : ''}>No</option>
+                            <option value="1" ${disabled === '1' ? 'selected' : ''}>Yes</option>
+                        </select>
+                    </div>
+                    <div class="col-12 text-end">
+                        <button type="button" class="btn btn-primary btn-sm px-4"
+                                onclick="saveEmpNewSpouseEdit(this, ${idx})">
+                            <i class="bi bi-check-circle me-1"></i>Update
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>`
+    );
+    const fields = {name, nric_no: nric, tel_no: tel, occupation: occ, income_tax_no: tax, address: addr, is_working: working, is_disabled: disabled};
+    Object.entries(fields).forEach(([k, v]) => {
+        const inp = document.createElement('input');
+        inp.type = 'hidden'; inp.name = `spouses[${idx}][${k}]`; inp.value = v;
+        inp.dataset.newSpIdx = idx;
+        hidden.appendChild(inp);
+    });
+    ['empNewSpName','empNewSpNric','empNewSpTel','empNewSpOcc','empNewSpTax','empNewSpAddr'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.value = '';
+    });
+    document.getElementById('empNewSpWorking').value  = '0';
+    document.getElementById('empNewSpDisabled').value = '0';
+}
+
+function removeEmpNewSpouse(btn, idx) {
+    btn.closest('.new-spouse-card').remove();
+    document.querySelectorAll(`#empNewSpouseHidden input[data-new-sp-idx="${idx}"]`).forEach(el => el.remove());
+}
+
+function empToggleNewSpouseEdit(btn) {
+    const card   = btn.closest('.new-spouse-card');
+    const fields = card.querySelector('.new-spouse-edit-fields');
+    fields.classList.toggle('d-none');
+}
+
+function saveEmpNewSpouseEdit(btn, idx) {
+    const card    = btn.closest('.new-spouse-card');
+    const name    = card.querySelector('.nsp-inp-name').value.trim();
+    if (!name) { alert('Please enter the spouse name.'); return; }
+    const nric    = card.querySelector('.nsp-inp-nric').value.trim();
+    const tel     = card.querySelector('.nsp-inp-tel').value.trim();
+    if (!tel) { alert('Please enter the spouse tel no.'); return; }
+    const occ     = card.querySelector('.nsp-inp-occ').value.trim();
+    const tax     = card.querySelector('.nsp-inp-tax').value.trim();
+    const addr    = card.querySelector('.nsp-inp-addr').value.trim();
+    const working = card.querySelector('.nsp-inp-working').value;
+    const dis     = card.querySelector('.nsp-inp-disabled').value;
+
+    // Update display
+    card.querySelector('.new-sp-display-name').textContent = name;
+    card.querySelector('.new-sp-display-sub').textContent  =
+        (nric ? 'NRIC: ' + nric + ' · ' : '') + (tel ? 'Tel: ' + tel : '') + (occ ? ' · ' + occ : '');
+
+    // Update hidden inputs
+    const fieldMap = {name, nric_no: nric, tel_no: tel, occupation: occ, income_tax_no: tax, address: addr, is_working: working, is_disabled: dis};
+    Object.entries(fieldMap).forEach(([k, v]) => {
+        const inp = document.querySelector(`#empNewSpouseHidden input[data-new-sp-idx="${idx}"][name="spouses[${idx}][${k}]"]`);
+        if (inp) inp.value = v;
+    });
+
+    card.querySelector('.new-spouse-edit-fields').classList.add('d-none');
 }
 
 </script>

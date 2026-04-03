@@ -20,6 +20,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->validateCsrfTokens(except: [
             'aarf/*/acknowledge',
         ]);
+
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

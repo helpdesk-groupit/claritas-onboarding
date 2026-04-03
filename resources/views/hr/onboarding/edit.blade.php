@@ -16,7 +16,95 @@ $p = $onboarding->personalDetail;
 $w = $onboarding->workDetail;
 $a = $onboarding->assetProvisioning;
 $canEditAll = Auth::user()->canEditAllOnboardingSections();
+$obEditName      = $p?->full_name ?? $onboarding->employee?->full_name ?? 'New Employee';
+$obEditPicUrl    = $onboarding->employee?->user?->profile_picture_url
+                 ?? 'https://ui-avatars.com/api/?name=' . urlencode($obEditName) . '&background=2563eb&color=fff&size=200';
+$obEditCanPhoto  = Auth::user()->canEditOnboarding() && $onboarding->employee?->user;
+$obEditStatus    = $onboarding->employee?->employment_status ?? 'pending';
+$obEditStatusBg  = match($obEditStatus) {
+    'active'         => 'success',
+    'resigned','terminated','contract_ended' => 'danger',
+    default          => 'warning text-dark',
+};
 @endphp
+
+{{-- ── Profile Header ────────────────────────────────────────────────────── --}}
+<div class="card mb-4">
+    <div class="card-body d-flex align-items-center gap-4 py-3">
+        <div class="d-flex flex-column align-items-center flex-shrink-0 gap-1">
+            <img src="{{ $obEditPicUrl }}" alt="{{ $obEditName }}"
+                 class="rounded-circle border shadow-sm"
+                 style="width:80px;height:80px;object-fit:cover;">
+            @if($obEditCanPhoto)
+            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
+                    style="font-size:11px;" data-bs-toggle="modal" data-bs-target="#changePhotoModalOb">
+                <i class="bi bi-camera me-1"></i>Change
+            </button>
+            @endif
+        </div>
+        <div class="flex-fill">
+            <h5 class="fw-bold mb-1">{{ $obEditName }}</h5>
+            @if($p?->preferred_name && $p->preferred_name !== $p->full_name)
+                <p class="text-muted mb-1 small">Known as: <em>{{ $p->preferred_name }}</em></p>
+            @endif
+            <p class="text-muted mb-2 small">{{ $onboarding->employee?->designation ?? $w?->designation ?? '—' }}</p>
+            <div class="d-flex flex-wrap gap-1">
+                @if($w?->company)
+                    <span class="badge bg-primary">{{ $w->company }}</span>
+                @endif
+                @if($w?->department)
+                    <span class="badge bg-secondary">{{ $w->department }}</span>
+                @endif
+                <span class="badge bg-{{ $obEditStatusBg }}">
+                    {{ ucfirst(str_replace('_', ' ', $obEditStatus)) }}
+                </span>
+            </div>
+        </div>
+        <div class="text-end text-muted small flex-shrink-0 d-none d-md-block">
+            @if($p?->personal_email)
+                <div><i class="bi bi-envelope me-1"></i>{{ $p->personal_email }}</div>
+            @endif
+            @if($w?->start_date)
+                <div class="mt-1"><i class="bi bi-calendar me-1"></i>Start: {{ \Carbon\Carbon::parse($w->start_date)->format('d M Y') }}</div>
+            @endif
+        </div>
+    </div>
+</div>
+
+{{-- ── Change Photo Modal ──────────────────────────────────────────────── --}}
+@if($obEditCanPhoto)
+<div class="modal fade" id="changePhotoModalOb" tabindex="-1" aria-labelledby="changePhotoModalObLabel" aria-hidden="true">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h6 class="modal-title fw-bold" id="changePhotoModalObLabel">
+                    <i class="bi bi-camera me-2"></i>Change Profile Photo
+                </h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ route('onboarding.avatar', $onboarding) }}" method="POST" enctype="multipart/form-data">
+                @csrf
+                <div class="modal-body">
+                    <div class="text-center mb-3">
+                        <img src="{{ $obEditPicUrl }}" alt="{{ $obEditName }}"
+                             class="rounded-circle border shadow-sm"
+                             style="width:80px;height:80px;object-fit:cover;">
+                    </div>
+                    <label class="form-label fw-semibold">New Photo</label>
+                    <input type="file" name="avatar" class="form-control" accept="image/*" required>
+                    <div class="form-text">JPEG, PNG, GIF or WebP. Max 2 MB.</div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-sm btn-primary">
+                        <i class="bi bi-upload me-1"></i>Upload
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+@endif
 
 <form action="{{ route('onboarding.update', $onboarding) }}" method="POST" enctype="multipart/form-data">
     @csrf
@@ -1129,6 +1217,198 @@ function editOBAddSpouse() {
 
 function escHtml(s) {
     return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Education (Section F) ────────────────────────────────────────────────
+let _obEditCertFiles = [];
+
+function editOBAddCertFile() {
+    const input = document.getElementById('editOBEduCertInput');
+    if (!input || !input.files.length) { alert('Please select a file first.'); return; }
+    _obEditCertFiles.push(input.files[0]);
+    renderOBCertFileList();
+    input.value = '';
+}
+
+function renderOBCertFileList() {
+    const list = document.getElementById('editOBEduCertFileList');
+    if (!list) return;
+    list.innerHTML = '';
+    _obEditCertFiles.forEach((f, i) => {
+        list.innerHTML += `<span class="badge bg-light border text-dark me-1 mb-1" style="font-size:11px;">
+            ${escHtml(f.name)}
+            <button type="button" class="btn-close ms-1" style="font-size:9px;"
+                    onclick="_obEditCertFiles.splice(${i},1);renderOBCertFileList()"></button>
+        </span>`;
+    });
+}
+
+function editOBAddEdu() {
+    const qual = document.getElementById('editOBEduQual').value.trim();
+    if (!qual) { alert('Please enter a qualification.'); return; }
+    const inst = document.getElementById('editOBEduInst').value.trim();
+    const year = document.getElementById('editOBEduYear').value.trim();
+    const idx  = document.querySelectorAll('#editOBEduList .editob-edu-row').length;
+    const row  = document.createElement('div');
+    row.className = 'border rounded p-2 mb-2 bg-white editob-edu-row';
+    row.innerHTML = `
+        <div class="d-flex align-items-center justify-content-between">
+            <div>
+                <span class="fw-semibold small">${escHtml(qual)}</span>
+                <span class="text-muted small ms-2">${escHtml(inst)}${year ? ' · ' + escHtml(year) : ''}</span>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1"
+                    onclick="this.closest('.editob-edu-row').remove();editOBSyncEdu()">
+                <i class="bi bi-x"></i>
+            </button>
+        </div>
+        <input type="hidden" class="editob-edu-qual" name="edu_qualification[]" value="${escHtml(qual)}">
+        <input type="hidden" class="editob-edu-inst" name="edu_institution[]" value="${escHtml(inst)}">
+        <input type="hidden" class="editob-edu-year" name="edu_year[]" value="${escHtml(year)}">`;
+    if (_obEditCertFiles.length) {
+        const dt = new DataTransfer();
+        _obEditCertFiles.forEach(f => dt.items.add(f));
+        const certInp = document.createElement('input');
+        certInp.type = 'file'; certInp.name = `edu_cert_new[${idx}][]`; certInp.multiple = true;
+        certInp.style.display = 'none'; certInp.files = dt.files;
+        row.appendChild(certInp);
+    }
+    document.getElementById('editOBEduList').appendChild(row);
+    document.getElementById('editOBEduQual').value = '';
+    document.getElementById('editOBEduInst').value = '';
+    document.getElementById('editOBEduYear').value = '';
+    const certList = document.getElementById('editOBEduCertFileList');
+    if (certList) certList.innerHTML = '';
+    _obEditCertFiles = [];
+}
+
+function editOBSyncEdu() { /* no-op: hidden inputs travel with their row element */ }
+
+function toggleOBEduEdit(btn) {
+    const row    = btn.closest('.editob-edu-row');
+    const fields = row.querySelector('.ob-edu-edit-fields');
+    const hidden = fields.classList.contains('d-none');
+    fields.classList.toggle('d-none', !hidden);
+    btn.innerHTML = hidden ? '<i class="bi bi-chevron-up"></i>' : '<i class="bi bi-pencil"></i>';
+}
+
+function saveOBEduEdit(btn) {
+    const row  = btn.closest('.editob-edu-row');
+    const qual = row.querySelector('.ob-edu-qual-inp').value.trim();
+    if (!qual) { alert('Please enter a qualification.'); return; }
+    const inst = row.querySelector('.ob-edu-inst-inp').value.trim();
+    const year = row.querySelector('.ob-edu-year-inp').value.trim();
+    row.querySelector('.editob-edu-qual').value = qual;
+    row.querySelector('.editob-edu-inst').value = inst;
+    row.querySelector('.editob-edu-year').value = year;
+    const summary = row.querySelector('.fw-semibold.small');
+    const sub     = row.querySelector('.text-muted.small.ms-2');
+    if (summary) summary.textContent = qual;
+    if (sub) sub.textContent = (inst || '') + (year ? ' · ' + year : '');
+    row.querySelector('.ob-edu-edit-fields').classList.add('d-none');
+    const editBtn = row.querySelector('button[onclick*="toggleOBEduEdit"]');
+    if (editBtn) editBtn.innerHTML = '<i class="bi bi-pencil"></i>';
+}
+
+// ── Emergency Contacts (Section H) ──────────────────────────────────────
+function toggleOBEcEdit(btn) {
+    const row    = btn.closest('.editob-ec-row');
+    const fields = row.querySelector('.ob-ec-edit-fields');
+    const hidden = fields.classList.contains('d-none');
+    fields.classList.toggle('d-none', !hidden);
+    btn.innerHTML = hidden ? '<i class="bi bi-chevron-up"></i>' : '<i class="bi bi-pencil"></i>';
+}
+
+function saveOBEcEdit(btn) {
+    const row  = btn.closest('.editob-ec-row');
+    const name = row.querySelector('.ob-ec-name-inp').value.trim();
+    if (!name) { alert('Please enter a contact name.'); return; }
+    const tel  = row.querySelector('.ob-ec-tel-inp').value.trim();
+    const rel  = row.querySelector('.ob-ec-rel-inp').value;
+    const order = row.dataset.order;
+    row.querySelector(`input[name="emergency[${order}][name]"]`).value = name;
+    row.querySelector(`input[name="emergency[${order}][tel_no]"]`).value = tel;
+    row.querySelector(`input[name="emergency[${order}][relationship]"]`).value = rel;
+    const label = row.querySelector('.ec-label');
+    const sub   = row.querySelector('.ec-sublabel');
+    if (label) label.textContent = 'Contact ' + order + ': ' + name;
+    if (sub) sub.textContent = tel + ' · ' + rel;
+    row.querySelector('.ob-ec-edit-fields').classList.add('d-none');
+    const editBtn = row.querySelector('button[onclick*="toggleOBEcEdit"]');
+    if (editBtn) editBtn.innerHTML = '<i class="bi bi-pencil"></i>';
+}
+
+function obRenumberEc() {
+    document.querySelectorAll('#editOBEcList .editob-ec-row').forEach((row, i) => {
+        const n = i + 1;
+        row.dataset.order = n;
+        ['name','tel_no','relationship'].forEach(k => {
+            const inp = row.querySelector(`input[name*="[${k}]"]`);
+            if (inp) inp.name = `emergency[${n}][${k}]`;
+        });
+        const label = row.querySelector('.ec-label');
+        if (label) label.textContent = label.textContent.replace(/^Contact \d+/, 'Contact ' + n);
+    });
+}
+
+function editOBAddEc() {
+    const name = document.getElementById('editOBEcName').value.trim();
+    const tel  = document.getElementById('editOBEcTel').value.trim();
+    const rel  = document.getElementById('editOBEcRel').value;
+    if (!name || !tel || !rel) { alert('Please fill in contact name, tel no., and relationship.'); return; }
+    const existing = document.querySelectorAll('#editOBEcList .editob-ec-row').length;
+    if (existing >= 2) { alert('Maximum 2 emergency contacts. Remove one first to add another.'); return; }
+    const n = existing + 1;
+    const relationships = ['Spouse','Parent','Sibling','Child','Friend','Colleague','Other'];
+    const row = document.createElement('div');
+    row.className = 'border rounded p-2 mb-1 bg-white editob-ec-row';
+    row.dataset.order = n;
+    row.innerHTML = `
+        <div class="d-flex align-items-center justify-content-between">
+            <div>
+                <input type="hidden" name="emergency[${n}][name]" value="${escHtml(name)}">
+                <input type="hidden" name="emergency[${n}][tel_no]" value="${escHtml(tel)}">
+                <input type="hidden" name="emergency[${n}][relationship]" value="${escHtml(rel)}">
+                <span class="fw-semibold small ec-label">Contact ${n}: ${escHtml(name)}</span>
+                <span class="text-muted small ms-2 ec-sublabel">${escHtml(tel)} · ${escHtml(rel)}</span>
+            </div>
+            <div class="d-flex gap-1 ms-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="toggleOBEcEdit(this)">
+                    <i class="bi bi-pencil"></i>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1"
+                        onclick="this.closest('.editob-ec-row').remove();obRenumberEc()">
+                    <i class="bi bi-x"></i>
+                </button>
+            </div>
+        </div>
+        <div class="ob-ec-edit-fields mt-2 d-none" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:.75rem;">
+            <div class="row g-2">
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold small mb-1">Full Name</label>
+                    <input type="text" class="ob-ec-name-inp form-control form-control-sm" value="${escHtml(name)}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold small mb-1">Tel No.</label>
+                    <input type="text" class="ob-ec-tel-inp form-control form-control-sm" value="${escHtml(tel)}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold small mb-1">Relationship</label>
+                    <select class="ob-ec-rel-inp form-select form-select-sm">
+                        ${relationships.map(r => `<option value="${r}"${r===rel?' selected':''}>${r}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="col-12 text-end">
+                    <button type="button" class="btn btn-sm btn-primary py-0 px-3" onclick="saveOBEcEdit(this)">
+                        <i class="bi bi-check me-1"></i>Update
+                    </button>
+                </div>
+            </div>
+        </div>`;
+    document.getElementById('editOBEcList').appendChild(row);
+    document.getElementById('editOBEcName').value = '';
+    document.getElementById('editOBEcTel').value = '';
+    document.getElementById('editOBEcRel').value = '';
 }
 
 function toggleAssetLabel(checkbox) {

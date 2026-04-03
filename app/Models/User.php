@@ -9,9 +9,9 @@ class User extends Authenticatable
 {
     use Notifiable;
 
-    protected $fillable = ['name', 'work_email', 'password', 'role', 'is_active', 'profile_picture'];
+    protected $fillable = ['name', 'work_email', 'password', 'role', 'is_active', 'profile_picture', 'login_attempts', 'deactivation_reason', 'deactivated_at', 'session_token'];
     protected $hidden   = ['password', 'remember_token'];
-    protected $casts    = ['password' => 'hashed', 'is_active' => 'boolean'];
+    protected $casts    = ['password' => 'hashed', 'is_active' => 'boolean', 'deactivated_at' => 'datetime'];
 
     // Tell Laravel password broker to use work_email
     public function getEmailForPasswordReset(): string { return $this->work_email; }

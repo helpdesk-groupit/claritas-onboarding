@@ -38,7 +38,7 @@
             padding: 14px 18px 4px; font-size: 10px; text-transform: uppercase;
             letter-spacing: 1.2px; color: rgba(255,255,255,0.4); font-weight: 600;
         }
-        .sidebar-nav { padding: 6px 0; flex: 1; }
+        .sidebar-nav { padding: 6px 0; flex: 1; overflow-y: auto; }
         .sidebar-nav .nav-item { margin: 1px 10px; }
         .sidebar-nav .nav-link {
             color: rgba(255,255,255,0.75); border-radius: 8px; padding: 9px 14px;
@@ -199,6 +199,16 @@
         </div>
         @endif
 
+        {{-- Announcements — HR Manager + Superadmin + System Admin + IT Manager + Manager --}}
+        @if(Auth::user()->isHrManager() || Auth::user()->isSuperadmin() || Auth::user()->isSystemAdmin() || Auth::user()->isItManager() || Auth::user()->employee?->work_role === 'manager')
+        <div class="nav-item">
+            <a href="{{ route('announcements.index') }}"
+               class="nav-link {{ request()->routeIs('announcements.*') ? 'active' : '' }}">
+                <i class="bi bi-megaphone"></i> Announcements
+            </a>
+        </div>
+        @endif
+
         {{-- Superadmin extras (above Profile, below Employee Listing) --}}
         @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
@@ -221,6 +231,12 @@
             <a href="{{ route('superadmin.roles.index') }}"
                class="nav-link {{ request()->routeIs('superadmin.roles.*') ? 'active' : '' }}">
                 <i class="bi bi-shield-lock"></i> Role Management
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('superadmin.accounts.index') }}"
+               class="nav-link {{ request()->routeIs('superadmin.accounts.*') ? 'active' : '' }}">
+                <i class="bi bi-person-lock"></i> Account Management
             </a>
         </div>
         <div class="nav-item">
@@ -309,6 +325,12 @@
                 <i class="bi bi-shield-lock"></i> Role Management
             </a>
         </div>
+        <div class="nav-item">
+            <a href="{{ route('announcements.index') }}"
+               class="nav-link {{ request()->routeIs('announcements.*') ? 'active' : '' }}">
+                <i class="bi bi-megaphone"></i> Announcements
+            </a>
+        </div>
         @endif
 
         {{-- 5. Profile --}}
@@ -338,6 +360,14 @@
                 <i class="bi bi-house"></i> Dashboard
             </a>
         </div>
+        @if(Auth::user()->employee?->work_role === 'manager')
+        <div class="nav-item">
+            <a href="{{ route('announcements.index') }}"
+               class="nav-link {{ request()->routeIs('announcements.*') ? 'active' : '' }}">
+                <i class="bi bi-megaphone"></i> Announcements
+            </a>
+        </div>
+        @endif
         <div class="nav-item">
             <a href="{{ route('profile') }}"
                class="nav-link {{ request()->routeIs('profile') ? 'active' : '' }}">
@@ -441,6 +471,109 @@ function setTheme(theme) {
     if (active) active.classList.add('border-primary', 'shadow-sm');
 }
 </script>
+@auth
+{{-- ── Idle Session Timeout ───────────────────────────────────────────────
+     Logs the user out after 60 seconds of inactivity.
+     "Activity" = any mouse move, keypress, click, scroll, or touch.
+     A 30-second warning modal appears before the logout fires, giving
+     the user a chance to click "Stay Logged In" and reset the timer.
+     The logout is performed via a real POST to /logout (with CSRF token)
+     so the server-side session is fully invalidated — not just a redirect.
+──────────────────────────────────────────────────────────────────────── --}}
+<div class="modal fade" id="idleWarningModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false" aria-labelledby="idleWarningLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" style="max-width:380px;">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header border-0 pb-0" style="background:#fff3cd;">
+                <h6 class="modal-title fw-bold text-warning-emphasis" id="idleWarningLabel">
+                    <i class="bi bi-clock-history me-2"></i>Session Expiring
+                </h6>
+            </div>
+            <div class="modal-body pt-2 text-center">
+                <p class="mb-1" style="font-size:14px;">You have been inactive. You will be logged out in</p>
+                <div id="idleCountdown" style="font-size:36px;font-weight:700;color:#dc3545;line-height:1.1;">30</div>
+                <p class="text-muted mt-1 mb-0" style="font-size:12px;">seconds</p>
+            </div>
+            <div class="modal-footer border-0 justify-content-center pt-0 pb-3">
+                <button type="button" class="btn btn-primary btn-sm px-4" id="idleStayBtn">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Stay Logged In
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<form id="idleLogoutForm" action="{{ route('logout') }}" method="POST" style="display:none;">
+    @csrf
+</form>
+<script>
+(function () {
+    // ── Configuration ─────────────────────────────────────────────────────
+    var IDLE_TIMEOUT_MS  = 15 * 60 * 1000;  // 15 min of inactivity → trigger warning
+    var WARNING_DURATION = 30;          // seconds of countdown shown in modal
+    // ─────────────────────────────────────────────────────────────────────
+
+    var idleTimer      = null;
+    var countdownTimer = null;
+    var countdown      = WARNING_DURATION;
+    var modal          = null;
+    var modalEl        = document.getElementById('idleWarningModal');
+    var countdownEl    = document.getElementById('idleCountdown');
+    var stayBtn        = document.getElementById('idleStayBtn');
+
+    // Lazy-init Bootstrap modal (Bootstrap is loaded after this script)
+    function getModal() {
+        if (!modal) modal = new bootstrap.Modal(modalEl);
+        return modal;
+    }
+
+    // ── Reset idle timer on any user activity ────────────────────────────
+    function resetTimer() {
+        clearTimeout(idleTimer);
+        // Only reset if the warning modal is NOT currently open
+        if (!modalEl.classList.contains('show')) {
+            idleTimer = setTimeout(showWarning, IDLE_TIMEOUT_MS);
+        }
+    }
+
+    // ── Show the 30-second countdown warning modal ───────────────────────
+    function showWarning() {
+        countdown   = WARNING_DURATION;
+        countdownEl.textContent = countdown;
+        getModal().show();
+
+        clearInterval(countdownTimer);
+        countdownTimer = setInterval(function () {
+            countdown--;
+            countdownEl.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(countdownTimer);
+                doLogout();
+            }
+        }, 1000);
+    }
+
+    // ── Perform server-side logout via form POST ─────────────────────────
+    function doLogout() {
+        getModal().hide();
+        document.getElementById('idleLogoutForm').submit();
+    }
+
+    // ── "Stay Logged In" button — dismiss modal and restart timer ────────
+    stayBtn.addEventListener('click', function () {
+        clearInterval(countdownTimer);
+        getModal().hide();
+        resetTimer(); // restart the 60-second idle clock
+    });
+
+    // ── Activity events that reset the idle timer ────────────────────────
+    ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll', 'click'].forEach(function (evt) {
+        document.addEventListener(evt, resetTimer, { passive: true });
+    });
+
+    // ── Start the timer when the page loads ──────────────────────────────
+    resetTimer();
+})();
+</script>
+@endauth
 @stack('scripts')
 </body>
 </html>

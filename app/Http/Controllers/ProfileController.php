@@ -80,6 +80,332 @@ class ProfileController extends Controller
         return view('user.profile', compact('user', 'employee', 'contracts', 'aarf', 'allAssets', 'editLogs', 'pendingConsentLog'));
     }
 
+    // ── Unified update: Sections A, F, G, H, I in one request ────────────
+    public function update(Request $request)
+    {
+        $employee = $this->getOrCreateEmployee();
+
+        $request->validate([
+            // Section A
+            'full_name'               => 'required|string|max:255',
+            'preferred_name'          => 'nullable|string|max:100',
+            'official_document_id'    => 'required|string|max:50',
+            'date_of_birth'           => 'required|date',
+            'sex'                     => 'required|in:male,female',
+            'marital_status'          => 'required|in:single,married,divorced,widowed',
+            'religion'                => 'required|string|max:100',
+            'race'                    => 'required|string|max:100',
+            'is_disabled'             => 'nullable|boolean',
+            'personal_contact_number' => 'required|string|max:20',
+            'house_tel_no'            => 'nullable|string|max:20',
+            'personal_email'          => 'required|email',
+            'bank_account_number'     => 'required|string|max:50',
+            'bank_name'               => 'nullable|string|max:100',
+            'bank_name_other'         => 'nullable|string|max:100',
+            'epf_no'                  => 'nullable|string|max:50',
+            'income_tax_no'           => 'nullable|string|max:50',
+            'socso_no'                => 'nullable|string|max:50',
+            'residential_address'     => 'required|string',
+            'nric_files'              => 'nullable|array|max:5',
+            'nric_files.*'            => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            // Section F
+            'edu_qualification.*'     => 'nullable|string|max:255',
+            'edu_institution.*'       => 'nullable|string|max:255',
+            'edu_year.*'              => 'nullable|integer|min:1950|max:2099',
+            'edu_experience_total'    => 'nullable|string|max:10',
+            'edu_certificate.*.*'     => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'edu_cert_keep.*.*'       => 'nullable|string',
+            'edu_delete_ids'          => 'nullable|string',
+            // Section G
+            'del_spouse_ids'          => 'nullable|string',
+            'spouses.*.id'            => 'nullable|integer',
+            'spouses.*.name'          => 'nullable|string|max:255',
+            'spouses.*.nric_no'       => 'nullable|string|max:50',
+            'spouses.*.tel_no'        => 'nullable|string|max:30',
+            'spouses.*.occupation'    => 'nullable|string|max:255',
+            'spouses.*.income_tax_no' => 'nullable|string|max:50',
+            'spouses.*.address'       => 'nullable|string',
+            'spouses.*.is_working'    => 'nullable|boolean',
+            'spouses.*.is_disabled'   => 'nullable|boolean',
+            // Section H
+            'emergency.1.name'         => 'required|string|max:255',
+            'emergency.1.tel_no'       => 'required|string|max:30',
+            'emergency.1.relationship' => 'required|string|max:100',
+            'emergency.2.name'         => 'required|string|max:255',
+            'emergency.2.tel_no'       => 'required|string|max:30',
+            'emergency.2.relationship' => 'required|string|max:100',
+            // Section I
+            'cat_a_100' => 'nullable|integer|min:0|max:99',
+            'cat_a_50'  => 'nullable|integer|min:0|max:99',
+            'cat_b_100' => 'nullable|integer|min:0|max:99',
+            'cat_b_50'  => 'nullable|integer|min:0|max:99',
+            'cat_c_100' => 'nullable|integer|min:0|max:99',
+            'cat_c_50'  => 'nullable|integer|min:0|max:99',
+            'cat_d_100' => 'nullable|integer|min:0|max:99',
+            'cat_d_50'  => 'nullable|integer|min:0|max:99',
+            'cat_e_100' => 'nullable|integer|min:0|max:99',
+            'cat_e_50'  => 'nullable|integer|min:0|max:99',
+        ]);
+
+        // Load relationships for snapshots
+        $employee->load(['educationHistories', 'spouseDetails', 'emergencyContacts', 'childRegistration']);
+
+        $oldSectionA = md5(serialize([
+            $employee->full_name, $employee->official_document_id, $employee->date_of_birth,
+            $employee->sex, $employee->marital_status, $employee->religion, $employee->race,
+            $employee->personal_contact_number, $employee->personal_email, $employee->bank_account_number,
+            $employee->bank_name, $employee->epf_no, $employee->income_tax_no, $employee->socso_no,
+            $employee->residential_address, $employee->is_disabled, $employee->preferred_name,
+            $employee->house_tel_no, $employee->nric_file_paths,
+        ]));
+        $oldEduHash    = md5(serialize($employee->educationHistories->map(fn($e) => [$e->id, $e->qualification, $e->institution, $e->year_graduated])->toArray()));
+        $oldSpouseHash = md5(serialize($employee->spouseDetails->map(fn($s) => [$s->id, $s->name, $s->tel_no])->toArray()));
+        $oldEcHash     = md5(serialize($employee->emergencyContacts->sortBy('contact_order')->map(fn($c) => [$c->name, $c->tel_no, $c->relationship, $c->contact_order])->values()->toArray()));
+        $childFields   = ['cat_a_100','cat_a_50','cat_b_100','cat_b_50','cat_c_100','cat_c_50','cat_d_100','cat_d_50','cat_e_100','cat_e_50'];
+        $oldChHash     = md5(serialize($employee->childRegistration?->only($childFields) ?? []));
+
+        // ── Section A ────────────────────────────────────────────────────────
+        $bankName = in_array($request->input('bank_name') ?? '', ['Other', 'other'])
+            ? ($request->input('bank_name_other') ?? null)
+            : ($request->input('bank_name') ?? null);
+
+        $aFields = [
+            'full_name'               => $request->input('full_name'),
+            'preferred_name'          => $request->input('preferred_name'),
+            'official_document_id'    => $request->input('official_document_id'),
+            'date_of_birth'           => $request->input('date_of_birth'),
+            'sex'                     => $request->input('sex'),
+            'marital_status'          => $request->input('marital_status'),
+            'religion'                => $request->input('religion'),
+            'race'                    => $request->input('race'),
+            'is_disabled'             => $request->boolean('is_disabled'),
+            'personal_contact_number' => $request->input('personal_contact_number'),
+            'house_tel_no'            => $request->input('house_tel_no'),
+            'personal_email'          => $request->input('personal_email'),
+            'bank_account_number'     => $request->input('bank_account_number'),
+            'bank_name'               => $bankName,
+            'epf_no'                  => $request->input('epf_no'),
+            'income_tax_no'           => $request->input('income_tax_no'),
+            'socso_no'                => $request->input('socso_no'),
+            'residential_address'     => $request->input('residential_address'),
+        ];
+
+        $existingNric  = $employee->nric_file_paths ?? ($employee->nric_file_path ? [$employee->nric_file_path] : []);
+        $keepSubmitted = $request->has('nric_keep_submitted');
+        if ($keepSubmitted) {
+            $keptNric     = (array) $request->input('nric_keep_paths', []);
+            $existingNric = array_values(array_intersect($existingNric, $keptNric));
+        }
+        $newNricPaths = [];
+        if ($request->hasFile('nric_files')) {
+            foreach ($request->file('nric_files') as $file) {
+                if ($file && $file->isValid()) {
+                    $newNricPaths[] = $file->store('nric_documents', 'public');
+                }
+            }
+        }
+        $mergedNric = array_values(array_merge($existingNric, $newNricPaths));
+        if (!empty($mergedNric)) {
+            $aFields['nric_file_paths'] = $mergedNric;
+            $aFields['nric_file_path']  = $mergedNric[0];
+        } elseif ($keepSubmitted) {
+            $aFields['nric_file_paths'] = null;
+            $aFields['nric_file_path']  = null;
+        }
+
+        $employee->update($aFields);
+
+        $user = Auth::user();
+        if ($user->name !== $request->input('full_name')) {
+            $user->update(['name' => $request->input('full_name')]);
+        }
+
+        $employee->refresh();
+        if ($employee->onboarding_id) {
+            $ob = \App\Models\Onboarding::with('personalDetail')->find($employee->onboarding_id);
+            if ($ob?->personalDetail) {
+                $ob->personalDetail->update([
+                    'full_name'               => $employee->full_name,
+                    'preferred_name'          => $employee->preferred_name,
+                    'official_document_id'    => $employee->official_document_id,
+                    'date_of_birth'           => $employee->date_of_birth,
+                    'sex'                     => $employee->sex,
+                    'marital_status'          => $employee->marital_status,
+                    'religion'                => $employee->religion,
+                    'race'                    => $employee->race,
+                    'is_disabled'             => $employee->is_disabled,
+                    'residential_address'     => $employee->residential_address,
+                    'personal_contact_number' => $employee->personal_contact_number,
+                    'house_tel_no'            => $employee->house_tel_no,
+                    'personal_email'          => $employee->personal_email,
+                    'bank_account_number'     => $employee->bank_account_number,
+                    'bank_name'               => $employee->bank_name,
+                    'epf_no'                  => $employee->epf_no,
+                    'income_tax_no'           => $employee->income_tax_no,
+                    'socso_no'                => $employee->socso_no,
+                ]);
+            }
+        }
+
+        $existingOffboarding = \App\Models\Offboarding::where(function ($q) use ($employee) {
+            $q->where('employee_id', $employee->id);
+            if ($employee->onboarding_id) {
+                $q->orWhere('onboarding_id', $employee->onboarding_id);
+            }
+        })->first();
+        if ($existingOffboarding) {
+            $existingOffboarding->update([
+                'full_name'      => $employee->full_name,
+                'personal_email' => $employee->personal_email,
+            ]);
+        }
+
+        // ── Section F: Education ──────────────────────────────────────────────
+        $eduDeleteIds = array_filter(explode(',', $request->input('edu_delete_ids', '')));
+        if (!empty($eduDeleteIds)) {
+            EmployeeEducationHistory::where('employee_id', $employee->id)
+                ->whereIn('id', $eduDeleteIds)->delete();
+        }
+
+        $expTotal = $request->input('edu_experience_total');
+        foreach ($request->input('edu_qualification', []) as $i => $qual) {
+            if (empty(trim((string) $qual))) continue;
+
+            $existingId     = $request->input("edu_id.{$i}");
+            $yearsExp       = ($i === 0) ? $expTotal : null;
+            $keepPaths      = $request->input("edu_cert_keep.{$i}", []);
+            $keepSubmitted  = $request->has("edu_cert_keep_sent.{$i}");
+
+            if ($existingId && $keepSubmitted) {
+                // User explicitly managed this row's certs — apply the keep list (may be empty = remove all)
+                $row = EmployeeEducationHistory::where('employee_id', $employee->id)->find($existingId);
+                $allExisting  = $row ? ($row->certificate_paths ?? ($row->certificate_path ? [$row->certificate_path] : [])) : [];
+                $keptExisting = array_values(array_intersect($allExisting, (array) $keepPaths));
+            } elseif ($existingId) {
+                $row = EmployeeEducationHistory::where('employee_id', $employee->id)->find($existingId);
+                $keptExisting = $row ? ($row->certificate_paths ?? ($row->certificate_path ? [$row->certificate_path] : [])) : [];
+            } else {
+                $keptExisting = [];
+            }
+
+            $newCertPaths = [];
+            if ($request->hasFile("edu_certificate.{$i}")) {
+                foreach ((array) $request->file("edu_certificate.{$i}") as $certFile) {
+                    if ($certFile && $certFile->isValid()) {
+                        $newCertPaths[] = $certFile->store('education_certificates', 'public');
+                    }
+                }
+            }
+
+            $mergedCerts = array_slice(array_values(array_merge($keptExisting, $newCertPaths)), 0, 5);
+
+            if ($existingId) {
+                if (!isset($row)) {
+                    $row = EmployeeEducationHistory::where('employee_id', $employee->id)->find($existingId);
+                }
+                if ($row) {
+                    $row->update([
+                        'qualification'     => $qual,
+                        'institution'       => $request->input("edu_institution.{$i}"),
+                        'year_graduated'    => $request->input("edu_year.{$i}"),
+                        'years_experience'  => $yearsExp,
+                        'certificate_path'  => $mergedCerts[0] ?? null,
+                        'certificate_paths' => !empty($mergedCerts) ? $mergedCerts : null,
+                    ]);
+                }
+            } else {
+                EmployeeEducationHistory::create([
+                    'employee_id'       => $employee->id,
+                    'qualification'     => $qual,
+                    'institution'       => $request->input("edu_institution.{$i}"),
+                    'year_graduated'    => $request->input("edu_year.{$i}"),
+                    'years_experience'  => $yearsExp,
+                    'certificate_path'  => $mergedCerts[0] ?? null,
+                    'certificate_paths' => !empty($mergedCerts) ? $mergedCerts : null,
+                ]);
+            }
+        }
+
+        // ── Section G: Spouse ─────────────────────────────────────────────────
+        $delSpouseIds = array_filter(explode(',', $request->input('del_spouse_ids', '')));
+        if (!empty($delSpouseIds)) {
+            EmployeeSpouseDetail::where('employee_id', $employee->id)
+                ->whereIn('id', $delSpouseIds)->delete();
+        }
+
+        foreach ($request->input('spouses', []) as $spouseData) {
+            if (empty(trim((string) ($spouseData['name'] ?? '')))) continue;
+            $sid     = $spouseData['id'] ?? null;
+            $payload = [
+                'name'          => $spouseData['name'] ?? null,
+                'nric_no'       => $spouseData['nric_no'] ?? null,
+                'tel_no'        => $spouseData['tel_no'] ?? null,
+                'occupation'    => $spouseData['occupation'] ?? null,
+                'income_tax_no' => $spouseData['income_tax_no'] ?? null,
+                'address'       => $spouseData['address'] ?? null,
+                'is_working'    => !empty($spouseData['is_working']),
+                'is_disabled'   => !empty($spouseData['is_disabled']),
+            ];
+            if ($sid) {
+                EmployeeSpouseDetail::where('employee_id', $employee->id)->where('id', $sid)->update($payload);
+            } else {
+                EmployeeSpouseDetail::create(array_merge($payload, ['employee_id' => $employee->id]));
+            }
+        }
+
+        // ── Section H: Emergency Contacts ────────────────────────────────────
+        foreach ([1, 2] as $order) {
+            $ec = $request->input("emergency.{$order}");
+            if (empty($ec['name'] ?? '')) continue;
+            EmployeeEmergencyContact::updateOrCreate(
+                ['employee_id' => $employee->id, 'contact_order' => $order],
+                [
+                    'name'         => $ec['name'],
+                    'tel_no'       => $ec['tel_no'],
+                    'relationship' => $ec['relationship'],
+                ]
+            );
+        }
+
+        // ── Section I: Children ───────────────────────────────────────────────
+        $childData = [];
+        foreach ($childFields as $f) {
+            $childData[$f] = (int) ($request->input($f) ?? 0);
+        }
+        EmployeeChildRegistration::updateOrCreate(['employee_id' => $employee->id], $childData);
+
+        // ── Detect changes and send ONE consent email ─────────────────────────
+        $employee->refresh();
+        $employee->load(['educationHistories', 'spouseDetails', 'emergencyContacts', 'childRegistration']);
+
+        $newSectionA = md5(serialize([
+            $employee->full_name, $employee->official_document_id, $employee->date_of_birth,
+            $employee->sex, $employee->marital_status, $employee->religion, $employee->race,
+            $employee->personal_contact_number, $employee->personal_email, $employee->bank_account_number,
+            $employee->bank_name, $employee->epf_no, $employee->income_tax_no, $employee->socso_no,
+            $employee->residential_address, $employee->is_disabled, $employee->preferred_name,
+            $employee->house_tel_no, $employee->nric_file_paths,
+        ]));
+        $newEduHash    = md5(serialize($employee->educationHistories->map(fn($e) => [$e->id, $e->qualification, $e->institution, $e->year_graduated])->toArray()));
+        $newSpouseHash = md5(serialize($employee->spouseDetails->map(fn($s) => [$s->id, $s->name, $s->tel_no])->toArray()));
+        $newEcHash     = md5(serialize($employee->emergencyContacts->sortBy('contact_order')->map(fn($c) => [$c->name, $c->tel_no, $c->relationship, $c->contact_order])->values()->toArray()));
+        $newChHash     = md5(serialize($employee->childRegistration?->only($childFields) ?? []));
+
+        $changedSections = [];
+        if ($oldSectionA !== $newSectionA)       $changedSections[] = 'Section A — Personal Details';
+        if ($oldEduHash !== $newEduHash)          $changedSections[] = 'Section F — Education & Work History';
+        if ($oldSpouseHash !== $newSpouseHash)    $changedSections[] = 'Section G — Spouse Information';
+        if ($oldEcHash !== $newEcHash)            $changedSections[] = 'Section H — Emergency Contacts';
+        if ($oldChHash !== $newChHash)            $changedSections[] = 'Section I — Child Registration';
+
+        if (!empty($changedSections)) {
+            $this->triggerProfileEditConsent($employee, $changedSections);
+            return back()->with('success', 'Profile updated. A consent re-acknowledgement email has been sent to you.');
+        }
+
+        return back()->with('success', 'Profile saved (no changes detected).');
+    }
+
     // ── Update personal biodata (Section A) ──────────────────────────────
     public function updateBiodata(Request $request)
     {

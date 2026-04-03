@@ -8,8 +8,10 @@ use App\Http\Controllers\OnboardingController;
 use App\Http\Controllers\AarfController;
 use App\Http\Controllers\AssetController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\AnnouncementController;
 use App\Http\Controllers\AccountController;
 use App\Http\Controllers\OffboardingController;
+use App\Http\Controllers\AccountManagementController;
 use App\Http\Controllers\CompanyController;
 use App\Http\Controllers\OnboardingInviteController;
 use Illuminate\Support\Facades\Route;
@@ -20,13 +22,15 @@ Route::get('/', fn() => redirect()->route('login'));
 // ── Guest ──────────────────────────────────────────────────────────────────
 Route::middleware('guest')->group(function () {
     Route::get('/login',                  [AuthController::class, 'showLogin'])->name('login');
-    Route::post('/login',                 [AuthController::class, 'login']);
+    // Throttle: 30 per minute per IP as last-resort protection — app-level lockout handles per-user lockout at 5 attempts
+    Route::post('/login',                 [AuthController::class, 'login'])->middleware('throttle:30,1');
     Route::get('/register',               [AuthController::class, 'showRegister'])->name('register');
     Route::post('/register/check-email',  [AuthController::class, 'checkEmail'])->name('register.checkEmail');
     Route::get('/register/set-password',  [AuthController::class, 'showSetPassword'])->name('register.setPassword');
     Route::post('/register',              [AuthController::class, 'register']);
     Route::get('/forgot-password',        [AuthController::class, 'showForgotPassword'])->name('password.request');
-    Route::post('/forgot-password',       [AuthController::class, 'sendResetLink'])->name('password.email');
+    // Throttle: max 5 reset requests per minute per IP — prevents email flooding
+    Route::post('/forgot-password',       [AuthController::class, 'sendResetLink'])->name('password.email')->middleware('throttle:5,1');
     Route::get('/reset-password/{token}', [AuthController::class, 'showResetPassword'])->name('password.reset');
     Route::post('/reset-password',        [AuthController::class, 'resetPassword'])->name('password.update');
 });
@@ -35,17 +39,18 @@ Route::post('/logout', [AuthController::class, 'logout'])->name('logout')->middl
 
 // ── Public AARF token link (for employee acknowledgement via email) ─────────
 Route::get('/aarf/{token}',              [AarfController::class, 'viewAarf'])->name('aarf.view');
-Route::post('/aarf/{token}/acknowledge', [AarfController::class, 'acknowledge'])->name('aarf.acknowledge');
+// Throttle: 10 per minute — CSRF-exempt but still rate-limited
+Route::post('/aarf/{token}/acknowledge', [AarfController::class, 'acknowledge'])->name('aarf.acknowledge')->middleware('throttle:10,1');
 
 // Public onboarding invite routes (no auth required)
 Route::get('/onboarding-invite/success',          [OnboardingInviteController::class, 'success'])->name('onboarding.invite.success');
 Route::get('/onboarding-invite/{token}',          [OnboardingInviteController::class, 'showForm'])->name('onboarding.invite.form');
-Route::post('/onboarding-invite/{token}/verify',  [OnboardingInviteController::class, 'verifyEmail'])->name('onboarding.invite.verify');
-Route::post('/onboarding-invite/{token}/consent', [OnboardingInviteController::class, 'acceptConsent'])->name('onboarding.invite.consent');
-Route::post('/onboarding-invite/{token}/submit',  [OnboardingInviteController::class, 'submit'])->name('onboarding.invite.submit');
+Route::post('/onboarding-invite/{token}/verify',  [OnboardingInviteController::class, 'verifyEmail'])->name('onboarding.invite.verify')->middleware('throttle:10,1');
+Route::post('/onboarding-invite/{token}/consent', [OnboardingInviteController::class, 'acceptConsent'])->name('onboarding.invite.consent')->middleware('throttle:10,1');
+Route::post('/onboarding-invite/{token}/submit',  [OnboardingInviteController::class, 'submit'])->name('onboarding.invite.submit')->middleware('throttle:5,1');
 
 // ── Authenticated ──────────────────────────────────────────────────────────
-Route::middleware('auth')->group(function () {
+Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \App\Http\Middleware\SecurityAuditMiddleware::class])->group(function () {
 
     // Dashboards
     Route::get('/dashboard',    [DashboardController::class, 'userDashboard'])->name('user.dashboard');
@@ -59,6 +64,7 @@ Route::middleware('auth')->group(function () {
 
     // Profile (all users)
     Route::get('/profile',                 [ProfileController::class, 'show'])->name('profile');
+    Route::put('/profile',                 [ProfileController::class, 'update'])->name('profile.update');
     Route::put('/profile/biodata',              [ProfileController::class, 'updateBiodata'])->name('profile.biodata.update');
     Route::put('/profile/work',                 [ProfileController::class, 'updateWork'])->name('profile.work.update');
     Route::post('/profile/education',           [ProfileController::class, 'updateEducation'])->name('profile.education.update');
@@ -90,12 +96,17 @@ Route::middleware('auth')->group(function () {
     Route::put('/onboarding/{onboarding}',                  [OnboardingController::class, 'update'])->name('onboarding.update');
     Route::get('/onboarding/{onboarding}/re-consent',       [OnboardingController::class, 'showReConsent'])->name('onboarding.re-consent.show');
     Route::post('/onboarding/{onboarding}/re-consent',      [OnboardingController::class, 'storeReConsent'])->name('onboarding.re-consent.store');
+    Route::post('/onboarding/{onboarding}/avatar',          [OnboardingController::class, 'uploadAvatar'])->name('onboarding.avatar');
 
     // HR: Employee Listing
     Route::get('/superadmin/roles',                          [EmployeeController::class, 'roleManagement'])->name('superadmin.roles.index');
     Route::put('/superadmin/roles/{employee}',               [EmployeeController::class, 'roleUpdate'])->name('superadmin.roles.update');
     Route::get('/superadmin/roles/{employee}/permissions',   [EmployeeController::class, 'getPermissions'])->name('superadmin.permissions.get');
     Route::post('/superadmin/roles/{employee}/permissions',  [EmployeeController::class, 'updatePermissions'])->name('superadmin.permissions.update');
+
+    // Account Management (Superadmin / System Admin)
+    Route::get('/superadmin/account-management',            [AccountManagementController::class, 'index'])->name('superadmin.accounts.index');
+    Route::post('/superadmin/account-management/{user}/activate', [AccountManagementController::class, 'activate'])->name('superadmin.accounts.activate');
 
     Route::get('/superadmin/companies',            [CompanyController::class, 'index'])->name('superadmin.companies.index');
     Route::post('/superadmin/companies',           [CompanyController::class, 'store'])->name('superadmin.companies.store');
@@ -109,6 +120,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/hr/employees/{employee}',     [EmployeeController::class, 'show'])->name('employees.show');
     Route::get('/hr/employees/{employee}/edit',[EmployeeController::class, 'edit'])->name('employees.edit');
     Route::put('/hr/employees/{employee}',     [EmployeeController::class, 'update'])->name('employees.update');
+    Route::post('/hr/employees/{employee}/avatar', [EmployeeController::class, 'uploadAvatar'])->name('employees.avatar');
     Route::post('/hr/employees/{employee}/education', [EmployeeController::class, 'updateEducation'])->name('employees.education.update');
     Route::post('/hr/employees/{employee}/spouse',            [EmployeeController::class, 'updateSpouse'])->name('employees.spouse.update');
     Route::put('/hr/employees/{employee}/spouse/{spouseId}',  [EmployeeController::class, 'editSpouse'])->name('employees.spouse.edit');
@@ -146,6 +158,14 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     // Keep legacy route pointing to HR index for any old links
     Route::get('/offboarding', fn() => redirect()->route('hr.offboarding.index'))->name('offboarding.index');
 
+
+    // Announcements (HR Manager / Superadmin)
+    Route::get('/hr/announcements',                        [AnnouncementController::class, 'index'])->name('announcements.index');
+    Route::get('/hr/announcements/create',                 [AnnouncementController::class, 'create'])->name('announcements.create');
+    Route::post('/hr/announcements',                       [AnnouncementController::class, 'store'])->name('announcements.store');
+    Route::get('/hr/announcements/{announcement}/edit',    [AnnouncementController::class, 'edit'])->name('announcements.edit');
+    Route::put('/hr/announcements/{announcement}',         [AnnouncementController::class, 'update'])->name('announcements.update');
+    Route::delete('/hr/announcements/{announcement}',      [AnnouncementController::class, 'destroy'])->name('announcements.destroy');
 
     // HR AARF view
     Route::get('/hr/aarf/{aarf}', [AarfController::class, 'hrView'])->name('hr.aarf.view');

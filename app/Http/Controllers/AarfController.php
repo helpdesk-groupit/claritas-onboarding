@@ -11,10 +11,16 @@ use Illuminate\Support\Facades\Auth;
 class AarfController extends Controller
 {
     // ── IT: AARF listing — only pending/active onboardings ────────────────
+    private function canViewAllAarfs(): bool
+    {
+        $u = Auth::user();
+        return $u->isSuperadmin() || $u->isHrManager() || $u->isHrExecutive() || $u->isItManager() || $u->isItExecutive();
+    }
+
     public function index()
     {
         $u = Auth::user();
-        if (!$u->isIt() && !$u->isSuperadmin()) abort(403);
+        if (!$u->isIt() && !$u->isSuperadmin() && !$u->isHrManager() && !$u->isHrExecutive()) abort(403);
 
         // Only show AARFs where the onboarding is still in-progress.
         // Once onboarding status = 'offboarded' (person moved to employees table),
@@ -36,7 +42,7 @@ class AarfController extends Controller
     public function itShow(Aarf $aarf)
     {
         $u = Auth::user();
-        if (!$u->isIt() && !$u->isSuperadmin()) abort(403);
+        if (!$u->isIt() && !$u->isSuperadmin() && !$u->isHrManager() && !$u->isHrExecutive()) abort(403);
 
         $aarf->load([
             'onboarding.personalDetail',
@@ -307,6 +313,23 @@ class AarfController extends Controller
             ])
             ->firstOrFail();
 
+        // If authenticated as a regular employee (not privileged), ensure they can only view their own AARF
+        if (auth()->check()) {
+            $authUser = auth()->user();
+            $isPrivileged = $authUser->isSuperadmin() || $authUser->isHrManager() || $authUser->isHrExecutive()
+                || $authUser->isItManager() || $authUser->isItExecutive()
+                || $authUser->isHr() || $authUser->isIt() || $authUser->isSystemAdmin();
+
+            if (!$isPrivileged) {
+                $empId = $authUser->employee?->id;
+                $aarfEmpId = $aarf->employee_id
+                    ?? $aarf->onboarding?->employee?->id;
+                if ($empId && $aarfEmpId && $empId !== $aarfEmpId) {
+                    abort(403);
+                }
+            }
+        }
+
         // Determine viewer role for display purposes only.
         // HR, superadmin, system_admin → read-only
         // ?readonly=1 (e.g. from profile page) → read-only for everyone
@@ -363,6 +386,7 @@ class AarfController extends Controller
     // ── HR internal view ───────────────────────────────────────────────────
     public function hrView(Aarf $aarf)
     {
+        if (!$this->canViewAllAarfs()) abort(403);
         $aarf->load(['onboarding.personalDetail', 'onboarding.workDetail', 'onboarding.assetAssignments.asset']);
         return view('hr.aarf', compact('aarf'));
     }

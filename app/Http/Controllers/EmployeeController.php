@@ -111,10 +111,13 @@ class EmployeeController extends Controller
 
         $employee->update(['work_role' => $request->work_role]);
 
-        // Sync users.role so permissions take effect immediately
+        // Sync users.role so permissions take effect immediately.
+        // users.role is a restricted ENUM; map org-level roles (others, manager, etc.) to 'employee'.
         if ($employee->user_id) {
+            $systemRoles = ['hr_manager','hr_executive','hr_intern','it_manager','it_executive','it_intern','superadmin','system_admin','employee'];
+            $userRole = in_array($request->work_role, $systemRoles) ? $request->work_role : 'employee';
             \App\Models\User::where('id', $employee->user_id)
-                ->update(['role' => $request->work_role]);
+                ->update(['role' => $userRole]);
         }
 
         return back()->with('success', $employee->full_name . '\'s role updated to ' . ucfirst(str_replace('_', ' ', $request->work_role)) . '.');
@@ -177,7 +180,10 @@ class EmployeeController extends Controller
     // ── HR: Export CSV ────────────────────────────────────────────────────
     public function export(Request $request)
     {
-        $this->authorizeHr();
+        $u = Auth::user();
+        if (!$u->isSuperadmin() && !$u->isHrManager() && !$u->isHrExecutive() && !$u->isItManager() && !$u->isItExecutive()) {
+            abort(403);
+        }
 
         $query = Employee::whereNull('active_until');
         if ($request->filled('search')) {
@@ -429,6 +435,7 @@ class EmployeeController extends Controller
     {
         $this->authorizeItOrHr();
         $employee->load([
+            'user',
             'onboarding.aarf',
             'onboarding.personalDetail',
             'onboarding.assetProvisioning',
@@ -469,6 +476,29 @@ class EmployeeController extends Controller
              ?? \App\Models\Aarf::where('employee_id', $employee->id)->first();
 
         return view('hr.employees.show', compact('employee', 'directAssets', 'availableAssets', 'aarf'));
+    }
+
+    // ── Upload / change employee profile photo (HR Manager / SuperAdmin) ────
+    public function uploadAvatar(Request $request, Employee $employee)
+    {
+        $u = Auth::user();
+        if (!in_array($u->role, ['hr_manager', 'superadmin', 'system_admin'])) abort(403);
+
+        $request->validate(['avatar' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:2048']);
+
+        $user = $employee->user;
+        if (!$user) {
+            return back()->with('error', 'This employee does not have a linked user account yet.');
+        }
+
+        if ($user->profile_picture) {
+            \Illuminate\Support\Facades\Storage::disk('public')->delete($user->profile_picture);
+        }
+
+        $path = $request->file('avatar')->store('profile-pictures', 'public');
+        $user->update(['profile_picture' => $path]);
+
+        return back()->with('success', 'Profile photo updated successfully.');
     }
 
     // ── IT Manager / Executive: Assign an additional asset to employee ─────
@@ -619,8 +649,8 @@ class EmployeeController extends Controller
     {
         $u = Auth::user();
         if (!in_array($u->role, ['hr_manager', 'superadmin'])) abort(403);
-        $employee->load(['onboarding.personalDetail', 'contracts', 'educationHistories', 'spouseDetails', 'emergencyContacts', 'childRegistration', 'editLogs']);
-        $managers  = \App\Models\User::whereIn('role', ['hr_manager','it_manager','superadmin','manager'])->orderBy('name')->with('employee')->get();
+        $employee->load(['user', 'onboarding.personalDetail', 'contracts', 'educationHistories', 'spouseDetails', 'emergencyContacts', 'childRegistration', 'editLogs']);
+        $managers  = \App\Models\User::whereIn('role', ['hr_manager','it_manager','superadmin','system_admin'])->orderBy('name')->with('employee')->get();
         $companies = Company::orderBy('name')->get(['name','address']);
 
         // Match the same directAssets logic as show() — includes auto-assigned (onboarding) assets
@@ -724,6 +754,39 @@ class EmployeeController extends Controller
             'last_salary_date'        => 'nullable|date',
             'employment_status'       => 'nullable|in:active,resigned,terminated,contract_ended',
             'remarks'                 => 'nullable|string|max:2000',
+            // Section F - Education
+            'edu_qualification.*'    => 'nullable|string|max:255',
+            'edu_institution.*'      => 'nullable|string|max:255',
+            'edu_year.*'             => 'nullable|integer|min:1950|max:2099',
+            'edu_experience_total'   => 'nullable|string|max:10',
+            'edu_certificate.*.*'    => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'edu_cert_keep.*.*'      => 'nullable|string',
+            'edu_delete_ids'         => 'nullable|string',
+            // Section G - Spouse
+            'del_spouse_ids'         => 'nullable|string',
+            'spouses'                => 'nullable|array',
+            'spouses.*.id'           => 'nullable|integer',
+            'spouses.*.name'         => 'nullable|string|max:255',
+            'spouses.*.nric_no'      => 'nullable|string|max:50',
+            'spouses.*.tel_no'       => 'nullable|string|max:30',
+            'spouses.*.occupation'   => 'nullable|string|max:255',
+            'spouses.*.income_tax_no'=> 'nullable|string|max:50',
+            'spouses.*.address'      => 'nullable|string',
+            'spouses.*.is_working'   => 'nullable|boolean',
+            'spouses.*.is_disabled'  => 'nullable|boolean',
+            // Section H - Emergency Contacts
+            'emergency.1.name'         => 'nullable|string|max:255',
+            'emergency.1.tel_no'       => 'nullable|string|max:30',
+            'emergency.1.relationship' => 'nullable|string|max:100',
+            'emergency.2.name'         => 'nullable|string|max:255',
+            'emergency.2.tel_no'       => 'nullable|string|max:30',
+            'emergency.2.relationship' => 'nullable|string|max:100',
+            // Section I - Child Registration
+            'cat_a_100'=>'nullable|integer|min:0|max:99','cat_a_50'=>'nullable|integer|min:0|max:99',
+            'cat_b_100'=>'nullable|integer|min:0|max:99','cat_b_50'=>'nullable|integer|min:0|max:99',
+            'cat_c_100'=>'nullable|integer|min:0|max:99','cat_c_50'=>'nullable|integer|min:0|max:99',
+            'cat_d_100'=>'nullable|integer|min:0|max:99','cat_d_50'=>'nullable|integer|min:0|max:99',
+            'cat_e_100'=>'nullable|integer|min:0|max:99','cat_e_50'=>'nullable|integer|min:0|max:99',
         ];
 
         $data = $request->validate($rules);
@@ -906,6 +969,15 @@ class EmployeeController extends Controller
             }
         }
 
+        // Load relationships for change detection (before main update)
+        $employee->load(['educationHistories', 'spouseDetails', 'emergencyContacts', 'childRegistration']);
+
+        // ── Snapshot before F/G/H/I updates ─────────────────────────────────────
+        $oldEduHash = md5(serialize($employee->educationHistories->map(fn($e) => [$e->id, $e->qualification, $e->institution, $e->year_graduated])->toArray()));
+        $oldSpouseHash = md5(serialize($employee->spouseDetails->map(fn($s) => [$s->id, $s->name, $s->tel_no])->toArray()));
+        $oldEcHash = md5(serialize($employee->emergencyContacts->sortBy('contact_order')->map(fn($c) => [$c->name, $c->tel_no, $c->relationship, $c->contact_order])->values()->toArray()));
+        $oldChHash = md5(serialize($employee->childRegistration?->only(['cat_a_100','cat_a_50','cat_b_100','cat_b_50','cat_c_100','cat_c_50','cat_d_100','cat_d_50','cat_e_100','cat_e_50']) ?? []));
+
         $employee->update($data);
 
         // ── Sync users.work_email when company_email changes ─────────────
@@ -916,10 +988,13 @@ class EmployeeController extends Controller
             }
         }
 
-        // Sync users.role when work_role changes — permissions are driven by users.role
+        // Sync users.role when work_role changes — permissions are driven by users.role.
+        // users.role is a restricted ENUM; map org-level roles (others, manager, etc.) to 'employee'.
         if (!empty($data['work_role']) && $employee->user_id) {
+            $systemRoles = ['hr_manager','hr_executive','hr_intern','it_manager','it_executive','it_intern','superadmin','system_admin','employee'];
+            $syncRole = in_array($data['work_role'], $systemRoles) ? $data['work_role'] : 'employee';
             \App\Models\User::where('id', $employee->user_id)
-                ->update(['role' => $data['work_role']]);
+                ->update(['role' => $syncRole]);
         }
 
         // ── Sync back to linked onboarding personal_details + work_details ──
@@ -1006,15 +1081,99 @@ class EmployeeController extends Controller
             'socso_no'                => $employee->socso_no,
         ];
 
-        $flashMessage = 'Employee record updated.';
+        // ── Section F: Education ──────────────────────────────────────────────────
+        $eduDeleteIds = array_filter(explode(',', $request->input('edu_delete_ids', '')));
+        if (!empty($eduDeleteIds)) {
+            \App\Models\EmployeeEducationHistory::where('employee_id', $employee->id)
+                ->whereIn('id', $eduDeleteIds)->delete();
+        }
+        $expTotal = $request->input('edu_experience_total');
+        foreach ($request->input('edu_qualification', []) as $i => $qual) {
+            if (empty(trim((string)$qual))) continue;
+            $existingId = $request->input("edu_id.{$i}");
+            $yearsExp   = ($i === 0) ? $expTotal : null;
+            $keepPaths  = $request->input("edu_cert_keep.{$i}", null);
+            if ($existingId) {
+                $row = \App\Models\EmployeeEducationHistory::where('employee_id', $employee->id)->find($existingId);
+                $allExisting = $row ? ($row->certificate_paths ?? ($row->certificate_path ? [$row->certificate_path] : [])) : [];
+                $keptExisting = $keepPaths !== null ? array_values(array_intersect($allExisting, (array)$keepPaths)) : $allExisting;
+            } else {
+                $row = null; $keptExisting = [];
+            }
+            $newCertPaths = [];
+            if ($request->hasFile("edu_certificate.{$i}")) {
+                foreach ((array)$request->file("edu_certificate.{$i}") as $certFile) {
+                    if ($certFile instanceof \Illuminate\Http\UploadedFile && $certFile->isValid()) {
+                        $newCertPaths[] = $certFile->store('education_certificates', 'public');
+                    }
+                }
+            }
+            $mergedCerts = array_slice(array_values(array_merge($keptExisting, $newCertPaths)), 0, 5);
+            if ($existingId && $row) {
+                $row->update(['qualification' => $qual, 'institution' => $request->input("edu_institution.{$i}"), 'year_graduated' => $request->input("edu_year.{$i}"), 'years_experience' => $yearsExp, 'certificate_path' => $mergedCerts[0] ?? null, 'certificate_paths' => !empty($mergedCerts) ? $mergedCerts : null]);
+            } elseif (!$existingId) {
+                \App\Models\EmployeeEducationHistory::create(['employee_id' => $employee->id, 'qualification' => $qual, 'institution' => $request->input("edu_institution.{$i}"), 'year_graduated' => $request->input("edu_year.{$i}"), 'years_experience' => $yearsExp, 'certificate_path' => $mergedCerts[0] ?? null, 'certificate_paths' => !empty($mergedCerts) ? $mergedCerts : null]);
+            }
+        }
+
+        // ── Section G: Spouse ─────────────────────────────────────────────────────
+        $delSpouseIds = array_filter(explode(',', $request->input('del_spouse_ids', '')));
+        if (!empty($delSpouseIds)) {
+            \App\Models\EmployeeSpouseDetail::where('employee_id', $employee->id)->whereIn('id', $delSpouseIds)->delete();
+        }
+        foreach ($request->input('spouses', []) as $sp) {
+            if (empty($sp['name'])) continue;
+            $spId = !empty($sp['id']) ? (int)$sp['id'] : null;
+            $spFields = ['name' => $sp['name'], 'nric_no' => $sp['nric_no'] ?? null, 'tel_no' => $sp['tel_no'] ?? null, 'occupation' => $sp['occupation'] ?? null, 'income_tax_no' => $sp['income_tax_no'] ?? null, 'address' => $sp['address'] ?? null, 'is_working' => !empty($sp['is_working']), 'is_disabled' => !empty($sp['is_disabled'])];
+            if ($spId) {
+                \App\Models\EmployeeSpouseDetail::where('employee_id', $employee->id)->where('id', $spId)->update($spFields);
+            } else {
+                $spFields['employee_id'] = $employee->id;
+                \App\Models\EmployeeSpouseDetail::create($spFields);
+            }
+        }
+
+        // ── Section H: Emergency Contacts ────────────────────────────────────────
+        foreach ([1, 2] as $order) {
+            $ec = $request->input("emergency.{$order}");
+            if (!empty($ec['name'])) {
+                \App\Models\EmployeeEmergencyContact::updateOrCreate(
+                    ['employee_id' => $employee->id, 'contact_order' => $order],
+                    ['name' => $ec['name'], 'tel_no' => $ec['tel_no'] ?? null, 'relationship' => $ec['relationship'] ?? null]
+                );
+            }
+        }
+
+        // ── Section I: Child Registration ─────────────────────────────────────────
+        $childData = [];
+        foreach (['a','b','c','d','e'] as $key) {
+            $childData["cat_{$key}_100"] = (int)($request->input("cat_{$key}_100") ?? 0);
+            $childData["cat_{$key}_50"]  = (int)($request->input("cat_{$key}_50") ?? 0);
+        }
+        if (!empty(array_filter($childData))) {
+            \App\Models\EmployeeChildRegistration::updateOrCreate(['employee_id' => $employee->id], $childData);
+        }
+
+        // ── Detect section changes for consent email ──────────────────────────────
+        $employee->load(['educationHistories', 'spouseDetails', 'emergencyContacts', 'childRegistration']);
+        $newEduHash = md5(serialize($employee->educationHistories->map(fn($e) => [$e->id, $e->qualification, $e->institution, $e->year_graduated])->toArray()));
+        $newSpouseHash = md5(serialize($employee->spouseDetails->map(fn($s) => [$s->id, $s->name, $s->tel_no])->toArray()));
+        $newEcHash = md5(serialize($employee->emergencyContacts->sortBy('contact_order')->map(fn($c) => [$c->name, $c->tel_no, $c->relationship, $c->contact_order])->values()->toArray()));
+        $newChHash = md5(serialize($employee->childRegistration?->only(['cat_a_100','cat_a_50','cat_b_100','cat_b_50','cat_c_100','cat_c_50','cat_d_100','cat_d_50','cat_e_100','cat_e_50']) ?? []));
+
+        $changedSections = [];
         if ($oldSectionA !== $newSectionA) {
+            $changedSections[] = 'Section A — Personal Details';
+        }
+        if ($oldEduHash !== $newEduHash) $changedSections[] = 'Section F — Education & Work History';
+        if ($oldSpouseHash !== $newSpouseHash) $changedSections[] = 'Section G — Spouse Information';
+        if ($oldEcHash !== $newEcHash) $changedSections[] = 'Section H — Emergency Contacts';
+        if ($oldChHash !== $newChHash) $changedSections[] = 'Section I — Child Registration';
+
+        $flashMessage = 'Employee record updated.';
+        if (!empty($changedSections)) {
             $consentRequired = $u->isHrManager() || $u->isSuperadmin() || $u->isSystemAdmin();
-            $this->triggerEmployeeConsent(
-                $employee,
-                ['Section A — Personal Details'],
-                $request->input('remarks'),
-                $consentRequired
-            );
+            $this->triggerEmployeeConsent($employee, $changedSections, $request->input('remarks'), $consentRequired);
             if ($consentRequired) {
                 $flashMessage = 'Employee record updated. A consent re-acknowledgement email has been sent to ' . ($employee->full_name ?? 'the employee') . '.';
             }
@@ -1074,7 +1233,7 @@ class EmployeeController extends Controller
             $newCertPaths = [];
             if ($request->hasFile("edu_certificate.{$i}")) {
                 foreach ((array)$request->file("edu_certificate.{$i}") as $certFile) {
-                    if ($certFile && $certFile->isValid()) {
+                    if ($certFile instanceof \Illuminate\Http\UploadedFile && $certFile->isValid()) {
                         $newCertPaths[] = $certFile->store('education_certificates', 'public');
                     }
                 }

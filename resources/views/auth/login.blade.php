@@ -51,6 +51,12 @@
             @if(session('status'))
                 <div class="alert alert-info py-2">{{ session('status') }}</div>
             @endif
+            {{-- Shown when Laravel's throttle middleware blocks the request (HTTP 429) --}}
+            @if($errors->has('email'))
+                <div class="alert alert-danger py-2">
+                    <i class="bi bi-shield-exclamation me-1"></i>{{ $errors->first('email') }}
+                </div>
+            @endif
 
             <form action="{{ route('login') }}{{ isset($redirectIntent) ? '?redirect='.$redirectIntent : '' }}" method="POST">
                 @csrf
@@ -59,7 +65,8 @@
                     <div class="input-group">
                         <span class="input-group-text"><i class="bi bi-envelope"></i></span>
                         <input type="email" name="work_email" class="form-control @error('work_email') is-invalid @enderror"
-                            value="{{ old('work_email') }}" placeholder="yourname@claritas.com" required autofocus>
+                            value="{{ old('work_email') }}" placeholder="yourname@claritas.com"
+                            autocomplete="username" required autofocus>
                         @error('work_email')
                             <div class="invalid-feedback">{{ $message }}</div>
                         @enderror
@@ -70,7 +77,7 @@
                     <div class="input-group">
                         <span class="input-group-text"><i class="bi bi-lock"></i></span>
                         <input type="password" name="password" class="form-control @error('password') is-invalid @enderror"
-                            placeholder="Enter password" required>
+                            placeholder="Enter password" autocomplete="current-password" required>
                         @error('password')
                             <div class="invalid-feedback">{{ $message }}</div>
                         @enderror

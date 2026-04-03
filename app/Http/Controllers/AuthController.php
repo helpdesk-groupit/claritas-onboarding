@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\SecurityAuditLog;
 use App\Models\User;
 use App\Models\Employee;
 use Illuminate\Http\Request;
@@ -30,22 +31,60 @@ class AuthController extends Controller
 
         $user = User::where('work_email', $request->work_email)->first();
 
-        if (!$user || !Hash::check($request->password, $user->password)) {
-            return back()->withErrors([
-                'work_email' => 'Invalid credentials. Please try again.',
-            ])->onlyInput('work_email');
+        // Check deactivated account first (before password check)
+        if ($user && !$user->is_active) {
+            $msg = $user->deactivation_reason === 'login_lockout'
+                ? 'Your account has been deactivated due to 5 unsuccessful login attempts. Please contact IT team for account activation.'
+                : 'This account has been deactivated.';
+            return back()->withErrors(['work_email' => $msg])->onlyInput('work_email');
         }
 
-        if (!$user->is_active) {
+        if (!$user || !Hash::check($request->password, $user->password)) {
+            // Track failed attempts per user
+            if ($user) {
+                $attempts = $user->login_attempts + 1;
+                if ($attempts >= 5) {
+                    $user->update([
+                        'login_attempts'      => $attempts,
+                        'is_active'           => false,
+                        'deactivation_reason' => 'login_lockout',
+                        'deactivated_at'      => now(),
+                    ]);
+                    SecurityAuditLog::record('lockout', [
+                        'user_id'    => $user->id,
+                        'work_email' => $user->work_email,
+                        'role'       => $user->role,
+                        'ip_address' => $request->ip(),
+                        'details'    => "Account locked after {$attempts} consecutive failed login attempts.",
+                    ]);
+                    return back()->withErrors([
+                        'work_email' => 'Your account has been deactivated due to 5 unsuccessful login attempts. Please contact IT team for account activation.',
+                    ])->onlyInput('work_email');
+                }
+                $user->update(['login_attempts' => $attempts]);
+                SecurityAuditLog::record('failed_login', [
+                    'user_id'    => $user->id,
+                    'work_email' => $user->work_email,
+                    'role'       => $user->role,
+                    'ip_address' => $request->ip(),
+                    'details'    => "Failed login attempt {$attempts}/5.",
+                ]);
+            } else {
+                SecurityAuditLog::record('failed_login', [
+                    'work_email' => $request->work_email,
+                    'ip_address' => $request->ip(),
+                    'details'    => 'Login attempt with unknown email.',
+                ]);
+            }
             return back()->withErrors([
-                'work_email' => 'This account has been deactivated.',
+                'work_email' => 'Invalid credentials. Please try again.',
             ])->onlyInput('work_email');
         }
 
         // Safety net: if linked employee has passed their exit date, deactivate and block
         $linkedEmployee = $user->employee;
         if ($linkedEmployee && $linkedEmployee->exit_date && $linkedEmployee->exit_date->isPast()) {
-            $user->update(['is_active' => false]);
+            $user->update(['is_active' => false, 'deactivation_reason' => 'exit_date', 'deactivated_at' => now()]);
             if (!$linkedEmployee->active_until) {
                 $linkedEmployee->update(['active_until' => $linkedEmployee->exit_date]);
             }
@@ -54,8 +93,17 @@ class AuthController extends Controller
             ])->onlyInput('work_email');
         }
 
+        // Successful login — reset failed attempt counter
+        $user->update(['login_attempts' => 0]);
+
         Auth::login($user, $request->boolean('remember'));
         $request->session()->regenerate();
+
+        // Single-session enforcement: generate a unique token, store in DB and session.
+        // Any previous session no longer holds this token → gets kicked out on next request.
+        $token = \Illuminate\Support\Str::random(60);
+        $user->update(['session_token' => $token]);
+        session(['_single_session_token' => $token]);
 
 
         // If arriving from a consent re-acknowledgement email, redirect to profile
@@ -186,10 +234,17 @@ class AuthController extends Controller
             'is_active'  => true,
         ]);
 
-        // Link to employee record if one exists
+        // Link to employee record if one exists.
+        // For non-system roles, default work_role to 'others' until superadmin assigns one.
         Employee::where('company_email', $email)
             ->whereNull('user_id')
             ->update(['user_id' => $user->id]);
+
+        if ($role === 'employee') {
+            Employee::where('company_email', $email)
+                ->whereNull('work_role')
+                ->update(['work_role' => 'others']);
+        }
 
         // If consent-redirect was stored in session, carry it through to login page
         $loginRoute = route('login');
@@ -213,6 +268,13 @@ class AuthController extends Controller
         $user = User::where('work_email', $request->email)->first();
         if (!$user) {
             return back()->withErrors(['email' => 'No account found with that email address.']);
+        }
+
+        if (!$user->is_active) {
+            if ($user->deactivation_reason === 'login_lockout') {
+                return back()->withErrors(['email' => 'Your account has been deactivated due to 5 unsuccessful login attempts. Please contact IT team for account activation.']);
+            }
+            return back()->withErrors(['email' => 'This account has been deactivated. Please contact IT team.']);
         }
 
         $status = Password::sendResetLink(['work_email' => $request->email]);
@@ -256,6 +318,11 @@ class AuthController extends Controller
     // ── Logout ─────────────────────────────────────────────────────────────
     public function logout(Request $request)
     {
+        // Clear the stored session token so the user's slot is freed
+        if (Auth::check()) {
+            Auth::user()->update(['session_token' => null]);
+        }
+
         Auth::logout();
         $request->session()->invalidate();
         $request->session()->regenerateToken();

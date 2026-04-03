@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Announcement;
 use App\Models\Onboarding;
 use App\Models\Employee;
 use App\Models\AssetInventory;
@@ -79,6 +80,12 @@ class DashboardController extends Controller
             ->select('department', DB::raw('count(*) as total'))
             ->groupBy('department')->orderByDesc('total')->get();
 
+        $birthdayBabies = Employee::whereNull('active_until')
+            ->whereNotNull('date_of_birth')
+            ->whereMonth('date_of_birth', $now->month)
+            ->orderByRaw('DAY(date_of_birth) ASC')
+            ->get(['full_name', 'preferred_name', 'date_of_birth', 'designation', 'department', 'company']);
+
         return [
             'stats' => [
                 'total_onboardings_ytd'  => WorkDetail::whereYear('start_date', $now->year)->count(),
@@ -93,7 +100,17 @@ class DashboardController extends Controller
             'activeByDesignation'    => $activeByDesignation,
             'activeByRole'           => $activeByRole,
             'activeByDepartment'     => $activeByDepartment,
+            'birthdayBabies'         => $birthdayBabies,
         ];
+    }
+
+    private function getAnnouncements(?string $company): \Illuminate\Database\Eloquent\Collection
+    {
+        return Announcement::with('creator.employee')
+            ->visibleTo($company)
+            ->orderByDesc('created_at')
+            ->limit(5)
+            ->get();
     }
 
     public function hrDashboard()
@@ -103,6 +120,7 @@ class DashboardController extends Controller
             return redirect()->route('user.dashboard');
         }
         extract($this->getDashboardStats());
+        $latestAnnouncements = $this->getAnnouncements($user->employee?->company);
 
         // Asset overview — needed for superadmin view on HR dashboard
         $assetStats = [
@@ -130,7 +148,7 @@ class DashboardController extends Controller
             'stats','onboardingsByCompany','newJoinersByCompany','exitingByCompany',
             'activeByCompany','activeByDesignation','activeByRole','activeByDepartment',
             'assetStats','assetsByType','companyOwnedTotal','companyOwnedByCompany',
-            'rentalTotal','rentalByVendor'
+            'rentalTotal','rentalByVendor','birthdayBabies','latestAnnouncements'
         ));
     }
 
@@ -179,13 +197,15 @@ class DashboardController extends Controller
             ->limit(10)
             ->get();
 
+        $latestAnnouncements = $this->getAnnouncements($user->employee?->company);
+
         return view('it.dashboard', compact(
             'assetStats', 'assetsByType',
             'companyOwnedTotal', 'companyOwnedByCompany',
             'rentalTotal', 'rentalByVendor',
             'stats', 'onboardingsByCompany', 'newJoinersByCompany', 'exitingByCompany',
             'activeByCompany', 'activeByDesignation', 'activeByRole', 'activeByDepartment',
-            'recentOnboardings'
+            'recentOnboardings', 'birthdayBabies', 'latestAnnouncements'
         ));
     }
 
@@ -248,6 +268,12 @@ class DashboardController extends Controller
         if ($user->isIt()) return redirect()->route('it.dashboard');
 
         $employee = $user->employee?->load('onboarding.personalDetail','onboarding.workDetail');
-        return view('user.dashboard', compact('user','employee'));
+        $birthdayBabies = Employee::whereNull('active_until')
+            ->whereNotNull('date_of_birth')
+            ->whereMonth('date_of_birth', Carbon::now()->month)
+            ->orderByRaw('DAY(date_of_birth) ASC')
+            ->get(['full_name', 'preferred_name', 'date_of_birth', 'designation', 'department', 'company']);
+        $latestAnnouncements = $this->getAnnouncements($employee?->company);
+        return view('user.dashboard', compact('user','employee','birthdayBabies','latestAnnouncements'));
     }
 }

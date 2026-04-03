@@ -28,8 +28,7 @@
 
         <div class="alert py-2 mb-3 small" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;color:#1e40af;">
             <i class="bi bi-info-circle me-2"></i>
-            Use the work email assigned to you by IT
-            (format: <strong><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="7a141b171f3a19161b08130e1b09541b09131b">[email&#160;protected]</a></strong>).
+            Use the work email assigned to you by IT to create your account.
             If you cannot remember your email, please see the IT team.
         </div>
 

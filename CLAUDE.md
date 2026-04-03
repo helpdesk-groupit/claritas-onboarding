@@ -33,11 +33,14 @@ php artisan migrate:fresh --seed
 This is a **multi-role HR onboarding/offboarding management system** built on Laravel 12 with Blade + Tailwind CSS v4.
 
 ### Roles & Access
-Four roles with distinct dashboards and capabilities:
-- **User** — self-service profile/account management
-- **HR** — employee lifecycle (onboarding, offboarding, employee records)
-- **IT** — asset inventory, provisioning, offboarding IT tasks
-- **SuperAdmin** — company management, role assignment
+Role groups with granular sub-roles:
+- **HR** (`hr_manager`, `hr_executive`, `hr_intern`) — employee lifecycle; only `hr_manager` can edit records, download contracts, and access restricted documents
+- **IT** (`it_manager`, `it_executive`, `it_intern`) — asset inventory, provisioning, offboarding IT tasks; view-only on employee/offboarding records
+- **SuperAdmin** (`superadmin`) — company management, role assignment; effectively has HR Manager permissions
+- **User** (`employee`) — self-service profile/account management
+- `system_admin` — internal admin role; treated like HR Manager in most views
+
+`User` model has coarse helpers (`isHr()`, `isIt()`, `isSuperadmin()`) and fine-grained capability methods (`canEditOnboarding()`, `canViewAssets()`, `canEditAarf()`, etc.) — always prefer these over raw role string comparisons. In Blade views, local `$canEdit` / `$canViewContracts` variables are derived from these helpers and used to gate UI elements.
 
 Route middleware enforces role access. Check `routes/web.php` and `app/Providers/AuthServiceProvider.php` for authorization gates/policies.
 
@@ -111,6 +114,13 @@ Only Sections A, F, G, H, I trigger any email for onboarding edits. The employee
 ### Multi-file Storage Patterns
 - **NRIC/Passport:** `personal_details.nric_file_paths` (JSON array). In employee records, mirrored to `employees.nric_file_paths`. Keep/remove controlled via `nric_keep_paths[]` hidden inputs on edit forms.
 - **Education certificates:** `employee_education_histories.certificate_paths` (JSON array, max 5). Legacy single-file column `certificate_path` is kept as the first entry for backwards compatibility. Keep/remove controlled via `edu_cert_keep[i][]` hidden inputs; new files use the DataTransfer API to attach File objects to a hidden `<input type="file">`.
+
+### IT vs HR Offboarding Views
+There are two separate view paths for offboarding detail:
+- `hr.offboarding.show` — accessed by HR staff via `hr.offboarding.index`
+- `it.offboarding-show` — accessed by IT staff via `it.offboarding.index`
+
+Both views display Sections F–I via `partials.employee-extra-sections-view`. The IT view is read-only and locks contract/handbook/orientation documents with an "HR only" badge.
 
 ### Pending Route Change
 `web.php.routes-to-add.txt` documents a planned registration route split. The routes in `routes/web.php` already reflect this update — the `.txt` file can be ignored.

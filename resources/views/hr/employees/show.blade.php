@@ -21,6 +21,18 @@
                    ?? 'https://ui-avatars.com/api/?name=' . urlencode($empName) . '&background=2563eb&color=fff&size=200';
 
     $statusColors = ['active'=>'success','resigned'=>'danger','terminated'=>'danger','contract_ended'=>'secondary'];
+
+    $roleLabels = [
+        'hr_manager'   => 'HR Manager',
+        'hr_executive' => 'HR Executive',
+        'hr_intern'    => 'HR Intern',
+        'it_manager'   => 'IT Manager',
+        'it_executive' => 'IT Executive',
+        'it_intern'    => 'IT Intern',
+        'superadmin'   => 'SuperAdmin',
+        'system_admin' => 'System Admin',
+        'employee'     => 'Employee',
+    ];
 @endphp
 
 {{-- ── Action Bar ───────────────────────────────────────────────────────── --}}
@@ -49,9 +61,17 @@
 {{-- ── Profile Header ────────────────────────────────────────────────────── --}}
 <div class="card mb-4">
     <div class="card-body d-flex align-items-center gap-4 py-3">
-        <img src="{{ $profilePicUrl }}" alt="{{ $empName }}"
-             class="rounded-circle border shadow-sm flex-shrink-0"
-             style="width:80px;height:80px;object-fit:cover;">
+        <div class="d-flex flex-column align-items-center flex-shrink-0 gap-1">
+            <img src="{{ $profilePicUrl }}" alt="{{ $empName }}"
+                 class="rounded-circle border shadow-sm"
+                 style="width:80px;height:80px;object-fit:cover;">
+            @if($canEdit)
+            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
+                    style="font-size:11px;" data-bs-toggle="modal" data-bs-target="#changePhotoModalEmp">
+                <i class="bi bi-camera me-1"></i>Change
+            </button>
+            @endif
+        </div>
         <div class="flex-fill">
             <h5 class="fw-bold mb-1">{{ $empName }}</h5>
             @if($employee->preferred_name && $employee->preferred_name !== $employee->full_name)
@@ -340,12 +360,16 @@
                 <td class="py-2">
                     @if($employee->work_role)
                         <span class="badge bg-primary px-3 py-2" style="font-size:13px;">
-                            {{ str_replace('_',' ', ucwords($employee->work_role)) }}
+                            {{ $roleLabels[$employee->work_role] ?? ucwords(str_replace('_',' ',$employee->work_role)) }}
                         </span>
                     @else
                         <span class="text-muted">Not assigned</span>
                     @endif
                 </td>
+            </tr>
+            <tr>
+                <td class="text-muted py-2">Login Email</td>
+                <td class="py-2">{{ $employee->user?->work_email ?? '—' }}</td>
             </tr>
             @if($employee->remarks)
             <tr>
@@ -605,6 +629,41 @@
                     @endforeach
                 </tbody>
             </table>
+        </div>
+    </div>
+</div>
+@endif
+
+{{-- ── Change Photo Modal ──────────────────────────────────────────────── --}}
+@if($canEdit)
+<div class="modal fade" id="changePhotoModalEmp" tabindex="-1" aria-labelledby="changePhotoModalEmpLabel" aria-hidden="true">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h6 class="modal-title fw-bold" id="changePhotoModalEmpLabel">
+                    <i class="bi bi-camera me-2"></i>Change Profile Photo
+                </h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ route('employees.avatar', $employee) }}" method="POST" enctype="multipart/form-data">
+                @csrf
+                <div class="modal-body">
+                    <div class="text-center mb-3">
+                        <img src="{{ $profilePicUrl }}" alt="{{ $empName }}"
+                             class="rounded-circle border shadow-sm"
+                             style="width:80px;height:80px;object-fit:cover;">
+                    </div>
+                    <label class="form-label fw-semibold">New Photo</label>
+                    <input type="file" name="avatar" class="form-control" accept="image/*" required>
+                    <div class="form-text">JPEG, PNG, GIF or WebP. Max 2 MB.</div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-sm btn-primary">
+                        <i class="bi bi-upload me-1"></i>Upload
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
 </div>

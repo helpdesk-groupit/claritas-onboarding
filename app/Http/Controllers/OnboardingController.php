@@ -284,7 +284,7 @@ class OnboardingController extends Controller
     public function edit(Onboarding $onboarding)
     {
         $this->authorizeCanEdit();
-        $onboarding->load(['personalDetail', 'workDetail', 'assetProvisioning', 'editLogs']);
+        $onboarding->load(['personalDetail', 'workDetail', 'assetProvisioning', 'editLogs', 'employee.user']);
         $hrUsers  = Employee::whereNull('active_until')->whereNotNull('full_name')->whereNotNull('company_email')
             ->whereIn('work_role', ['hr_manager','hr_executive','hr_intern'])->orderBy('full_name')->get();
         $itUsers  = Employee::whereNull('active_until')->whereNotNull('full_name')->whereNotNull('company_email')
@@ -548,6 +548,29 @@ class OnboardingController extends Controller
         return redirect()->route('onboarding.show', $onboarding)->with('success', $flashMessage);
     }
 
+    // ── Upload / change onboarding profile photo (HR Manager / SuperAdmin) ──
+    public function uploadAvatar(Request $request, Onboarding $onboarding)
+    {
+        $u = Auth::user();
+        if (!$u->canEditOnboarding()) abort(403);
+
+        $request->validate(['avatar' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:2048']);
+
+        $user = $onboarding->employee?->user;
+        if (!$user) {
+            return back()->with('error', 'No linked user account found for this onboarding record.');
+        }
+
+        if ($user->profile_picture) {
+            \Illuminate\Support\Facades\Storage::disk('public')->delete($user->profile_picture);
+        }
+
+        $path = $request->file('avatar')->store('profile-pictures', 'public');
+        $user->update(['profile_picture' => $path]);
+
+        return back()->with('success', 'Profile photo updated successfully.');
+    }
+
     public function showReConsent(Request $request, Onboarding $onboarding)
     {
         $token   = $request->query('token');
@@ -602,6 +625,11 @@ class OnboardingController extends Controller
 
     public function export(Request $request)
     {
+        $u = Auth::user();
+        if (!$u->isSuperadmin() && !$u->isHrManager() && !$u->isHrExecutive() && !$u->isItManager() && !$u->isItExecutive()) {
+            abort(403);
+        }
+
         $query = Onboarding::with(['personalDetail', 'workDetail', 'assetProvisioning']);
         if ($request->filled('search')) {
             $search = $request->search;
