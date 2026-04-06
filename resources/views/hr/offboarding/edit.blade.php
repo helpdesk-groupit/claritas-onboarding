@@ -199,7 +199,7 @@
                     <div id="nricExistingList" class="mb-2">
                         @foreach($existingNric as $idx => $path)
                         <div class="d-inline-flex align-items-center gap-1 me-1 mb-1">
-                            <a href="{{ asset('storage/'.$path) }}" target="_blank"
+                            <a href="{{ secure_file_url($path) }}" target="_blank"
                                class="btn btn-sm btn-outline-primary" style="font-size:12px;">
                                 <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $idx+1 }}
                             </a>
@@ -633,7 +633,7 @@
                         <div class="d-flex align-items-center justify-content-between gap-2 p-2 rounded-2" style="background:#dcfce7;font-size:12px;">
                             <span><i class="bi bi-file-earmark-check-fill text-success me-1"></i>Personalised handbook uploaded</span>
                             <div class="d-flex gap-1">
-                                <a href="{{ asset('storage/'.$employee->handbook_path) }}" target="_blank" class="btn btn-outline-success btn-sm" style="padding:2px 7px;"><i class="bi bi-eye" style="font-size:12px;"></i></a>
+                                <a href="{{ secure_file_url($employee->handbook_path) }}" target="_blank" class="btn btn-outline-success btn-sm" style="padding:2px 7px;"><i class="bi bi-eye" style="font-size:12px;"></i></a>
                                 <form action="{{ route('employees.handbook.delete', $employee) }}" method="POST" onsubmit="return confirm('Remove this handbook?')">
                                     @csrf @method('DELETE')
                                     <button class="btn btn-outline-danger btn-sm" style="padding:2px 7px;"><i class="bi bi-trash" style="font-size:12px;"></i></button>
@@ -668,7 +668,7 @@
                         <div class="d-flex align-items-center justify-content-between gap-2 p-2 rounded-2" style="background:#fef3c7;font-size:12px;">
                             <span><i class="bi bi-file-earmark-check-fill text-warning me-1"></i>Personalised slide uploaded</span>
                             <div class="d-flex gap-1">
-                                <a href="{{ asset('storage/'.$employee->orientation_path) }}" target="_blank" class="btn btn-outline-warning btn-sm" style="padding:2px 7px;"><i class="bi bi-eye" style="font-size:12px;"></i></a>
+                                <a href="{{ secure_file_url($employee->orientation_path) }}" target="_blank" class="btn btn-outline-warning btn-sm" style="padding:2px 7px;"><i class="bi bi-eye" style="font-size:12px;"></i></a>
                                 <form action="{{ route('employees.orientation.delete', $employee) }}" method="POST" onsubmit="return confirm('Remove this orientation slide?')">
                                     @csrf @method('DELETE')
                                     <button class="btn btn-outline-danger btn-sm" style="padding:2px 7px;"><i class="bi bi-trash" style="font-size:12px;"></i></button>
@@ -721,7 +721,7 @@
                         @if(!empty($editCertFiles))
                         <div class="mt-1">
                             @foreach($editCertFiles as $ci => $cf)
-                            <a href="{{ asset('storage/'.$cf) }}" target="_blank"
+                            <a href="{{ secure_file_url($cf) }}" target="_blank"
                                class="btn btn-sm btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:11px;">
                                 <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci + 1 }}
                             </a>
@@ -760,7 +760,7 @@
                             <div class="edu-cert-existing mb-2">
                                 @foreach($inlineCerts as $ci => $cf)
                                 <div class="d-inline-flex align-items-center gap-1 me-1 mb-1">
-                                    <a href="{{ asset('storage/'.$cf) }}" target="_blank"
+                                    <a href="{{ secure_file_url($cf) }}" target="_blank"
                                        class="btn btn-sm btn-outline-primary" style="font-size:11px;">
                                         <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci+1 }}
                                     </a>

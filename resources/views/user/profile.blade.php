@@ -121,7 +121,7 @@
                 <div id="profileNricExistingList" class="mb-2">
                     @foreach($existingNric as $idx => $path)
                     <div class="d-inline-flex align-items-center gap-1 me-1 mb-1" id="profileNricItem_{{ $idx }}">
-                        <a href="{{ asset('storage/'.$path) }}" target="_blank"
+                        <a href="{{ secure_file_url($path) }}" target="_blank"
                            class="btn btn-sm btn-outline-primary" style="font-size:12px;">
                             <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $idx+1 }}
                         </a>
@@ -575,7 +575,7 @@
                         @if(!empty($editCertFiles))
                         <div class="mt-1">
                             @foreach($editCertFiles as $cf)
-                            <a href="{{ asset('storage/'.$cf) }}" target="_blank"
+                            <a href="{{ secure_file_url($cf) }}" target="_blank"
                                class="btn btn-outline-primary me-1" style="padding:2px 8px;font-size:11px;">
                                 <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $loop->iteration }}
                             </a>
@@ -622,7 +622,7 @@
                             <div class="edu-cert-existing mb-2">
                                 @foreach($inlineCerts as $ci => $cf)
                                 <div class="d-inline-flex align-items-center gap-1 me-1 mb-1">
-                                    <a href="{{ asset('storage/'.$cf) }}" target="_blank"
+                                    <a href="{{ secure_file_url($cf) }}" target="_blank"
                                        class="btn btn-sm btn-outline-primary" style="font-size:11px;">
                                         <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci+1 }}
                                     </a>

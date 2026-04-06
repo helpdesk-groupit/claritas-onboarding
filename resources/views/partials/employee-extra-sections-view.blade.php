@@ -83,7 +83,7 @@
                             @endphp
                             @if(!empty($certFiles))
                                 @foreach($certFiles as $ci => $certFile)
-                                <a href="{{ asset('storage/'.$certFile) }}" target="_blank"
+                                <a href="{{ secure_file_url($certFile) }}" target="_blank"
                                    class="btn btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:11px;">
                                     <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci + 1 }}
                                 </a>

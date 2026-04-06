@@ -27,9 +27,9 @@
             display: flex; flex-direction: column; flex: 1 1 auto; overflow: hidden; min-height: 0;
         }
         .sidebar {
-            width: var(--sidebar-w); min-height: 100vh; position: fixed; top: 0; left: 0; z-index: 100;
+            width: var(--sidebar-w); height: 100vh; position: fixed; top: 0; left: 0; z-index: 100;
             background: linear-gradient(180deg, #1A6FE8 0%, #4B9EFF 100%);
-            display: flex; flex-direction: column;
+            display: flex; flex-direction: column; overflow: hidden;
         }
         .sidebar-brand { padding: 20px 18px 16px; border-bottom: 1px solid rgba(255,255,255,0.13); }
         .sidebar-brand h5 { color: #fff; font-weight: 700; margin: 0; font-size: 16px; }
@@ -142,18 +142,288 @@
     <div class="sidebar-nav">
 
         {{-- ══════════════════════════════════════════════════
-             HR / SUPERADMIN / SYSTEM ADMIN MENU
-             Order: Dashboard → Onboarding → Offboarding → Employee Listing → [extras] → Profile → Account
+             SUPERADMIN MENU — all modules organized by category
              ══════════════════════════════════════════════════ --}}
-        @if(Auth::user()->isHr() || Auth::user()->isSuperadmin() || Auth::user()->isSystemAdmin())
+        @if(Auth::user()->isSuperadmin())
+
+        {{-- ── HR ── --}}
+        <div class="sidebar-section">HR</div>
+        <div class="nav-item">
+            <a href="{{ route('hr.dashboard') }}"
+               class="nav-link {{ request()->routeIs('hr.dashboard') ? 'active' : '' }}">
+                <i class="bi bi-speedometer2"></i> Dashboard
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('onboarding.index') }}"
+               class="nav-link {{ request()->routeIs('onboarding.*') ? 'active' : '' }}">
+                <i class="bi bi-person-plus"></i> Onboarding
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('hr.offboarding.index') }}"
+               class="nav-link {{ request()->routeIs('hr.offboarding.*') || request()->routeIs('offboarding.*') ? 'active' : '' }}">
+                <i class="bi bi-box-arrow-right"></i> Offboarding
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('employees.index') }}"
+               class="nav-link {{ request()->routeIs('employees.*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Employee Listing
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('announcements.index') }}"
+               class="nav-link {{ request()->routeIs('announcements.*') ? 'active' : '' }}">
+                <i class="bi bi-megaphone"></i> Announcements
+            </a>
+        </div>
+
+        {{-- ── HRM Modules ── --}}
+        <div class="sidebar-section">HRM Modules</div>
+        <div class="nav-item">
+            <a href="{{ route('hr.leave.index') }}"
+               class="nav-link {{ request()->routeIs('hr.leave.*') ? 'active' : '' }}">
+                <i class="bi bi-calendar2-week"></i> Leave Management
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('hr.payroll.pay-runs.index') }}"
+               class="nav-link {{ request()->routeIs('hr.payroll.*') && !request()->routeIs('hr.payroll.ea-forms.*') ? 'active' : '' }}">
+                <i class="bi bi-wallet2"></i> Payroll
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('hr.payroll.ea-forms.index') }}"
+               class="nav-link {{ request()->routeIs('hr.payroll.ea-forms.*') ? 'active' : '' }}">
+                <i class="bi bi-file-earmark-text"></i> EA Forms
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('hr.attendance.index') }}"
+               class="nav-link {{ request()->routeIs('hr.attendance.*') ? 'active' : '' }}">
+                <i class="bi bi-clock-history"></i> Attendance
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('hr.claims.index') }}"
+               class="nav-link {{ request()->routeIs('hr.claims.*') ? 'active' : '' }}">
+                <i class="bi bi-receipt-cutoff"></i> Claims
+            </a>
+        </div>
+
+        {{-- ── IT ── --}}
+        <div class="sidebar-section">IT</div>
+        <div class="nav-item">
+            <a href="{{ route('assets.index') }}"
+               class="nav-link {{ request()->routeIs('assets.*') ? 'active' : '' }}">
+                <i class="bi bi-laptop"></i> Asset Listing
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('it.tasks') }}"
+               class="nav-link {{ request()->routeIs('it.tasks') ? 'active' : '' }}">
+                <i class="bi bi-list-task"></i> Task Management
+                @php $myTasks = \App\Models\ItTask::where('assigned_to', Auth::id())->where('status','!=','done')->count(); @endphp
+                @if($myTasks > 0)
+                    <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $myTasks }}</span>
+                @endif
+            </a>
+        </div>
+
+        {{-- ── Finance ── --}}
+        <div class="sidebar-section">Finance</div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.dashboard') }}"
+               class="nav-link {{ request()->routeIs('accounting.dashboard') || request()->routeIs('accounting.executive-dashboard') ? 'active' : '' }}">
+                <i class="bi bi-calculator"></i> Accounting
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.chart-of-accounts.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.chart-of-accounts.*') ? 'active' : '' }}">
+                <i class="bi bi-diagram-3"></i> Chart of Accounts
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.journal-entries.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.journal-entries.*') ? 'active' : '' }}">
+                <i class="bi bi-journal-text"></i> General Ledger
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.invoices.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.invoices.*', 'accounting.customers.*', 'accounting.customer-payments.*', 'accounting.credit-notes.*') ? 'active' : '' }}">
+                <i class="bi bi-receipt"></i> Receivables
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.bills.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.bills.*', 'accounting.vendors.*', 'accounting.vendor-payments.*', 'accounting.purchase-orders.*') ? 'active' : '' }}">
+                <i class="bi bi-receipt-cutoff"></i> Payables
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.banking.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.banking.*', 'accounting.bank-transfers.*') ? 'active' : '' }}">
+                <i class="bi bi-bank"></i> Banking
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.tax.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.tax.*', 'accounting.tax-returns.*') ? 'active' : '' }}">
+                <i class="bi bi-percent"></i> Tax
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.fixed-assets.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.fixed-assets.*', 'accounting.asset-categories.*') ? 'active' : '' }}">
+                <i class="bi bi-building"></i> Fixed Assets
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.budgets.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.budgets.*') ? 'active' : '' }}">
+                <i class="bi bi-pie-chart"></i> Budgets
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.reports.trial-balance') }}"
+               class="nav-link {{ request()->routeIs('accounting.reports.*') ? 'active' : '' }}">
+                <i class="bi bi-file-earmark-bar-graph"></i> Financial Reports
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.ai.invoice-scanner') }}"
+               class="nav-link {{ request()->routeIs('accounting.ai.*') ? 'active' : '' }}">
+                <i class="bi bi-robot"></i> AI Tools
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.settings') }}"
+               class="nav-link {{ request()->routeIs('accounting.settings*') ? 'active' : '' }}">
+                <i class="bi bi-sliders"></i> Accounting Settings
+            </a>
+        </div>
+
+        {{-- ── C-Suite & Reports ── --}}
+        <div class="sidebar-section">C-Suite & Reports</div>
+        <div class="nav-item">
+            <a href="{{ route('reports.executive') }}"
+               class="nav-link {{ request()->routeIs('reports.*') ? 'active' : '' }}">
+                <i class="bi bi-graph-up-arrow"></i> C-Suite Reports
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('superadmin.system-overview') }}"
+               class="nav-link {{ request()->routeIs('superadmin.system-overview') ? 'active' : '' }}">
+                <i class="bi bi-diagram-3"></i> System Overview
+            </a>
+        </div>
+
+        {{-- ── Self-Service ── --}}
+        <div class="sidebar-section">Self-Service</div>
+        <div class="nav-item">
+            <a href="{{ route('user.leave.index') }}"
+               class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
+                <i class="bi bi-calendar-plus"></i> My Leave
+            </a>
+        </div>
+        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        <div class="nav-item">
+            <a href="{{ route('user.leave.team') }}"
+               class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Team Leave
+                @php $__pendingTeam = \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count(); @endphp
+                @if($__pendingTeam > 0)
+                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
+                @endif
+            </a>
+        </div>
+        @endif
+        <div class="nav-item">
+            <a href="{{ route('user.payroll.index') }}"
+               class="nav-link {{ request()->routeIs('user.payroll.index') || request()->routeIs('user.payroll.payslip') ? 'active' : '' }}">
+                <i class="bi bi-receipt"></i> My Payslips
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('user.payroll.ea-form') }}"
+               class="nav-link {{ request()->routeIs('user.payroll.ea-form') ? 'active' : '' }}">
+                <i class="bi bi-file-earmark-text"></i> My EA Form
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('user.attendance.index') }}"
+               class="nav-link {{ request()->routeIs('user.attendance.*') ? 'active' : '' }}">
+                <i class="bi bi-stopwatch"></i> My Attendance
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('user.claims.index') }}"
+               class="nav-link {{ request()->routeIs('user.claims.index') ? 'active' : '' }}">
+                <i class="bi bi-receipt-cutoff"></i> My Claims
+            </a>
+        </div>
+        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        <div class="nav-item">
+            <a href="{{ route('user.claims.team') }}"
+               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Team Claims
+                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'submitted')->count(); @endphp
+                @if($__pendingTeamClaims > 0)
+                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
+                @endif
+            </a>
+        </div>
+        @endif
+
+        {{-- ── Administration ── --}}
+        <div class="sidebar-section">Administration</div>
+        <div class="nav-item">
+            <a href="{{ route('superadmin.roles.index') }}"
+               class="nav-link {{ request()->routeIs('superadmin.roles.*') ? 'active' : '' }}">
+                <i class="bi bi-shield-lock"></i> Role Management
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('superadmin.accounts.index') }}"
+               class="nav-link {{ request()->routeIs('superadmin.accounts.*') ? 'active' : '' }}">
+                <i class="bi bi-person-lock"></i> Account Management
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('superadmin.companies.index') }}"
+               class="nav-link {{ request()->routeIs('superadmin.companies.*') ? 'active' : '' }}">
+                <i class="bi bi-building"></i> Company Registration
+            </a>
+        </div>
+
+        {{-- ── Account ── --}}
+        <div class="sidebar-section">Account</div>
+        <div class="nav-item">
+            <a href="{{ route('profile') }}"
+               class="nav-link {{ request()->routeIs('profile') ? 'active' : '' }}">
+                <i class="bi bi-person-circle"></i> Profile
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('account') }}"
+               class="nav-link {{ request()->routeIs('account') ? 'active' : '' }}">
+                <i class="bi bi-gear"></i> Account
+            </a>
+        </div>
+
+        {{-- ══════════════════════════════════════════════════
+             HR / SYSTEM ADMIN MENU
+             ══════════════════════════════════════════════════ --}}
+        @elseif(Auth::user()->isHr() || Auth::user()->isSystemAdmin())
         <div class="sidebar-section">
-            @if(Auth::user()->isSuperadmin()) Superadmin Menu
-            @elseif(Auth::user()->isSystemAdmin()) System Admin Menu
+            @if(Auth::user()->isSystemAdmin()) System Admin Menu
             @else HR Menu
             @endif
         </div>
 
-        {{-- 1. Dashboard --}}
         <div class="nav-item">
             <a href="{{ route('hr.dashboard') }}"
                class="nav-link {{ request()->routeIs('hr.dashboard') ? 'active' : '' }}">
@@ -209,40 +479,100 @@
         </div>
         @endif
 
-        {{-- Superadmin extras (above Profile, below Employee Listing) --}}
-        @if(Auth::user()->isSuperadmin())
+        {{-- ── HRM Modules (HR Only) ── --}}
+        <div class="sidebar-section">HRM Modules</div>
+        @if(Auth::user()->isHrManager() || Auth::user()->isSystemAdmin())
         <div class="nav-item">
-            <a href="{{ route('assets.index') }}"
-               class="nav-link {{ request()->routeIs('assets.*') ? 'active' : '' }}">
-                <i class="bi bi-laptop"></i> Asset Listing
+            <a href="{{ route('reports.executive') }}"
+               class="nav-link {{ request()->routeIs('reports.*') ? 'active' : '' }}">
+                <i class="bi bi-graph-up-arrow"></i> C-Suite Reports
+            </a>
+        </div>
+        @endif
+        <div class="nav-item">
+            <a href="{{ route('hr.leave.index') }}"
+               class="nav-link {{ request()->routeIs('hr.leave.*') ? 'active' : '' }}">
+                <i class="bi bi-calendar2-week"></i> Leave Management
             </a>
         </div>
         <div class="nav-item">
-            <a href="{{ route('it.tasks') }}"
-               class="nav-link {{ request()->routeIs('it.tasks') ? 'active' : '' }}">
-                <i class="bi bi-list-task"></i> Task Management
-                @php $myTasks = \App\Models\ItTask::where('assigned_to', Auth::id())->where('status','!=','done')->count(); @endphp
-                @if($myTasks > 0)
-                    <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $myTasks }}</span>
+            <a href="{{ route('hr.payroll.pay-runs.index') }}"
+               class="nav-link {{ request()->routeIs('hr.payroll.*') && !request()->routeIs('hr.payroll.ea-forms.*') ? 'active' : '' }}">
+                <i class="bi bi-wallet2"></i> Payroll
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('hr.payroll.ea-forms.index') }}"
+               class="nav-link {{ request()->routeIs('hr.payroll.ea-forms.*') ? 'active' : '' }}">
+                <i class="bi bi-file-earmark-text"></i> EA Forms
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('hr.attendance.index') }}"
+               class="nav-link {{ request()->routeIs('hr.attendance.*') ? 'active' : '' }}">
+                <i class="bi bi-clock-history"></i> Attendance
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('hr.claims.index') }}"
+               class="nav-link {{ request()->routeIs('hr.claims.*') ? 'active' : '' }}">
+                <i class="bi bi-receipt-cutoff"></i> Claims
+            </a>
+        </div>
+
+        {{-- ── Self-Service ── --}}
+        <div class="sidebar-section">Self-Service</div>
+        <div class="nav-item">
+            <a href="{{ route('user.leave.index') }}"
+               class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
+                <i class="bi bi-calendar-plus"></i> My Leave
+            </a>
+        </div>
+        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        <div class="nav-item">
+            <a href="{{ route('user.leave.team') }}"
+               class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Team Leave
+                @php $__pendingTeam = \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count(); @endphp
+                @if($__pendingTeam > 0)
+                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
                 @endif
             </a>
         </div>
+        @endif
         <div class="nav-item">
-            <a href="{{ route('superadmin.roles.index') }}"
-               class="nav-link {{ request()->routeIs('superadmin.roles.*') ? 'active' : '' }}">
-                <i class="bi bi-shield-lock"></i> Role Management
+            <a href="{{ route('user.payroll.index') }}"
+               class="nav-link {{ request()->routeIs('user.payroll.index') || request()->routeIs('user.payroll.payslip') ? 'active' : '' }}">
+                <i class="bi bi-receipt"></i> My Payslips
             </a>
         </div>
         <div class="nav-item">
-            <a href="{{ route('superadmin.accounts.index') }}"
-               class="nav-link {{ request()->routeIs('superadmin.accounts.*') ? 'active' : '' }}">
-                <i class="bi bi-person-lock"></i> Account Management
+            <a href="{{ route('user.payroll.ea-form') }}"
+               class="nav-link {{ request()->routeIs('user.payroll.ea-form') ? 'active' : '' }}">
+                <i class="bi bi-file-earmark-text"></i> My EA Form
             </a>
         </div>
         <div class="nav-item">
-            <a href="{{ route('superadmin.companies.index') }}"
-               class="nav-link {{ request()->routeIs('superadmin.companies.*') ? 'active' : '' }}">
-                <i class="bi bi-building"></i> Company Registration
+            <a href="{{ route('user.attendance.index') }}"
+               class="nav-link {{ request()->routeIs('user.attendance.*') ? 'active' : '' }}">
+                <i class="bi bi-stopwatch"></i> My Attendance
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('user.claims.index') }}"
+               class="nav-link {{ request()->routeIs('user.claims.index') ? 'active' : '' }}">
+                <i class="bi bi-receipt-cutoff"></i> My Claims
+            </a>
+        </div>
+        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        <div class="nav-item">
+            <a href="{{ route('user.claims.team') }}"
+               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Team Claims
+                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'submitted')->count(); @endphp
+                @if($__pendingTeamClaims > 0)
+                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
+                @endif
             </a>
         </div>
         @endif
@@ -327,6 +657,63 @@
         </div>
         @endif
 
+        {{-- Self-Service (IT staff are also employees) --}}
+        <div class="sidebar-section">Self-Service</div>
+        <div class="nav-item">
+            <a href="{{ route('user.leave.index') }}"
+               class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
+                <i class="bi bi-calendar-plus"></i> My Leave
+            </a>
+        </div>
+        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        <div class="nav-item">
+            <a href="{{ route('user.leave.team') }}"
+               class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Team Leave
+                @php $__pendingTeam = \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count(); @endphp
+                @if($__pendingTeam > 0)
+                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
+                @endif
+            </a>
+        </div>
+        @endif
+        <div class="nav-item">
+            <a href="{{ route('user.payroll.index') }}"
+               class="nav-link {{ request()->routeIs('user.payroll.index') || request()->routeIs('user.payroll.payslip') ? 'active' : '' }}">
+                <i class="bi bi-receipt"></i> My Payslips
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('user.payroll.ea-form') }}"
+               class="nav-link {{ request()->routeIs('user.payroll.ea-form') ? 'active' : '' }}">
+                <i class="bi bi-file-earmark-text"></i> My EA Form
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('user.attendance.index') }}"
+               class="nav-link {{ request()->routeIs('user.attendance.*') ? 'active' : '' }}">
+                <i class="bi bi-stopwatch"></i> My Attendance
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('user.claims.index') }}"
+               class="nav-link {{ request()->routeIs('user.claims.index') ? 'active' : '' }}">
+                <i class="bi bi-receipt-cutoff"></i> My Claims
+            </a>
+        </div>
+        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        <div class="nav-item">
+            <a href="{{ route('user.claims.team') }}"
+               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Team Claims
+                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'submitted')->count(); @endphp
+                @if($__pendingTeamClaims > 0)
+                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
+                @endif
+            </a>
+        </div>
+        @endif
+
         {{-- 5. Profile --}}
         <div class="nav-item">
             <a href="{{ route('profile') }}"
@@ -362,6 +749,64 @@
             </a>
         </div>
         @endif
+
+        {{-- Self-Service --}}
+        <div class="sidebar-section">Self-Service</div>
+        <div class="nav-item">
+            <a href="{{ route('user.leave.index') }}"
+               class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
+                <i class="bi bi-calendar-plus"></i> My Leave
+            </a>
+        </div>
+        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        <div class="nav-item">
+            <a href="{{ route('user.leave.team') }}"
+               class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Team Leave
+                @php $__pendingTeam = \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count(); @endphp
+                @if($__pendingTeam > 0)
+                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
+                @endif
+            </a>
+        </div>
+        @endif
+        <div class="nav-item">
+            <a href="{{ route('user.payroll.index') }}"
+               class="nav-link {{ request()->routeIs('user.payroll.index') || request()->routeIs('user.payroll.payslip') ? 'active' : '' }}">
+                <i class="bi bi-receipt"></i> My Payslips
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('user.payroll.ea-form') }}"
+               class="nav-link {{ request()->routeIs('user.payroll.ea-form') ? 'active' : '' }}">
+                <i class="bi bi-file-earmark-text"></i> My EA Form
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('user.attendance.index') }}"
+               class="nav-link {{ request()->routeIs('user.attendance.*') ? 'active' : '' }}">
+                <i class="bi bi-stopwatch"></i> My Attendance
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('user.claims.index') }}"
+               class="nav-link {{ request()->routeIs('user.claims.index') ? 'active' : '' }}">
+                <i class="bi bi-receipt-cutoff"></i> My Claims
+            </a>
+        </div>
+        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        <div class="nav-item">
+            <a href="{{ route('user.claims.team') }}"
+               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Team Claims
+                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'submitted')->count(); @endphp
+                @if($__pendingTeamClaims > 0)
+                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
+                @endif
+            </a>
+        </div>
+        @endif
+
         <div class="nav-item">
             <a href="{{ route('profile') }}"
                class="nav-link {{ request()->routeIs('profile') ? 'active' : '' }}">
@@ -374,6 +819,87 @@
                 <i class="bi bi-gear"></i> Account
             </a>
         </div>
+        @endif
+
+        {{-- Accounting Module (non-superadmin roles with finance access) --}}
+        @if(!Auth::user()->isSuperadmin() && Auth::user()->canViewAccounting())
+        <div class="sidebar-section">Accounting</div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.dashboard') }}"
+               class="nav-link {{ request()->routeIs('accounting.dashboard') ? 'active' : '' }}">
+                <i class="bi bi-speedometer2"></i> Dashboard
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.chart-of-accounts.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.chart-of-accounts.*') ? 'active' : '' }}">
+                <i class="bi bi-diagram-3"></i> Chart of Accounts
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.journal-entries.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.journal-entries.*') ? 'active' : '' }}">
+                <i class="bi bi-journal-text"></i> General Ledger
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.invoices.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.invoices.*', 'accounting.customers.*', 'accounting.customer-payments.*', 'accounting.credit-notes.*') ? 'active' : '' }}">
+                <i class="bi bi-receipt"></i> Receivables
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.bills.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.bills.*', 'accounting.vendors.*', 'accounting.vendor-payments.*', 'accounting.purchase-orders.*') ? 'active' : '' }}">
+                <i class="bi bi-receipt-cutoff"></i> Payables
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.banking.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.banking.*', 'accounting.bank-transfers.*') ? 'active' : '' }}">
+                <i class="bi bi-bank"></i> Banking
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.tax.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.tax.*', 'accounting.tax-returns.*') ? 'active' : '' }}">
+                <i class="bi bi-percent"></i> Tax
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.fixed-assets.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.fixed-assets.*', 'accounting.asset-categories.*') ? 'active' : '' }}">
+                <i class="bi bi-building"></i> Fixed Assets
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.budgets.index') }}"
+               class="nav-link {{ request()->routeIs('accounting.budgets.*') ? 'active' : '' }}">
+                <i class="bi bi-pie-chart"></i> Budgets
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('accounting.reports.trial-balance') }}"
+               class="nav-link {{ request()->routeIs('accounting.reports.*') ? 'active' : '' }}">
+                <i class="bi bi-file-earmark-bar-graph"></i> Reports
+            </a>
+        </div>
+        @if(Auth::user()->canUseAiChat())
+        <div class="nav-item">
+            <a href="{{ route('accounting.ai.invoice-scanner') }}"
+               class="nav-link {{ request()->routeIs('accounting.ai.*') ? 'active' : '' }}">
+                <i class="bi bi-robot"></i> AI Tools
+            </a>
+        </div>
+        @endif
+        @if(Auth::user()->canManageAccounting())
+        <div class="nav-item">
+            <a href="{{ route('accounting.settings') }}"
+               class="nav-link {{ request()->routeIs('accounting.settings*') ? 'active' : '' }}">
+                <i class="bi bi-sliders"></i> Settings
+            </a>
+        </div>
+        @endif
         @endif
 
         {{-- 7. Logout --}}

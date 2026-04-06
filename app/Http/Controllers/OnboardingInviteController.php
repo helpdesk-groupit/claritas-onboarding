@@ -195,7 +195,7 @@ class OnboardingInviteController extends Controller
             'income_tax_no'           => 'nullable|string|max:50',
             'socso_no'                => 'nullable|string|max:50',
             'nric_files'              => 'nullable|array|max:5',
-            'nric_files.*'            => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'nric_files.*'            => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             // Education
             'edu_qualification.*'        => 'nullable|string|max:255',
             'edu_institution.*'          => 'nullable|string|max:255',
@@ -203,7 +203,7 @@ class OnboardingInviteController extends Controller
             'edu_experience_total'       => 'nullable|string|max:10',
             'edu_certificate'            => 'nullable|array',
             'edu_certificate.*'          => 'nullable|array',
-            'edu_certificate.*.*'        => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'edu_certificate.*.*'        => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             // Multiple spouses
             'spouses'                    => 'nullable|array',
             'spouses.*.name'             => 'required|string|max:255',
@@ -261,7 +261,7 @@ class OnboardingInviteController extends Controller
         if ($request->hasFile('nric_files')) {
             foreach ($request->file('nric_files') as $file) {
                 if ($file && $file->isValid()) {
-                    $nricPaths[] = $file->store('nric_documents', 'public');
+                    $nricPaths[] = $file->store('nric_documents', 'local');
                 }
             }
         }
@@ -278,7 +278,7 @@ class OnboardingInviteController extends Controller
             if (!is_array($certFiles)) $certFiles = [$certFiles];
             foreach ($certFiles as $certFile) {
                 if ($certFile && $certFile->isValid()) {
-                    $certPaths[] = $certFile->store('education_certificates', 'public');
+                    $certPaths[] = $certFile->store('education_certificates', 'local');
                 }
             }
             $eduStaging[] = [

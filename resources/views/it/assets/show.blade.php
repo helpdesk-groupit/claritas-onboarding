@@ -62,7 +62,7 @@
                     <tr><td class="text-muted">Warranty Expiry</td><td>{{ $asset->warranty_expiry_date?->format('d M Y') ?? '—' }}</td></tr>
                     <tr><td class="text-muted">Invoice Doc</td><td>
                         @if($asset->invoice_document)
-                            <a href="{{ asset('storage/'.$asset->invoice_document) }}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-file-pdf me-1"></i>View</a>
+                            <a href="{{ secure_file_url($asset->invoice_document) }}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-file-pdf me-1"></i>View</a>
                         @else — @endif
                     </td></tr>
                     @else
@@ -75,7 +75,7 @@
                     <tr><td class="text-muted">Contract Ref</td><td>{{ $asset->rental_contract_reference ?? '—' }}</td></tr>
                     <tr><td class="text-muted">Invoice Doc</td><td>
                         @if($asset->invoice_document)
-                            <a href="{{ asset('storage/'.$asset->invoice_document) }}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-file-pdf me-1"></i>View</a>
+                            <a href="{{ secure_file_url($asset->invoice_document) }}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-file-pdf me-1"></i>View</a>
                         @else — @endif
                     </td></tr>
                     @endif

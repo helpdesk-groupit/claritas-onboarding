@@ -92,7 +92,7 @@ class AssetController extends Controller
         $data      = $this->buildAssetData($request, $validated);
 
         if ($request->hasFile('invoice_document')) {
-            $data['invoice_document'] = $request->file('invoice_document')->store('invoices', 'public');
+            $data['invoice_document'] = $request->file('invoice_document')->store('invoices', 'local');
         }
 
         $asset = AssetInventory::create($data);
@@ -196,7 +196,7 @@ class AssetController extends Controller
         $data      = $this->buildAssetData($request, $validated, $user);
 
         if ($request->hasFile('invoice_document')) {
-            $data['invoice_document'] = $request->file('invoice_document')->store('invoices', 'public');
+            $data['invoice_document'] = $request->file('invoice_document')->store('invoices', 'local');
         }
 
         // Handle photo keep/remove + new uploads
@@ -1220,7 +1220,7 @@ class AssetController extends Controller
             $rules['purchase_vendor']           = 'nullable|string|max:255';
             $rules['purchase_cost']             = 'nullable|numeric|min:0';
             $rules['warranty_expiry_date']      = 'nullable|date';
-            $rules['invoice_document']          = 'nullable|file|mimes:pdf|max:5120';
+            $rules['invoice_document']          = 'nullable|file|mimes:pdf|max:5120|valid_file_content';
             $rules['ownership_type']            = 'required|in:company,rental';
             $rules['company_name']              = 'nullable|string|max:255';
             $rules['rental_vendor']             = 'nullable|string|max:255';

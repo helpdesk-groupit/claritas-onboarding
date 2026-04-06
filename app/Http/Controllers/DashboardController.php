@@ -113,6 +113,16 @@ class DashboardController extends Controller
             ->get();
     }
 
+    public function systemOverview()
+    {
+        $user = Auth::user();
+        if (!$user->isSuperadmin()) {
+            abort(403);
+        }
+
+        return view('superadmin.system-overview');
+    }
+
     public function hrDashboard()
     {
         $user = Auth::user();

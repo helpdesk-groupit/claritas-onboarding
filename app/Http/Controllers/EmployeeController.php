@@ -390,7 +390,7 @@ class EmployeeController extends Controller
             $employmentType = in_array($rawEmpType, ['permanent','intern','contract'])
                 ? $rawEmpType : 'contract';
 
-            Employee::create([
+            $newEmployee = Employee::create([
                 'active_from'             => $startDate,
                 'full_name'               => trim($data['full_name']),
                 'preferred_name'          => trim($data['preferred_name']          ?? '') ?: null,
@@ -417,6 +417,15 @@ class EmployeeController extends Controller
                 'exit_date'               => $parseDate($data['exit_date']         ?? ''),
             ]);
 
+            // Resolve manager_id from reporting_manager name
+            $mgrName = trim($data['reporting_manager'] ?? '');
+            if ($mgrName) {
+                $managerId = Employee::resolveManagerId($mgrName);
+                if ($managerId && $managerId !== $newEmployee->id) {
+                    $newEmployee->update(['manager_id' => $managerId]);
+                }
+            }
+
             $imported++;
         }
 
@@ -436,6 +445,7 @@ class EmployeeController extends Controller
         $this->authorizeItOrHr();
         $employee->load([
             'user',
+            'manager',
             'onboarding.aarf',
             'onboarding.personalDetail',
             'onboarding.assetProvisioning',
@@ -484,7 +494,7 @@ class EmployeeController extends Controller
         $u = Auth::user();
         if (!in_array($u->role, ['hr_manager', 'superadmin', 'system_admin'])) abort(403);
 
-        $request->validate(['avatar' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:2048']);
+        $request->validate(['avatar' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:2048|valid_file_content']);
 
         $user = $employee->user;
         if (!$user) {
@@ -738,13 +748,14 @@ class EmployeeController extends Controller
             'socso_no'                => 'nullable|string|max:50',
             // NRIC files
             'nric_files'              => 'nullable|array|max:5',
-            'nric_files.*'            => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'nric_files.*'            => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             // Work
             'designation'             => 'nullable|string|max:255',
             'department'              => 'nullable|string|max:255',
             'company'                 => 'nullable|string|max:255',
             'office_location'         => 'nullable|string|max:255',
             'reporting_manager'       => 'nullable|string|max:255',
+            'manager_id'              => 'nullable|integer|exists:employees,id',
             'company_email'           => 'nullable|email',
             'google_id'               => 'nullable|string|max:255',
             'employment_type'         => 'nullable|string',
@@ -759,7 +770,7 @@ class EmployeeController extends Controller
             'edu_institution.*'      => 'nullable|string|max:255',
             'edu_year.*'             => 'nullable|integer|min:1950|max:2099',
             'edu_experience_total'   => 'nullable|string|max:10',
-            'edu_certificate.*.*'    => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'edu_certificate.*.*'    => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             'edu_cert_keep.*.*'      => 'nullable|string',
             'edu_delete_ids'         => 'nullable|string',
             // Section G - Spouse
@@ -833,7 +844,7 @@ class EmployeeController extends Controller
         if ($request->hasFile('nric_files')) {
             foreach ($request->file('nric_files') as $file) {
                 if ($file && $file->isValid()) {
-                    $newNricPaths[] = $file->store('nric_documents', 'public');
+                    $newNricPaths[] = $file->store('nric_documents', 'local');
                 }
             }
         }
@@ -980,6 +991,14 @@ class EmployeeController extends Controller
 
         $employee->update($data);
 
+        // Resolve manager_id if not explicitly provided but reporting_manager was changed
+        if (empty($data['manager_id']) && !empty($data['reporting_manager'])) {
+            $resolvedId = Employee::resolveManagerId($data['reporting_manager']);
+            if ($resolvedId && $resolvedId !== $employee->id) {
+                $employee->update(['manager_id' => $resolvedId]);
+            }
+        }
+
         // ── Sync users.work_email when company_email changes ─────────────
         if (!empty($data['company_email']) && $employee->user_id) {
             $linkedUser = \App\Models\User::find($employee->user_id);
@@ -1104,7 +1123,7 @@ class EmployeeController extends Controller
             if ($request->hasFile("edu_certificate.{$i}")) {
                 foreach ((array)$request->file("edu_certificate.{$i}") as $certFile) {
                     if ($certFile instanceof \Illuminate\Http\UploadedFile && $certFile->isValid()) {
-                        $newCertPaths[] = $certFile->store('education_certificates', 'public');
+                        $newCertPaths[] = $certFile->store('education_certificates', 'local');
                     }
                 }
             }
@@ -1196,7 +1215,7 @@ class EmployeeController extends Controller
             'edu_institution.*'      => 'nullable|string|max:255',
             'edu_year.*'             => 'nullable|integer|min:1950|max:2099',
             'edu_experience_total'   => 'nullable|string|max:10',
-            'edu_certificate.*.*'    => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'edu_certificate.*.*'    => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             'edu_cert_keep.*.*'      => 'nullable|string',
             'edu_delete_ids'         => 'nullable|string',
         ]);
@@ -1234,7 +1253,7 @@ class EmployeeController extends Controller
             if ($request->hasFile("edu_certificate.{$i}")) {
                 foreach ((array)$request->file("edu_certificate.{$i}") as $certFile) {
                     if ($certFile instanceof \Illuminate\Http\UploadedFile && $certFile->isValid()) {
-                        $newCertPaths[] = $certFile->store('education_certificates', 'public');
+                        $newCertPaths[] = $certFile->store('education_certificates', 'local');
                     }
                 }
             }
@@ -1431,12 +1450,12 @@ class EmployeeController extends Controller
         if (!in_array(Auth::user()->role, ['hr_manager', 'superadmin'])) abort(403);
 
         $request->validate([
-            'contract_file' => 'required|file|mimes:pdf,doc,docx|max:10240',
+            'contract_file' => 'required|file|mimes:pdf,doc,docx|max:10240|valid_file_content',
             'notes'         => 'nullable|string|max:500',
         ]);
 
         $file = $request->file('contract_file');
-        $path = $file->store('employee_contracts/' . $employee->id, 'public');
+        $path = $file->store('employee_contracts/' . $employee->id, 'local');
 
         $employee->contracts()->create([
             'uploaded_by'       => Auth::id(),
@@ -1481,7 +1500,7 @@ class EmployeeController extends Controller
         if (!in_array(Auth::user()->role, ['hr_manager', 'superadmin'])) abort(403);
 
         $request->validate([
-            'handbook_file' => 'required|file|mimes:pdf|max:20480',
+            'handbook_file' => 'required|file|mimes:pdf|max:20480|valid_file_content',
         ]);
 
         // Delete old file if one already exists
@@ -1490,7 +1509,7 @@ class EmployeeController extends Controller
         }
 
         $path = $request->file('handbook_file')
-            ->store('employee_documents/' . $employee->id . '/handbook', 'public');
+            ->store('employee_documents/' . $employee->id . '/handbook', 'local');
 
         $employee->update(['handbook_path' => $path]);
 
@@ -1516,7 +1535,7 @@ class EmployeeController extends Controller
         if (!in_array(Auth::user()->role, ['hr_manager', 'superadmin'])) abort(403);
 
         $request->validate([
-            'orientation_file' => 'required|file|mimes:pdf|max:20480',
+            'orientation_file' => 'required|file|mimes:pdf|max:20480|valid_file_content',
         ]);
 
         if ($employee->orientation_path) {
@@ -1524,7 +1543,7 @@ class EmployeeController extends Controller
         }
 
         $path = $request->file('orientation_file')
-            ->store('employee_documents/' . $employee->id . '/orientation', 'public');
+            ->store('employee_documents/' . $employee->id . '/orientation', 'local');
 
         $employee->update(['orientation_path' => $path]);
 

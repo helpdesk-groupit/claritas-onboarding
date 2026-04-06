@@ -235,7 +235,7 @@ class OffboardingController extends Controller
             $newNricPaths = [];
             if ($request->hasFile('nric_files')) {
                 foreach ($request->file('nric_files') as $file) {
-                    $newNricPaths[] = $file->store('employees/nric', 'public');
+                    $newNricPaths[] = $file->store('nric_documents', 'local');
                 }
             }
             $allNric = array_merge($existingNric, $newNricPaths);
@@ -368,7 +368,7 @@ class OffboardingController extends Controller
                 if ($request->hasFile("edu_certificate.{$i}")) {
                     foreach ((array)$request->file("edu_certificate.{$i}") as $certFile) {
                         if ($certFile && $certFile->isValid()) {
-                            $newCertPaths[] = $certFile->store('education_certificates', 'public');
+                            $newCertPaths[] = $certFile->store('education_certificates', 'local');
                         }
                     }
                 }

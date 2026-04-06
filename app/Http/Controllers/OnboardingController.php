@@ -169,7 +169,7 @@ class OnboardingController extends Controller
         if ($request->hasFile('nric_files')) {
             foreach ($request->file('nric_files') as $file) {
                 if ($file && $file->isValid()) {
-                    $nricPaths[] = $file->store('nric_documents', 'public');
+                    $nricPaths[] = $file->store('nric_documents', 'local');
                 }
             }
             $nricPath = $nricPaths[0] ?? null;
@@ -344,7 +344,7 @@ class OnboardingController extends Controller
         if ($request->hasFile('nric_files')) {
             foreach ($request->file('nric_files') as $file) {
                 if ($file && $file->isValid()) {
-                    $nricPaths[] = $file->store('nric_documents', 'public');
+                    $nricPaths[] = $file->store('nric_documents', 'local');
                 }
             }
             $nricPath = $nricPaths[0] ?? null;
@@ -554,7 +554,7 @@ class OnboardingController extends Controller
         $u = Auth::user();
         if (!$u->canEditOnboarding()) abort(403);
 
-        $request->validate(['avatar' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:2048']);
+        $request->validate(['avatar' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:2048|valid_file_content']);
 
         $user = $onboarding->employee?->user;
         if (!$user) {
@@ -862,8 +862,8 @@ class OnboardingController extends Controller
             'bank_name'=>'nullable|string|max:100','bank_name_other'=>'nullable|string|max:100',
             'epf_no'=>'nullable|string|max:50','income_tax_no'=>'nullable|string|max:50',
             'socso_no'=>'nullable|string|max:50',
-            'nric_files'=>'nullable|array|max:5','nric_files.*'=>'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
-            'edu_certificate'=>'nullable|array','edu_certificate.*'=>'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'nric_files'=>'nullable|array|max:5','nric_files.*'=>'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+            'edu_certificate'=>'nullable|array','edu_certificate.*'=>'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             'edu_existing_cert_paths'=>'nullable|array','edu_existing_cert_paths.*'=>'nullable|string',
             'employee_status'=>'required|in:active,resigned','staff_status'=>'required|in:existing,new,rehire',
             'employment_type'=>'required|in:permanent,intern,contract','designation'=>'required|string|max:255',
@@ -930,7 +930,7 @@ class OnboardingController extends Controller
             if ($request->hasFile("edu_cert_new.{$i}")) {
                 foreach ($request->file("edu_cert_new.{$i}") as $certFile) {
                     if ($certFile && $certFile->isValid()) {
-                        $newCerts[] = $certFile->store('education_certificates', 'public');
+                        $newCerts[] = $certFile->store('education_certificates', 'local');
                     }
                 }
             }

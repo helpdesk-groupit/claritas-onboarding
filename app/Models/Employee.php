@@ -14,12 +14,14 @@ class Employee extends Model
         'personal_contact_number', 'house_tel_no', 'personal_email',
         'bank_account_number', 'bank_name',
         'epf_no', 'income_tax_no', 'socso_no',
+        'epf_category', 'is_resident', 'nationality',
         'nric_file_path',
         'nric_file_paths',
         'consent_given_at', 'consent_ip',
         // Work info (official record)
         'designation', 'department', 'company', 'office_location',
-        'reporting_manager', 'company_email', 'start_date', 'exit_date', 'last_salary_date',
+        'reporting_manager', 'manager_id', 'reporting_manager_email',
+        'company_email', 'start_date', 'exit_date', 'last_salary_date',
         'employment_type', 'work_role', 'google_id',
         // AARF document
         'aarf_file_path',
@@ -54,6 +56,30 @@ class Employee extends Model
     public function emergencyContacts()  { return $this->hasMany(EmployeeEmergencyContact::class)->orderBy('contact_order'); }
     public function childRegistration()  { return $this->hasOne(EmployeeChildRegistration::class); }
     public function editLogs()           { return $this->hasMany(\App\Models\EmployeeEditLog::class)->latest(); }
+
+    // ── HRM module relationships ──────────────────────────────────────
+    public function manager()            { return $this->belongsTo(Employee::class, 'manager_id'); }
+    public function directReports()      { return $this->hasMany(Employee::class, 'manager_id'); }
+    public function leaveApplications()  { return $this->hasMany(\App\Models\LeaveApplication::class); }
+    public function leaveBalances()      { return $this->hasMany(\App\Models\LeaveBalance::class); }
+    public function attendanceRecords()  { return $this->hasMany(\App\Models\AttendanceRecord::class); }
+    public function overtimeRequests()   { return $this->hasMany(\App\Models\OvertimeRequest::class); }
+    public function employeeSalary()     { return $this->hasOne(\App\Models\EmployeeSalary::class)->where('is_active', true); }
+    public function salaryHistory()      { return $this->hasMany(\App\Models\EmployeeSalary::class)->orderByDesc('effective_from'); }
+    public function salaryAdjustments()  { return $this->hasMany(\App\Models\SalaryAdjustment::class)->orderByDesc('effective_date'); }
+    public function expenseClaims()      { return $this->hasMany(\App\Models\ExpenseClaim::class)->orderByDesc('year')->orderByDesc('month'); }
+
+    /**
+     * Resolve manager_id from a reporting manager's full name.
+     * Returns the Employee ID of the first active employee matching the name.
+     */
+    public static function resolveManagerId(?string $managerName): ?int
+    {
+        if (!$managerName) return null;
+        return static::where('full_name', $managerName)
+            ->whereNull('active_until')
+            ->value('id');
+    }
 
     // Resolve AARF regardless of whether it's linked via onboarding_id or employee_id
     public function resolveAarf(): ?\App\Models\Aarf
@@ -112,6 +138,17 @@ class Employee extends Model
             'work_role'        => $w?->role,
             'google_id'        => $w?->google_id,
         ]);
+
+        // Resolve manager_id from reporting_manager name
+        if ($w?->reporting_manager) {
+            $managerId = static::resolveManagerId($w->reporting_manager);
+            if ($managerId && $managerId !== $this->id) {
+                $this->update([
+                    'manager_id' => $managerId,
+                    'reporting_manager_email' => $w->reporting_manager_email,
+                ]);
+            }
+        }
 
         // Flush invite staging data (education, spouse, emergency, children) into relationship tables
         \App\Http\Controllers\OnboardingInviteController::flushStagingToEmployee(

@@ -156,7 +156,7 @@ $obEditStatusBg  = match($obEditStatus) {
                     @if(!empty($existingNric))
                     <div class="mb-2">
                         @foreach($existingNric as $idx => $path)
-                        <a href="{{ asset('storage/'.$path) }}" target="_blank"
+                        <a href="{{ secure_file_url($path) }}" target="_blank"
                            class="btn btn-sm btn-outline-primary me-1 mb-1" style="font-size:12px;">
                             <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $idx+1 }}
                         </a>
@@ -403,6 +403,7 @@ $obEditStatusBg  = match($obEditStatus) {
                             <option value="{{ $mgr->full_name }}"
                                 data-email="{{ $mgr->company_email }}"
                                 data-company="{{ $mgr->company }}"
+                                data-employee-id="{{ $mgr->id }}"
                                 {{ old('reporting_manager', $onboarding->workDetail?->reporting_manager)==$mgr->full_name?'selected':'' }}>
                                 {{ $mgr->full_name }}
                                 @if($mgr->designation) — {{ $mgr->designation }} @endif
@@ -735,7 +736,7 @@ $obEditStatusBg  = match($obEditStatus) {
                     @if(!empty($certPaths))
                     <div class="mt-1">
                         @foreach($certPaths as $ci => $certPath)
-                        <a href="{{ asset('storage/'.$certPath) }}" target="_blank"
+                        <a href="{{ secure_file_url($certPath) }}" target="_blank"
                            class="btn btn-sm btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:11px;">
                             <i class="bi bi-file-earmark-arrow-down me-1"></i>Cert {{ $ci + 1 }}
                         </a>

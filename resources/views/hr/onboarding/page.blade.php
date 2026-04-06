@@ -566,6 +566,7 @@
                                 <option value="{{ $mgr->full_name }}"
                                     data-email="{{ $mgr->company_email }}"
                                     data-company="{{ $mgr->company }}"
+                                    data-employee-id="{{ $mgr->id }}"
                                     {{ old('reporting_manager')==$mgr->full_name?'selected':'' }}>
                                     {{ $mgr->full_name }}
                                     @if($mgr->designation) — {{ $mgr->designation }} @endif

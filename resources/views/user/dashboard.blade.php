@@ -22,4 +22,6 @@
 
 @include('partials.announcements-widget')
 
+@include('partials.on-leave-widget')
+
 @endsection

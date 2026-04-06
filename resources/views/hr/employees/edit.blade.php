@@ -301,7 +301,7 @@
                     <div id="nricExistingList" class="mb-2">
                         @foreach($existingNric as $idx => $path)
                         <div class="d-inline-flex align-items-center gap-1 me-1 mb-1" id="nricItem_{{ $idx }}">
-                            <a href="{{ asset('storage/'.$path) }}" target="_blank"
+                            <a href="{{ secure_file_url($path) }}" target="_blank"
                                class="btn btn-sm btn-outline-primary" style="font-size:12px;">
                                 <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $idx+1 }}
                             </a>
@@ -414,7 +414,7 @@
                         @endphp
                         {{-- If the current manager is not in the active list, show them as a fallback --}}
                         @if($currentMgr && !$mgrInList)
-                            <option value="{{ $currentMgr }}" selected>{{ $currentMgr }} (current)</option>
+                            <option value="{{ $currentMgr }}" data-employee-id="{{ $employee->manager_id }}" selected>{{ $currentMgr }} (current)</option>
                         @endif
                         @foreach($managers as $mgr)
                             @php
@@ -436,11 +436,13 @@
                             @endphp
                             <option value="{{ $mgr->name }}"
                                 data-company="{{ $mgr->employee?->company }}"
+                                data-employee-id="{{ $mgr->employee?->id }}"
                                 {{ $currentMgr == $mgr->name ? 'selected' : '' }}>
                                 {{ $mgr->name }} ({{ $roleLabelsEmp[$mgr->role ?? ''] ?? ucfirst(str_replace('_',' ',$mgr->role ?? '')) }})
                             </option>
                         @endforeach
                     </select>
+                    <input type="hidden" name="manager_id" id="edit_manager_id" value="{{ old('manager_id', $employee->manager_id) }}">
                     @error('reporting_manager')<div class="invalid-feedback">{{ $message }}</div>@enderror
                 </div>
                 <div class="col-md-4">
@@ -762,7 +764,7 @@
                         @if(!empty($editCertFiles))
                         <div class="mt-1">
                             @foreach($editCertFiles as $ci => $cf)
-                            <a href="{{ asset('storage/'.$cf) }}" target="_blank"
+                            <a href="{{ secure_file_url($cf) }}" target="_blank"
                                class="btn btn-xs btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:11px;">
                                 <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci + 1 }}
                             </a>
@@ -808,7 +810,7 @@
                             <div class="edu-cert-existing mb-2">
                                 @foreach($inlineCerts as $ci => $cf)
                                 <div class="d-inline-flex align-items-center gap-1 me-1 mb-1">
-                                    <a href="{{ asset('storage/'.$cf) }}" target="_blank"
+                                    <a href="{{ secure_file_url($cf) }}" target="_blank"
                                        class="btn btn-sm btn-outline-primary" style="font-size:11px;">
                                         <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci+1 }}
                                     </a>
@@ -1241,7 +1243,7 @@
                         <div class="d-flex align-items-center justify-content-between gap-2 p-2 rounded-2" style="background:#dcfce7;font-size:12px;">
                             <span><i class="bi bi-file-earmark-check-fill text-success me-1"></i>Personalised handbook uploaded</span>
                             <div class="d-flex gap-1">
-                                <a href="{{ asset('storage/' . $employee->handbook_path) }}" target="_blank"
+                                <a href="{{ secure_file_url($employee->handbook_path) }}" target="_blank"
                                    class="btn btn-outline-success btn-sm" style="padding:2px 7px;" title="View">
                                     <i class="bi bi-eye" style="font-size:12px;"></i>
                                 </a>
@@ -1293,7 +1295,7 @@
                         <div class="d-flex align-items-center justify-content-between gap-2 p-2 rounded-2" style="background:#fef3c7;font-size:12px;">
                             <span><i class="bi bi-file-earmark-check-fill text-warning me-1"></i>Personalised slide uploaded</span>
                             <div class="d-flex gap-1">
-                                <a href="{{ asset('storage/' . $employee->orientation_path) }}" target="_blank"
+                                <a href="{{ secure_file_url($employee->orientation_path) }}" target="_blank"
                                    class="btn btn-outline-warning btn-sm" style="padding:2px 7px;" title="View">
                                     <i class="bi bi-eye" style="font-size:12px;"></i>
                                 </a>
@@ -1657,6 +1659,19 @@ document.addEventListener('DOMContentLoaded', function () {
     toggleOffboardingHint();
     var empCo = document.getElementById('empCompanySelect');
     if (empCo && empCo.value) filterManagersByCompany(empCo.value, 'edit_reporting_manager');
+
+    // Sync manager_id hidden field with selected reporting manager
+    var mgrSel = document.getElementById('edit_reporting_manager');
+    if (mgrSel) {
+        function syncManagerId() {
+            var opt = mgrSel.options[mgrSel.selectedIndex];
+            var hiddenId = document.getElementById('edit_manager_id');
+            if (hiddenId) hiddenId.value = opt ? (opt.getAttribute('data-employee-id') || '') : '';
+        }
+        mgrSel.addEventListener('change', syncManagerId);
+        // Sync on load if manager is pre-selected
+        syncManagerId();
+    }
 });
 
 function autofillOfficeLocation(selectEl, targetId) {

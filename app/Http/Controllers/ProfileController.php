@@ -107,13 +107,13 @@ class ProfileController extends Controller
             'socso_no'                => 'nullable|string|max:50',
             'residential_address'     => 'required|string',
             'nric_files'              => 'nullable|array|max:5',
-            'nric_files.*'            => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'nric_files.*'            => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             // Section F
             'edu_qualification.*'     => 'nullable|string|max:255',
             'edu_institution.*'       => 'nullable|string|max:255',
             'edu_year.*'              => 'nullable|integer|min:1950|max:2099',
             'edu_experience_total'    => 'nullable|string|max:10',
-            'edu_certificate.*.*'     => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'edu_certificate.*.*'     => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             'edu_cert_keep.*.*'       => 'nullable|string',
             'edu_delete_ids'          => 'nullable|string',
             // Section G
@@ -200,7 +200,7 @@ class ProfileController extends Controller
         if ($request->hasFile('nric_files')) {
             foreach ($request->file('nric_files') as $file) {
                 if ($file && $file->isValid()) {
-                    $newNricPaths[] = $file->store('nric_documents', 'public');
+                    $newNricPaths[] = $file->store('nric_documents', 'local');
                 }
             }
         }
@@ -292,7 +292,7 @@ class ProfileController extends Controller
             if ($request->hasFile("edu_certificate.{$i}")) {
                 foreach ((array) $request->file("edu_certificate.{$i}") as $certFile) {
                     if ($certFile && $certFile->isValid()) {
-                        $newCertPaths[] = $certFile->store('education_certificates', 'public');
+                        $newCertPaths[] = $certFile->store('education_certificates', 'local');
                     }
                 }
             }
@@ -430,7 +430,7 @@ class ProfileController extends Controller
             'socso_no'                => 'nullable|string|max:50',
             'residential_address'     => 'required|string',
             'nric_files'              => 'nullable|array|max:5',
-            'nric_files.*'            => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'nric_files.*'            => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
         ]);
 
         $bankName = (in_array($validated['bank_name'] ?? '', ['Other','other']))
@@ -455,7 +455,7 @@ class ProfileController extends Controller
         if ($request->hasFile('nric_files')) {
             foreach ($request->file('nric_files') as $file) {
                 if ($file && $file->isValid()) {
-                    $newNricPaths[] = $file->store('nric_documents', 'public');
+                    $newNricPaths[] = $file->store('nric_documents', 'local');
                 }
             }
         }
@@ -595,7 +595,7 @@ class ProfileController extends Controller
             'edu_institution.*'    => 'nullable|string|max:255',
             'edu_year.*'           => 'nullable|integer|min:1950|max:2099',
             'edu_experience_total' => 'nullable|string|max:10',
-            'edu_certificate.*.*'  => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'edu_certificate.*.*'  => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             'edu_cert_keep.*.*'    => 'nullable|string',
             'edu_delete_ids'       => 'nullable|string',
         ]);
@@ -636,7 +636,7 @@ class ProfileController extends Controller
             if ($request->hasFile("edu_certificate.{$i}")) {
                 foreach ((array)$request->file("edu_certificate.{$i}") as $certFile) {
                     if ($certFile && $certFile->isValid()) {
-                        $newCertPaths[] = $certFile->store('education_certificates', 'public');
+                        $newCertPaths[] = $certFile->store('education_certificates', 'local');
                     }
                 }
             }
@@ -811,9 +811,9 @@ class ProfileController extends Controller
     // ── Upload AARF ───────────────────────────────────────────────────────
     public function uploadAarf(Request $request)
     {
-        $request->validate(['aarf_file' => 'required|file|mimes:pdf|max:5120']);
+        $request->validate(['aarf_file' => 'required|file|mimes:pdf|max:5120|valid_file_content']);
         $employee = $this->getOrCreateEmployee();
-        $path     = $request->file('aarf_file')->store('aarfs', 'public');
+        $path     = $request->file('aarf_file')->store('aarfs', 'local');
         $employee->update(['aarf_file_path' => $path]);
         return back()->with('success', 'AARF uploaded successfully.');
     }

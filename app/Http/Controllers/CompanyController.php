@@ -29,7 +29,7 @@ class CompanyController extends Controller
             'name'                => 'required|string|max:255|unique:companies,name',
             'address'             => 'nullable|string|max:1000',
             'registration_number' => 'nullable|string|max:100',
-            'logo'                => 'nullable|image|mimes:jpeg,png,jpg,gif,webp,svg|max:2048',
+            'logo'                => 'nullable|image|mimes:jpeg,png,jpg,gif,webp,svg|max:2048|valid_file_content',
         ]);
 
         $data = $request->only('name', 'address', 'registration_number');
@@ -51,7 +51,7 @@ class CompanyController extends Controller
             'name'                => 'required|string|max:255|unique:companies,name,' . $company->id,
             'address'             => 'nullable|string|max:1000',
             'registration_number' => 'nullable|string|max:100',
-            'logo'                => 'nullable|image|mimes:jpeg,png,jpg,gif,webp,svg|max:2048',
+            'logo'                => 'nullable|image|mimes:jpeg,png,jpg,gif,webp,svg|max:2048|valid_file_content',
         ]);
 
         $data = $request->only('name', 'address', 'registration_number');

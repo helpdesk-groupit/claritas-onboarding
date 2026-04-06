@@ -27,6 +27,8 @@
 
 @include('partials.announcements-widget')
 
+@include('partials.on-leave-widget')
+
 {{-- ── ONBOARDING OVERVIEW CARDS ──────────────────────────────────────── --}}
 <div class="mb-2"><small class="text-muted fw-semibold" style="text-transform:uppercase;letter-spacing:.06em;"><i class="bi bi-person-plus me-1"></i>Onboarding Overview</small></div>
 <div class="row g-3 mb-4">

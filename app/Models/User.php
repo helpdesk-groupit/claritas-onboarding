@@ -98,6 +98,38 @@ class User extends Authenticatable
         return in_array($this->role, ['it_manager', 'superadmin', 'employee']);
     }
 
+    // ── Payroll capability checks ─────────────────────────────────────
+    public function canViewPayroll(): bool
+    {
+        return in_array($this->role, ['hr_manager', 'hr_executive', 'superadmin', 'system_admin']);
+    }
+
+    public function canManagePayroll(): bool
+    {
+        return in_array($this->role, ['hr_manager', 'superadmin', 'system_admin']);
+    }
+
+    public function canApprovePayRun(): bool
+    {
+        return in_array($this->role, ['hr_manager', 'superadmin']);
+    }
+
+    public function canManageEaForms(): bool
+    {
+        return in_array($this->role, ['hr_manager', 'superadmin', 'system_admin']);
+    }
+
+    // ── Claims capability checks ──────────────────────────────────────
+    public function canViewAllClaims(): bool
+    {
+        return in_array($this->role, ['hr_manager', 'hr_executive', 'superadmin', 'system_admin']);
+    }
+
+    public function canManageClaims(): bool
+    {
+        return in_array($this->role, ['hr_manager', 'superadmin', 'system_admin']);
+    }
+
     public function employee() { return $this->hasOne(Employee::class); }
 
     public function permissions() { return $this->hasMany(UserPermission::class); }
@@ -126,5 +158,31 @@ class User extends Authenticatable
     {
         $p = $this->customPermission($resource);
         return in_array($p, ['full', 'edit']);
+    }
+
+    // ── Accounting Module ──────────────────────────────────────────────
+
+    public function isFinanceManager(): bool  { return $this->role === 'finance_manager'; }
+    public function isFinanceExecutive(): bool { return $this->role === 'finance_executive'; }
+    public function isFinance(): bool          { return in_array($this->role, ['finance_manager', 'finance_executive']); }
+
+    public function canViewAccounting(): bool
+    {
+        return in_array($this->role, ['finance_manager', 'finance_executive', 'hr_manager', 'superadmin', 'system_admin']);
+    }
+
+    public function canManageAccounting(): bool
+    {
+        return in_array($this->role, ['finance_manager', 'superadmin', 'system_admin']);
+    }
+
+    public function canApproveTransactions(): bool
+    {
+        return in_array($this->role, ['finance_manager', 'superadmin']);
+    }
+
+    public function canUseAiChat(): bool
+    {
+        return in_array($this->role, ['finance_manager', 'superadmin']);
     }
 }

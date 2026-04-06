@@ -14,6 +14,9 @@ return Application::configure(basePath: dirname(__DIR__))
         App\Providers\AuthServiceProvider::class,
     ])
     ->withMiddleware(function (Middleware $middleware): void {
+        // Global security headers on every response
+        $middleware->prepend(\App\Http\Middleware\SecurityHeaders::class);
+
         // Exempt the public AARF acknowledgement POST from CSRF verification.
         // This route is accessed via a token link (e.g. from email), often in a fresh
         // browser session where no CSRF token has been set yet.

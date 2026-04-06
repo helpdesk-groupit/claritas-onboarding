@@ -31,15 +31,25 @@ class AuthController extends Controller
 
         $user = User::where('work_email', $request->work_email)->first();
 
+        // Unified credential check — uses a generic error message for ALL failure cases
+        // to prevent user enumeration (OWASP A07 — Identification & Authentication Failures)
+        $genericError = 'The provided credentials do not match our records.';
+
         // Check deactivated account first (before password check)
         if ($user && !$user->is_active) {
-            $msg = $user->deactivation_reason === 'login_lockout'
-                ? 'Your account has been deactivated due to 5 unsuccessful login attempts. Please contact IT team for account activation.'
-                : 'This account has been deactivated.';
-            return back()->withErrors(['work_email' => $msg])->onlyInput('work_email');
+            // Still perform a dummy hash check to prevent timing-based enumeration
+            Hash::check($request->password, $user->password ?? '$2y$12$dummyhashvaluefortimingatk000000000000000000000');
+            SecurityAuditLog::record('failed_login', [
+                'user_id'    => $user->id,
+                'work_email' => $user->work_email,
+                'role'       => $user->role,
+                'ip_address' => $request->ip(),
+                'details'    => 'Login attempt on deactivated account (reason: ' . ($user->deactivation_reason ?? 'unknown') . ').',
+            ]);
+            return back()->withErrors(['work_email' => $genericError])->onlyInput('work_email');
         }
 
-        if (!$user || !Hash::check($request->password, $user->password)) {
+        if (!$user || !Hash::check($request->password, $user->password ?? '$2y$12$dummyhashvaluefortimingatk000000000000000000000')) {
             // Track failed attempts per user
             if ($user) {
                 $attempts = $user->login_attempts + 1;
@@ -58,7 +68,7 @@ class AuthController extends Controller
                         'details'    => "Account locked after {$attempts} consecutive failed login attempts.",
                     ]);
                     return back()->withErrors([
-                        'work_email' => 'Your account has been deactivated due to 5 unsuccessful login attempts. Please contact IT team for account activation.',
+                        'work_email' => $genericError,
                     ])->onlyInput('work_email');
                 }
                 $user->update(['login_attempts' => $attempts]);
@@ -77,7 +87,7 @@ class AuthController extends Controller
                 ]);
             }
             return back()->withErrors([
-                'work_email' => 'Invalid credentials. Please try again.',
+                'work_email' => $genericError,
             ])->onlyInput('work_email');
         }
 
@@ -89,7 +99,7 @@ class AuthController extends Controller
                 $linkedEmployee->update(['active_until' => $linkedEmployee->exit_date]);
             }
             return back()->withErrors([
-                'work_email' => 'Your account access ended on ' . $linkedEmployee->exit_date->format('d M Y') . '.',
+                'work_email' => $genericError,
             ])->onlyInput('work_email');
         }
 
@@ -265,23 +275,21 @@ class AuthController extends Controller
     {
         $request->validate(['email' => 'required|email']);
 
+        // Always return the same generic message to prevent user enumeration
+        // (OWASP A07 — Identification & Authentication Failures)
+        $genericMessage = 'If an account exists with that email address, a password reset link has been sent.';
+
         $user = User::where('work_email', $request->email)->first();
-        if (!$user) {
-            return back()->withErrors(['email' => 'No account found with that email address.']);
+
+        // Silently bail for non-existent or deactivated accounts
+        if (!$user || !$user->is_active) {
+            return back()->with('status', $genericMessage);
         }
 
-        if (!$user->is_active) {
-            if ($user->deactivation_reason === 'login_lockout') {
-                return back()->withErrors(['email' => 'Your account has been deactivated due to 5 unsuccessful login attempts. Please contact IT team for account activation.']);
-            }
-            return back()->withErrors(['email' => 'This account has been deactivated. Please contact IT team.']);
-        }
+        // Always show the generic message regardless of actual send result
+        Password::sendResetLink(['work_email' => $request->email]);
 
-        $status = Password::sendResetLink(['work_email' => $request->email]);
-
-        return $status === Password::RESET_LINK_SENT
-            ? back()->with('status', 'A password reset link has been sent to ' . $request->email . '.')
-            : back()->withErrors(['email' => 'Failed to send reset link. Please try again.']);
+        return back()->with('status', $genericMessage);
     }
 
     public function showResetPassword(Request $request, string $token)

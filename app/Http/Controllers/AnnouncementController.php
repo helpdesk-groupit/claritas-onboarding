@@ -71,7 +71,7 @@ class AnnouncementController extends Controller
             'companies'     => 'nullable|array',
             'companies.*'   => 'string|max:255',
             'attachments'   => 'nullable|array|max:10',
-            'attachments.*' => 'file|mimes:pdf,jpg,jpeg,png,gif,webp|max:10240',
+            'attachments.*' => 'file|mimes:pdf,jpg,jpeg,png,gif,webp|max:10240|valid_file_content',
         ]);
 
         // Store attachments
@@ -121,7 +121,7 @@ class AnnouncementController extends Controller
             'companies'           => 'nullable|array',
             'companies.*'         => 'string|max:255',
             'attachments'         => 'nullable|array|max:10',
-            'attachments.*'       => 'file|mimes:pdf,jpg,jpeg,png,gif,webp|max:10240',
+            'attachments.*'       => 'file|mimes:pdf,jpg,jpeg,png,gif,webp|max:10240|valid_file_content',
             'keep_attachments'    => 'nullable|array',
             'keep_attachments.*'  => 'nullable|string',
         ]);

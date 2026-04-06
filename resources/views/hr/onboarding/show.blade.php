@@ -135,7 +135,7 @@
                     <tr><td class="text-muted py-2">NRIC / Passport Copy</td><td class="py-2">
                         @if(in_array($authUser->role, ['hr_manager','it_manager','superadmin','system_admin']) || ($profileOwnerId && $authUser->id === $profileOwnerId))
                         @foreach($allNric as $idx => $path)
-                        <a href="{{ asset('storage/'.$path) }}" target="_blank"
+                        <a href="{{ secure_file_url($path) }}" target="_blank"
                            class="btn btn-sm btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:12px;">
                             <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $idx+1 }}
                         </a>
@@ -178,7 +178,7 @@
                             @if(!empty($certPaths))
                                 @if(in_array($authUser->role, ['hr_manager','it_manager','superadmin','system_admin']) || ($profileOwnerId && $authUser->id === $profileOwnerId))
                                 @foreach($certPaths as $ci => $certPath)
-                                <a href="{{ asset('storage/'.$certPath) }}" target="_blank"
+                                <a href="{{ secure_file_url($certPath) }}" target="_blank"
                                    class="btn btn-sm btn-outline-primary me-1 mb-1" style="padding:2px 8px;font-size:11px;">
                                     <i class="bi bi-file-earmark-arrow-down me-1"></i>File {{ $ci + 1 }}
                                 </a>
