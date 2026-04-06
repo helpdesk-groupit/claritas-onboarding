@@ -106,7 +106,7 @@ class EmployeeController extends Controller
         if (!Auth::user()->isSuperadmin()) abort(403);
 
         $request->validate([
-            'work_role' => 'required|in:manager,senior_executive,executive_associate,director_hod,hr_manager,hr_executive,hr_intern,it_manager,it_executive,it_intern,superadmin,system_admin,others',
+            'work_role' => 'required|in:manager,senior_executive,executive_associate,director_hod,hr_manager,hr_executive,hr_intern,it_manager,it_executive,it_intern,finance_manager,finance_executive,superadmin,system_admin,others',
         ]);
 
         $employee->update(['work_role' => $request->work_role]);
@@ -114,7 +114,7 @@ class EmployeeController extends Controller
         // Sync users.role so permissions take effect immediately.
         // users.role is a restricted ENUM; map org-level roles (others, manager, etc.) to 'employee'.
         if ($employee->user_id) {
-            $systemRoles = ['hr_manager','hr_executive','hr_intern','it_manager','it_executive','it_intern','superadmin','system_admin','employee'];
+            $systemRoles = ['hr_manager','hr_executive','hr_intern','it_manager','it_executive','it_intern','finance_manager','finance_executive','superadmin','system_admin','employee'];
             $userRole = in_array($request->work_role, $systemRoles) ? $request->work_role : 'employee';
             \App\Models\User::where('id', $employee->user_id)
                 ->update(['role' => $userRole]);
