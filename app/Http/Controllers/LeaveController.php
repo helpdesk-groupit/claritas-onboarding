@@ -158,6 +158,24 @@ class LeaveController extends Controller
         return back()->with('success', 'Public holiday added.');
     }
 
+    public function updateHoliday(Request $request, PublicHoliday $holiday)
+    {
+        $this->authorizeLeaveManager();
+        $data = $request->validate([
+            'name' => 'required|string|max:255',
+            'date' => 'required|date',
+            'company' => 'nullable|string|max:255',
+            'is_recurring' => 'boolean',
+        ]);
+
+        $data['year'] = date('Y', strtotime($data['date']));
+        $data['is_recurring'] = $request->boolean('is_recurring');
+
+        $holiday->update($data);
+
+        return back()->with('success', 'Public holiday updated.');
+    }
+
     public function destroyHoliday(PublicHoliday $holiday)
     {
         $this->authorizeLeaveManager();
