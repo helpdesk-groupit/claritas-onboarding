@@ -155,14 +155,14 @@ class ReportController extends Controller
 
         // ── Expense Claims KPIs ────────────────────────────────────────
         $claimsStats = DB::table('expense_claims')
-            ->where('year', $year)
+            ->where('expense_claims.year', $year)
             ->when($companyFilter, fn($q) => $q->join('employees', 'expense_claims.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw("
                 COUNT(*) as total_claims,
-                SUM(CASE WHEN status = 'hr_approved' OR status = 'paid' THEN total_with_gst ELSE 0 END) as approved_amount,
-                SUM(CASE WHEN status = 'submitted' OR status = 'manager_approved' THEN total_with_gst ELSE 0 END) as pending_amount,
-                SUM(CASE WHEN status = 'hr_rejected' OR status = 'manager_rejected' THEN total_with_gst ELSE 0 END) as rejected_amount
+                SUM(CASE WHEN expense_claims.status = 'hr_approved' OR expense_claims.status = 'paid' THEN total_with_gst ELSE 0 END) as approved_amount,
+                SUM(CASE WHEN expense_claims.status = 'submitted' OR expense_claims.status = 'manager_approved' THEN total_with_gst ELSE 0 END) as pending_amount,
+                SUM(CASE WHEN expense_claims.status = 'hr_rejected' OR expense_claims.status = 'manager_rejected' THEN total_with_gst ELSE 0 END) as rejected_amount
             ")->first();
 
         $claimsByCategory = DB::table('expense_claim_items')
@@ -177,7 +177,7 @@ class ReportController extends Controller
 
         // ── Leave KPIs ─────────────────────────────────────────────────
         $leaveStats = DB::table('leave_applications')
-            ->whereYear('start_date', $year)
+            ->whereYear('leave_applications.start_date', $year)
             ->when($companyFilter, fn($q) => $q->join('employees', 'leave_applications.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw("
@@ -198,7 +198,7 @@ class ReportController extends Controller
 
         // ── Attendance KPIs ────────────────────────────────────────────
         $attendanceStats = DB::table('attendance_records')
-            ->whereYear('date', $year)
+            ->whereYear('attendance_records.date', $year)
             ->when($companyFilter, fn($q) => $q->join('employees', 'attendance_records.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw("
@@ -453,10 +453,12 @@ class ReportController extends Controller
 
         // Expense claims summary
         $claimsByMonth = DB::table('expense_claims')
-            ->where('year', $year)
-            ->whereIn('status', ['hr_approved', 'paid'])
-            ->selectRaw('month as m, SUM(total_with_gst) as total, COUNT(*) as count')
-            ->groupBy('month')->orderBy('month')->pluck('total', 'm')->toArray();
+            ->where('expense_claims.year', $year)
+            ->whereIn('expense_claims.status', ['hr_approved', 'paid'])
+            ->when($companyFilter, fn($q) => $q->join('employees', 'expense_claims.employee_id', '=', 'employees.id')
+                ->where('employees.company', $companyFilter))
+            ->selectRaw('expense_claims.month as m, SUM(expense_claims.total_with_gst) as total, COUNT(*) as count')
+            ->groupBy('expense_claims.month')->orderBy('expense_claims.month')->pluck('total', 'm')->toArray();
 
         $claimsTrend = [];
         for ($m = 1; $m <= 12; $m++) {
@@ -471,6 +473,8 @@ class ReportController extends Controller
             ->join('expense_categories', 'expense_claim_items.expense_category_id', '=', 'expense_categories.id')
             ->where('expense_claims.year', $year)
             ->whereIn('expense_claims.status', ['hr_approved', 'paid'])
+            ->when($companyFilter, fn($q) => $q->join('employees', 'expense_claims.employee_id', '=', 'employees.id')
+                ->where('employees.company', $companyFilter))
             ->selectRaw('expense_categories.name as category, SUM(expense_claim_items.total_with_gst) as total, COUNT(*) as count')
             ->groupBy('expense_categories.name')
             ->orderByDesc('total')->get();
@@ -497,8 +501,8 @@ class ReportController extends Controller
 
         // Leave applications by month
         $monthlyLeave = DB::table('leave_applications')
-            ->whereYear('start_date', $year)
-            ->where('status', 'approved')
+            ->whereYear('leave_applications.start_date', $year)
+            ->where('leave_applications.status', 'approved')
             ->when($companyFilter, fn($q) => $q->join('employees', 'leave_applications.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw('MONTH(leave_applications.start_date) as m, SUM(leave_applications.total_days) as total_days, COUNT(*) as count')
@@ -517,6 +521,8 @@ class ReportController extends Controller
             ->join('leave_types', 'leave_applications.leave_type_id', '=', 'leave_types.id')
             ->whereYear('leave_applications.start_date', $year)
             ->where('leave_applications.status', 'approved')
+            ->when($companyFilter, fn($q) => $q->join('employees', 'leave_applications.employee_id', '=', 'employees.id')
+                ->where('employees.company', $companyFilter))
             ->selectRaw('leave_types.name as type_name, leave_types.code, SUM(leave_applications.total_days) as total_days, COUNT(*) as count')
             ->groupBy('leave_types.name', 'leave_types.code')
             ->orderByDesc('total_days')->get();
@@ -544,6 +550,8 @@ class ReportController extends Controller
         $balanceUtilization = DB::table('leave_balances')
             ->join('leave_types', 'leave_balances.leave_type_id', '=', 'leave_types.id')
             ->where('leave_balances.year', $year)
+            ->when($companyFilter, fn($q) => $q->join('employees', 'leave_balances.employee_id', '=', 'employees.id')
+                ->where('employees.company', $companyFilter))
             ->selectRaw('leave_types.name as type_name, SUM(leave_balances.entitled) as total_entitled, SUM(leave_balances.taken) as total_taken, SUM(leave_balances.carry_forward) as total_cf')
             ->groupBy('leave_types.name')
             ->orderByDesc('total_entitled')->get();
@@ -568,7 +576,7 @@ class ReportController extends Controller
 
         // Monthly attendance breakdown
         $monthlyAttendance = DB::table('attendance_records')
-            ->whereYear('date', $year)
+            ->whereYear('attendance_records.date', $year)
             ->when($companyFilter, fn($q) => $q->join('employees', 'attendance_records.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw("MONTH(attendance_records.date) as m,
@@ -612,10 +620,12 @@ class ReportController extends Controller
 
         // Overtime trends
         $overtimeByMonth = DB::table('overtime_requests')
-            ->whereYear('date', $year)
-            ->where('status', 'approved')
-            ->selectRaw('MONTH(date) as m, SUM(hours) as total_hours, COUNT(*) as count')
-            ->groupByRaw('MONTH(date)')->pluck('total_hours', 'm')->toArray();
+            ->whereYear('overtime_requests.date', $year)
+            ->where('overtime_requests.status', 'approved')
+            ->when($companyFilter, fn($q) => $q->join('employees', 'overtime_requests.employee_id', '=', 'employees.id')
+                ->where('employees.company', $companyFilter))
+            ->selectRaw('MONTH(overtime_requests.date) as m, SUM(overtime_requests.hours) as total_hours, COUNT(*) as count')
+            ->groupByRaw('MONTH(overtime_requests.date)')->pluck('total_hours', 'm')->toArray();
 
         $overtimeTrend = [];
         for ($m = 1; $m <= 12; $m++) {
