@@ -3,6 +3,7 @@
 @section('page-title', 'Leave Types')
 
 @section('content')
+@include('hr.leave.partials.nav-tabs')
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0"><i class="bi bi-tags me-2"></i>Leave Types</h5>

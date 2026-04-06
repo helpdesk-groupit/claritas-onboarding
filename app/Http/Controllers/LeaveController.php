@@ -17,15 +17,33 @@ use Illuminate\Support\Facades\Mail;
 
 class LeaveController extends Controller
 {
+    /** Abort 403 unless user can view leave admin pages. */
+    private function authorizeLeaveAdmin(): void
+    {
+        if (!Auth::user()->canViewLeaveAdmin()) {
+            abort(403);
+        }
+    }
+
+    /** Abort 403 unless user can manage leave settings (types, entitlements, balances, holidays). */
+    private function authorizeLeaveManager(): void
+    {
+        if (!Auth::user()->canManageLeave()) {
+            abort(403);
+        }
+    }
+
     // ── HR: Leave Types Management ─────────────────────────────────────
     public function types()
     {
+        $this->authorizeLeaveAdmin();
         $types = LeaveType::orderBy('sort_order')->get();
         return view('hr.leave.types', compact('types'));
     }
 
     public function storeType(Request $request)
     {
+        $this->authorizeLeaveManager();
         $data = $request->validate([
             'name' => 'required|string|max:100',
             'code' => 'required|string|max:20|unique:leave_types,code',
@@ -45,6 +63,7 @@ class LeaveController extends Controller
 
     public function updateType(Request $request, LeaveType $leaveType)
     {
+        $this->authorizeLeaveManager();
         $data = $request->validate([
             'name' => 'required|string|max:100',
             'description' => 'nullable|string|max:500',
@@ -65,6 +84,7 @@ class LeaveController extends Controller
     // ── HR: Entitlements ───────────────────────────────────────────────
     public function entitlements()
     {
+        $this->authorizeLeaveAdmin();
         $entitlements = LeaveEntitlement::with('leaveType')->get();
         $leaveTypes = LeaveType::where('is_active', true)->get();
         return view('hr.leave.entitlements', compact('entitlements', 'leaveTypes'));
@@ -72,6 +92,7 @@ class LeaveController extends Controller
 
     public function storeEntitlement(Request $request)
     {
+        $this->authorizeLeaveManager();
         $data = $request->validate([
             'leave_type_id' => 'required|exists:leave_types,id',
             'company' => 'nullable|string|max:255',
@@ -89,12 +110,14 @@ class LeaveController extends Controller
     // ── HR: Public Holidays ────────────────────────────────────────────
     public function holidays()
     {
+        $this->authorizeLeaveAdmin();
         $holidays = PublicHoliday::orderBy('date')->get();
         return view('hr.leave.holidays', compact('holidays'));
     }
 
     public function storeHoliday(Request $request)
     {
+        $this->authorizeLeaveManager();
         $data = $request->validate([
             'name' => 'required|string|max:255',
             'date' => 'required|date',
@@ -112,6 +135,7 @@ class LeaveController extends Controller
 
     public function destroyHoliday(PublicHoliday $holiday)
     {
+        $this->authorizeLeaveManager();
         $holiday->delete();
         return back()->with('success', 'Public holiday removed.');
     }
@@ -119,6 +143,7 @@ class LeaveController extends Controller
     // ── HR: All Leave Applications ─────────────────────────────────────
     public function index(Request $request)
     {
+        $this->authorizeLeaveAdmin();
         $query = LeaveApplication::with(['employee', 'leaveType', 'approver'])
             ->orderByDesc('created_at');
 
@@ -138,6 +163,7 @@ class LeaveController extends Controller
 
     public function approve(LeaveApplication $application)
     {
+        $this->authorizeLeaveManager();
         if ($application->status !== 'pending') {
             return back()->with('error', 'This application is no longer pending.');
         }
@@ -177,6 +203,7 @@ class LeaveController extends Controller
 
     public function reject(Request $request, LeaveApplication $application)
     {
+        $this->authorizeLeaveManager();
         if ($application->status !== 'pending') {
             return back()->with('error', 'This application is no longer pending.');
         }
@@ -211,6 +238,7 @@ class LeaveController extends Controller
     // ── HR: Leave Balances Overview ────────────────────────────────────
     public function balances(Request $request)
     {
+        $this->authorizeLeaveAdmin();
         $year = $request->input('year', now()->year);
         $balances = LeaveBalance::with(['employee', 'leaveType'])
             ->where('year', $year)
@@ -227,6 +255,7 @@ class LeaveController extends Controller
     // ── HR: Initialize Balances for Year ───────────────────────────────
     public function initializeBalances(Request $request)
     {
+        $this->authorizeLeaveManager();
         $year = $request->input('year', now()->year);
         $employees = Employee::whereNull('exit_date')->orWhere('exit_date', '>=', now())->get();
         $leaveTypes = LeaveType::where('is_active', true)->get();
@@ -486,6 +515,8 @@ class LeaveController extends Controller
     // ── HR: Team Calendar ──────────────────────────────────────────────
     public function calendar(Request $request)
     {
+        $this->authorizeLeaveAdmin();
+
         $month = $request->input('month', now()->month);
         $year = $request->input('year', now()->year);
 

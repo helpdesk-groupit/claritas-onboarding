@@ -3,6 +3,7 @@
 @section('page-title', 'Team Leave Calendar')
 
 @section('content')
+@include('hr.leave.partials.nav-tabs')
 <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0"><i class="bi bi-calendar3 me-2"></i>{{ \Carbon\Carbon::create($year, $month)->format('F Y') }}</h5>

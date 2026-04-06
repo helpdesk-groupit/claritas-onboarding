@@ -3,9 +3,10 @@
 @section('page-title', 'Leave Balances')
 
 @section('content')
+@include('hr.leave.partials.nav-tabs')
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0"><i class="bi bi-pie-chart me-2"></i>Leave Balances — {{ $year }}</h5>
+        <h5 class="mb-0"><i class="bi bi-pie-chart me-2"></i>Leave Balances &mdash; {{ $year }}</h5>
         <div class="d-flex gap-2">
             <form method="POST" action="{{ route('hr.leave.balances.initialize') }}">
                 @csrf

@@ -98,6 +98,17 @@ class User extends Authenticatable
         return in_array($this->role, ['it_manager', 'superadmin', 'employee']);
     }
 
+    // ── Leave capability checks ───────────────────────────────────────
+    public function canViewLeaveAdmin(): bool
+    {
+        return in_array($this->role, ['hr_manager', 'hr_executive', 'superadmin', 'system_admin']);
+    }
+
+    public function canManageLeave(): bool
+    {
+        return in_array($this->role, ['hr_manager', 'superadmin', 'system_admin']);
+    }
+
     // ── Payroll capability checks ─────────────────────────────────────
     public function canViewPayroll(): bool
     {
