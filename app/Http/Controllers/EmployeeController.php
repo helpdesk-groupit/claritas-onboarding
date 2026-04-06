@@ -31,7 +31,7 @@ class EmployeeController extends Controller
     // ── Superadmin: Role Management ───────────────────────────────────────
     public function roleManagement(Request $request)
     {
-        if (!Auth::user()->isSuperadmin() && !Auth::user()->isItManager()) abort(403);
+        if (!Auth::user()->isSuperadmin()) abort(403);
 
         $query = Employee::whereNull('active_until');
 
@@ -103,7 +103,7 @@ class EmployeeController extends Controller
 
     public function roleUpdate(Request $request, Employee $employee)
     {
-        if (!Auth::user()->isSuperadmin() && !Auth::user()->isItManager()) abort(403);
+        if (!Auth::user()->isSuperadmin()) abort(403);
 
         $request->validate([
             'work_role' => 'required|in:manager,senior_executive,executive_associate,director_hod,hr_manager,hr_executive,hr_intern,it_manager,it_executive,it_intern,superadmin,system_admin,others',

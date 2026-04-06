@@ -320,12 +320,6 @@
 
         @if(Auth::user()->isItManager())
         <div class="nav-item">
-            <a href="{{ route('superadmin.roles.index') }}"
-               class="nav-link {{ request()->routeIs('superadmin.roles.*') ? 'active' : '' }}">
-                <i class="bi bi-shield-lock"></i> Role Management
-            </a>
-        </div>
-        <div class="nav-item">
             <a href="{{ route('announcements.index') }}"
                class="nav-link {{ request()->routeIs('announcements.*') ? 'active' : '' }}">
                 <i class="bi bi-megaphone"></i> Announcements
