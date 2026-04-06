@@ -642,8 +642,8 @@ return new class extends Migration
             $table->timestamps();
 
             $table->foreign('asset_account_id')->references('id')->on('acc_chart_of_accounts')->nullOnDelete();
-            $table->foreign('depreciation_expense_account_id')->references('id')->on('acc_chart_of_accounts')->nullOnDelete();
-            $table->foreign('accumulated_depreciation_account_id')->references('id')->on('acc_chart_of_accounts')->nullOnDelete();
+            $table->foreign('depreciation_expense_account_id', 'acc_fac_depr_expense_acct_foreign')->references('id')->on('acc_chart_of_accounts')->nullOnDelete();
+            $table->foreign('accumulated_depreciation_account_id', 'acc_fac_accum_depr_acct_foreign')->references('id')->on('acc_chart_of_accounts')->nullOnDelete();
         });
 
         if (!Schema::hasTable('acc_fixed_assets')) Schema::create('acc_fixed_assets', function (Blueprint $table) {
