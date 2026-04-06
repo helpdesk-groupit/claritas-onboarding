@@ -107,6 +107,31 @@ class LeaveController extends Controller
         return back()->with('success', 'Entitlement created.');
     }
 
+    public function updateEntitlement(Request $request, LeaveEntitlement $entitlement)
+    {
+        $this->authorizeLeaveManager();
+        $data = $request->validate([
+            'leave_type_id' => 'required|exists:leave_types,id',
+            'company' => 'nullable|string|max:255',
+            'min_tenure_months' => 'required|integer|min:0',
+            'max_tenure_months' => 'nullable|integer|min:0',
+            'entitled_days' => 'required|numeric|min:0',
+            'carry_forward_limit' => 'required|numeric|min:0',
+        ]);
+
+        $entitlement->update($data);
+
+        return back()->with('success', 'Entitlement updated.');
+    }
+
+    public function destroyEntitlement(LeaveEntitlement $entitlement)
+    {
+        $this->authorizeLeaveManager();
+        $entitlement->delete();
+
+        return back()->with('success', 'Entitlement deleted.');
+    }
+
     // ── HR: Public Holidays ────────────────────────────────────────────
     public function holidays()
     {

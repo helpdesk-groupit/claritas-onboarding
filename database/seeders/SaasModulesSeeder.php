@@ -30,27 +30,53 @@ class SaasModulesSeeder extends Seeder
         }
 
         // ── Leave Entitlements (EA 1955 minimum) ───────────────────────────
+        // Annual Leave – s.60E EA 1955
         $al = LeaveType::where('code', 'AL')->first();
         LeaveEntitlement::create(['leave_type_id' => $al->id, 'min_tenure_months' => 0,  'max_tenure_months' => 24,  'entitled_days' => 8,  'carry_forward_limit' => 5]);
         LeaveEntitlement::create(['leave_type_id' => $al->id, 'min_tenure_months' => 24, 'max_tenure_months' => 60,  'entitled_days' => 12, 'carry_forward_limit' => 5]);
-        LeaveEntitlement::create(['leave_type_id' => $al->id, 'min_tenure_months' => 60, 'max_tenure_months' => 999, 'entitled_days' => 16, 'carry_forward_limit' => 8]);
+        LeaveEntitlement::create(['leave_type_id' => $al->id, 'min_tenure_months' => 60, 'max_tenure_months' => null, 'entitled_days' => 16, 'carry_forward_limit' => 8]);
 
+        // Sick Leave (outpatient) – s.60F(1)(a) EA 1955
         $sl = LeaveType::where('code', 'SL')->first();
         LeaveEntitlement::create(['leave_type_id' => $sl->id, 'min_tenure_months' => 0,  'max_tenure_months' => 24,  'entitled_days' => 14, 'carry_forward_limit' => 0]);
         LeaveEntitlement::create(['leave_type_id' => $sl->id, 'min_tenure_months' => 24, 'max_tenure_months' => 60,  'entitled_days' => 18, 'carry_forward_limit' => 0]);
-        LeaveEntitlement::create(['leave_type_id' => $sl->id, 'min_tenure_months' => 60, 'max_tenure_months' => 999, 'entitled_days' => 22, 'carry_forward_limit' => 0]);
+        LeaveEntitlement::create(['leave_type_id' => $sl->id, 'min_tenure_months' => 60, 'max_tenure_months' => null, 'entitled_days' => 22, 'carry_forward_limit' => 0]);
 
+        // Medical Leave (same as Sick Leave for employers who separate them) – s.60F
+        $ml = LeaveType::where('code', 'ML')->first();
+        if ($ml) {
+            LeaveEntitlement::create(['leave_type_id' => $ml->id, 'min_tenure_months' => 0,  'max_tenure_months' => 24,  'entitled_days' => 14, 'carry_forward_limit' => 0]);
+            LeaveEntitlement::create(['leave_type_id' => $ml->id, 'min_tenure_months' => 24, 'max_tenure_months' => 60,  'entitled_days' => 18, 'carry_forward_limit' => 0]);
+            LeaveEntitlement::create(['leave_type_id' => $ml->id, 'min_tenure_months' => 60, 'max_tenure_months' => null, 'entitled_days' => 22, 'carry_forward_limit' => 0]);
+        }
+
+        // Hospitalisation Leave – s.60F(1)(bb) EA 1955 (60 days inclusive of sick leave)
         $hl = LeaveType::where('code', 'HL')->first();
-        LeaveEntitlement::create(['leave_type_id' => $hl->id, 'min_tenure_months' => 0, 'max_tenure_months' => 999, 'entitled_days' => 60, 'carry_forward_limit' => 0]);
+        LeaveEntitlement::create(['leave_type_id' => $hl->id, 'min_tenure_months' => 0, 'max_tenure_months' => null, 'entitled_days' => 60, 'carry_forward_limit' => 0]);
 
+        // Compassionate Leave – not in EA 1955, common practice 3 days
         $cl = LeaveType::where('code', 'CL')->first();
-        LeaveEntitlement::create(['leave_type_id' => $cl->id, 'min_tenure_months' => 0, 'max_tenure_months' => 999, 'entitled_days' => 3, 'carry_forward_limit' => 0]);
+        LeaveEntitlement::create(['leave_type_id' => $cl->id, 'min_tenure_months' => 0, 'max_tenure_months' => null, 'entitled_days' => 3, 'carry_forward_limit' => 0]);
 
+        // Maternity Leave – s.37(1)(a) EA 1955 (amended 2022: 98 days)
         $matl = LeaveType::where('code', 'MATL')->first();
-        LeaveEntitlement::create(['leave_type_id' => $matl->id, 'min_tenure_months' => 0, 'max_tenure_months' => 999, 'entitled_days' => 98, 'carry_forward_limit' => 0]);
+        LeaveEntitlement::create(['leave_type_id' => $matl->id, 'min_tenure_months' => 0, 'max_tenure_months' => null, 'entitled_days' => 98, 'carry_forward_limit' => 0]);
 
+        // Paternity Leave – s.60FA EA 1955 (amended 2022: 7 days)
         $patl = LeaveType::where('code', 'PATL')->first();
-        LeaveEntitlement::create(['leave_type_id' => $patl->id, 'min_tenure_months' => 0, 'max_tenure_months' => 999, 'entitled_days' => 7, 'carry_forward_limit' => 0]);
+        LeaveEntitlement::create(['leave_type_id' => $patl->id, 'min_tenure_months' => 0, 'max_tenure_months' => null, 'entitled_days' => 7, 'carry_forward_limit' => 0]);
+
+        // Replacement Leave – earned when working on rest day/public holiday
+        $rl = LeaveType::where('code', 'RL')->first();
+        if ($rl) {
+            LeaveEntitlement::create(['leave_type_id' => $rl->id, 'min_tenure_months' => 0, 'max_tenure_months' => null, 'entitled_days' => 0, 'carry_forward_limit' => 0]);
+        }
+
+        // Unpaid Leave – no statutory entitlement, tracked at 0
+        $ul = LeaveType::where('code', 'UL')->first();
+        if ($ul) {
+            LeaveEntitlement::create(['leave_type_id' => $ul->id, 'min_tenure_months' => 0, 'max_tenure_months' => null, 'entitled_days' => 0, 'carry_forward_limit' => 0]);
+        }
 
         // ── Payroll Items (Malaysian statutory) ────────────────────────────
         $payrollItems = [

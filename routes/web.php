@@ -235,6 +235,8 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     // HR: Entitlements
     Route::get('/hr/leave/entitlements',                [LeaveController::class, 'entitlements'])->name('hr.leave.entitlements');
     Route::post('/hr/leave/entitlements',               [LeaveController::class, 'storeEntitlement'])->name('hr.leave.entitlements.store');
+    Route::put('/hr/leave/entitlements/{entitlement}',  [LeaveController::class, 'updateEntitlement'])->name('hr.leave.entitlements.update');
+    Route::delete('/hr/leave/entitlements/{entitlement}',[LeaveController::class, 'destroyEntitlement'])->name('hr.leave.entitlements.destroy');
 
     // HR: Public Holidays
     Route::get('/hr/leave/holidays',                    [LeaveController::class, 'holidays'])->name('hr.leave.holidays');
