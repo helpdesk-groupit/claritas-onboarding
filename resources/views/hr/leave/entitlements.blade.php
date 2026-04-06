@@ -34,7 +34,7 @@
 
 <div class="modal fade" id="addEntitlementModal" tabindex="-1">
     <div class="modal-dialog">
-        <form action="{{ route('leave.entitlements.store') }}" method="POST" class="modal-content">
+        <form action="{{ route('hr.leave.entitlements.store') }}" method="POST" class="modal-content">
             @csrf
             <div class="modal-header"><h5 class="modal-title">Add Entitlement</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
             <div class="modal-body">

@@ -21,7 +21,7 @@
                         <td>{{ $h->company ?? 'All' }}</td>
                         <td>{!! $h->is_recurring ? '<i class="bi bi-check-circle text-success"></i>' : '' !!}</td>
                         <td>
-                            <form action="{{ route('leave.holidays.destroy', $h) }}" method="POST" class="d-inline" onsubmit="return confirm('Remove this holiday?')">
+                            <form action="{{ route('hr.leave.holidays.destroy', $h) }}" method="POST" class="d-inline" onsubmit="return confirm('Remove this holiday?')">
                                 @csrf @method('DELETE')
                                 <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
                             </form>
@@ -38,7 +38,7 @@
 
 <div class="modal fade" id="addHolidayModal" tabindex="-1">
     <div class="modal-dialog">
-        <form action="{{ route('leave.holidays.store') }}" method="POST" class="modal-content">
+        <form action="{{ route('hr.leave.holidays.store') }}" method="POST" class="modal-content">
             @csrf
             <div class="modal-header"><h5 class="modal-title">Add Public Holiday</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
             <div class="modal-body">

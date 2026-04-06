@@ -35,7 +35,7 @@
                             {{-- Edit Modal --}}
                             <div class="modal fade" id="editTypeModal{{ $type->id }}" tabindex="-1">
                                 <div class="modal-dialog">
-                                    <form action="{{ route('leave.types.update', $type) }}" method="POST" class="modal-content">
+                                    <form action="{{ route('hr.leave.types.update', $type) }}" method="POST" class="modal-content">
                                         @csrf @method('PUT')
                                         <div class="modal-header"><h5 class="modal-title">Edit Leave Type</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
                                         <div class="modal-body">
@@ -63,7 +63,7 @@
 {{-- Add Type Modal --}}
 <div class="modal fade" id="addTypeModal" tabindex="-1">
     <div class="modal-dialog">
-        <form action="{{ route('leave.types.store') }}" method="POST" class="modal-content">
+        <form action="{{ route('hr.leave.types.store') }}" method="POST" class="modal-content">
             @csrf
             <div class="modal-header"><h5 class="modal-title">Add Leave Type</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
             <div class="modal-body">
