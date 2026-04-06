@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\SecurityAuditLog;
 use App\Models\User;
 use App\Models\Employee;
+use App\Services\ThreatDetector;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -39,13 +40,15 @@ class AuthController extends Controller
         if ($user && !$user->is_active) {
             // Still perform a dummy hash check to prevent timing-based enumeration
             Hash::check($request->password, $user->password ?? '$2y$12$dummyhashvaluefortimingatk000000000000000000000');
-            SecurityAuditLog::record('failed_login', [
+            $ctx = [
                 'user_id'    => $user->id,
                 'work_email' => $user->work_email,
                 'role'       => $user->role,
                 'ip_address' => $request->ip(),
                 'details'    => 'Login attempt on deactivated account (reason: ' . ($user->deactivation_reason ?? 'unknown') . ').',
-            ]);
+            ];
+            SecurityAuditLog::record('failed_login', $ctx);
+            ThreatDetector::analyze('failed_login', $ctx);
             return back()->withErrors(['work_email' => $genericError])->onlyInput('work_email');
         }
 
@@ -60,31 +63,37 @@ class AuthController extends Controller
                         'deactivation_reason' => 'login_lockout',
                         'deactivated_at'      => now(),
                     ]);
-                    SecurityAuditLog::record('lockout', [
+                    $lockCtx = [
                         'user_id'    => $user->id,
                         'work_email' => $user->work_email,
                         'role'       => $user->role,
                         'ip_address' => $request->ip(),
                         'details'    => "Account locked after {$attempts} consecutive failed login attempts.",
-                    ]);
+                    ];
+                    SecurityAuditLog::record('lockout', $lockCtx);
+                    ThreatDetector::analyze('account_locked', $lockCtx);
                     return back()->withErrors([
                         'work_email' => $genericError,
                     ])->onlyInput('work_email');
                 }
                 $user->update(['login_attempts' => $attempts]);
-                SecurityAuditLog::record('failed_login', [
+                $failCtx = [
                     'user_id'    => $user->id,
                     'work_email' => $user->work_email,
                     'role'       => $user->role,
                     'ip_address' => $request->ip(),
                     'details'    => "Failed login attempt {$attempts}/5.",
-                ]);
+                ];
+                SecurityAuditLog::record('failed_login', $failCtx);
+                ThreatDetector::analyze('failed_login', $failCtx);
             } else {
-                SecurityAuditLog::record('failed_login', [
+                $unknownCtx = [
                     'work_email' => $request->work_email,
                     'ip_address' => $request->ip(),
                     'details'    => 'Login attempt with unknown email.',
-                ]);
+                ];
+                SecurityAuditLog::record('failed_login', $unknownCtx);
+                ThreatDetector::analyze('failed_login', $unknownCtx);
             }
             return back()->withErrors([
                 'work_email' => $genericError,

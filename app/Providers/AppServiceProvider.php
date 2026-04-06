@@ -27,6 +27,9 @@ class AppServiceProvider extends ServiceProvider
         'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/zip', 'application/octet-stream'],
     ];
 
+    /** Image MIME types that should have metadata stripped. */
+    private const IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
     public function boot(): void
     {
         Paginator::useBootstrapFive();
@@ -58,6 +61,29 @@ class AppServiceProvider extends ServiceProvider
 
         Validator::replacer('valid_file_content', function ($message, $attribute) {
             return "The {$attribute} file content does not match its extension.";
+        });
+
+        // Sanitize uploaded images: strip EXIF/metadata and reprocess to neutralize polyglots.
+        // Usage: 'field' => 'file|mimes:jpg,png|sanitize_image'
+        // Note: This mutates the request by replacing the file with a sanitized copy.
+        Validator::extend('sanitize_image', function ($attribute, $value, $parameters, $validator) {
+            if (!$value instanceof UploadedFile || !$value->isValid()) {
+                return true;
+            }
+
+            $mime = $value->getMimeType();
+            if (!in_array($mime, self::IMAGE_MIMES, true)) {
+                return true; // Not an image — skip
+            }
+
+            // Replace with sanitized version via ImageSanitizer
+            $sanitized = \App\Services\ImageSanitizer::sanitize($value);
+            if ($sanitized !== $value) {
+                // Swap the file in the request
+                request()->files->set($attribute, $sanitized);
+            }
+
+            return true; // Always passes — sanitization is the goal, not validation
         });
     }
 }

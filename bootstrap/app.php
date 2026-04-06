@@ -14,6 +14,9 @@ return Application::configure(basePath: dirname(__DIR__))
         App\Providers\AuthServiceProvider::class,
     ])
     ->withMiddleware(function (Middleware $middleware): void {
+        // Force HTTPS in production
+        $middleware->prepend(\App\Http\Middleware\ForceHttps::class);
+
         // Global security headers on every response
         $middleware->prepend(\App\Http\Middleware\SecurityHeaders::class);
 

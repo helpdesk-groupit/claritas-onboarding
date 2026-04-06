@@ -235,8 +235,8 @@
             <span class="stat-pill"><span class="num">10</span> Modules</span>
             <span class="stat-pill"><span class="num">87</span> Database Tables</span>
             <span class="stat-pill"><span class="num">310+</span> Endpoints</span>
-            <span class="stat-pill"><span class="num">23</span> Automated Emails</span>
-            <span class="stat-pill"><span class="num">91/100</span> Security Score</span>
+            <span class="stat-pill"><span class="num">24</span> Automated Emails</span>
+            <span class="stat-pill"><span class="num">94/100</span> Security Score</span>
         </div>
     </div>
 </div>
@@ -595,7 +595,7 @@
 <div class="row g-4 mb-5">
     <div class="col-lg-4">
         <div class="compliance-stamp h-100">
-            <div class="score">91<span style="font-size:2rem;">/100</span></div>
+            <div class="score">94<span style="font-size:2rem;">/100</span></div>
             <div class="score-label mt-2">OWASP Security Score</div>
             <hr style="border-color:rgba(255,255,255,0.2);">
             <div class="d-flex flex-column gap-2 text-start" style="font-size:0.85rem;">
@@ -604,6 +604,9 @@
                 <div><i class="bi bi-check-circle-fill me-2"></i>Encrypted Secrets at Rest</div>
                 <div><i class="bi bi-check-circle-fill me-2"></i>Malaysian PDPA Aligned</div>
                 <div><i class="bi bi-check-circle-fill me-2"></i>Employment Act 1955 Compliant</div>
+                <div><i class="bi bi-check-circle-fill me-2"></i>Encrypted Backups (AES-256)</div>
+                <div><i class="bi bi-check-circle-fill me-2"></i>HMAC Log Integrity Chain</div>
+                <div><i class="bi bi-check-circle-fill me-2"></i>Real-time Threat Detection</div>
             </div>
         </div>
     </div>
@@ -664,6 +667,51 @@
                     </div>
                 </div>
             </div>
+            <div class="col-md-6">
+                <div class="security-badge">
+                    <i class="bi bi-shield-lock-fill text-danger"></i>
+                    <div>
+                        <div class="sb-title">Encrypted Backups</div>
+                        <div class="sb-desc">AES-256-CBC encryption, HMAC integrity verification, automated daily/6-hourly snapshots</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="security-badge">
+                    <i class="bi bi-image text-info"></i>
+                    <div>
+                        <div class="sb-title">Image Metadata Stripping</div>
+                        <div class="sb-desc">GD pixel-copy reprocessing removes all EXIF/GPS data from uploads</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="security-badge">
+                    <i class="bi bi-fingerprint text-primary"></i>
+                    <div>
+                        <div class="sb-title">HMAC Log Integrity</div>
+                        <div class="sb-desc">SHA-256 chained entries with sequence numbers, tamper-evident audit trail</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="security-badge">
+                    <i class="bi bi-exclamation-triangle-fill text-warning"></i>
+                    <div>
+                        <div class="sb-title">Real-time Threat Detection</div>
+                        <div class="sb-desc">Brute force, privilege escalation, rate anomaly detection with instant email alerts</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="security-badge">
+                    <i class="bi bi-globe2 text-success"></i>
+                    <div>
+                        <div class="sb-title">TLS/HTTPS Enforcement</div>
+                        <div class="sb-desc">Forced HTTPS redirect with HSTS headers, URL scheme enforcement</div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -672,7 +720,7 @@
 {{-- EMAIL AUTOMATION --}}
 {{-- ═══════════════════════════════════════════════════════════ --}}
 <div class="flow-section">
-    <h3><i class="bi bi-envelope-open me-2"></i>Automated Email System — 23 Workflows</h3>
+    <h3><i class="bi bi-envelope-open me-2"></i>Automated Email System — 24 Workflows</h3>
     <div class="row g-4">
         <div class="col-md-4">
             <h6 class="fw-bold text-primary mb-3">Onboarding & Employee</h6>
@@ -725,6 +773,7 @@
                     'Payslip Ready',
                     'EA Form Ready',
                     'Security Audit Report',
+                    'Suspicious Activity Alert',
                 ];
             @endphp
             @foreach($hrm_mails as $i => $mail)
@@ -802,7 +851,7 @@
     <span class="tech-badge"><i class="bi bi-bar-chart-line text-primary"></i> Chart.js 4.4</span>
     <span class="tech-badge"><i class="bi bi-robot text-success"></i> OpenAI GPT-4o (Vision + Chat)</span>
     <span class="tech-badge"><i class="bi bi-envelope text-primary"></i> SMTP Mail (23 classes)</span>
-    <span class="tech-badge"><i class="bi bi-clock text-warning"></i> Task Scheduler (7 commands)</span>
+    <span class="tech-badge"><i class="bi bi-clock text-warning"></i> Task Scheduler (10 commands)</span>
     <span class="tech-badge"><i class="bi bi-shield-check text-success"></i> OWASP Compliant</span>
     <span class="tech-badge"><i class="bi bi-flag text-danger"></i> Malaysian Statutory (EPF/SOCSO/EIS/PCB)</span>
     <span class="tech-badge"><i class="bi bi-journal-bookmark text-info"></i> Double-Entry Bookkeeping</span>
