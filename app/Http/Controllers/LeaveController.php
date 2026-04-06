@@ -199,7 +199,7 @@ class LeaveController extends Controller
         }
 
         $applications = $query->paginate(20);
-        $employees = Employee::orderBy('full_name')->get();
+        $employees = Employee::where('employment_status', 'active')->orderBy('full_name')->get();
 
         return view('hr.leave.index', compact('applications', 'employees'));
     }
@@ -285,12 +285,13 @@ class LeaveController extends Controller
         $year = $request->input('year', now()->year);
         $balances = LeaveBalance::with(['employee', 'leaveType'])
             ->where('year', $year)
+            ->whereHas('employee', fn($q) => $q->where('employment_status', 'active'))
             ->orderBy('employee_id')
             ->get()
             ->groupBy('employee_id');
 
         $leaveTypes = LeaveType::where('is_active', true)->orderBy('sort_order')->get();
-        $employees = Employee::orderBy('full_name')->get();
+        $employees = Employee::where('employment_status', 'active')->orderBy('full_name')->get();
 
         return view('hr.leave.balances', compact('balances', 'leaveTypes', 'employees', 'year'));
     }
@@ -300,7 +301,7 @@ class LeaveController extends Controller
     {
         $this->authorizeLeaveManager();
         $year = $request->input('year', now()->year);
-        $employees = Employee::whereNull('exit_date')->orWhere('exit_date', '>=', now())->get();
+        $employees = Employee::where('employment_status', 'active')->get();
         $leaveTypes = LeaveType::where('is_active', true)->get();
         $entitlements = LeaveEntitlement::all();
         $count = 0;
