@@ -54,9 +54,8 @@
                     <input type="password" name="password" id="password"
                            class="form-control @error('password') is-invalid @enderror"
                            placeholder="Min. 8 characters, number &amp; symbol"
-                           oninput="checkStrength()"
                            required>
-                    <button type="button" class="input-group-text bg-white border-start-0" onclick="togglePw('password','eyePw')">
+                    <button type="button" class="input-group-text bg-white border-start-0" id="togglePwBtn">
                         <i class="bi bi-eye text-muted" id="eyePw"></i>
                     </button>
                     @error('password')
@@ -90,9 +89,8 @@
                     <input type="password" name="password_confirmation" id="password_confirmation"
                            class="form-control"
                            placeholder="Re-enter your password"
-                           oninput="checkMatch()"
                            required>
-                    <button type="button" class="input-group-text bg-white border-start-0" onclick="togglePw('password_confirmation','eyeCf')">
+                    <button type="button" class="input-group-text bg-white border-start-0" id="toggleCfBtn">
                         <i class="bi bi-eye text-muted" id="eyeCf"></i>
                     </button>
                 </div>
@@ -198,6 +196,11 @@
             icon.className = 'bi bi-eye text-muted';
         }
     }
+
+    document.getElementById('password').addEventListener('input', checkStrength);
+    document.getElementById('password_confirmation').addEventListener('input', checkMatch);
+    document.getElementById('togglePwBtn').addEventListener('click', function() { togglePw('password', 'eyePw'); });
+    document.getElementById('toggleCfBtn').addEventListener('click', function() { togglePw('password_confirmation', 'eyeCf'); });
 </script>
 </body>
 </html>
