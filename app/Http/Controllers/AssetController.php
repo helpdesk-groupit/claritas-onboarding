@@ -512,7 +512,11 @@ class AssetController extends Controller
                     }
                 }
             } elseif (($data['asset_assigned_date'] ?? null) && ($data['asset_assigned_date'] ?? null) !== $oldAssignedDate) {
-                // Only date changed — log remark only, no email needed
+                // Sync new date to asset_assignments so AARF reflects the change
+                AssetAssignment::where('asset_inventory_id', $asset->id)
+                    ->where('status', 'assigned')
+                    ->update(['assigned_date' => $data['asset_assigned_date']]);
+
                 $asset->appendRemark(
                     "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
                     "assignment date updated for {$name} by {$actorName}."
