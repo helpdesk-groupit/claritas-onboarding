@@ -73,21 +73,22 @@
                 </h6>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <form action="{{ route('employees.avatar', $employee) }}" method="POST" enctype="multipart/form-data">
+            <form action="{{ route('employees.avatar', $employee) }}" method="POST" enctype="multipart/form-data" id="empAvatarForm">
                 @csrf
                 <div class="modal-body">
                     <div class="text-center mb-3">
                         <img src="{{ $editProfilePicUrl }}" alt="{{ $editEmpName }}"
                              class="rounded-circle border shadow-sm"
-                             style="width:80px;height:80px;object-fit:cover;">
+                             style="width:80px;height:80px;object-fit:cover;" id="empAvatarPreview">
                     </div>
                     <label class="form-label fw-semibold">New Photo</label>
-                    <input type="file" name="avatar" class="form-control" accept="image/*" required>
-                    <div class="form-text">JPEG, PNG, GIF or WebP. Max 2 MB.</div>
+                    <input type="file" name="avatar" class="form-control" accept="image/*" required id="empAvatarInput">
+                    <div class="form-text">JPEG, PNG, GIF or WebP. Large images are auto-resized to 1024px (high quality).</div>
+                    <div class="form-text mt-1" id="empAvatarStatus" style="display:none;"></div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-sm btn-primary">
+                    <button type="submit" class="btn btn-sm btn-primary" id="empAvatarSubmit">
                         <i class="bi bi-upload me-1"></i>Upload
                     </button>
                 </div>
@@ -95,6 +96,78 @@
         </div>
     </div>
 </div>
+<script nonce="{{ $cspNonce ?? '' }}">
+(function() {
+    const input    = document.getElementById('empAvatarInput');
+    const preview  = document.getElementById('empAvatarPreview');
+    const status   = document.getElementById('empAvatarStatus');
+    const submit   = document.getElementById('empAvatarSubmit');
+    const MAX_DIM  = 1024;
+    const QUALITY  = 0.92;
+    const SAFE_MAX = 2 * 1024 * 1024; // 2 MB server limit
+
+    function fmt(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+        return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+    }
+
+    input.addEventListener('change', function() {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        if (!file.type.startsWith('image/')) return;
+
+        // GIFs lose animation if re-encoded; pass through if already small enough.
+        const isGif = file.type === 'image/gif';
+        if (isGif && file.size <= SAFE_MAX) {
+            status.style.display = 'block';
+            status.textContent = 'Original size: ' + fmt(file.size);
+            return;
+        }
+
+        status.style.display = 'block';
+        status.textContent = 'Processing image...';
+        submit.disabled = true;
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const img = new Image();
+            img.onload = function() {
+                let w = img.naturalWidth, h = img.naturalHeight;
+                if (w > MAX_DIM || h > MAX_DIM) {
+                    if (w >= h) { h = Math.round(h * MAX_DIM / w); w = MAX_DIM; }
+                    else        { w = Math.round(w * MAX_DIM / h); h = MAX_DIM; }
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = w; canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, w, h);
+                canvas.toBlob(function(blob) {
+                    if (!blob) {
+                        status.textContent = 'Compression failed — using original file.';
+                        submit.disabled = false;
+                        return;
+                    }
+                    const newName = (file.name.replace(/\.[^.]+$/, '') || 'avatar') + '.jpg';
+                    const newFile = new File([blob], newName, { type: 'image/jpeg', lastModified: Date.now() });
+                    const dt = new DataTransfer();
+                    dt.items.add(newFile);
+                    input.files = dt.files;
+                    if (preview) preview.src = URL.createObjectURL(blob);
+                    status.textContent = 'Resized: ' + fmt(file.size) + ' → ' + fmt(blob.size) + ' (' + w + '×' + h + 'px)';
+                    submit.disabled = false;
+                }, 'image/jpeg', QUALITY);
+            };
+            img.onerror = function() {
+                status.textContent = 'Could not read image — using original file.';
+                submit.disabled = false;
+            };
+            img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+    });
+})();
+</script>
 @endif
 
 @if($errors->any())
