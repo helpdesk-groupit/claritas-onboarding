@@ -174,6 +174,12 @@
             </a>
         </div>
         <div class="nav-item">
+            <a href="{{ route('superadmin.companies.index') }}"
+               class="nav-link {{ request()->routeIs('superadmin.companies.*') ? 'active' : '' }}">
+                <i class="bi bi-building"></i> Company Registration
+            </a>
+        </div>
+        <div class="nav-item">
             <a href="{{ route('announcements.index') }}"
                class="nav-link {{ request()->routeIs('announcements.*') ? 'active' : '' }}">
                 <i class="bi bi-megaphone"></i> Announcements
@@ -229,6 +235,12 @@
                 @if($myTasks > 0)
                     <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $myTasks }}</span>
                 @endif
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('tickets.manage') }}"
+               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
+                <i class="bi bi-gear-wide-connected"></i> Ticket Management
             </a>
         </div>
 
@@ -325,6 +337,12 @@
         {{-- ── Self-Service ── --}}
         <div class="sidebar-section">Self-Service</div>
         <div class="nav-item">
+            <a href="{{ route('tickets.index') }}"
+               class="nav-link {{ request()->routeIs('tickets.index') ? 'active' : '' }}">
+                <i class="bi bi-ticket-detailed"></i> Tickets
+            </a>
+        </div>
+        <div class="nav-item">
             <a href="{{ route('user.leave.index') }}"
                class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
                 <i class="bi bi-calendar-plus"></i> My Leave
@@ -379,8 +397,8 @@
         </div>
         @endif
 
-        {{-- ── Administration ── --}}
-        <div class="sidebar-section">Administration</div>
+        {{-- ── Settings ── --}}
+        <div class="sidebar-section">Settings</div>
         <div class="nav-item">
             <a href="{{ route('superadmin.roles.index') }}"
                class="nav-link {{ request()->routeIs('superadmin.roles.*') ? 'active' : '' }}">
@@ -394,9 +412,9 @@
             </a>
         </div>
         <div class="nav-item">
-            <a href="{{ route('superadmin.companies.index') }}"
-               class="nav-link {{ request()->routeIs('superadmin.companies.*') ? 'active' : '' }}">
-                <i class="bi bi-building"></i> Company Registration
+            <a href="{{ route('superadmin.department-settings.index') }}"
+               class="nav-link {{ request()->routeIs('superadmin.department-settings.*') ? 'active' : '' }}">
+                <i class="bi bi-diagram-2"></i> Department Settings
             </a>
         </div>
         <div class="nav-item">
@@ -526,9 +544,23 @@
                 <i class="bi bi-receipt-cutoff"></i> Claims
             </a>
         </div>
+        @if(Auth::user()->canAccessTicketManagement())
+        <div class="nav-item">
+            <a href="{{ route('tickets.manage') }}"
+               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
+                <i class="bi bi-gear-wide-connected"></i> Ticket Management
+            </a>
+        </div>
+        @endif
 
         {{-- ── Self-Service ── --}}
         <div class="sidebar-section">Self-Service</div>
+        <div class="nav-item">
+            <a href="{{ route('tickets.index') }}"
+               class="nav-link {{ request()->routeIs('tickets.index') ? 'active' : '' }}">
+                <i class="bi bi-ticket-detailed"></i> Tickets
+            </a>
+        </div>
         <div class="nav-item">
             <a href="{{ route('user.leave.index') }}"
                class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
@@ -654,6 +686,12 @@
                 @endif
             </a>
         </div>
+        <div class="nav-item">
+            <a href="{{ route('tickets.manage') }}"
+               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
+                <i class="bi bi-gear-wide-connected"></i> Ticket Management
+            </a>
+        </div>
 
         @if(Auth::user()->isItManager())
         <div class="nav-item">
@@ -666,6 +704,12 @@
 
         {{-- Self-Service (IT staff are also employees) --}}
         <div class="sidebar-section">Self-Service</div>
+        <div class="nav-item">
+            <a href="{{ route('tickets.index') }}"
+               class="nav-link {{ request()->routeIs('tickets.index') ? 'active' : '' }}">
+                <i class="bi bi-ticket-detailed"></i> Tickets
+            </a>
+        </div>
         <div class="nav-item">
             <a href="{{ route('user.leave.index') }}"
                class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
@@ -757,8 +801,25 @@
         </div>
         @endif
 
+        {{-- Management (only shown if the user actually manages something) --}}
+        @if(Auth::user()->canAccessTicketManagement())
+        <div class="sidebar-section">Management</div>
+        <div class="nav-item">
+            <a href="{{ route('tickets.manage') }}"
+               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
+                <i class="bi bi-gear-wide-connected"></i> Ticket Management
+            </a>
+        </div>
+        @endif
+
         {{-- Self-Service --}}
         <div class="sidebar-section">Self-Service</div>
+        <div class="nav-item">
+            <a href="{{ route('tickets.index') }}"
+               class="nav-link {{ request()->routeIs('tickets.index') ? 'active' : '' }}">
+                <i class="bi bi-ticket-detailed"></i> Tickets
+            </a>
+        </div>
         <div class="nav-item">
             <a href="{{ route('user.leave.index') }}"
                class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
@@ -946,9 +1007,37 @@
             </button>
             <h4>@yield('page-title', 'Dashboard')</h4>
         </div>
-        <span class="text-muted small">
-            <i class="bi bi-calendar3 me-1"></i>{{ now()->format('d/m/Y') }}
-        </span>
+        <div class="d-flex align-items-center gap-3">
+            {{-- ── Notifications Bell ─────────────────────────────────── --}}
+            <div class="dropdown" id="notifDropdown">
+                <button id="notifBellBtn" type="button"
+                        class="btn btn-sm position-relative p-1 border-0 bg-transparent"
+                        data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                        aria-expanded="false" aria-label="Notifications"
+                        style="font-size:20px;color:#475569;">
+                    <i class="bi bi-bell"></i>
+                    <span id="notifBadge"
+                          class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none"
+                          style="font-size:10px;padding:3px 5px;">0</span>
+                </button>
+                <div class="dropdown-menu dropdown-menu-end shadow p-0"
+                     style="width:340px;">
+                    <div style="max-height:440px;overflow:hidden;display:flex;flex-direction:column;">
+                        <div class="d-flex align-items-center justify-content-between px-3 py-2 border-bottom"
+                             style="background:#f8fafc;">
+                            <span class="fw-semibold small">Notifications</span>
+                            <a href="#" id="notifMarkAllBtn" class="small text-decoration-none">Mark all as read</a>
+                        </div>
+                        <div id="notifList" style="overflow-y:auto;flex:1;">
+                            <div class="text-center text-muted small py-4" id="notifLoading">Loading…</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <span class="text-muted small">
+                <i class="bi bi-calendar3 me-1"></i>{{ now()->format('d/m/Y') }}
+            </span>
+        </div>
     </div>
     <div class="content-area">
         @foreach(['success','error','info','warning'] as $type)
@@ -1100,6 +1189,126 @@ function setTheme(theme) {
 
     // ── Start the timer when the page loads ──────────────────────────────
     resetTimer();
+})();
+</script>
+
+{{-- ── Notifications bell: fetch, render, poll, mark read ─────────────── --}}
+<script nonce="{{ $cspNonce ?? '' }}">
+(function () {
+    'use strict';
+
+    var bellBtn      = document.getElementById('notifBellBtn');
+    var badge        = document.getElementById('notifBadge');
+    var list         = document.getElementById('notifList');
+    var markAllBtn   = document.getElementById('notifMarkAllBtn');
+    var csrfToken    = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+
+    if (!bellBtn) return;
+
+    var POLL_INTERVAL = 60000; // 60s
+    var pollTimer = null;
+
+    function escapeHtml(s) {
+        if (s == null) return '';
+        return String(s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+
+    function renderBadge(count) {
+        if (count > 0) {
+            badge.textContent = count > 99 ? '99+' : String(count);
+            badge.classList.remove('d-none');
+        } else {
+            badge.classList.add('d-none');
+        }
+    }
+
+    function renderList(items) {
+        if (!items || items.length === 0) {
+            list.innerHTML = '<div class="text-center text-muted small py-4">No notifications yet.</div>';
+            return;
+        }
+        var html = '';
+        items.forEach(function (n) {
+            var d = n.data || {};
+            var icon  = d.icon || 'bi-bell';
+            var color = d.color || 'secondary';
+            var msg   = d.message || '';
+            var url   = d.url || '#';
+            var unreadStyle = n.read
+                ? 'background:#fff;'
+                : 'background:#eff6ff;border-left:3px solid #2563eb;';
+            html +=
+                '<a href="' + escapeHtml(url) + '" data-notif-id="' + escapeHtml(n.id) + '"' +
+                '   class="notif-item d-flex gap-2 px-3 py-2 text-decoration-none border-bottom"' +
+                '   style="' + unreadStyle + 'color:#1e293b;">' +
+                '  <div class="flex-shrink-0">' +
+                '    <i class="bi ' + escapeHtml(icon) + ' text-' + escapeHtml(color) + '" style="font-size:18px;"></i>' +
+                '  </div>' +
+                '  <div style="min-width:0;flex:1;">' +
+                '    <div class="small" style="line-height:1.35;">' + escapeHtml(msg) + '</div>' +
+                '    <div class="text-muted" style="font-size:11px;">' + escapeHtml(n.time_ago || '') + '</div>' +
+                '  </div>' +
+                '</a>';
+        });
+        list.innerHTML = html;
+
+        // Wire click → markRead (in addition to navigation via the href)
+        list.querySelectorAll('.notif-item').forEach(function (el) {
+            el.addEventListener('click', function () {
+                var id = el.getAttribute('data-notif-id');
+                fetch('/notifications/' + encodeURIComponent(id) + '/read', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json' },
+                    credentials: 'same-origin'
+                }).catch(function () {});
+                // Don't preventDefault — we want navigation to also happen
+            });
+        });
+    }
+
+    function fetchNotifications() {
+        if (document.visibilityState !== 'visible') return;
+        fetch('/notifications', {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+            if (!data) return;
+            renderBadge(data.unread_count || 0);
+            renderList(data.notifications || []);
+        })
+        .catch(function () { /* silent */ });
+    }
+
+    markAllBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        fetch('/notifications/read-all', {
+            method: 'POST',
+            headers: { 'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json' },
+            credentials: 'same-origin'
+        })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function () { fetchNotifications(); });
+    });
+
+    function startPolling() {
+        if (pollTimer) return;
+        pollTimer = setInterval(fetchNotifications, POLL_INTERVAL);
+    }
+    function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') { fetchNotifications(); startPolling(); }
+        else { stopPolling(); }
+    });
+
+    // Initial fetch + start polling
+    fetchNotifications();
+    startPolling();
 })();
 </script>
 @endauth

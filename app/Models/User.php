@@ -223,4 +223,49 @@ class User extends Authenticatable
     {
         return in_array($this->role, ['finance_manager', 'superadmin']);
     }
+
+    // ── Tickets capability checks ─────────────────────────────────────
+    public function canViewAllTickets(): bool
+    {
+        return in_array($this->role, ['superadmin', 'system_admin']);
+    }
+
+    public function canManageTicketsForDepartment(string $department): bool
+    {
+        return \App\Models\Ticket::isManagerOf($this, $department);
+    }
+
+    /** True if the user manages tickets for at least one department. */
+    public function isTicketManager(): bool
+    {
+        return !empty(\App\Models\Ticket::departmentsManagedBy($this));
+    }
+
+    /**
+     * True if the user can access the Ticket Management page (/tickets/manage).
+     * - Superadmin / system_admin: always
+     * - True department managers (manager-suffixed app roles or work_role='manager'): always
+     *
+     * Non-managers — executives, interns, regular employees — do NOT get the
+     * Ticket Management page even if they're PIC-assignable. They see their
+     * assigned tickets via the "Assigned to Me" tab on My Tickets (/tickets).
+     *
+     * Note: this is stricter than `isTicketManager()` / `Ticket::isManagerOf()`,
+     * which intentionally include executives in the broader manager set so
+     * executives still get new-ticket notifications and dept-team visibility.
+     * The Ticket Management *page* is reserved for the narrower "true manager"
+     * audience.
+     */
+    public function canAccessTicketManagement(): bool
+    {
+        if ($this->isSuperadmin() || $this->isSystemAdmin()) {
+            return true;
+        }
+        // App-role-gated true managers
+        if (in_array($this->role, ['hr_manager', 'it_manager', 'finance_manager'], true)) {
+            return true;
+        }
+        // Work-role-gated true managers
+        return $this->employee && $this->employee->work_role === 'manager';
+    }
 }

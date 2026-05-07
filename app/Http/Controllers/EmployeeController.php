@@ -393,9 +393,14 @@ class EmployeeController extends Controller
         ];
 
         while (($row = fgetcsv($handle)) !== false) {
-            // First row = headers
+            // First row = headers. Normalize: lowercase + spaces→underscores so we
+            // accept both the snake_case template (full_name) and the Title-Case
+            // export (Full Name) interchangeably.
             if ($headers === null) {
-                $headers = array_map('trim', $row);
+                $headers = array_map(
+                    fn($h) => strtolower(str_replace(' ', '_', trim((string) $h))),
+                    $row
+                );
                 $rowNumber++;
                 continue;
             }

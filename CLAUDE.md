@@ -40,7 +40,7 @@ This is a **multi-role HR platform** built on Laravel 12 with Blade + Tailwind C
 ### Frontend Patterns Reference
 See `FRONTEND-PATTERNS.md` for a detailed reference of how each page's JavaScript works — event handlers, CSP compliance, dynamic form patterns, file upload patterns, and a per-page interaction map. **Consult before modifying any Blade view with JavaScript** to avoid breaking existing functionality.
 
-**Critical rule:** Never use inline `onclick`/`onchange` attributes. The CSP policy blocks them. Always use `addEventListener` inside a nonce-protected `<script>` block.
+**Critical rule (most common bug class in this codebase):** CSP blocks ALL inline event handler attributes — `onclick`, `onchange`, `oninput`, `onsubmit`, etc. — including those injected dynamically into `innerHTML` template literals. Always use `addEventListener` inside a nonce-protected `<script>` block. For dynamically created elements, use event delegation or `createElement` + `addEventListener`. Typical symptoms: button does nothing, form submit button stays disabled, validators never run, password visibility toggle fails.
 
 ### Roles & Access
 Role groups with granular sub-roles:
@@ -72,6 +72,8 @@ AssetInventory → AssetAssignment (to employee) → AssetProvisioning → retur
 ```
 `Aarf` (Annual Asset Record Form) links assets to employees for acknowledgement via tokenized email links.
 
+**Dual-storage gotcha:** Asset assignment date lives in two places — `asset_inventories.asset_assigned_date` (source for the asset listing edit form) and `asset_assignments.assigned_date` (source for AARF display). When updating one in `AssetController@update()`, sync the other, otherwise AARF will show a stale date.
+
 ### Key Models
 - `Employee` — central entity, has many relationships to all employee sub-tables
 - `User` — auth model; linked 1:1 to `Employee`
@@ -84,6 +86,7 @@ AssetInventory → AssetAssignment (to employee) → AssetProvisioning → retur
 - `offboarding:notify` — every minute; time-based offboarding email reminders
 - `leave:remind-managers` / `claims:remind` — daily at 9 AM
 - `sweep:pending-weekly` — Wednesday midnight; scans all pending acknowledgements (employee profile consents, AARF forms, leave approvals, expense claim approvals) and sends targeted reminder emails to the responsible person
+- `tickets:remind-stale` — hourly; emails + bell-notifies PIC (or department managers if unassigned) for any non-archived ticket idle 24h+. Throttled to one reminder per 24h via `tickets.last_reminder_sent_at`. Also auto-flips `Open → Pending` after 24h with no PIC.
 - `security:audit-report` — hourly
 - `log:verify-integrity` — daily at 3 AM via `LogIntegrity` service
 - `backup:run` — daily at 2 AM (full encrypted backup) + database snapshots every 6 hours; 30-day retention
@@ -100,8 +103,8 @@ AssetInventory → AssetAssignment (to employee) → AssetProvisioning → retur
 ### File Storage
 Two disks: `local` (private: `storage/app/private`, served via `SecureFileController`) and `public` (public: `storage/app/public`). Sensitive files (NRIC, contracts, certificates) go to the private disk and are served with role-gated access checks.
 
-### Mail
-25 Mailable classes in `app/Mail/`, each with a corresponding Blade template in `resources/views/emails/`. The default sender is `hr@claritas.com` (configured via `MAIL_FROM_ADDRESS`).
+### Mail & Notifications
+Mailable classes live in `app/Mail/` with Blade templates in `resources/views/emails/`. Database notifications (bell icon) live in `app/Notifications/` and use Laravel's `Notification` facade with the `database` channel. Default sender is `hr@claritas.com` (configured via `MAIL_FROM_ADDRESS`).
 
 Notable mail classes:
 - `OnboardingEditNotificationMail` — plain notification sent when HR edits an onboarding record (no acknowledgement required)
@@ -112,12 +115,15 @@ Notable mail classes:
 - `LeaveApplicationNotifyMail`, `LeaveApprovalNotifyMail`, `PendingLeaveReminderMail` — leave workflow
 - `EaFormReadyMail` — payroll EA form notification
 - `WeeklyPendingSweepMail` — weekly sweep reminder for all pending acknowledgements/approvals (consent, AARF, leave, claims); sent by `sweep:pending-weekly` on Wednesdays
+- `TicketCreatedMail` / `TicketAssignedMail` / `TicketResolvedMail` / `TicketReminderMail` — ticket lifecycle emails, paired with matching `TicketRaisedNotification` / `TicketAssignedNotification` / `TicketResolvedNotification` / `TicketReminderNotification` / `TicketUnassignedNotification` / `NewTicketMessageNotification` for the in-app bell
 
 ### Frontend
 - Blade templates under `resources/views/` organized by role (`hr/`, `it/`, `user/`, `superadmin/`) plus `accounting/` and `reports/`
 - Shared layout at `resources/views/layouts/app.blade.php`
 - Tailwind CSS v4 via `@tailwindcss/vite` plugin — no `tailwind.config.js`; config lives in `resources/css/app.css`
-- No JS framework; Alpine.js or vanilla JS where needed
+- UI framework: **Bootstrap 5.3.2** + Bootstrap Icons 1.11.3, loaded globally from jsdelivr CDN
+- Per-page CDN libraries: **Select2 4.1.0-rc.0** (onboarding form), **Chart.js 4.4.7** (accounting & executive dashboards)
+- No JS framework; vanilla JS only. Always escape user-entered values before `innerHTML` insertion using the project-standard `escHtml(s)` / `obEsc(s)` helpers.
 
 ### Testing
 - PHPUnit with two suites: `Unit` (`tests/Unit/`) and `Feature` (`tests/Feature/`)
@@ -160,6 +166,112 @@ Both views display Sections F–I via `partials.employee-extra-sections-view`. T
 - `LogIntegrity` — verifies security audit log chain integrity (HMAC chaining via `LOG_INTEGRITY_KEY`)
 - `ImageSanitizer` — strips EXIF metadata from uploaded images
 - `AccountingService` / `AiAccountingService` — accounting module business logic and AI invoice scanning
+- `AttachmentProcessor` — centralised secure-storage + image-compression pipeline for ticket uploads (resizes images to 1920px max width via GD, re-encodes to strip EXIF, moves PDFs/other files as-is). Used by both `TicketAttachment` (creation) and `TicketMessageAttachment` (chat).
+
+### Ticketing Module
+Internal helpdesk-style tickets with company-scoped routing across 17 departments. Self-service at `/tickets` (raise + view own); management at `/tickets/manage` (PIC inbox).
+
+**Status lifecycle** (`Ticket::STATUSES`):
+```
+Open → In Progress → Resolved (terminal, auto-archived)
+                  ↘  Closed   (terminal, manual close without resolution)
+Open → Pending (auto-flipped after 24h with no PIC, by tickets:remind-stale)
+```
+`ACTIVE_STATUSES = [Open, In Progress, Pending]`; `ARCHIVED_STATUSES = [Resolved, Closed]`. `last_reminder_sent_at` throttles reminder emails to 1 per 24h.
+
+**Department types — two PIC eligibility models** (`Ticket::DEPARTMENTS`):
+- **App-role-gated** (HRA, Group IT, Finance, Admin) — eligibility = `users.role` ∈ `DEPARTMENT_MANAGER_ROLES[$dept]`. Some have intern extras (`DEPARTMENT_PIC_EXTRA_ROLES`) eligible for PIC but not for "manager" notifications.
+- **Work-role-gated** (the other 14: Community, Consulting, Content, Design, Digital, Ecommerce, KOL, Management, Marketing, Media, Production, Projects, Sales, Tech) — eligibility = `employees.work_role = 'manager'` AND `employees.department = <dept>`. `superadmin`/`system_admin` are catch-all eligible.
+
+**Department × Company access** (`department_company_access` pivot, configured at `/superadmin/department-settings`):
+- Effective served-companies for a dept = **auto-derived members** (companies where any qualifying user/employee works) ∪ **explicit pivot extras**.
+- Empty result = "serves all companies" (graceful default for unconfigured depts).
+- Routing helpers all live as static methods on `Ticket`: `companiesServingDepartment()`, `companyNamesServingDepartment()`, `departmentsForCompany()`, `picPoolForDeptAndCompany()`. Always use these — don't reimplement the union logic.
+
+**`Ticket::scopeVisibleTo(User)`** for the management page — the model is "dept-team across served cluster", not company-isolated:
+- `superadmin`/`system_admin` → all tickets.
+- Managers (incl. executives) → tickets where, for some managed dept, `tickets.department = <dept>` AND `tickets.company_id` ∈ `companiesServingDepartment(<dept>)`. So a Tech manager at Claritas — when Tech serves Claritas+Enlinea+Nuren — sees Tech tickets from all three. Per-managed-dept OR clauses, so a multi-dept manager gets each dept's own cluster.
+- Non-managers (interns with assigned tickets) → only tickets `assigned_to = user.id`. The assignment itself is the gate; whoever assigned the intern accepted the cross-company exposure.
+- A user's own RAISED tickets are NOT included — those live on the self-service page (`/tickets`), filtered separately.
+
+**`Ticket::picPoolForDeptAndCompany(dept, companyId, includePicExtras)`** has TWO paths to inclusion (OR'd), both restricted to the dept's served-companies cluster:
+- **Path 1 — Manager set** (always evaluated): work-role-gated → `employees.work_role = 'manager'` AND `employees.department = dept`; app-role-gated → `users.role` ∈ `DEPARTMENT_MANAGER_ROLES[dept]` (plus `DEPARTMENT_PIC_EXTRA_ROLES` like interns when `includePicExtras = true`).
+- **Path 2 — Department-membership fallback** (only when `includePicExtras = true`): any user with `employees.department = dept` (regardless of `work_role` / `users.role`) at a served company. Lets non-manager team members be assignable as PIC.
+- Plus `superadmin`/`system_admin` always (catch-all).
+
+Path 2 is intentionally OFF when `includePicExtras = false`, so `managersForNotification()` (used for new-ticket emails + stale reminders) stays scoped to the strict manager set. `eligiblePicQuery()` (the assign-PIC dropdown) passes `true`, so the broader pool surfaces only there.
+
+Path 2 requires the `employees.department` value to **exactly match** the canonical dept name (`'HRA'`, `'Group IT'`, `'Finance'`, `'Admin'`, plus the 13 work-role-gated names). `employees.department` is free-text — audit/canonicalise periodically.
+
+**Intern capabilities** (HRA, Group IT only): can be assigned PIC, can chat + update status on assigned tickets, but CANNOT assign/reassign PIC, see full department inbox, or receive "new ticket raised" notifications (those go to managers only via `managersForNotification()`).
+
+**Ticket detail page — manage controls are navigation-context-gated:**
+- The same `/tickets/{id}` page is reached from both `/tickets` (My Tickets) and `/tickets/manage`. The Add/Remove PIC and Update Status (as a manager) controls render only when the user navigated from the Management page — links there pass `?from=manage`. Links from My Tickets don't pass it.
+- `TicketController::show()` reads the `from` query param: `$canManage = $hasManageRole && $request->query('from') === 'manage'`. So a Tech manager opening their own raised ticket from My Tickets sees a read-only view; opening someone else's Tech ticket from Ticket Management gives them full controls. The action handlers (`assignPic`, `updateStatus`) still enforce the manage-role check server-side, so a hand-crafted `?from=manage` URL doesn't grant manage rights to a non-manager.
+- The PIC's own status-update path is independent — `@if($canManage || $ticket->assigned_to === Auth::id())` — so a non-manager PIC can still update status on their assigned tickets regardless of source page.
+
+**Page access — managers vs everyone else:**
+- `/tickets/manage` (Ticket Management page) is gated by `User::canAccessTicketManagement()`, which is now **strict**: superadmin/system_admin, or `users.role` ∈ `[hr_manager, it_manager, finance_manager]`, or `employees.work_role = 'manager'`. Executives, interns, and regular employees do NOT get this page even if they're PIC-eligible.
+- Non-managers see their assigned tickets via the **Assigned to Me** tab on `/tickets` (My Tickets), placed between Active and Archived. The tab queries `tickets.assigned_to = user.id` (any status) and uses `FIELD(status, ...)` ordering so Active statuses come first and Resolved/Closed sink to the bottom.
+- The stricter `canAccessTicketManagement()` is intentionally narrower than `Ticket::isManagerOf()` — the latter still includes executives so they continue to receive new-ticket notifications and dept-team visibility.
+
+**Resolution-time metric — measured from `assigned_at`, not `created_at`:**
+- `tickets.assigned_at` (added by `2026_05_07_000001_add_assigned_at_to_tickets`) is set in `TicketController::assignPic()` when a PIC is assigned and cleared when one is removed. Cards 2 and 3 (PIC perf + Department Health) use `TIMESTAMPDIFF(MINUTE, COALESCE(assigned_at, created_at), resolved_at)` so a ticket that sat unassigned for days doesn't count against the PIC. `Ticket::timeToResolve()` mirrors this via `($this->assigned_at ?? $this->created_at)->diff($this->resolved_at)`.
+- COALESCE keeps legacy tickets (resolved before the column existed) showing the old "creation → resolution" time so historical numbers don't shift on day one. New assignments going forward measure correctly.
+- If you want to backfill historical data: `UPDATE tickets SET assigned_at = updated_at WHERE assigned_to IS NOT NULL AND assigned_at IS NULL` is a rough proxy (uses last status-change time as the assignment proxy). Optional — only if accurate historical numbers matter.
+
+**PIC analytics on the Assigned to Me tab:**
+- The same three analytics cards from the Ticket Management page are also rendered above the listing when `$scope === 'assigned'` on `/tickets`. Built by `TicketController::buildPicAnalytics($user)` — same return shape as `buildManagerAnalytics()`, so the existing `tickets.partials.analytics-card-2-pic-times` and `analytics-card-3-dept-health` partials are reused unchanged.
+- Scope is per-user, not per-team:
+  - **Card 1 (priority)** — only tickets where `assigned_to = $user->id` AND status in active set.
+  - **Card 2 (PIC perf)** — single row: the user's own avg `TIMESTAMPDIFF(MINUTE, created_at, resolved_at)` across their Resolved tickets.
+  - **Card 3 (dept health)** — single row: `tickets.department = $user->employee->department`, regardless of who PIC'd, mapped to a tier via `Ticket::healthTier()`. Skipped if the user has no `employees.department`.
+- `availableCompanies` is intentionally empty for the PIC view — no per-company filter dropdown rendered. The two card partials guard the `<select>` with `@if(!empty($analytics['availableCompanies']))` so the dropdown only appears on the manage page.
+
+**Ticket numbering:** `TIC-YYYY-NNNN` per-year sequence, generated atomically in a `lockForUpdate()` transaction (`Ticket::generateTicketNumber()`, auto-fired in `booted()::creating`). Don't pre-set `ticket_number`.
+
+**Standardised subjects:** `Ticket::DEPARTMENT_SUBJECTS` is a controlled vocabulary used by the Raise New Ticket dropdown so analytics aggregate cleanly. Edit the constant freely — no migration needed; existing tickets keep their text untouched.
+
+**Attachments:** Both creation attachments (`TicketAttachment`) and chat attachments (`TicketMessageAttachment`) flow through `AttachmentProcessor::store()` into private storage. Routes are upload-throttled (`throttle:uploads`).
+
+**Department Settings UI flow** (`/superadmin/department-settings`, superadmin/system_admin only):
+- Layout is a **company-first accordion** mirroring the Ticket Management page (`.company-section` / `.company-header` / `.company-body`). Each company expands to show **only the departments that actually exist at that company** — strict, member-based definition. Departments without members at a company simply don't appear there; this page cannot fabricate or "add" a department to a company.
+- "Exists at this company" = a user/employee with the dept's role/work_role works at that company (auto-derive). Extras (cross-company assignments via the pivot) are **not** counted as existence — an Extra is just a routing rule that lives at the *source* company.
+- Each existing dept row carries an **Also serves these other companies (Extras)** chip cloud — clickable chips for every *other* registered company. Clicking a chip toggles whether this dept also handles that company's tickets. Saved as rows in `department_company_access` (`department`, `company_id`).
+- Multiple-auto-derive sync: if the same dept auto-derives at two companies, both rows render the same chip cloud. JS keeps the chips synced so toggling in one row mirrors to the other (single underlying pivot row).
+- Form posts: `assignments[<department>][] = <other_company_id>` — same backend shape as before. Auto-served existence has no input (it's derived, not stored here).
+- Update strategy is **wipe-and-rebuild** — `DepartmentCompanyAccess::query()->delete()` then re-insert from the submitted array. Safe because the table is small and admin-edited; do not adapt to per-row diffs without reason.
+- The receiving company's section does NOT list inbound Extras. So if Tech (Claritas) is extras-assigned to Nuren, Nuren's section won't show a "Tech" row — Nuren doesn't have its own Tech members. The Extra is visible only on Claritas's Tech row's chip cloud. (The New Ticket form, however, still shows Tech in Nuren's Department dropdown via `companiesServingDepartment()`.)
+
+**Strict-membership filtering** (matches Department Settings UX):
+- `Ticket::departmentsForCompany($companyName)` — used by the New Ticket form's Department dropdown. Returns only depts where the company is in the served-companies cluster (auto ∪ pivot extras). Implicit-serves-all fallback **not** applied — fully-unconfigured depts are intentionally invisible per-company.
+- `Ticket::departmentServesCompany($dept, $companyName)` — same strict definition, used for server-side validation in `TicketController::store()` so the bounce matches what the dropdown shows.
+- Other helpers (`scopeVisibleTo`, `picPoolForDeptAndCompany`) keep the implicit-serves-all default for routing safety on fully-unconfigured depts. Superadmin/system_admin bypass these filters at the controller and always see every department.
+
+**User-manual modals + public help pages**:
+- Each ticketing-module page (My Tickets, Ticket Management, Department Settings) has a User Manual button that opens an in-app Bootstrap modal.
+- Modal partial is split in two: `_user-manual-<topic>.blade.php` (modal wrapper + footer buttons) and `_user-manual-<topic>-body.blade.php` (CSS + content sections, with generic `Company A` / `Company B` placeholders, never real customer names).
+- The same `*-body.blade.php` partial is also included by a standalone public Blade view (`help.<topic>`) extending [`layouts/help.blade.php`](resources/views/layouts/help.blade.php) — single source of truth for the manual content.
+- Public routes (no auth, `noindex,nofollow`) at `/help/my-tickets`, `/help/ticket-management`, `/help/department-settings` — see [`HelpController`](app/Http/Controllers/HelpController.php). Designed to be link-shareable to anyone (employees, prospective hires, external auditors).
+- Each modal footer carries a **Copy share link** button (`.um-share-btn` with `data-share-url`) and an **Open in new tab** anchor pointing to the public help URL. The clipboard-copy JS lives once in [`partials/_user-manual-share-js.blade.php`](resources/views/partials/_user-manual-share-js.blade.php) (guarded by `@once` so multiple modal includes don't push it twice).
+- Don't put real company names back into the body partials — the public pages would expose them. Keep the placeholder vocabulary (`Company A`, `Company B`, `Company C`, `Company D`).
+
+### Notifications / Bell Icon
+Uses Laravel's standard `notifications` table via the `Notifiable` trait on `User`. All ticket notifications are `database`-only (no mail channel — email goes via separate `Mail::to()->send($mailable)` calls inside controllers/commands).
+
+**Notification payload contract** (returned from `toDatabase()`): all ticket notifications include the same shape so the bell can render them generically:
+```php
+['event', 'ticket_id', 'ticket_number', 'department', 'priority', 'subject',
+ 'icon' /* bi-* class */, 'color' /* bootstrap color */, 'message', 'url']
+```
+When adding a new notification, follow this shape — the bell JS reads `data.icon`, `data.color`, `data.message`, `data.url` only.
+
+**Bell UI** lives in [`resources/views/layouts/app.blade.php`](resources/views/layouts/app.blade.php) inside a single nonce-protected `<script>` block (CSP-compliant, ~line 1195). Behaviour:
+- Polls `GET /notifications` every 60s, **only when `document.visibilityState === 'visible'`** (no background traffic on hidden tabs).
+- Renders the latest 10 with `escapeHtml()` on every dynamic value (in line with the project-wide rule against unescaped `innerHTML`).
+- Click on an item: fires `POST /notifications/{id}/read` (fire-and-forget, no `preventDefault` — navigation to `data.url` happens normally).
+- "Mark all read" button → `POST /notifications/read-all`.
+- The `NotificationController` JSON feed returns `{ notifications: [...], unread_count: N }`; both `index` and `markAllRead` return the updated unread count so the badge stays in sync without an extra fetch.
 
 ### Pending Route Change
 `web.php.routes-to-add.txt` documents a planned registration route split. The routes in `routes/web.php` already reflect this update — the `.txt` file can be ignored.

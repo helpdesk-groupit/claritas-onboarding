@@ -1,0 +1,893 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Mail\TicketAssignedMail;
+use App\Mail\TicketCreatedMail;
+use App\Mail\TicketResolvedMail;
+use App\Models\Company;
+use App\Models\Employee;
+use App\Models\Ticket;
+use App\Models\TicketAttachment;
+use App\Models\User;
+use App\Notifications\TicketAssignedNotification;
+use App\Notifications\TicketRaisedNotification;
+use App\Notifications\TicketResolvedNotification;
+use App\Notifications\TicketUnassignedNotification;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+
+class TicketController extends Controller
+{
+    // ── Self-Service: tickets the user has raised ─────────────────────────
+    // Used by everyone (employees, interns, managers, superadmin) for raising
+    // new tickets and tracking their own. Managers/superadmin use /tickets/manage
+    // for handling tickets they manage or are assigned to.
+    //
+    // Grouped by company → department in the view (same accordion as manage page)
+    // so users who raise tickets across multiple companies see them organised.
+    public function index(Request $request)
+    {
+        $user = Auth::user();
+
+        // Tab scope: 'active' (default), 'assigned', or 'archived'
+        // - 'active'   = tickets the user RAISED, status in ACTIVE_STATUSES
+        // - 'assigned' = tickets the user is PIC of (any status; archived sorted last)
+        // - 'archived' = tickets the user RAISED, status in ARCHIVED_STATUSES
+        $scope = $request->query('scope', 'active');
+        if (!in_array($scope, ['active', 'assigned', 'archived'], true)) {
+            $scope = 'active';
+        }
+
+        // Tab counts (independent of current filter state)
+        $counts = [
+            'active'   => Ticket::where('user_id', $user->id)
+                            ->whereIn('status', Ticket::ACTIVE_STATUSES)->count(),
+            'assigned' => Ticket::where('assigned_to', $user->id)->count(),
+            'archived' => Ticket::where('user_id', $user->id)
+                            ->whereIn('status', Ticket::ARCHIVED_STATUSES)->count(),
+        ];
+
+        $query = Ticket::with(['creator', 'assignee', 'company'])
+            ->select('tickets.*')
+            // Resolve a display company name once (form choice → companies.name,
+            // fallback to creator's employees.company). See Ticket::scopeVisibleTo
+            // for the matching dept-served cluster used elsewhere.
+            ->addSelect(DB::raw(
+                "COALESCE(
+                    (SELECT name FROM companies WHERE companies.id = tickets.company_id),
+                    (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
+                ) AS ticket_company_name"
+            ))
+            ->orderByRaw("CASE WHEN COALESCE(
+                    (SELECT name FROM companies WHERE companies.id = tickets.company_id),
+                    (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
+                ) IS NULL THEN 1 ELSE 0 END")
+            ->orderByRaw("COALESCE(
+                    (SELECT name FROM companies WHERE companies.id = tickets.company_id),
+                    (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
+                ) ASC")
+            ->orderBy('department')
+            // FIELD() puts active statuses first, archived (Resolved/Closed) at
+            // the bottom — matters most on the 'assigned' tab where both mix.
+            ->orderByRaw("FIELD(status, 'Open', 'In Progress', 'Pending', 'Resolved', 'Closed')")
+            ->orderByDesc('created_at');
+
+        // Apply tab filter — three branches.
+        if ($scope === 'assigned') {
+            $query->where('assigned_to', $user->id);
+            $statusOptions = Ticket::STATUSES;
+        } elseif ($scope === 'archived') {
+            $query->where('user_id', $user->id)
+                  ->whereIn('status', Ticket::ARCHIVED_STATUSES);
+            $statusOptions = Ticket::ARCHIVED_STATUSES;
+        } else {
+            $query->where('user_id', $user->id)
+                  ->whereIn('status', Ticket::ACTIVE_STATUSES);
+            $statusOptions = Ticket::ACTIVE_STATUSES;
+        }
+
+        // Optional status filter (constrained to the current tab's status set)
+        if ($request->filled('status') && in_array($request->status, $statusOptions, true)) {
+            $query->where('status', $request->status);
+        }
+
+        // Higher per-page since the page is collapsible — less risk of one
+        // company being split across pages.
+        $tickets = $query->paginate(100)->withQueryString();
+
+        // Pre-group on the current page: Company → Department → Tickets
+        $grouped = $tickets->getCollection()
+            ->groupBy(function ($t) {
+                return $t->ticket_company_name ?: '— Unassigned Company —';
+            })
+            ->map(fn($byCompany) => $byCompany->groupBy('department'));
+
+        // PIC analytics cards — only shown on the "Assigned to Me" tab.
+        // Same shape as the manage-page analytics so we can reuse the partials.
+        $analytics = null;
+        if ($scope === 'assigned') {
+            $analytics = $this->buildPicAnalytics($user);
+        }
+
+        return view('tickets.index', [
+            'tickets'       => $tickets,
+            'grouped'       => $grouped,
+            'scope'         => $scope,
+            'counts'        => $counts,
+            'statusOptions' => $statusOptions,
+            'analytics'     => $analytics,
+        ]);
+    }
+
+    // ── Ticket Management: tabs + company/dept grouping for managers/PICs ─
+    public function manage(Request $request)
+    {
+        $user = Auth::user();
+        if (!$user->canAccessTicketManagement()) {
+            abort(403);
+        }
+
+        $scope = $request->query('scope', 'all');
+        if (!in_array($scope, ['all', 'assigned', 'archived'], true)) {
+            $scope = 'all';
+        }
+
+        // Closure returns a fresh base query with status/department filters applied.
+        // Used for both the tab counts and the paginated result set.
+        $base = function () use ($user, $request) {
+            $q = Ticket::visibleTo($user);
+            if ($request->filled('status') && in_array($request->status, Ticket::STATUSES, true)) {
+                $q->where('status', $request->status);
+            }
+            if ($request->filled('department') && in_array($request->department, Ticket::DEPARTMENTS, true)) {
+                $q->where('department', $request->department);
+            }
+            return $q;
+        };
+
+        $managedDepartments = Ticket::departmentsManagedBy($user);
+
+        // Active tabs exclude terminal statuses; Archived tab shows only those.
+        $counts = [
+            'all'      => $base()->whereIn('status', Ticket::ACTIVE_STATUSES)->count(),
+            'assigned' => $base()->whereIn('status', Ticket::ACTIVE_STATUSES)->where('assigned_to', $user->id)->count(),
+            'archived' => $base()->whereIn('status', Ticket::ARCHIVED_STATUSES)->count(),
+        ];
+
+        // Use the ticket's CHOSEN company (company_id from the create form) for
+        // grouping, with creator's employee.company as a fallback for legacy rows
+        // that pre-date the company_id column.
+        $query = $base()
+            ->with(['creator.employee', 'assignee', 'company'])
+            ->select('tickets.*')
+            // See note in index() — array-key alias on a DB::raw expression is
+            // silently dropped by Laravel; embed AS directly in the raw SQL.
+            ->addSelect(DB::raw(
+                "COALESCE(
+                    (SELECT name FROM companies WHERE companies.id = tickets.company_id),
+                    (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
+                ) AS ticket_company_name"
+            ))
+            // Pin rows with no company at the bottom.
+            ->orderByRaw("CASE WHEN COALESCE(
+                    (SELECT name FROM companies WHERE companies.id = tickets.company_id),
+                    (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
+                ) IS NULL THEN 1 ELSE 0 END")
+            ->orderByRaw("COALESCE(
+                    (SELECT name FROM companies WHERE companies.id = tickets.company_id),
+                    (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
+                ) ASC")
+            ->orderBy('department')
+            ->orderByRaw("FIELD(status, 'Open', 'In Progress', 'Pending', 'Resolved', 'Closed')")
+            ->orderByDesc('created_at');
+
+        if ($scope === 'archived') {
+            $query->whereIn('status', Ticket::ARCHIVED_STATUSES);
+        } else {
+            $query->whereIn('status', Ticket::ACTIVE_STATUSES);
+            if ($scope === 'assigned') {
+                $query->where('assigned_to', $user->id);
+            }
+        }
+
+        // Higher per-page since the manage view is collapsible — less risk
+        // of a single company being split across pages.
+        $tickets = $query->paginate(100)->withQueryString();
+
+        // Pre-group on the current page: Company → Department → Tickets.
+        // Uses the ticket's chosen company (company_id), with creator's
+        // employee.company as a legacy fallback.
+        $grouped = $tickets->getCollection()
+            ->groupBy(function ($t) {
+                return $t->ticket_company_name ?: '— Unassigned Company —';
+            })
+            ->map(fn($byCompany) => $byCompany->groupBy('department'));
+
+        // For the superadmin table — one row per ticket needs its department's
+        // manager list. Fetch once per unique department on the current page.
+        // Excludes:
+        //  - superadmin/system_admin (system-wide access, not org-level dept managers)
+        //  - *_executive roles (they support the manager but aren't the manager themselves)
+        // Result: only the actual department manager (hr_manager, it_manager,
+        // finance_manager, or Employee.work_role = 'manager' for work-role-gated depts).
+        $departmentManagers = [];
+        if ($user->canViewAllTickets()) {
+            $uniqueDepts = $tickets->getCollection()->pluck('department')->unique();
+            $excludeRoles = ['superadmin', 'system_admin', 'hr_executive', 'it_executive', 'finance_executive'];
+            foreach ($uniqueDepts as $dept) {
+                $departmentManagers[$dept] = Ticket::eligibleManagersQuery($dept, false)
+                    ->whereNotIn('users.role', $excludeRoles)
+                    ->select('users.id', 'users.name', 'users.role')
+                    ->orderBy('users.name')
+                    ->get();
+            }
+        }
+
+        // Analytics cards — superadmin sees system-wide snapshot, managers
+        // see analytics scoped to their managed department(s). Both ignore
+        // tab/filter state; they're a status-of-the-world dashboard.
+        $analytics = null;
+        if ($user->canViewAllTickets()) {
+            $analytics = $this->buildAnalytics();
+        } elseif (!empty($managedDepartments)) {
+            $analytics = $this->buildManagerAnalytics($managedDepartments);
+        }
+
+        return view('tickets.manage', [
+            'tickets'            => $tickets,
+            'grouped'            => $grouped,
+            'managedDepartments' => $managedDepartments,
+            'scope'              => $scope,
+            'counts'             => $counts,
+            'departmentManagers' => $departmentManagers,
+            'analytics'          => $analytics,
+        ]);
+    }
+
+    /**
+     * Superadmin analytics dashboard.
+     *  - Card 1: Active tickets by priority (system-wide)
+     *  - Card 2: Avg resolution time by PIC (filterable by company)
+     *  - Card 3: Department health based on avg resolution time (filterable by company)
+     */
+    private function buildAnalytics(): array
+    {
+        // Card 1 — Active tickets by priority (across the whole system)
+        $byPriority = $this->countActiveByPriority(Ticket::query());
+
+        // Cards 2 & 3 — Resolution-time stats. Computed across all Resolved
+        // tickets in the system, broken out by company so the JS can filter.
+        $allCompanies = Company::orderBy('name')->get(['id', 'name']);
+        $resolutionData = $this->computeResolutionStats(
+            Ticket::query(),     // unrestricted scope (superadmin)
+            $allCompanies,
+            null                 // no dept restriction
+        );
+
+        return array_merge([
+            'mode'        => 'superadmin',
+            'totalActive' => array_sum($byPriority),
+            'byPriority'  => $byPriority,
+        ], $resolutionData);
+    }
+
+    /**
+     * Manager analytics dashboard. Scope expands beyond the manager's own
+     * company — the analytics span ALL companies their managed department(s)
+     * serve, so they can benchmark their company against others. The
+     * operational ticket table below is unaffected.
+     */
+    private function buildManagerAnalytics(array $managedDepartments): array
+    {
+        // Card 1 — Active tickets by priority, scoped to managed depts only
+        $card1Query = Ticket::whereIn('tickets.department', $managedDepartments);
+        $byPriority = $this->countActiveByPriority($card1Query);
+
+        // Companies dropdown: union of companies served by the user's managed depts
+        $companyNamesUnion = collect();
+        foreach ($managedDepartments as $dept) {
+            $companyNamesUnion = $companyNamesUnion->merge(
+                Ticket::companyNamesServingDepartment($dept)
+            );
+        }
+        $availableCompanies = Company::whereIn('name', $companyNamesUnion->unique()->values())
+            ->orderBy('name')
+            ->get(['id', 'name']);
+
+        // Cards 2 & 3 — Resolution-time stats across the broader served-companies scope
+        $resolutionData = $this->computeResolutionStats(
+            Ticket::whereIn('tickets.department', $managedDepartments),
+            $availableCompanies,
+            $managedDepartments
+        );
+
+        return array_merge([
+            'mode'                => 'manager',
+            'totalActive'         => array_sum($byPriority),
+            'byPriority'          => $byPriority,
+            'managedDepartments'  => $managedDepartments,
+        ], $resolutionData);
+    }
+
+    /**
+     * Active-ticket counts per priority. Returns an array keyed by every
+     * priority in fixed order with zero defaults.
+     */
+    private function countActiveByPriority($baseQuery): array
+    {
+        $raw = (clone $baseQuery)
+            ->whereIn('tickets.status', Ticket::ACTIVE_STATUSES)
+            ->select('priority', DB::raw('COUNT(*) as cnt'))
+            ->groupBy('priority')
+            ->pluck('cnt', 'priority')
+            ->toArray();
+
+        $byPriority = [];
+        foreach (Ticket::PRIORITIES as $p) {
+            $byPriority[$p] = (int) ($raw[$p] ?? 0);
+        }
+        return $byPriority;
+    }
+
+    /**
+     * Build Card 2 (PIC stats) and Card 3 (department health) data.
+     *
+     * @param Builder       $baseQuery          Scope of tickets (unrestricted for
+     *                                          superadmin; managed-dept restricted
+     *                                          for managers).
+     * @param Collection    $availableCompanies Companies shown in the filter dropdown.
+     * @param array|null    $deptList           Departments to enumerate for Card 3
+     *                                          (null = all DEPARTMENTS).
+     */
+    private function computeResolutionStats($baseQuery, $availableCompanies, ?array $deptList): array
+    {
+        // Limit to truly-resolved tickets only — Closed tickets weren't really
+        // resolved, including them would skew the averages with stale-cleanup
+        // events. Both must have resolved_at set for the SQL diff to work.
+        $resolvedBase = (clone $baseQuery)
+            ->where('tickets.status', 'Resolved')
+            ->whereNotNull('tickets.resolved_at');
+
+        // ── Card 2 — per (PIC, company) avg resolution time ─────────────
+        $picRows = (clone $resolvedBase)
+            ->whereNotNull('assigned_to')
+            ->select(
+                'assigned_to',
+                'company_id',
+                DB::raw('COUNT(*) as cnt'),
+                DB::raw('AVG(TIMESTAMPDIFF(MINUTE, COALESCE(assigned_at, created_at), resolved_at)) as avg_minutes')
+            )
+            ->groupBy('assigned_to', 'company_id')
+            ->get();
+
+        // Resolve PIC names in one query
+        $picIds   = $picRows->pluck('assigned_to')->unique()->values();
+        $picNames = User::whereIn('id', $picIds)->pluck('name', 'id');
+
+        // Build per-company and aggregated structures
+        // picStats = { '__all__' => [...], '<companyId>' => [...] }
+        $picStats = ['__all__' => []];
+        foreach ($availableCompanies as $c) {
+            $picStats[(string) $c->id] = [];
+        }
+
+        // First aggregate per PIC across all companies for the "__all__" view
+        $picAllAccum = []; // [picId => ['weightedSum' => x, 'totalCount' => y]]
+        foreach ($picRows as $row) {
+            $picId        = (int) $row->assigned_to;
+            $companyId    = $row->company_id ? (string) $row->company_id : null;
+            $cnt          = (int) $row->cnt;
+            $avgMinutes   = (int) round((float) $row->avg_minutes);
+
+            // Per-company entry
+            if ($companyId !== null && isset($picStats[$companyId])) {
+                $picStats[$companyId][] = $this->buildPerfRow(
+                    ['name' => $picNames[$picId] ?? 'Unknown'], $cnt, $avgMinutes
+                );
+            }
+
+            // Accumulate for "all companies"
+            $picAllAccum[$picId] ??= ['weightedSum' => 0, 'totalCount' => 0];
+            $picAllAccum[$picId]['weightedSum'] += $avgMinutes * $cnt;
+            $picAllAccum[$picId]['totalCount']  += $cnt;
+        }
+
+        foreach ($picAllAccum as $picId => $acc) {
+            $combinedAvg = (int) round($acc['weightedSum'] / max(1, $acc['totalCount']));
+            $picStats['__all__'][] = $this->buildPerfRow(
+                ['name' => $picNames[$picId] ?? 'Unknown'], $acc['totalCount'], $combinedAvg
+            );
+        }
+
+        // Sort each list: fastest first
+        foreach ($picStats as $key => $list) {
+            usort($list, fn($a, $b) => $a['avg_minutes'] <=> $b['avg_minutes']);
+            $picStats[$key] = $list;
+        }
+
+        // ── Card 3 — per (department, company) avg resolution time + tier ──
+        $deptRows = (clone $resolvedBase)
+            ->select(
+                'department',
+                'company_id',
+                DB::raw('COUNT(*) as cnt'),
+                DB::raw('AVG(TIMESTAMPDIFF(MINUTE, COALESCE(assigned_at, created_at), resolved_at)) as avg_minutes')
+            )
+            ->groupBy('department', 'company_id')
+            ->get();
+
+        $deptList = $deptList ?: Ticket::DEPARTMENTS;
+
+        // Initialise every (company, dept) combo with no-data so the card
+        // always shows a complete table even if a dept hasn't resolved anything yet.
+        $deptStats = ['__all__' => []];
+        foreach ($availableCompanies as $c) {
+            $deptStats[(string) $c->id] = [];
+        }
+        $emptyEntry = $this->buildPerfRow(['department' => null], 0, null);
+        foreach ($deptList as $dept) {
+            $entry = array_merge($emptyEntry, ['department' => $dept]);
+            $deptStats['__all__'][$dept] = $entry;
+            foreach ($availableCompanies as $c) {
+                $deptStats[(string) $c->id][$dept] = $entry;
+            }
+        }
+
+        $deptAllAccum = []; // [dept => ['weightedSum' => x, 'totalCount' => y]]
+        foreach ($deptRows as $row) {
+            $dept       = $row->department;
+            if (!in_array($dept, $deptList, true)) continue;
+            $companyId  = $row->company_id ? (string) $row->company_id : null;
+            $cnt        = (int) $row->cnt;
+            $avgMinutes = (int) round((float) $row->avg_minutes);
+
+            if ($companyId !== null && isset($deptStats[$companyId])) {
+                $deptStats[$companyId][$dept] = $this->buildPerfRow(
+                    ['department' => $dept], $cnt, $avgMinutes
+                );
+            }
+
+            $deptAllAccum[$dept] ??= ['weightedSum' => 0, 'totalCount' => 0];
+            $deptAllAccum[$dept]['weightedSum'] += $avgMinutes * $cnt;
+            $deptAllAccum[$dept]['totalCount']  += $cnt;
+        }
+
+        foreach ($deptAllAccum as $dept => $acc) {
+            $combinedAvg = (int) round($acc['weightedSum'] / max(1, $acc['totalCount']));
+            $deptStats['__all__'][$dept] = $this->buildPerfRow(
+                ['department' => $dept], $acc['totalCount'], $combinedAvg
+            );
+        }
+
+        // Sort each list: by tier (good→amber→poor→nodata) then by avg ASC
+        $tierOrder = ['good' => 1, 'amber' => 2, 'poor' => 3, 'nodata' => 4];
+        foreach ($deptStats as $key => $list) {
+            $arr = array_values($list);
+            usort($arr, function ($a, $b) use ($tierOrder) {
+                $tierCmp = ($tierOrder[$a['tier']] ?? 9) <=> ($tierOrder[$b['tier']] ?? 9);
+                if ($tierCmp !== 0) return $tierCmp;
+                return ($a['avg_minutes'] ?? PHP_INT_MAX) <=> ($b['avg_minutes'] ?? PHP_INT_MAX);
+            });
+            $deptStats[$key] = $arr;
+        }
+
+        // Tier summaries for the small "tier counts" header on Card 3 —
+        // one per filter scope.
+        $deptTierCounts = [];
+        foreach ($deptStats as $key => $list) {
+            $counts = ['good' => 0, 'amber' => 0, 'poor' => 0, 'nodata' => 0];
+            foreach ($list as $entry) {
+                $counts[$entry['tier']] = ($counts[$entry['tier']] ?? 0) + 1;
+            }
+            $deptTierCounts[$key] = $counts;
+        }
+
+        return [
+            'picStats'           => $picStats,             // { '__all__'|companyId => [{name, count, avg_minutes, formatted, tier, width_pct}] }
+            'deptStats'          => $deptStats,            // { '__all__'|companyId => [{department, count, avg_minutes, formatted, tier, width_pct}] }
+            'deptTierCounts'     => $deptTierCounts,       // { '__all__'|companyId => {good, amber, poor, nodata} }
+            'availableCompanies' => $availableCompanies->map(fn($c) => ['id' => (string) $c->id, 'name' => $c->name])->values()->toArray(),
+        ];
+    }
+
+    /**
+     * Analytics for the PIC view (My Tickets > Assigned to Me tab).
+     *
+     * Mirrors the shape of buildAnalytics()/buildManagerAnalytics() so the
+     * existing card partials (analytics-card-2-pic-times,
+     * analytics-card-3-dept-health) can be reused unchanged. Data is scoped
+     * to the user, not their team:
+     *   - Card 1 (priority)   — active tickets ASSIGNED TO this user.
+     *   - Card 2 (PIC perf)   — only this user as a PIC, no others.
+     *   - Card 3 (dept health) — only the user's own dept (employees.department).
+     */
+    private function buildPicAnalytics(User $user): array
+    {
+        // ── Card 1: my active tickets, by priority ─────────────────────
+        $byPriority = $this->countActiveByPriority(
+            Ticket::where('assigned_to', $user->id)
+        );
+
+        // ── Card 2: my own PIC performance ────────────────────────────
+        $myStats = Ticket::where('assigned_to', $user->id)
+            ->where('status', 'Resolved')
+            ->whereNotNull('resolved_at')
+            ->selectRaw('COUNT(*) AS cnt, AVG(TIMESTAMPDIFF(MINUTE, COALESCE(assigned_at, created_at), resolved_at)) AS avg_minutes')
+            ->first();
+
+        $myCount      = (int) ($myStats->cnt ?? 0);
+        $myAvgMinutes = $myCount > 0 ? (int) round((float) $myStats->avg_minutes) : null;
+
+        $picStats = ['__all__' => []];
+        if ($myCount > 0) {
+            $picStats['__all__'][] = $this->buildPerfRow(
+                ['name' => $user->name],
+                $myCount,
+                $myAvgMinutes
+            );
+        }
+
+        // ── Card 3: my department's health ─────────────────────────────
+        $myDept = $user->employee?->department;
+        $deptStats = ['__all__' => []];
+        $deptTierCounts = ['__all__' => ['good' => 0, 'amber' => 0, 'poor' => 0, 'nodata' => 0]];
+
+        if ($myDept) {
+            $deptRow = Ticket::where('department', $myDept)
+                ->where('status', 'Resolved')
+                ->whereNotNull('resolved_at')
+                ->selectRaw('COUNT(*) AS cnt, AVG(TIMESTAMPDIFF(MINUTE, COALESCE(assigned_at, created_at), resolved_at)) AS avg_minutes')
+                ->first();
+
+            $deptCount      = (int) ($deptRow->cnt ?? 0);
+            $deptAvgMinutes = $deptCount > 0 ? (int) round((float) $deptRow->avg_minutes) : null;
+
+            $entry = $this->buildPerfRow(
+                ['department' => $myDept],
+                $deptCount,
+                $deptAvgMinutes
+            );
+            $deptStats['__all__'][] = $entry;
+            $deptTierCounts['__all__'][$entry['tier']]++;
+        }
+
+        return [
+            'mode'               => 'pic',
+            'totalActive'        => array_sum($byPriority),
+            'byPriority'         => $byPriority,
+            'picStats'           => $picStats,
+            'deptStats'          => $deptStats,
+            'deptTierCounts'     => $deptTierCounts,
+            // No company-filter dropdown for the PIC view — it's a one-row card.
+            'availableCompanies' => [],
+        ];
+    }
+
+    /**
+     * Build a row entry for the perf cards (Card 2 PIC + Card 3 dept).
+     * Includes pre-computed bar width % and tier so the view doesn't need maths.
+     *
+     * Bar scales 0-100% against HEALTH_AMBER_MAX_MINUTES — anything beyond the
+     * amber/poor boundary fills the bar fully. Visual: longer bar = slower.
+     */
+    private function buildPerfRow(array $base, int $count, ?int $avgMinutes): array
+    {
+        $widthPct = 0;
+        if ($avgMinutes !== null && $avgMinutes > 0) {
+            $widthPct = min(100, ($avgMinutes / Ticket::HEALTH_AMBER_MAX_MINUTES) * 100);
+        }
+        return array_merge($base, [
+            'count'       => $count,
+            'avg_minutes' => $avgMinutes,
+            'formatted'   => $avgMinutes !== null ? Ticket::formatMinutes($avgMinutes) : '—',
+            'tier'        => Ticket::healthTier($avgMinutes),
+            'width_pct'   => $widthPct,
+        ]);
+    }
+
+    // ── Create form ───────────────────────────────────────────────────────
+    public function create()
+    {
+        $user        = Auth::user();
+        $userCompany = $user->employee?->company;
+
+        // All registered companies for the dropdown
+        $companies = Company::orderBy('name')->get(['id', 'name']);
+
+        // Default selected company: user's own (matched by name) if registered;
+        // else the first company in the list. Use the model's normalised
+        // resolver so "Enlinea Sdn. Bhd." (employees.company) still matches
+        // "Enlinea Sdn Bhd" (companies.name).
+        $defaultCompanyId = null;
+        if ($userCompany) {
+            $defaultCompanyId = Ticket::resolveCompanyId($userCompany);
+        }
+        $defaultCompanyId ??= $companies->first()?->id;
+
+        // Pre-compute, for each company, the list of departments that ACTUALLY
+        // serve it (auto-derived members ∪ pivot extras). Strict filter applies
+        // to every user, including superadmin/system_admin — the user wants the
+        // dropdown to mirror the Department Settings view exactly. To raise a
+        // ticket against a department that has no members at this company, an
+        // employee in that role must be hired first, or the dept must be
+        // configured as an Extra for this company.
+        $departmentsByCompany = [];
+        foreach ($companies as $company) {
+            $departmentsByCompany[$company->id] = Ticket::departmentsForCompany($company->name);
+        }
+
+        return view('tickets.create', [
+            'companies'            => $companies,
+            'defaultCompanyId'     => $defaultCompanyId,
+            'departmentsByCompany' => $departmentsByCompany,
+            'priorities'           => Ticket::PRIORITIES,
+            'departmentSubjects'   => Ticket::DEPARTMENT_SUBJECTS,
+        ]);
+    }
+
+    // ── Store new ticket ──────────────────────────────────────────────────
+    public function store(Request $request)
+    {
+        $user = Auth::user();
+
+        $data = $request->validate([
+            'company_id'        => 'required|exists:companies,id',
+            'subject'           => 'required|string|max:255',
+            'subject_other'     => 'nullable|string|max:255',
+            'description'       => 'required|string|max:10000',
+            'department'        => 'required|in:' . implode(',', Ticket::DEPARTMENTS),
+            'priority'          => 'required|in:' . implode(',', Ticket::PRIORITIES),
+            'attachments'       => 'nullable|array|max:10',
+            'attachments.*'     => 'file|max:10240|mimes:pdf,jpg,jpeg,png,gif,webp|valid_file_content',
+        ]);
+
+        // Resolve company name (used for dept-serves check + denormalised storage)
+        $companyName = Company::where('id', $data['company_id'])->value('name');
+
+        // The chosen department must serve the chosen company. Superadmin/sysadmin bypass.
+        if (!$user->isSuperadmin() && !$user->isSystemAdmin()) {
+            if (!Ticket::departmentServesCompany($data['department'], $companyName)) {
+                return back()
+                    ->withErrors(['department' => 'Selected company does not have access to this department.'])
+                    ->withInput();
+            }
+        }
+
+        // Subject vocabulary check — "Other" requires a custom subject text.
+        $allowedSubjects = Ticket::DEPARTMENT_SUBJECTS[$data['department']] ?? [];
+        if (!empty($allowedSubjects) && !in_array($data['subject'], $allowedSubjects, true)) {
+            return back()
+                ->withErrors(['subject' => 'Selected subject is not valid for the chosen department.'])
+                ->withInput();
+        }
+
+        $finalSubject = $data['subject'];
+        if ($data['subject'] === 'Other') {
+            $custom = trim($data['subject_other'] ?? '');
+            if ($custom === '') {
+                return back()
+                    ->withErrors(['subject_other' => 'Please describe the subject when picking "Other".'])
+                    ->withInput();
+            }
+            $finalSubject = 'Other — ' . $custom;
+        }
+
+        $ticket = Ticket::create([
+            'user_id'     => $user->id,
+            'company_id'  => $data['company_id'],
+            'department'  => $data['department'],
+            'priority'    => $data['priority'],
+            'subject'     => $finalSubject,
+            'description' => $data['description'],
+            'status'      => 'Open',
+        ]);
+
+        // Process and store attachments (image-compress + secure save)
+        if ($request->hasFile('attachments')) {
+            foreach ($request->file('attachments') as $file) {
+                $this->storeTicketAttachment($ticket, $file);
+            }
+        }
+
+        // Notify department managers of the new ticket (email + in-app bell).
+        // Excludes interns — they only get notified when actually assigned.
+        $managers = $ticket->managersForNotification()->get();
+
+        foreach ($managers as $manager) {
+            if ($manager->work_email) {
+                Mail::to($manager->work_email)->queue(new TicketCreatedMail($ticket, $manager));
+            }
+        }
+        Notification::send($managers, new TicketRaisedNotification($ticket->fresh(['creator'])));
+
+        return redirect()->route('tickets.show', $ticket)->with('success', 'Ticket created.');
+    }
+
+    // ── Ticket detail / chat view ─────────────────────────────────────────
+    public function show(Request $request, Ticket $ticket)
+    {
+        $user = Auth::user();
+        $this->authorizeView($user, $ticket);
+
+        $ticket->load(['creator.employee', 'assignee', 'messages.sender', 'attachments']);
+
+        // Manage controls (Add/Remove PIC + Update Status as a manager) are
+        // only surfaced when the user navigated here from the Ticket Management
+        // page (which appends ?from=manage to its links). If a manager or
+        // superadmin clicks the same ticket from /tickets (My Tickets), they
+        // were acting as the raiser — keep it read-only there. The PIC's own
+        // status-update path stays open regardless of source page (see view).
+        $hasManageRole = $user->canManageTicketsForDepartment($ticket->department)
+                         || $user->isSuperadmin() || $user->isSystemAdmin();
+        $cameFromManagePage = $request->query('from') === 'manage';
+        $canManage = $hasManageRole && $cameFromManagePage;
+
+        // Only fetch the eligible-PIC pool when the assign-PIC dropdown will render.
+        $assigneePool = collect();
+        if ($canManage) {
+            $assigneePool = $ticket->eligiblePicQuery()
+                ->orderBy('name')
+                ->get();
+        }
+
+        return view('tickets.show', [
+            'ticket'       => $ticket,
+            'assigneePool' => $assigneePool,
+            'canManage'    => $canManage,
+            'statuses'     => Ticket::STATUSES,
+        ]);
+    }
+
+    // ── Manager assigns PIC (mirrors ItTaskController@assignPic logic) ────
+    public function assignPic(Request $request, Ticket $ticket)
+    {
+        $user = Auth::user();
+        if (!$user->canManageTicketsForDepartment($ticket->department)
+            && !$user->isSuperadmin() && !$user->isSystemAdmin()) {
+            abort(403);
+        }
+
+        $picUserId = $request->input('assigned_pic_user_id');
+
+        // Remove PIC — clear assignment, return to Open. Also clear assigned_at
+        // so the next PIC's clock starts fresh from their own assignment time.
+        if (!$picUserId) {
+            $previousPic = $ticket->assigned_to ? User::find($ticket->assigned_to) : null;
+            $ticket->update(['assigned_to' => null, 'assigned_at' => null, 'status' => 'Open']);
+            if ($previousPic) {
+                $previousPic->notify(new TicketUnassignedNotification($ticket->fresh(), $user));
+            }
+            return back()->with('success', 'PIC removed.');
+        }
+
+        // Direct PIC-to-PIC switching is not allowed.
+        // The manager must first remove the existing PIC, then assign a new one.
+        if ($ticket->assigned_to && (int) $picUserId !== (int) $ticket->assigned_to) {
+            return back()->with('error', 'Remove the current PIC before assigning a new one.');
+        }
+
+        $request->validate(['assigned_pic_user_id' => 'required|exists:users,id']);
+
+        // Confirm chosen user is eligible — honours department scope (global vs company).
+        $ticket->load('creator.employee');
+        $isEligible = $ticket->eligiblePicQuery()
+            ->where('users.id', $picUserId)
+            ->exists();
+        if (!$isEligible) {
+            return back()->withErrors(['assigned_pic_user_id' => 'Selected user is not eligible to be PIC for this ticket.']);
+        }
+
+        $candidate = User::findOrFail($picUserId);
+
+        // Assigning a PIC moves the ticket into the active "In Progress" state,
+        // regardless of whether it was Open or Pending. Only preserve already-
+        // terminal statuses (Resolved/Closed) — those should be re-opened
+        // explicitly via the status dropdown, not by assigning a PIC.
+        $newStatus = in_array($ticket->status, Ticket::ARCHIVED_STATUSES, true)
+            ? $ticket->status
+            : 'In Progress';
+
+        // Stamp assigned_at on this transition. Resolution-time analytics use
+        // this as the start of the PIC's clock instead of the ticket's
+        // creation timestamp — see TicketController::computeResolutionStats
+        // and Ticket::timeToResolve().
+        $ticket->update([
+            'assigned_to' => $picUserId,
+            'assigned_at' => now(),
+            'status'      => $newStatus,
+        ]);
+
+        Mail::to($candidate->work_email)->queue(new TicketAssignedMail($ticket->fresh(['creator', 'assignee']), $candidate));
+        $candidate->notify(new TicketAssignedNotification($ticket->fresh(), $user));
+
+        return back()->with('success', 'PIC assigned.');
+    }
+
+    // ── Update ticket status ──────────────────────────────────────────────
+    public function updateStatus(Request $request, Ticket $ticket)
+    {
+        $user = Auth::user();
+        $isManager = $user->canManageTicketsForDepartment($ticket->department)
+                     || $user->isSuperadmin() || $user->isSystemAdmin();
+        $isAssignee = $ticket->assigned_to === $user->id;
+
+        if (!$isManager && !$isAssignee) {
+            abort(403);
+        }
+
+        $request->validate([
+            'status' => 'required|in:' . implode(',', Ticket::STATUSES),
+        ]);
+
+        $previousStatus = $ticket->status;
+        $newStatus      = $request->status;
+
+        // Block setting "In Progress" on a ticket with no PIC — it's auto-set
+        // when a PIC is assigned, not user-selectable in that state.
+        if ($newStatus === 'In Progress' && empty($ticket->assigned_to)) {
+            return back()->withErrors(['status' => 'In Progress requires an assigned PIC. Assign a PIC first.']);
+        }
+
+        // Resolution event: transitioning INTO Resolved from a non-terminal state.
+        // Triggers the resolution email + bell notification to the creator.
+        $isResolutionEvent = $newStatus === 'Resolved'
+            && !in_array($previousStatus, Ticket::ARCHIVED_STATUSES, true);
+
+        $update = ['status' => $newStatus];
+
+        // Set resolved_at the first time we enter Resolved
+        if ($newStatus === 'Resolved' && empty($ticket->resolved_at)) {
+            $update['resolved_at'] = now();
+        }
+        // Re-opening from a terminal state — clear resolved_at
+        elseif (in_array($previousStatus, Ticket::ARCHIVED_STATUSES, true)
+                && !in_array($newStatus, Ticket::ARCHIVED_STATUSES, true)) {
+            $update['resolved_at'] = null;
+        }
+
+        $ticket->update($update);
+
+        if ($isResolutionEvent && $ticket->creator) {
+            Mail::to($ticket->creator->work_email)->queue(new TicketResolvedMail($ticket->fresh(['creator', 'assignee'])));
+            $ticket->creator->notify(new TicketResolvedNotification($ticket->fresh(['creator', 'assignee'])));
+        }
+
+        return back()->with('success', $isResolutionEvent
+            ? 'Ticket resolved.'
+            : 'Ticket status updated.');
+    }
+
+    // ── Authorization helper ──────────────────────────────────────────────
+    private function authorizeView(User $user, Ticket $ticket): void
+    {
+        if ($user->isSuperadmin() || $user->isSystemAdmin()) {
+            return;
+        }
+        if ($ticket->user_id === $user->id || $ticket->assigned_to === $user->id) {
+            return;
+        }
+        if ($user->canManageTicketsForDepartment($ticket->department)) {
+            return;
+        }
+        abort(403);
+    }
+
+    /**
+     * Persist a single uploaded file as a TicketAttachment via AttachmentProcessor.
+     */
+    private function storeTicketAttachment(Ticket $ticket, $file): void
+    {
+        $meta = \App\Services\AttachmentProcessor::store(
+            $file,
+            'ticket_attachments',
+            $ticket->id . '_'
+        );
+        TicketAttachment::create(array_merge(['ticket_id' => $ticket->id], $meta));
+    }
+}

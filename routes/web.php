@@ -22,6 +22,10 @@ use App\Http\Controllers\ExpenseClaimController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SecureFileController;
 use App\Http\Controllers\KnowledgeBaseController;
+use App\Http\Controllers\TicketController;
+use App\Http\Controllers\TicketMessageController;
+use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\DepartmentSettingsController;
 use App\Http\Controllers\Accounting\AccountingDashboardController;
 use App\Http\Controllers\Accounting\ChartOfAccountController;
 use App\Http\Controllers\Accounting\GeneralLedgerController;
@@ -72,6 +76,13 @@ Route::get('/onboarding-invite/{token}',          [OnboardingInviteController::c
 Route::post('/onboarding-invite/{token}/verify',  [OnboardingInviteController::class, 'verifyEmail'])->name('onboarding.invite.verify')->middleware('throttle:10,1');
 Route::post('/onboarding-invite/{token}/consent', [OnboardingInviteController::class, 'acceptConsent'])->name('onboarding.invite.consent')->middleware('throttle:10,1');
 Route::post('/onboarding-invite/{token}/submit',  [OnboardingInviteController::class, 'submit'])->name('onboarding.invite.submit')->middleware('throttle:5,1');
+
+// Public help / user-manual pages — no auth, shareable as a link
+Route::prefix('help')->name('help.')->group(function () {
+    Route::get('/my-tickets',          [\App\Http\Controllers\HelpController::class, 'tickets'])->name('tickets');
+    Route::get('/ticket-management',   [\App\Http\Controllers\HelpController::class, 'manage'])->name('manage');
+    Route::get('/department-settings', [\App\Http\Controllers\HelpController::class, 'departmentSettings'])->name('dept-settings');
+});
 
 // ── Authenticated ──────────────────────────────────────────────────────────
 Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \App\Http\Middleware\SecurityAuditMiddleware::class, \App\Http\Middleware\EnforceTwoFactor::class])->group(function () {
@@ -544,4 +555,27 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     Route::put('/accounting/settings',                               [AccountingSettingController::class, 'update'])->name('accounting.settings.update')->middleware('throttle:10,1');
     Route::post('/accounting/settings/fiscal-year',                  [AccountingSettingController::class, 'storeFiscalYear'])->name('accounting.settings.store-fiscal-year');
     Route::post('/accounting/settings/currency',                     [AccountingSettingController::class, 'storeCurrency'])->name('accounting.settings.store-currency');
+
+    // ══════════════════════════════════════════════════════════════════════
+    // TICKETING SYSTEM
+    // ══════════════════════════════════════════════════════════════════════
+    Route::get('/tickets',                                  [TicketController::class, 'index'])->name('tickets.index');
+    Route::get('/tickets/manage',                           [TicketController::class, 'manage'])->name('tickets.manage');
+    Route::get('/tickets/create',                           [TicketController::class, 'create'])->name('tickets.create');
+    Route::post('/tickets',                                 [TicketController::class, 'store'])->name('tickets.store');
+    Route::get('/tickets/{ticket}',                         [TicketController::class, 'show'])->name('tickets.show');
+    Route::post('/tickets/{ticket}/assign-pic',             [TicketController::class, 'assignPic'])->name('tickets.assign-pic');
+    Route::post('/tickets/{ticket}/status',                 [TicketController::class, 'updateStatus'])->name('tickets.status');
+    // Chat — AJAX poll (GET) + send (POST). Uploads throttled.
+    Route::get('/tickets/{ticket}/messages',                [TicketMessageController::class, 'index'])->name('tickets.messages.index');
+    Route::post('/tickets/{ticket}/messages',               [TicketMessageController::class, 'store'])->name('tickets.messages.store')->middleware('throttle:uploads');
+
+    // ── In-app Notifications (bell icon dropdown) ────────────────────────
+    Route::get('/notifications',                            [NotificationController::class, 'index'])->name('notifications.index');
+    Route::post('/notifications/{id}/read',                 [NotificationController::class, 'markRead'])->name('notifications.read');
+    Route::post('/notifications/read-all',                  [NotificationController::class, 'markAllRead'])->name('notifications.read-all');
+
+    // ── Department Settings (Superadmin) — assign companies to ticket depts ─
+    Route::get('/superadmin/department-settings',  [DepartmentSettingsController::class, 'index'])->name('superadmin.department-settings.index');
+    Route::post('/superadmin/department-settings', [DepartmentSettingsController::class, 'update'])->name('superadmin.department-settings.update');
 });

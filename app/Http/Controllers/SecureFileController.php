@@ -26,6 +26,11 @@ class SecureFileController extends Controller
         'invoices'              => ['hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
         'rental_contracts'      => ['hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
         'claim_receipts'        => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
+        // ticket_attachments is intentionally not listed here — it follows
+        // ticket-level access (creator / assignee / dept manager / sysadmin),
+        // not directory roles, since work-role-gated dept managers (Tech,
+        // Marketing, etc.) carry users.role='employee' and can't be enumerated.
+        // Resolved in canAccessTicketFile() instead.
     ];
 
     /**
@@ -77,6 +82,14 @@ class SecureFileController extends Controller
      */
     private function hasAccess($user, string $directory, string $path): bool
     {
+        // Tickets follow ticket-level access (creator / assignee / dept manager
+        // / sysadmin), not directory-level roles, because work-role-gated dept
+        // managers carry users.role='employee' and can't be listed in
+        // DIRECTORY_PERMISSIONS. Mirrors TicketController::authorizeView().
+        if ($directory === 'ticket_attachments') {
+            return $this->canAccessTicketFile($user, $path);
+        }
+
         $permissions = self::DIRECTORY_PERMISSIONS[$directory] ?? null;
 
         // If directory not in permissions map, deny by default
@@ -95,6 +108,51 @@ class SecureFileController extends Controller
         }
 
         return false;
+    }
+
+    /**
+     * Decide if $user can read the ticket-attachment file at $path.
+     *
+     * Same access rule as TicketController::authorizeView(). The path lookup
+     * spans all three attachment models because the ticket_attachments/
+     * directory holds files from each:
+     *   - TicketAttachment       (creation-time supporting docs, file_path)
+     *   - TicketMessage          (legacy single-file chat, attachment_path)
+     *   - TicketMessageAttachment (multi-file chat, file_path → message → ticket)
+     */
+    private function canAccessTicketFile($user, string $path): bool
+    {
+        if ($user->role === 'superadmin' || $user->role === 'system_admin') {
+            return true;
+        }
+
+        $ticketId = \App\Models\TicketAttachment::where('file_path', $path)->value('ticket_id');
+
+        if (!$ticketId) {
+            $ticketId = \App\Models\TicketMessage::where('attachment_path', $path)->value('ticket_id');
+        }
+
+        if (!$ticketId) {
+            $messageId = \App\Models\TicketMessageAttachment::where('file_path', $path)->value('message_id');
+            if ($messageId) {
+                $ticketId = \App\Models\TicketMessage::where('id', $messageId)->value('ticket_id');
+            }
+        }
+
+        if (!$ticketId) {
+            return false;
+        }
+
+        $ticket = \App\Models\Ticket::find($ticketId);
+        if (!$ticket) {
+            return false;
+        }
+
+        if ($ticket->user_id === $user->id || $ticket->assigned_to === $user->id) {
+            return true;
+        }
+
+        return $user->canManageTicketsForDepartment($ticket->department);
     }
 
     /**
@@ -134,6 +192,9 @@ class SecureFileController extends Controller
                 return true;
             }
         }
+
+        // Note: ticket_attachments/* are NOT handled here — hasAccess() routes
+        // them to canAccessTicketFile() before reaching this method.
 
         return false;
     }

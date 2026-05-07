@@ -31,3 +31,6 @@ Schedule::command('system:refresh-metadata')->hourly();
 
 // Update checker: daily package update scan + security score refresh
 Schedule::command('system:check-updates')->dailyAt('06:00');
+
+// Tickets: hourly scan for tickets idle 24h+; throttled to 1 reminder per ticket per 24h
+Schedule::command('tickets:remind-stale')->hourly();

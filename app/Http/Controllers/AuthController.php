@@ -100,13 +100,17 @@ class AuthController extends Controller
             ])->onlyInput('work_email');
         }
 
-        // Safety net: if linked employee has passed their exit date, deactivate and block
-        $linkedEmployee = $user->employee;
+        // Safety net: if the user's CURRENT employment relationship has passed
+        // its exit date, deactivate and block. Filter on active_until=NULL so a
+        // rehire (who carries an old offboarded Employee row alongside a new
+        // active one) is evaluated against their current row, not the historical
+        // one. Without this filter, hasOne returns whichever row Eloquent picks
+        // first — typically the oldest, offboarded one — and locks the rehire
+        // out with deactivation_reason='exit_date'.
+        $linkedEmployee = $user->employee()->whereNull('active_until')->first();
         if ($linkedEmployee && $linkedEmployee->exit_date && $linkedEmployee->exit_date->isPast()) {
             $user->update(['is_active' => false, 'deactivation_reason' => 'exit_date', 'deactivated_at' => now()]);
-            if (!$linkedEmployee->active_until) {
-                $linkedEmployee->update(['active_until' => $linkedEmployee->exit_date]);
-            }
+            $linkedEmployee->update(['active_until' => $linkedEmployee->exit_date]);
             return back()->withErrors([
                 'work_email' => $genericError,
             ])->onlyInput('work_email');
