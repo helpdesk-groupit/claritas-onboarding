@@ -424,18 +424,31 @@ class TicketController extends Controller
 
         $deptList = $deptList ?: Ticket::DEPARTMENTS;
 
-        // Initialise every (company, dept) combo with no-data so the card
-        // always shows a complete table even if a dept hasn't resolved anything yet.
+        // Initialise every (company, dept) combo with no-data so the card always
+        // shows a complete table even if a dept hasn't resolved anything yet.
+        // Per-company rows are seeded ONLY for depts that actually exist at
+        // that company (auto-derive ∪ pivot extras) — otherwise the company
+        // filter would list depts that aren't relevant to that company.
+        // The "__all__" view still shows every dept across the system.
         $deptStats = ['__all__' => []];
         foreach ($availableCompanies as $c) {
             $deptStats[(string) $c->id] = [];
         }
         $emptyEntry = $this->buildPerfRow(['department' => null], 0, null);
+
+        // Pre-resolve served-companies per dept once (each call hits the DB).
+        $deptServedCompanyIds = [];
+        foreach ($deptList as $dept) {
+            $deptServedCompanyIds[$dept] = Ticket::companiesServingDepartment($dept);
+        }
+
         foreach ($deptList as $dept) {
             $entry = array_merge($emptyEntry, ['department' => $dept]);
             $deptStats['__all__'][$dept] = $entry;
             foreach ($availableCompanies as $c) {
-                $deptStats[(string) $c->id][$dept] = $entry;
+                if (in_array((int) $c->id, $deptServedCompanyIds[$dept], true)) {
+                    $deptStats[(string) $c->id][$dept] = $entry;
+                }
             }
         }
 
@@ -447,7 +460,12 @@ class TicketController extends Controller
             $cnt        = (int) $row->cnt;
             $avgMinutes = (int) round((float) $row->avg_minutes);
 
-            if ($companyId !== null && isset($deptStats[$companyId])) {
+            // Only fill the per-company cell if we seeded it (i.e. the dept
+            // actually serves this company per the current cluster config).
+            // A ticket whose (dept, company) is no longer in the cluster
+            // — e.g. dropped extras, member moved away — gets skipped from
+            // the per-company view but still aggregates into __all__ below.
+            if ($companyId !== null && isset($deptStats[$companyId][$dept])) {
                 $deptStats[$companyId][$dept] = $this->buildPerfRow(
                     ['department' => $dept], $cnt, $avgMinutes
                 );

@@ -116,6 +116,39 @@
     [data-theme="dark"] .um-acc { background: #1e293b; border-color: #334155; }
     [data-theme="dark"] .um-acc-body { background: #1e293b; }
     [data-theme="dark"] .um-dept-header { background: #0f172a; color: #cbd5e1; }
+
+    /* ── Mobile responsive overrides ── */
+    /* Below 768px the 3-col diagram (form-field → arrow → instruction) collapses
+       to a stack: form field on top, instruction (with its numbered circle) right
+       below. Arrows are hidden — the number adjacency carries the meaning. */
+    @media (max-width: 768px) {
+        .um-section-title { font-size: 14px; }
+        .um-section p, .um-step-list > li, .um-tip, .um-warn { font-size: 13px; }
+
+        .um-diagram {
+            grid-template-columns: 1fr;
+            gap: 6px;
+            padding: 10px;
+        }
+        .um-diagram .um-col-header { display: none; }
+        .um-diagram .um-arrow-cell { display: none; }
+        .um-diagram .um-form-row { margin-top: 10px; }
+        .um-diagram .um-instr-row { padding: 4px 0 0; font-size: 13px; }
+        .um-diagram .um-instr-row:not(:last-child) { padding-bottom: 8px; border-bottom: 1px solid #e2e8f0; }
+
+        .um-acc-header { font-size: 12px; padding: 8px 10px; }
+        .um-dept-header { font-size: 12px; padding: 6px 8px; }
+        .um-ticket-row { font-size: 11px; flex-wrap: wrap; gap: 6px; }
+        .um-ticket-row .um-tnum { flex: 0 0 auto; }
+        .um-mockup { padding: 10px; }
+        .um-newbtn-mockup { flex-wrap: wrap; }
+    }
+    @media (max-width: 480px) {
+        .um-section { margin-bottom: 18px; }
+        .um-step-list > li { padding-left: 32px; }
+        .um-step-list > li::before { width: 22px; height: 22px; font-size: 11px; }
+    }
+    [data-theme="dark"] .um-diagram .um-instr-row:not(:last-child) { border-color: #334155; }
 </style>
 @endpush
 @endonce

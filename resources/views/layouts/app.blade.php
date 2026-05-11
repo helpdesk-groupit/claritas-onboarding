@@ -17,7 +17,17 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
     <style>
         :root { --sidebar-w: 255px; --primary: #2684FE; }
+        /* Document scrolling stays on html/body — no overflow on body so iOS
+           Safari's natural scroll context isn't disturbed. Horizontal-overflow
+           protection lives on .main-content (below) so wide tables can't
+           force the page to scroll sideways. */
         body { background: #f1f5f9; font-family: 'Segoe UI', sans-serif; }
+        /* Defensive: never let body get stuck in modal-locked state on a
+           non-modal page. Bootstrap toggles `modal-open` (overflow:hidden)
+           on body when a modal is shown — if the show/hide handshake fails
+           on mobile (interrupted gesture, fast tap on backdrop) the class
+           can stick and freeze page scroll. The DOMContentLoaded JS at the
+           bottom of this layout cleans it up on every page load. */
         .modal { z-index: 1055; }
         .modal-backdrop { z-index: 1050; }
         .modal-dialog-scrollable { max-height: calc(100vh - 56px); }
@@ -58,7 +68,18 @@
             font-size: 10px; padding: 2px 7px; border-radius: 20px;
             background: rgba(255,255,255,0.18); color: #fff; display: inline-block; margin-top: 2px;
         }
-        .main-content { margin-left: var(--sidebar-w); min-height: 100vh; }
+        .main-content {
+            margin-left: var(--sidebar-w);
+            min-height: 100vh;
+            /* min-width:0 lets flex/grid children inside .content-area shrink
+               to fit the viewport instead of forcing horizontal overflow.
+               overflow-x: clip clips any inner wide content (tables, etc.)
+               without creating a scroll context that interferes with
+               document-level vertical scrolling — unlike `overflow-x: hidden`
+               which can freeze sticky/scroll on some mobile browsers. */
+            min-width: 0;
+            overflow-x: clip;
+        }
         .topbar {
             background: #fff; border-bottom: 1px solid #e2e8f0; padding: 12px 24px;
             display: flex; align-items: center; justify-content: space-between;
@@ -1189,6 +1210,32 @@ function setTheme(theme) {
 
     // ── Start the timer when the page loads ──────────────────────────────
     resetTimer();
+})();
+</script>
+
+{{-- ── Defensive: clear any orphaned Bootstrap modal lock on page load ─── --}}
+<script nonce="{{ $cspNonce ?? '' }}">
+(function () {
+    'use strict';
+    // If a modal was opened and the show/hide handshake didn't complete
+    // (e.g. interrupted touch gesture, fast tap on backdrop, navigation
+    // mid-animation), Bootstrap can leave `body.modal-open` set and the
+    // body styled with overflow:hidden — which freezes page scroll. Clean
+    // up on every fresh page load when no modal is currently showing.
+    function unlockBodyIfNoModal() {
+        if (document.querySelector('.modal.show')) return;
+        document.body.classList.remove('modal-open');
+        document.body.style.removeProperty('overflow');
+        document.body.style.removeProperty('padding-right');
+        document.querySelectorAll('.modal-backdrop').forEach(function (b) { b.remove(); });
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', unlockBodyIfNoModal);
+    } else {
+        unlockBodyIfNoModal();
+    }
+    // Also run on bfcache restore (Safari/Chrome back-forward cache).
+    window.addEventListener('pageshow', unlockBodyIfNoModal);
 })();
 </script>
 

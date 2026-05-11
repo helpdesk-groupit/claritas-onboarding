@@ -20,6 +20,11 @@ return Application::configure(basePath: dirname(__DIR__))
         // Global security headers on every response
         $middleware->prepend(\App\Http\Middleware\SecurityHeaders::class);
 
+        // Scan every uploaded file for malware before any controller runs.
+        // No-op on requests with no files; runs MalwareScanner heuristics
+        // (and ClamAV if configured) on every UploadedFile otherwise.
+        $middleware->append(\App\Http\Middleware\ScanUploadsForMalware::class);
+
         // Exempt the public AARF acknowledgement POST from CSRF verification.
         // This route is accessed via a token link (e.g. from email), often in a fresh
         // browser session where no CSRF token has been set yet.

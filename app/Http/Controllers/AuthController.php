@@ -175,14 +175,20 @@ class AuthController extends Controller
                 ->withErrors(['work_email' => 'This email does not exist in our system. Please enter your assigned work email or contact the IT team.']);
         }
 
-        // Check if an account already exists for this email
-        if (User::where('work_email', $email)->exists()) {
+        // Block ONLY when an *active* account exists. A deactivated account
+        // (e.g. previously offboarded, now rehired with a fresh Onboarding)
+        // is allowed to proceed — register() will reactivate it instead of
+        // creating a duplicate. The offboarding history stays intact on the
+        // old Employee row; only the User row is reactivated.
+        $existing = User::where('work_email', $email)->first();
+        if ($existing && $existing->is_active) {
             return back()
                 ->withInput()
                 ->withErrors(['work_email' => 'An account with this email already exists. Please sign in instead.']);
         }
 
-        // Email is valid and has no account yet — pass to step 2
+        // Email is valid and either has no account yet, or has a deactivated
+        // account that's eligible for rehire reactivation. Pass to step 2.
         return redirect()->route('register.setPassword')
             ->with('verified_email', $email);
     }
@@ -228,7 +234,39 @@ class AuthController extends Controller
                 ->withErrors(['work_email' => 'This email is not valid. Please start again.']);
         }
 
-        if (User::where('work_email', $email)->exists()) {
+        // Rehire-aware: if a deactivated user row exists AND there is a current
+        // active employee row for this email (active_until IS NULL), treat this
+        // as a returning employee re-enrolling. Reactivate the existing user and
+        // set their new password instead of creating a duplicate. A solo
+        // deactivation (e.g. login_lockout) without a current active employee
+        // does NOT match this path and continues to be rejected.
+        $existingUser = User::where('work_email', $email)->first();
+        if ($existingUser) {
+            $hasCurrentActiveEmployee = Employee::where('company_email', $email)
+                ->whereNull('active_until')
+                ->exists();
+            if (!$existingUser->is_active && $hasCurrentActiveEmployee) {
+                $existingUser->update([
+                    'password'            => Hash::make($request->password),
+                    'is_active'           => true,
+                    'login_attempts'      => 0,
+                    'deactivation_reason' => null,
+                    'deactivated_at'      => null,
+                ]);
+                // Link the freshly active Employee row(s) to this user if not yet linked
+                Employee::where('company_email', $email)
+                    ->whereNull('active_until')
+                    ->whereNull('user_id')
+                    ->update(['user_id' => $existingUser->id]);
+
+                $loginRoute = route('login');
+                if (session('redirect_after_login') === 'profile-consent') {
+                    $loginRoute .= '?redirect=profile-consent';
+                }
+                return redirect($loginRoute)
+                    ->with('success', 'Account reactivated successfully! Please log in.');
+            }
+
             return redirect()->route('login')
                 ->withErrors(['work_email' => 'An account already exists for this email.']);
         }

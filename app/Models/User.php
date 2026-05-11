@@ -168,7 +168,7 @@ class User extends Authenticatable
         return in_array($this->role, ['hr_manager', 'superadmin', 'system_admin']);
     }
 
-    public function employee() { return $this->hasOne(Employee::class); }
+    public function employee() { return $this->hasOne(Employee::class)->whereNull('active_until'); }
 
     public function permissions() { return $this->hasMany(UserPermission::class); }
 

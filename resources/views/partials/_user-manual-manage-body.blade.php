@@ -74,6 +74,35 @@
     [data-theme="dark"] .um-acc { background: #1e293b; border-color: #334155; }
     [data-theme="dark"] .um-acc-body { background: #1e293b; }
     [data-theme="dark"] .um-dept-header { background: #0f172a; color: #cbd5e1; }
+
+    /* ── Mobile responsive overrides ── */
+    @media (max-width: 768px) {
+        .um-section-title { font-size: 14px; }
+        .um-section p, .um-step-list > li, .um-tip, .um-warn { font-size: 13px; }
+
+        /* 3-card analytics row: stack vertically */
+        .um-card-row { grid-template-columns: 1fr; }
+
+        /* Lifecycle: keep its 6-column grid (it's a 2D diagram) but tighten
+           padding and rely on the existing overflow-x: auto so users can
+           swipe sideways to see the full flow on phones. */
+        .um-lifecycle { padding: 12px 8px; gap: 12px 6px; }
+        .um-lifecycle .um-lc-box { font-size: 11.5px; padding: 6px 10px; }
+        .um-lifecycle .um-lc-box.small { font-size: 10.5px; padding: 4px 8px; }
+        .um-lifecycle .um-lc-cap { font-size: 10px; max-width: 95px; }
+        .um-lifecycle .um-lc-arrow .um-lc-arrow-label { font-size: 9.5px; }
+        .um-lifecycle-footer { font-size: 10.5px; padding: 0 8px; }
+
+        .um-acc-header { font-size: 12px; padding: 8px 10px; }
+        .um-dept-header { font-size: 12px; padding: 6px 8px; }
+        .um-ticket-row { font-size: 11px; flex-wrap: wrap; gap: 6px; }
+        .um-mockup { padding: 10px; }
+    }
+    @media (max-width: 480px) {
+        .um-section { margin-bottom: 18px; }
+        .um-step-list > li { padding-left: 32px; }
+        .um-step-list > li::before { width: 22px; height: 22px; font-size: 11px; }
+    }
 </style>
 @endpush
 @endonce

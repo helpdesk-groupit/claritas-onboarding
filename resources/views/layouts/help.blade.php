@@ -52,6 +52,27 @@
         [data-theme="dark"] .help-page-card h1 { color: #f1f5f9; }
         [data-theme="dark"] .help-footer { color: #94a3b8; border-color: #334155; }
         [data-theme="dark"] .help-footer a { color: #93c5fd; }
+
+        /* ── Mobile responsive ── */
+        @media (max-width: 768px) {
+            .help-topbar {
+                flex-wrap: wrap;
+                gap: 8px;
+                padding: 10px 14px;
+            }
+            .help-topbar .help-brand { font-size: 14px; }
+            .help-topbar .help-brand i { font-size: 18px; }
+            .help-topbar .help-share .btn { font-size: 12px; padding: 4px 8px; }
+            .help-topbar .help-share .btn i { margin-right: 2px; }
+
+            .help-content { padding: 14px; }
+            .help-page-card { padding: 16px 14px; border-radius: 8px; }
+            .help-page-card h1 { font-size: 18px; }
+            .help-page-card .help-subtitle { font-size: 12px; }
+        }
+        @media (max-width: 480px) {
+            .help-topbar .help-share { width: 100%; justify-content: flex-end; }
+        }
     </style>
 
     @stack('styles')

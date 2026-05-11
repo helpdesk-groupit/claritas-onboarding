@@ -98,6 +98,10 @@ AssetInventory → AssetAssignment (to employee) → AssetProvisioning → retur
 - **`SecurityHeaders`** / **`ForceHttps`** — additional hardening middleware (controlled via `FORCE_HTTPS` env var)
 - **`SecureFileController`** — serves private files with a `DIRECTORY_PERMISSIONS` map that enforces per-directory role checks; guards against path traversal
 - **File validation in `AppServiceProvider`:** `valid_file_content` rule checks magic bytes against declared MIME type; `sanitize_image` rule strips EXIF/metadata via `ImageSanitizer` service
+- **`ScanUploadsForMalware`** middleware (appended globally in `bootstrap/app.php`) — runs `MalwareScanner` against every `UploadedFile` on the request before any controller code. Blocks with HTTP 422 and records a `malware_blocked` row in `security_audit_logs` (best-effort — audit failures don't suppress the block). No-op on requests with no files. Hooked at the middleware layer rather than in `AttachmentProcessor` because not every upload (NRIC, profile pictures, leave attachments) routes through that service.
+- **`MalwareScanner`** service — two independent layers, either flag rejects:
+  - *Heuristic (always on):* samples first 8 KB + last 1 KB of the file; matches EICAR, embedded `<?php`/`<?=`, webshell function chains (`eval(base64_decode)`, `eval($_REQUEST)`, shell-exec on user input, `preg_replace /e`, `assert($_REQUEST)`, `create_function`), ASP/JSP runtime calls, and Office macro autoexec paired with Shell calls. Patterns are intentionally narrow — false positives break user workflows.
+  - *ClamAV (optional):* if `CLAMAV_HOST` is set (see `config/services.php`), also scans via `clamd` INSTREAM protocol over TCP. Network errors degrade silently to heuristic-only and log at warning level. Defaults: port 3310, 5s connect timeout, 30s stream timeout.
 - Upload rate-limiting: `throttle:uploads` (10 uploads/minute per user/IP)
 
 ### File Storage

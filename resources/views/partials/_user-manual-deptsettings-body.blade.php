@@ -46,6 +46,25 @@
     [data-theme="dark"] .um-pill.auto { background:#14532d; color:#86efac; }
     [data-theme="dark"] .um-mock-chip { background: #0f172a; border-color: #475569; color: #cbd5e1; }
     [data-theme="dark"] .um-mock-chip.on { background: #1e3a8a; border-color: #3b82f6; color: #bfdbfe; }
+
+    /* ── Mobile responsive overrides ── */
+    @media (max-width: 768px) {
+        .um-section-title { font-size: 14px; }
+        .um-section p, .um-step-list > li, .um-tip, .um-warn { font-size: 13px; }
+        .um-acc-header { font-size: 12px; padding: 8px 10px; }
+        .um-mock-deptrow { padding: 8px 10px; }
+        .um-mock-deptrow .um-mock-header { gap: 6px; }
+        .um-mock-deptrow .um-mock-name { font-size: 12px; }
+        .um-pill { font-size: 10px; padding: 2px 8px; flex-wrap: wrap; }
+        .um-mockup { padding: 10px; }
+    }
+    @media (max-width: 480px) {
+        .um-section { margin-bottom: 18px; }
+        .um-step-list > li { padding-left: 32px; }
+        .um-step-list > li::before { width: 22px; height: 22px; font-size: 11px; }
+        .um-mock-chips { gap: 4px; }
+        .um-mock-chip { font-size: 10px; padding: 2px 7px; }
+    }
 </style>
 @endpush
 @endonce

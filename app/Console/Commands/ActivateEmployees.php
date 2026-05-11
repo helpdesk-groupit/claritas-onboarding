@@ -47,6 +47,37 @@ class ActivateEmployees extends Command
                 $activated++;
             }
 
+            // Rehire reactivation: when an offboarded employee rejoins under the
+            // same company email, the user row from their previous tenure is
+            // still flagged is_active=false (set by the offboard branch below).
+            // Flip it back on and re-link the new Employee row so they can log
+            // in from day one. Past offboarding records on the old Employee row
+            // are not touched — they remain as historical exit data.
+            $companyEmail = $employee->company_email;
+            if ($companyEmail) {
+                $priorOffboarded = Employee::where('company_email', $companyEmail)
+                    ->whereNotNull('active_until')
+                    ->where('id', '!=', $employee->id)
+                    ->exists();
+                if ($priorOffboarded) {
+                    $rehireUser = \App\Models\User::where('work_email', $companyEmail)
+                        ->where('is_active', false)
+                        ->first();
+                    if ($rehireUser) {
+                        $rehireUser->update([
+                            'is_active'           => true,
+                            'login_attempts'      => 0,
+                            'deactivation_reason' => null,
+                            'deactivated_at'      => null,
+                        ]);
+                        if ($employee->user_id !== $rehireUser->id) {
+                            $employee->update(['user_id' => $rehireUser->id]);
+                        }
+                        $this->info("  Reactivated user account for rehire: {$employee->full_name}");
+                    }
+                }
+            }
+
             // Send welcome email — this is the primary purpose of the daily run
             $sent = $controller->sendWelcomeEmail($ob);
             $this->info('  Welcome email ' . ($sent ? 'SENT ✓' : 'FAILED ✗') . ' → ' . ($ob->personalDetail?->full_name ?? 'Unknown') . ' (' . ($ob->workDetail?->company_email ?? $ob->personalDetail?->personal_email ?? 'no email') . ')');
