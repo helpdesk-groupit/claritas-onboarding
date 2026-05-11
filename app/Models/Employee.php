@@ -32,6 +32,8 @@ class Employee extends Model
         'handbook_path', 'orientation_path',
         // Status
         'employment_status', 'resignation_reason', 'remarks',
+        // Birthday e-card idempotency stamp (set by birthdays:send-wishes)
+        'birthday_email_sent_year',
     ];
 
     protected $casts = [

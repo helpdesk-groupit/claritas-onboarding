@@ -7,6 +7,16 @@ Schedule::command('offboarding:notify')->everyMinute();
 Schedule::command('security:audit-report')->hourly();
 Schedule::command('leave:remind-managers')->dailyAt('09:00');
 Schedule::command('claims:remind')->dailyAt('09:00');
+// Birthdays: check every minute so candidates activated mid-day (e.g. a
+// rehire, or an employee whose start_date lands on their birthday) get the
+// e-card almost immediately. Idempotent via employees.birthday_email_sent_year
+// — at most one email per employee per calendar year, regardless of run
+// frequency. withoutOverlapping prevents two simultaneous runs from
+// double-sending if a previous run is still in flight.
+Schedule::command('birthdays:send-wishes')
+    ->everyMinute()
+    ->timezone('Asia/Kuala_Lumpur')
+    ->withoutOverlapping();
 Schedule::command('sweep:pending-weekly')->weeklyOn(3, '00:00'); // Wednesday midnight
 
 // Backup: daily encrypted full backup at 2 AM, retain 30 days

@@ -85,6 +85,7 @@ AssetInventory → AssetAssignment (to employee) → AssetProvisioning → retur
 - `employees:activate` — every minute; activates employees on start date + sends welcome email, flushes `invite_staging_json` via `populateFromOnboarding()`
 - `offboarding:notify` — every minute; time-based offboarding email reminders
 - `leave:remind-managers` / `claims:remind` — daily at 9 AM
+- `birthdays:send-wishes` — every minute (Asia/Kuala_Lumpur, `withoutOverlapping`); sends a virtual birthday e-card via `BirthdayWishMail` to every active employee whose `date_of_birth` matches today and `birthday_email_sent_year != current year`. Stamps `employees.birthday_email_sent_year = current year` after a successful send, so any number of reruns the same day are no-ops. Per-minute cadence ensures employees activated mid-day (rehires, start-date-on-birthday) get an almost-immediate wish. Feb 29 birthdays are delivered on Feb 28 in non-leap years. Template at `emails/birthday-wish.blade.php` is table-based + inline-styled for Outlook/Zoho/Gmail compatibility and uses no external images.
 - `sweep:pending-weekly` — Wednesday midnight; scans all pending acknowledgements (employee profile consents, AARF forms, leave approvals, expense claim approvals) and sends targeted reminder emails to the responsible person
 - `tickets:remind-stale` — hourly; emails + bell-notifies PIC (or department managers if unassigned) for any non-archived ticket idle 24h+. Throttled to one reminder per 24h via `tickets.last_reminder_sent_at`. Also auto-flips `Open → Pending` after 24h with no PIC.
 - `security:audit-report` — hourly
@@ -118,6 +119,7 @@ Notable mail classes:
 - `ClaimApprovedMail`, `ClaimSubmittedMail`, `ClaimReminderMail` — eClaim workflow
 - `LeaveApplicationNotifyMail`, `LeaveApprovalNotifyMail`, `PendingLeaveReminderMail` — leave workflow
 - `EaFormReadyMail` — payroll EA form notification
+- `BirthdayWishMail` — daily birthday e-card to the employee's work email (table-based, inline-styled, no external images for max client compatibility); sent by `birthdays:send-wishes` and idempotent via `employees.birthday_email_sent_year`
 - `WeeklyPendingSweepMail` — weekly sweep reminder for all pending acknowledgements/approvals (consent, AARF, leave, claims); sent by `sweep:pending-weekly` on Wednesdays
 - `TicketCreatedMail` / `TicketAssignedMail` / `TicketResolvedMail` / `TicketReminderMail` — ticket lifecycle emails, paired with matching `TicketRaisedNotification` / `TicketAssignedNotification` / `TicketResolvedNotification` / `TicketReminderNotification` / `TicketUnassignedNotification` / `NewTicketMessageNotification` for the in-app bell
 
