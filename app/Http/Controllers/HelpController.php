@@ -3,14 +3,15 @@
 namespace App\Http\Controllers;
 
 /**
- * Public help / user-manual pages — accessible without login so they can be
- * shared as a link with anyone (employees, prospective hires, external auditors).
+ * Help / user-manual pages — shareable URLs, but viewing requires login.
+ * An unauthenticated visitor is redirected to the login page by the auth
+ * middleware on the route group.
  *
  * The same content is also rendered inside in-app modals on the relevant
  * authenticated pages; both surfaces include the same body partial so edits
  * stay in one place. See resources/views/partials/_user-manual-*-body.blade.php.
  *
- * Routes (no auth middleware):
+ * Routes (auth-gated):
  *   GET /help/my-tickets           → tickets()
  *   GET /help/ticket-management    → manage()
  *   GET /help/department-settings  → departmentSettings()
