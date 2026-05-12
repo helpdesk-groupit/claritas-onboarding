@@ -121,7 +121,7 @@ Notable mail classes:
 - `EaFormReadyMail` — payroll EA form notification
 - `BirthdayWishMail` — daily birthday e-card to the employee's work email (table-based, inline-styled, no external images for max client compatibility); sent by `birthdays:send-wishes` and idempotent via `employees.birthday_email_sent_year`
 - `WeeklyPendingSweepMail` — weekly sweep reminder for all pending acknowledgements/approvals (consent, AARF, leave, claims); sent by `sweep:pending-weekly` on Wednesdays
-- `TicketCreatedMail` / `TicketAssignedMail` / `TicketResolvedMail` / `TicketReminderMail` — ticket lifecycle emails, paired with matching `TicketRaisedNotification` / `TicketAssignedNotification` / `TicketResolvedNotification` / `TicketReminderNotification` / `TicketUnassignedNotification` / `NewTicketMessageNotification` for the in-app bell
+- `TicketCreatedMail` / `TicketAssignedMail` / `TicketResolvedMail` / `TicketReminderMail` / `TicketNewMessageMail` — ticket lifecycle emails, paired with matching `TicketRaisedNotification` / `TicketAssignedNotification` / `TicketResolvedNotification` / `TicketReminderNotification` / `TicketUnassignedNotification` / `NewTicketMessageNotification` for the in-app bell. The chat-message email and bell are dispatched together from `TicketMessageController::store()` to the same recipient set (raiser + PIC, never the sender) so the two channels stay in sync; email failures are logged but don't break the chat write.
 
 ### Frontend
 - Blade templates under `resources/views/` organized by role (`hr/`, `it/`, `user/`, `superadmin/`) plus `accounting/` and `reports/`
