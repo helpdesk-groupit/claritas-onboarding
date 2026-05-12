@@ -74,11 +74,24 @@
          LEFT (33%) — Ticket metadata cards
          ═══════════════════════════════════════════════════════════════════ --}}
     <div>
+        @php $isAdminEditor = Auth::user()->isSuperadmin() || Auth::user()->isSystemAdmin(); @endphp
         <div class="card mb-3">
             <div class="card-body">
                 <div class="d-flex align-items-center justify-content-between mb-2">
                     <h6 class="fw-semibold mb-0">{{ $ticket->ticket_number }}</h6>
-                    <span class="badge bg-{{ $ticket->statusColor() }}" id="ticketStatusBadge">{{ $ticket->status }}</span>
+                    <div class="d-flex align-items-center gap-2">
+                        {{-- Edit (department re-route) — only when this page was reached from
+                             /tickets/manage AND the viewer can manage this dept. Same gating as
+                             the Assign-PIC / Update-Status controls; absent on /tickets. --}}
+                        @if($canManage)
+                            <a href="{{ route('tickets.edit-admin', $ticket) }}"
+                               class="btn btn-outline-secondary btn-sm py-0 px-2"
+                               title="Re-route this ticket to a different department">
+                                <i class="bi bi-arrow-left-right"></i> Edit
+                            </a>
+                        @endif
+                        <span class="badge bg-{{ $ticket->statusColor() }}" id="ticketStatusBadge">{{ $ticket->status }}</span>
+                    </div>
                 </div>
                 <p class="fw-semibold mb-2">{{ $ticket->subject }}</p>
                 <p class="small text-muted mb-3" style="white-space:pre-wrap;">{{ $ticket->description }}</p>
@@ -217,6 +230,59 @@
                 </form>
             </div>
         </div>
+        @endif
+
+        @php $editLogs = $ticket->editLogs()->with('editor')->get(); @endphp
+        @if($editLogs->isNotEmpty())
+            <div class="card mt-3">
+                <div class="card-body">
+                    <h6 class="fw-semibold mb-3">
+                        <i class="bi bi-clock-history me-1"></i> Edit log
+                        <span class="badge bg-secondary ms-1">{{ $editLogs->count() }}</span>
+                    </h6>
+                        <div class="d-flex flex-column gap-2">
+                            @foreach($editLogs as $log)
+                                <div class="border rounded p-2" style="background:#f8fafc;font-size:12px;">
+                                    <div class="d-flex justify-content-between align-items-start mb-1">
+                                        <span class="fw-semibold">{{ $log->editor?->name ?? 'Unknown' }}</span>
+                                        <span class="text-muted" style="font-size:11px;">{{ $log->created_at?->format('d M Y, H:i') }}</span>
+                                    </div>
+                                    @foreach($log->changes as $field => $diff)
+                                        @php
+                                            $fromVal = is_array($diff) ? ($diff['from'] ?? '') : '';
+                                            $toVal   = is_array($diff) ? ($diff['to']   ?? '') : '';
+                                            // Display friendly company name when the field is company_id.
+                                            if ($field === 'company_id') {
+                                                $fromVal = \App\Models\Company::where('id', $fromVal)->value('name') ?? $fromVal;
+                                                $toVal   = \App\Models\Company::where('id', $toVal)->value('name')   ?? $toVal;
+                                            }
+                                            // Truncate long subject/description bodies in the log preview.
+                                            if (in_array($field, ['subject','description'], true)) {
+                                                $fromVal = \Illuminate\Support\Str::limit((string) $fromVal, 60);
+                                                $toVal   = \Illuminate\Support\Str::limit((string) $toVal, 60);
+                                            }
+                                        @endphp
+                                        <div class="mb-1">
+                                            <span class="text-muted text-uppercase" style="font-size:10px;letter-spacing:.4px;">
+                                                {{ str_replace('_', ' ', $field) }}
+                                            </span>
+                                            <div class="d-flex align-items-center gap-1 flex-wrap">
+                                                <span class="badge bg-light text-dark border" style="font-weight:normal;">{{ $fromVal !== '' ? $fromVal : '—' }}</span>
+                                                <i class="bi bi-arrow-right text-muted"></i>
+                                                <span class="badge bg-light text-dark border" style="font-weight:normal;">{{ $toVal !== '' ? $toVal : '—' }}</span>
+                                            </div>
+                                        </div>
+                                    @endforeach
+                                    @if($log->note)
+                                        <div class="mt-1 pt-1 border-top" style="font-style:italic;color:#475569;">
+                                            <i class="bi bi-chat-quote me-1"></i>{{ $log->note }}
+                                        </div>
+                                    @endif
+                                </div>
+                            @endforeach
+                        </div>
+                    </div>
+                </div>
         @endif
     </div>
 

@@ -276,6 +276,11 @@ class Ticket extends Model
         return $this->hasMany(TicketAttachment::class)->orderBy('id');
     }
 
+    public function editLogs()
+    {
+        return $this->hasMany(TicketEditLog::class)->latest();
+    }
+
     public function company()
     {
         return $this->belongsTo(Company::class);

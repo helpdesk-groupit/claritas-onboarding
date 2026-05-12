@@ -18,7 +18,7 @@
             </div>
         @endif
 
-        <form method="POST" action="{{ route('tickets.store') }}" enctype="multipart/form-data">
+        <form method="POST" action="{{ route('tickets.store') }}" enctype="multipart/form-data" id="ticketCreateForm">
             @csrf
 
             {{-- Row 1: Company + Priority --}}
@@ -97,7 +97,7 @@
 
             <div class="d-flex justify-content-end gap-2">
                 <a href="{{ route('tickets.index') }}" class="btn btn-light">Cancel</a>
-                <button type="submit" class="btn btn-primary">
+                <button type="submit" class="btn btn-primary" id="ticketSubmitBtn">
                     <i class="bi bi-send me-1"></i> Submit Ticket
                 </button>
             </div>
@@ -208,6 +208,29 @@
     }
     if (oldSubjectOther) {
         otherInput.value = oldSubjectOther;
+    }
+
+    // ── Double-submit guard ──────────────────────────────────────────────
+    // A fast double-click on Submit was creating two near-identical tickets
+    // with consecutive numbers. Disable the button on the first submit, swap
+    // its label to a spinner, and short-circuit any subsequent submit events.
+    // The disabled state automatically resets if the server returns the form
+    // with validation errors (page reload re-renders fresh markup).
+    var ticketForm = document.getElementById('ticketCreateForm');
+    var submitBtn  = document.getElementById('ticketSubmitBtn');
+    var submitting = false;
+    if (ticketForm && submitBtn) {
+        ticketForm.addEventListener('submit', function (e) {
+            if (submitting) {
+                e.preventDefault();
+                return;
+            }
+            submitting = true;
+            submitBtn.disabled = true;
+            submitBtn.setAttribute('aria-busy', 'true');
+            submitBtn.innerHTML =
+                '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Submitting…';
+        });
     }
 })();
 </script>

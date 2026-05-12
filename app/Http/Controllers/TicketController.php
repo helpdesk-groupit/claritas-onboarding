@@ -9,6 +9,7 @@ use App\Models\Company;
 use App\Models\Employee;
 use App\Models\Ticket;
 use App\Models\TicketAttachment;
+use App\Models\TicketEditLog;
 use App\Models\User;
 use App\Notifications\TicketAssignedNotification;
 use App\Notifications\TicketRaisedNotification;
@@ -768,6 +769,118 @@ class TicketController extends Controller
             'canManage'    => $canManage,
             'statuses'     => Ticket::STATUSES,
         ]);
+    }
+
+    // ── Re-route a misfiled ticket (manager / superadmin only) ────────────
+    // The only editable field is the department — used when a raiser picked
+    // the wrong dept. Changing it clears PIC + assigned_at, resets status to
+    // Open, and re-fires the new-ticket notifications to the new dept's pool.
+    // The edit log is recorded for every change; only superadmin/system_admin
+    // see it on the ticket detail page (gated in the view).
+    public function editAdmin(Ticket $ticket)
+    {
+        $this->authorizeEdit($ticket);
+
+        $ticket->load('attachments', 'company', 'creator');
+
+        return view('tickets.edit-admin', [
+            'ticket'      => $ticket,
+            'companies'   => Company::orderBy('name')->get(['id', 'name']),
+            'departments' => Ticket::DEPARTMENTS,
+            'priorities'  => Ticket::PRIORITIES,
+        ]);
+    }
+
+    public function updateAdmin(Request $request, Ticket $ticket)
+    {
+        $this->authorizeEdit($ticket);
+
+        $data = $request->validate([
+            'department' => 'required|in:' . implode(',', Ticket::DEPARTMENTS),
+            'note'       => 'nullable|string|max:1000',
+        ]);
+
+        if ($data['department'] === $ticket->department) {
+            return redirect()->route('tickets.show', ['ticket' => $ticket, 'from' => 'manage'])
+                ->with('info', 'No changes were saved — department is the same.');
+        }
+
+        $changes = [
+            'department' => ['from' => $ticket->department, 'to' => $data['department']],
+        ];
+
+        DB::transaction(function () use ($ticket, $data, $changes) {
+            // Old PIC is no longer in the new dept's eligible pool. Clear PIC +
+            // assigned_at so the new dept managers take it from scratch. Status
+            // returns to Open so the new owners see it as fresh.
+            $ticket->update([
+                'department'  => $data['department'],
+                'assigned_to' => null,
+                'assigned_at' => null,
+                'status'      => 'Open',
+            ]);
+
+            TicketEditLog::create([
+                'ticket_id'         => $ticket->id,
+                'edited_by_user_id' => Auth::id(),
+                'changes'           => $changes,
+                'note'              => $data['note'] ?? null,
+            ]);
+        });
+
+        // Refresh so notification helpers see the new dept on the model.
+        $ticket->refresh();
+
+        // Notify the *new* department's managers as if the ticket had just been
+        // raised in their queue. Old dept managers are not re-notified — the
+        // ticket leaves their inbox by virtue of the dept-scoped visibility.
+        $managers = $ticket->managersForNotification()->get();
+        foreach ($managers as $manager) {
+            if ($manager->work_email) {
+                Mail::to($manager->work_email)->queue(new TicketCreatedMail($ticket, $manager));
+            }
+        }
+        if ($managers->isNotEmpty()) {
+            Notification::send($managers, new TicketRaisedNotification($ticket->fresh(['creator'])));
+        }
+        foreach ($ticket->unregisteredManagersForNotification()->get() as $unregEmp) {
+            Mail::to($unregEmp->company_email)->queue(new TicketCreatedMail($ticket, $unregEmp));
+        }
+
+        // After a dept change, the editor may no longer have manage rights on
+        // the *new* department — and authorizeView() would 403 the redirect to
+        // the show page. So if they've routed themselves out of their own
+        // access, send them back to the Ticket Management list instead.
+        $user = Auth::user();
+        $stillHasAccess = $user->isSuperadmin()
+            || $user->isSystemAdmin()
+            || $user->canManageTicketsForDepartment($ticket->department);
+
+        if ($stillHasAccess) {
+            return redirect()->route('tickets.show', ['ticket' => $ticket, 'from' => 'manage'])
+                ->with('success', 'Department updated. The new department\'s managers have been notified.');
+        }
+
+        return redirect()->route('tickets.manage')
+            ->with('success', 'Ticket moved to ' . $ticket->department . '. Its new department\'s managers have been notified, and it is no longer in your inbox.');
+    }
+
+    /**
+     * Permission gate for the Edit Department action. Superadmin/system_admin
+     * always; otherwise must be a manager of the ticket's *current* department
+     * (so a Tech manager can re-route a misfiled Tech ticket to Group IT, but
+     * a Group IT manager couldn't grab a KOL ticket they have no business with).
+     */
+    private function authorizeEdit(Ticket $ticket): void
+    {
+        $user = Auth::user();
+        $allowed = $user
+            && ($user->isSuperadmin()
+                || $user->isSystemAdmin()
+                || $user->canManageTicketsForDepartment($ticket->department));
+        if (!$allowed) {
+            abort(403);
+        }
     }
 
     // ── Manager assigns PIC (mirrors ItTaskController@assignPic logic) ────
