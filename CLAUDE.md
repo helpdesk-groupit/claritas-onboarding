@@ -209,6 +209,8 @@ Path 2 is intentionally OFF when `includePicExtras = false`, so `managersForNoti
 
 Path 2 requires the `employees.department` value to **exactly match** the canonical dept name (`'HRA'`, `'Group IT'`, `'Finance'`, `'Admin'`, plus the 13 work-role-gated names). `employees.department` is free-text — audit/canonicalise periodically.
 
+**Unregistered-manager email fallback** (`Ticket::unregisteredManagersForNotification()`): the User-keyed manager pool misses managers who have HR records but haven't created their User account yet. The fallback returns Employee rows where `work_role = 'manager'`, `department = ticket dept`, `active_until IS NULL`, `company` in served cluster, and either no linked User OR the User is `is_active = false`. It applies **only to work-role-gated depts** (app-role-gated depts identify managers via `users.role`, which doesn't exist pre-registration). Used by `TicketController::store()` and `tickets:remind-stale` for **email only** — no in-app bell, because `notifications.notifiable_id` FKs to `users.id`. The "no users row" condition prevents double-emailing registered managers. `TicketCreatedMail` / `TicketReminderMail` constructors now accept `User|Employee` for `$recipient`; the view receives a computed `$recipientName` string so it doesn't have to discriminate.
+
 **Intern capabilities** (HRA, Group IT only): can be assigned PIC, can chat + update status on assigned tickets, but CANNOT assign/reassign PIC, see full department inbox, or receive "new ticket raised" notifications (those go to managers only via `managersForNotification()`).
 
 **Ticket detail page — manage controls are navigation-context-gated:**

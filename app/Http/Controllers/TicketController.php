@@ -724,6 +724,14 @@ class TicketController extends Controller
         }
         Notification::send($managers, new TicketRaisedNotification($ticket->fresh(['creator'])));
 
+        // Email-only fallback for unregistered managers — HR records exist but
+        // the User row hasn't been created yet, so they're invisible to the
+        // User-keyed query above. The bell ping can't reach them (notifications
+        // table FKs to users) until they register.
+        foreach ($ticket->unregisteredManagersForNotification()->get() as $unregEmp) {
+            Mail::to($unregEmp->company_email)->queue(new TicketCreatedMail($ticket, $unregEmp));
+        }
+
         return redirect()->route('tickets.show', $ticket)->with('success', 'Ticket created.');
     }
 

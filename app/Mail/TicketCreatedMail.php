@@ -2,6 +2,7 @@
 
 namespace App\Mail;
 
+use App\Models\Employee;
 use App\Models\Ticket;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
@@ -16,7 +17,7 @@ class TicketCreatedMail extends Mailable
 
     public function __construct(
         public Ticket $ticket,
-        public User $recipient,
+        public User|Employee $recipient,
     ) {}
 
     public function envelope(): Envelope
@@ -29,8 +30,19 @@ class TicketCreatedMail extends Mailable
     public function content(): Content
     {
         return new Content(view: 'emails.ticket-created', with: [
-            'ticket'    => $this->ticket,
-            'recipient' => $this->recipient,
+            'ticket'        => $this->ticket,
+            'recipient'     => $this->recipient,
+            'recipientName' => $this->resolveRecipientName(),
         ]);
+    }
+
+    private function resolveRecipientName(): string
+    {
+        if ($this->recipient instanceof User) {
+            return $this->recipient->name ?: 'there';
+        }
+        return $this->recipient->preferred_name
+            ?: $this->recipient->full_name
+            ?: 'there';
     }
 }

@@ -790,6 +790,53 @@ class Ticket extends Model
     }
 
     /**
+     * Returns an Employee query for managers whose HR record matches this
+     * ticket's department but who haven't created (or have lost) their User
+     * account yet — they are unreachable via managersForNotification() which
+     * is User-keyed. Used as an email-only fallback so a ticket raised for a
+     * dept whose manager is onboarded but not yet registered still pings them.
+     *
+     * Scope (only applies to work-role-gated depts — app-role-gated depts
+     * identify managers via users.role, which doesn't exist pre-registration):
+     *   - employees.work_role = 'manager'
+     *   - employees.department = $this->department
+     *   - employees.active_until IS NULL                  (current employment)
+     *   - employees.company in dept's served cluster      (cross-company routing)
+     *   - employees.company_email present
+     *   - Either no users row at all, OR linked users row is inactive
+     *     (filters out anyone already covered by managersForNotification()
+     *     and avoids sending two emails to the same person)
+     *
+     * Bell notifications cannot reach these recipients — Laravel's
+     * notifications.notifiable_id FKs to users.id — so call sites must email
+     * only, no Notification::send().
+     */
+    public function unregisteredManagersForNotification()
+    {
+        if (!in_array($this->department, self::WORK_ROLE_MANAGER_DEPARTMENTS, true)) {
+            return Employee::query()->whereRaw('1 = 0');
+        }
+
+        $servedCompanyNames = self::companyNamesServingDepartment($this->department);
+
+        $q = Employee::where('work_role', 'manager')
+            ->where('department', $this->department)
+            ->whereNull('active_until')
+            ->whereNotNull('company_email')
+            ->where('company_email', '!=', '')
+            ->where(function ($qq) {
+                $qq->whereDoesntHave('user')
+                   ->orWhereHas('user', fn($u) => $u->where('is_active', false));
+            });
+
+        if (!empty($servedCompanyNames)) {
+            $q->whereIn('company', $servedCompanyNames);
+        }
+
+        return $q;
+    }
+
+    /**
      * Returns a User query for everyone eligible for tickets in the given
      * department. The pool is the dept's served-companies cluster (auto-derived
      * members ∪ pivot extras), NOT just the ticket's specific company.

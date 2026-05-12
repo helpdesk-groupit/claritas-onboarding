@@ -2,6 +2,7 @@
 
 namespace App\Mail;
 
+use App\Models\Employee;
 use App\Models\Ticket;
 use App\Models\User;
 use Carbon\CarbonInterface;
@@ -17,7 +18,7 @@ class TicketReminderMail extends Mailable
 
     public function __construct(
         public Ticket $ticket,
-        public User $recipient,
+        public User|Employee $recipient,
         public CarbonInterface $lastActivityAt,
         public bool $isUnassigned,
     ) {}
@@ -35,8 +36,19 @@ class TicketReminderMail extends Mailable
         return new Content(view: 'emails.ticket-reminder', with: [
             'ticket'         => $this->ticket,
             'recipient'      => $this->recipient,
+            'recipientName'  => $this->resolveRecipientName(),
             'lastActivityAt' => $this->lastActivityAt,
             'isUnassigned'   => $this->isUnassigned,
         ]);
+    }
+
+    private function resolveRecipientName(): string
+    {
+        if ($this->recipient instanceof User) {
+            return $this->recipient->name ?: 'there';
+        }
+        return $this->recipient->preferred_name
+            ?: $this->recipient->full_name
+            ?: 'there';
     }
 }

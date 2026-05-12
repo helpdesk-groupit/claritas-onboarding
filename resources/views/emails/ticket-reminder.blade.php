@@ -29,7 +29,7 @@
   </div>
 
   <div class="body">
-    <div class="greeting">Hello {{ $recipient->name }},</div>
+    <div class="greeting">Hello {{ $recipientName }},</div>
 
     <p style="color:#475569;font-size:15px;line-height:1.6;">
       @if($isUnassigned)

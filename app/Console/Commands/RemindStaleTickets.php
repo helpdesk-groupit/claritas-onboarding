@@ -70,23 +70,37 @@ class RemindStaleTickets extends Command
             }
 
             $recipients = $this->resolveRecipients($ticket);
-            if ($recipients->isEmpty()) {
+            $isUnassigned = is_null($ticket->assigned_to);
+
+            // Unregistered managers (Employee rows whose User row doesn't exist
+            // or is inactive) — email-only fallback. Only meaningful when no PIC
+            // is assigned, because a PIC necessarily has a User account.
+            $unregisteredManagers = $isUnassigned
+                ? $ticket->unregisteredManagersForNotification()->get()
+                : collect();
+
+            if ($recipients->isEmpty() && $unregisteredManagers->isEmpty()) {
                 $this->warn("  {$ticket->ticket_number}: no recipients (no PIC and no managers).");
                 $skipped++;
                 continue;
             }
 
-            $isUnassigned = is_null($ticket->assigned_to);
-
             try {
                 foreach ($recipients as $r) {
                     Mail::to($r->work_email)->queue(new TicketReminderMail($ticket, $r, $lastActivity, $isUnassigned));
                 }
-                Notification::send($recipients, new TicketReminderNotification($ticket, $lastActivity, $isUnassigned));
+                if ($recipients->isNotEmpty()) {
+                    Notification::send($recipients, new TicketReminderNotification($ticket, $lastActivity, $isUnassigned));
+                }
+
+                foreach ($unregisteredManagers as $emp) {
+                    Mail::to($emp->company_email)->queue(new TicketReminderMail($ticket, $emp, $lastActivity, $isUnassigned));
+                }
 
                 $ticket->update(['last_reminder_sent_at' => now()]);
                 $sent++;
-                $this->info("  Reminded {$recipients->count()} recipient(s) for {$ticket->ticket_number} (idle " . (int) $lastActivity->diffInHours(now()) . 'h)');
+                $totalRecipients = $recipients->count() + $unregisteredManagers->count();
+                $this->info("  Reminded {$totalRecipients} recipient(s) for {$ticket->ticket_number} (idle " . (int) $lastActivity->diffInHours(now()) . 'h)');
             } catch (\Exception $e) {
                 Log::warning("Ticket reminder failed for {$ticket->ticket_number}: " . $e->getMessage());
                 $this->error("  Failed for {$ticket->ticket_number}: {$e->getMessage()}");
