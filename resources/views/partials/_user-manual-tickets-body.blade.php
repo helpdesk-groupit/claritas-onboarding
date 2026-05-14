@@ -172,7 +172,11 @@
         <span class="text-muted small">&larr; you'll find this button in the page header</span>
     </div>
 
-    <p class="mt-3">The form has 7 fields. Each arrow connects a form field to its instruction:</p>
+    <p class="mt-3">
+        The form is <strong>subject-first</strong> &mdash; you pick (or type) what the issue is about and
+        the system figures out which department should handle it and which company to file it under.
+        You only fill in 4 things: <em>Subject, Description, Priority, Attachments</em>.
+    </p>
 
     <div class="um-diagram">
         <div class="um-col-header">Form field (what you see)</div>
@@ -180,43 +184,23 @@
         <div class="um-col-header">What to do</div>
 
         <div class="um-form-row">
-            <label class="um-flabel">Company <span class="text-danger">*</span></label>
-            <div class="um-fmock"><span>Company A Sdn Bhd</span><i class="bi bi-chevron-down um-caret"></i></div>
+            <label class="um-flabel">Subject <span class="text-danger">*</span></label>
+            <div class="um-fmock"><span>Type to search subjects&hellip;</span><i class="bi bi-search um-caret"></i></div>
         </div>
         <div class="um-arrow-cell"><i class="bi bi-arrow-right-circle-fill"></i></div>
         <div class="um-instr-row">
             <span class="um-num">1</span>
-            <div class="um-itext"><strong>Pick the company</strong> the ticket is for. You can raise a ticket against any registered company &mdash; not just your own. The default selection is your own company; change it if needed.</div>
+            <div class="um-itext"><strong>Start typing</strong> and pick the closest match from the dropdown (e.g. <em>"Email Problem"</em>, <em>"Salary Query"</em>). Subjects are grouped by department in the list. If nothing fits, pick <em>"Other / not sure"</em> at the bottom.</div>
         </div>
 
         <div class="um-form-row">
-            <label class="um-flabel">Priority <span class="text-danger">*</span></label>
-            <div class="um-fmock"><span>Medium</span><i class="bi bi-chevron-down um-caret"></i></div>
+            <label class="um-flabel">Describe the subject <span class="text-muted small">(only if Other)</span></label>
+            <div class="um-fmock"><span class="text-muted">My laptop won't turn on</span></div>
         </div>
         <div class="um-arrow-cell"><i class="bi bi-arrow-right-circle-fill"></i></div>
         <div class="um-instr-row">
             <span class="um-num">2</span>
-            <div class="um-itext"><strong>Pick the priority</strong> &mdash; Low / Medium / High / Urgent. Pick what reflects real impact; the PIC sees this on their inbox.</div>
-        </div>
-
-        <div class="um-form-row">
-            <label class="um-flabel">Department <span class="text-danger">*</span></label>
-            <div class="um-fmock"><span>Tech</span><i class="bi bi-chevron-down um-caret"></i></div>
-        </div>
-        <div class="um-arrow-cell"><i class="bi bi-arrow-right-circle-fill"></i></div>
-        <div class="um-instr-row">
-            <span class="um-num">3</span>
-            <div class="um-itext"><strong>Pick the department.</strong> The dropdown only shows departments configured to serve the company you chose. If a department is missing, that company isn't covered &mdash; ask superadmin to update Department Settings.</div>
-        </div>
-
-        <div class="um-form-row">
-            <label class="um-flabel">Subject <span class="text-danger">*</span></label>
-            <div class="um-fmock"><span>Bug Report</span><i class="bi bi-chevron-down um-caret"></i></div>
-        </div>
-        <div class="um-arrow-cell"><i class="bi bi-arrow-right-circle-fill"></i></div>
-        <div class="um-instr-row">
-            <span class="um-num">4</span>
-            <div class="um-itext"><strong>Pick a subject</strong> from the standardised list (so analytics aggregate cleanly), or pick <em>Other</em> and describe it briefly in the extra text box that appears.</div>
+            <div class="um-itext"><strong>If you picked "Other"</strong>, a small text box appears. A few words is enough &mdash; the system reads what you type and auto-detects the department from keywords like <em>laptop, salary, invoice, design</em>, etc.</div>
         </div>
 
         <div class="um-form-row">
@@ -225,8 +209,18 @@
         </div>
         <div class="um-arrow-cell"><i class="bi bi-arrow-right-circle-fill"></i></div>
         <div class="um-instr-row">
-            <span class="um-num">5</span>
-            <div class="um-itext"><strong>Write a clear description.</strong> Include what you tried, what you expected, and what actually happened. Screenshots help &mdash; attach them in the next field.</div>
+            <span class="um-num">3</span>
+            <div class="um-itext"><strong>Write a clear description.</strong> Include what you tried, what you expected, and what actually happened. Screenshots help &mdash; attach them below.</div>
+        </div>
+
+        <div class="um-form-row">
+            <label class="um-flabel">Priority <span class="text-danger">*</span></label>
+            <div class="um-fmock"><span>Medium</span><i class="bi bi-chevron-down um-caret"></i></div>
+        </div>
+        <div class="um-arrow-cell"><i class="bi bi-arrow-right-circle-fill"></i></div>
+        <div class="um-instr-row">
+            <span class="um-num">4</span>
+            <div class="um-itext"><strong>Pick the priority</strong> &mdash; Low / Medium / High / Urgent. Pick what reflects real impact; the PIC sees this on their inbox.</div>
         </div>
 
         <div class="um-form-row">
@@ -238,8 +232,32 @@
         </div>
         <div class="um-arrow-cell"><i class="bi bi-arrow-right-circle-fill"></i></div>
         <div class="um-instr-row">
-            <span class="um-num">6</span>
+            <span class="um-num">5</span>
             <div class="um-itext"><strong>Attach files</strong> if needed &mdash; up to 10 images or PDFs, 10&nbsp;MB each. Images are auto-compressed and EXIF-stripped on upload.</div>
+        </div>
+
+        <div class="um-form-row">
+            <div style="background:#f8fafc;border:1px dashed #cbd5e1;border-radius:8px;padding:8px 10px;">
+                <div style="font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:.5px;font-weight:600;margin-bottom:4px;">
+                    <i class="bi bi-signpost-2 me-1"></i>Routing
+                </div>
+                <div style="font-size:11px;display:flex;align-items:center;gap:6px;">
+                    <span style="color:#64748b;">Department</span>
+                    <i class="bi bi-arrow-right" style="color:#94a3b8;"></i>
+                    <span style="font-weight:600;color:#1e293b;">Group IT</span>
+                    <span style="font-size:10px;color:#6b7280;font-style:italic;margin-left:4px;">(auto)</span>
+                </div>
+                <div style="font-size:11px;display:flex;align-items:center;gap:6px;margin-top:2px;">
+                    <span style="color:#64748b;">Company</span>
+                    <i class="bi bi-arrow-right" style="color:#94a3b8;"></i>
+                    <span style="font-weight:600;color:#1e293b;">Company A Sdn Bhd</span>
+                </div>
+            </div>
+        </div>
+        <div class="um-arrow-cell"><i class="bi bi-arrow-right-circle-fill"></i></div>
+        <div class="um-instr-row">
+            <span class="um-num">6</span>
+            <div class="um-itext"><strong>Check the Routing preview.</strong> It shows live where the ticket will go &mdash; the <em>Department</em> is auto-detected from your subject, and the <em>Company</em> is your own company by default. If the auto-detected department looks wrong (or you picked "Other" and the system couldn't infer one), click the small <em>Change</em> link to pick manually.</div>
         </div>
 
         <div class="um-form-row">
@@ -249,11 +267,12 @@
         <div class="um-arrow-cell"><i class="bi bi-arrow-right-circle-fill"></i></div>
         <div class="um-instr-row">
             <span class="um-num">7</span>
-            <div class="um-itext"><strong>Click Submit Ticket.</strong> You'll be taken to the ticket detail page; the new ticket also appears under the chosen company's section here on My Tickets.</div>
+            <div class="um-itext"><strong>Click Submit Ticket.</strong> You'll be taken to the ticket detail page; the new ticket also appears under your company's section here on My Tickets.</div>
         </div>
     </div>
 
-    <div class="um-tip"><i class="bi bi-lightbulb"></i><strong>Tip:</strong> the company you pick determines which manager team gets notified. Pick the company the ticket is <em>about</em>, not the company you happen to work at.</div>
+    <div class="um-tip"><i class="bi bi-lightbulb"></i><strong>Tip:</strong> you don't need to know which department handles what &mdash; just describe the issue. The system maps standardised subjects (and keywords from your "Other" text) to the right department for you.</div>
+    <div class="um-warn"><i class="bi bi-exclamation-triangle-fill"></i><strong>Heads up:</strong> the Company is locked to your own company. If a ticket needs to be filed for a different company (e.g. a managing-director use case), ask a superadmin to raise it on your behalf.</div>
 </div>
 
 <div class="um-section">
@@ -407,8 +426,9 @@
 <div class="um-section">
     <div class="um-section-title"><i class="bi bi-question-circle-fill"></i> Common questions</div>
     <ul class="um-step-list">
-        <li><strong>"My department isn't in the dropdown when I pick this company."</strong> &mdash; the department isn't configured to serve this company. Ask superadmin to add it on Department Settings.</li>
-        <li><strong>"Why is my ticket not appearing under the company I picked?"</strong> &mdash; refresh the page. If it's still wrong, hover the ticket detail's <em>Company</em> field to confirm what was actually saved.</li>
+        <li><strong>"The Routing preview says 'Couldn't infer &mdash; pick below'."</strong> &mdash; you picked "Other" and the words you typed didn't match any keyword the system recognises. Just pick a department from the small dropdown that appears below the preview.</li>
+        <li><strong>"The auto-detected department looks wrong."</strong> &mdash; click the <em>Change</em> link next to the department in the Routing preview, then pick the one that should handle it.</li>
+        <li><strong>"My company doesn't have access to this department."</strong> &mdash; your company isn't configured to use that department yet. Ask superadmin to add it on Department Settings, or pick a different subject that routes elsewhere.</li>
         <li><strong>"Can I edit a ticket after submitting?"</strong> &mdash; not directly. Use the conversation thread to add follow-ups; the PIC can see all of it.</li>
         <li><strong>"Can I cancel a ticket?"</strong> &mdash; ask the PIC to mark it Closed.</li>
     </ul>

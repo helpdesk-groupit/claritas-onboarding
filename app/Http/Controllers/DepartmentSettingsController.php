@@ -26,32 +26,30 @@ class DepartmentSettingsController extends Controller
         $companies   = Company::orderBy('name')->get(['id', 'name']);
         $departments = Ticket::DEPARTMENTS;
 
-        // Existing extras per dept (the editable pivot rows).
-        $assignments = DepartmentCompanyAccess::all()
-            ->groupBy('department')
-            ->map(fn($rows) => $rows->pluck('company_id')->map(fn($id) => (int) $id)->toArray())
-            ->toArray();
+        // Existing extras keyed by (source_company_id, department) → list of
+        // served company ids. The view nests dept rows under a company
+        // accordion, so the source company is fixed per row.
+        $assignments = []; // [source_company_id][dept] => [served_company_ids]
+        DepartmentCompanyAccess::whereNotNull('source_company_id')
+            ->get(['source_company_id', 'department', 'company_id'])
+            ->each(function ($row) use (&$assignments) {
+                $assignments[(int) $row->source_company_id][$row->department][] = (int) $row->company_id;
+            });
 
-        // Auto-derived served companies per dept (computed from member employees).
-        // Used to show the per-row "Auto-serves: …" subtitle and to suppress the
-        // misleading "(serves all)" badge when a dept actually has auto-coverage.
-        $autoServed     = [];
-        $autoServedNames = [];
+        // Auto-derived served companies per dept — used to render the
+        // "Auto-serves" subtitle on each dept row. Not affected by the source
+        // split since auto-derivation always points to the company hosting
+        // the team (which is the same as the source).
+        $autoServed = [];
         foreach ($departments as $dept) {
-            $allIds = Ticket::companiesServingDepartment($dept);
-            // Subtract the explicit-extras to get the truly auto-derived set
-            $extraIds  = $assignments[$dept] ?? [];
-            $autoIds   = array_values(array_diff($allIds, $extraIds));
-            $autoServed[$dept] = $autoIds;
-            $autoServedNames[$dept] = $companies->whereIn('id', $autoIds)->pluck('name')->all();
+            $autoServed[$dept] = Ticket::defaultServedCompanyIdsForDepartmentPublic($dept);
         }
 
         return view('superadmin.department-settings', [
-            'companies'        => $companies,
-            'departments'      => $departments,
-            'assignments'      => $assignments,
-            'autoServed'       => $autoServed,
-            'autoServedNames'  => $autoServedNames,
+            'companies'   => $companies,
+            'departments' => $departments,
+            'assignments' => $assignments,
+            'autoServed'  => $autoServed,
         ]);
     }
 
@@ -62,27 +60,41 @@ class DepartmentSettingsController extends Controller
             abort(403);
         }
 
-        // Form posts: assignments[<department>][] = <company_id>
-        // Departments with zero checked boxes simply won't appear in the array.
+        // Form posts: assignments[<source_company_id>][<department>][] = <served_company_id>
+        // The source company is implicit in the accordion (each dept row sits
+        // under one company's section); the view encodes it in the input name.
         $assignments = $request->input('assignments', []);
         $validCompanyIds = Company::pluck('id')->map(fn($id) => (int) $id)->all();
 
         DB::transaction(function () use ($assignments, $validCompanyIds) {
-            // Wipe and rebuild — simplest and safest for a small admin-edited table
+            // Wipe and rebuild — simplest and safest for this small
+            // admin-edited table. The unique constraint on
+            // (source_company_id, department, company_id) protects against
+            // accidental duplicates from a malformed POST.
             DepartmentCompanyAccess::query()->delete();
 
-            foreach ($assignments as $dept => $companyIds) {
-                if (!in_array($dept, Ticket::DEPARTMENTS, true)) continue;
-                if (!is_array($companyIds)) continue;
+            foreach ($assignments as $sourceCompanyId => $deptMap) {
+                $sourceCompanyId = (int) $sourceCompanyId;
+                if (!in_array($sourceCompanyId, $validCompanyIds, true)) continue;
+                if (!is_array($deptMap)) continue;
 
-                foreach ($companyIds as $companyId) {
-                    $companyId = (int) $companyId;
-                    if (!in_array($companyId, $validCompanyIds, true)) continue;
+                foreach ($deptMap as $dept => $servedIds) {
+                    if (!in_array($dept, Ticket::DEPARTMENTS, true)) continue;
+                    if (!is_array($servedIds)) continue;
 
-                    DepartmentCompanyAccess::create([
-                        'department' => $dept,
-                        'company_id' => $companyId,
-                    ]);
+                    foreach ($servedIds as $servedId) {
+                        $servedId = (int) $servedId;
+                        if (!in_array($servedId, $validCompanyIds, true)) continue;
+                        // Don't store a self-row (source serving itself is
+                        // already implied by auto-derive membership).
+                        if ($servedId === $sourceCompanyId) continue;
+
+                        DepartmentCompanyAccess::create([
+                            'source_company_id' => $sourceCompanyId,
+                            'department'        => $dept,
+                            'company_id'        => $servedId,
+                        ]);
+                    }
                 }
             }
         });

@@ -138,7 +138,7 @@ Notable mail classes:
 
 ### Database
 - MySQL in production/local (`claritas_onboarding`), SQLite in-memory for tests
-- 44 migrations; the first 4 (prefixed `2024_01_`) define the core schema, subsequent `2026_03_` migrations are incremental enhancements
+- ~90 migrations; the first 4 (prefixed `2024_01_`) define the core schema, subsequent `2026_03_` through `2026_05_` migrations are incremental enhancements
 - Timezone: `Asia/Kuala_Lumpur` (set in `config/app.php`)
 
 ### Onboarding Staging JSON (`invite_staging_json`)

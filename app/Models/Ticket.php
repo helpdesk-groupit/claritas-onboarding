@@ -12,7 +12,8 @@ class Ticket extends Model
     use HasFactory;
 
     protected $fillable = [
-        'ticket_number', 'user_id', 'company_id', 'assigned_to', 'assigned_at',
+        'ticket_number', 'user_id', 'company_id', 'service_company_id',
+        'assigned_to', 'assigned_at',
         'department', 'priority', 'status', 'subject', 'description',
         'resolved_at', 'last_reminder_sent_at',
     ];
@@ -227,6 +228,83 @@ class Ticket extends Model
     ];
 
     /**
+     * Keyword hints used to infer a department from a free-text "Other"
+     * subject. First match wins (substring, case-insensitive). Order the
+     * dictionaries narrowest → broadest if you add overlapping terms.
+     *
+     * NOTE: there is no separate Admin department in practice — HRA handles
+     * office / facility / travel / meeting room queries too, so those
+     * keywords are collected under HRA here.
+     */
+    public const SUBJECT_KEYWORD_HINTS = [
+        // Digital sits FIRST so social-platform mentions win over generic IT
+        // / Marketing terms. e.g. "Facebook password" routes to Digital (a
+        // platform-specific query), not Group IT (which would match 'password').
+        // Same reasoning for "Instagram ad campaign" vs Marketing's 'ad'/'campaign'.
+        'Digital'  => ['facebook', 'instagram', 'tiktok'],
+        'Group IT' => ['laptop', 'computer', 'email', 'outlook', 'wifi', 'network',
+                       'password', 'login', 'access', 'software', 'install',
+                       'printer', 'vpn', 'monitor', 'mouse', 'keyboard'],
+        'HRA'      => ['salary', 'payroll', 'leave', 'onboard', 'offboard',
+                       'resignat', 'benefit', 'employ', 'contract',
+                       'office', 'supply', 'maintenance', 'facility',
+                       'travel', 'booking', 'meeting room', 'stationery'],
+        'Finance'  => ['invoice', 'payment', 'expense', 'reimburs', 'tax',
+                       'budget', 'vendor', 'claim', 'receipt'],
+        'Marketing'=> ['campaign', 'seo', 'analytics', 'marketing', 'ad ', 'ads '],
+        'Design'   => ['design', 'logo', 'mockup', 'figma', 'graphic'],
+        'Tech'     => ['bug', 'deploy', 'code review', 'api', 'performance issue',
+                       'server error'],
+    ];
+
+    /**
+     * Build a reverse-lookup map: subject string → list of departments that
+     * accept that subject. Excludes "Other" (handled separately).
+     *
+     * Most entries map to one department; a handful (e.g. "Brand Asset
+     * Request") legitimately belong to multiple, in which case the optgroup
+     * the user picked from disambiguates on the client side and this map is
+     * used server-side to validate the submitted (subject, department) pair.
+     */
+    public static function subjectToDepartmentMap(): array
+    {
+        $map = [];
+        foreach (self::DEPARTMENT_SUBJECTS as $dept => $subjects) {
+            foreach ($subjects as $subject) {
+                if ($subject === 'Other') {
+                    continue;
+                }
+                $map[$subject][] = $dept;
+            }
+        }
+        return $map;
+    }
+
+    /**
+     * Server-side mirror of the client-side keyword inference used for
+     * "Other" subjects. Returns the first matching department or null when
+     * nothing in SUBJECT_KEYWORD_HINTS matches.
+     */
+    public static function inferDepartmentFromText(?string $text): ?string
+    {
+        if ($text === null) {
+            return null;
+        }
+        $lower = mb_strtolower(trim($text));
+        if ($lower === '') {
+            return null;
+        }
+        foreach (self::SUBJECT_KEYWORD_HINTS as $dept => $keywords) {
+            foreach ($keywords as $kw) {
+                if (str_contains($lower, $kw)) {
+                    return $dept;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * Roles that are eligible to be assigned as PIC but are NOT considered
      * department managers.
      *
@@ -286,21 +364,33 @@ class Ticket extends Model
         return $this->belongsTo(Company::class);
     }
 
+    /**
+     * The company whose team is the service provider for this ticket
+     * (i.e. the team that handles it). Distinct from company() (the raiser).
+     */
+    public function serviceCompany()
+    {
+        return $this->belongsTo(Company::class, 'service_company_id');
+    }
+
     // ── Scopes ────────────────────────────────────────────────────────────
 
     /**
      * Restrict tickets to those visible on the Ticket Management page.
      *
-     * - Superadmin / system_admin → everything (system-wide admins)
+     * Service-provider model:
+     * - Superadmin / system_admin → everything (system-wide admins, bypass).
      * - Managers (incl. executives) → tickets in their managed department(s)
-     *   whose company is in that dept's served-companies cluster (auto-derived
-     *   members ∪ pivot extras). So a Tech manager at Claritas — when Tech is
-     *   configured to serve Claritas + Enlinea + Nuren — sees Tech tickets
-     *   from all three. The dept's coverage configuration drives the cluster;
-     *   the manager's own company doesn't restrict it.
+     *   where the SERVICE-PROVIDER company is the manager's own company. So
+     *   a Group IT manager at Company A sees tickets whose service_company_id
+     *   = A.id, regardless of which client raised them. Tickets routed to
+     *   another company's Group IT team are invisible.
      * - Non-managers (interns assigned to tickets) → only tickets assigned to
-     *   them as PIC. Visibility piggy-backs on assignment; if a manager assigned
-     *   the intern to a ticket from any served company, the intern sees it.
+     *   them as PIC. The assignment itself is the access grant.
+     *
+     * Legacy tickets where service_company_id IS NULL fall back to the old
+     * cluster check on company_id — keeps pre-migration tickets visible to
+     * the historical audience until they're edited / backfilled.
      *
      * Note: a user's own RAISED tickets are NOT included here — those belong
      * on the Self-Service page (/tickets), which has its own filter.
@@ -314,25 +404,36 @@ class Ticket extends Model
         $managedDepartments = self::departmentsManagedBy($user);
 
         if (empty($managedDepartments)) {
-            // Non-manager (intern with assigned tickets, etc.): only see
-            // tickets assigned to them. The assignment itself is the gate —
-            // whoever assigned the intern accepted the cross-company exposure.
             return $query->where('assigned_to', $user->id);
         }
 
-        // Manager: tickets in any managed dept whose company is in that dept's
-        // served-companies cluster. Built as per-dept OR clauses so a manager
-        // of multiple depts gets each dept's own cluster, not the union.
-        return $query->where(function ($outer) use ($managedDepartments) {
+        // Manager's own company id — needed to match service_company_id.
+        $managerCompanyId = $user->employee?->company
+            ? self::resolveCompanyId($user->employee->company)
+            : null;
+
+        return $query->where(function ($outer) use ($managedDepartments, $managerCompanyId) {
             foreach ($managedDepartments as $dept) {
-                $servedIds = self::companiesServingDepartment($dept);
-                $outer->orWhere(function ($inner) use ($dept, $servedIds) {
+                $outer->orWhere(function ($inner) use ($dept, $managerCompanyId) {
                     $inner->where('tickets.department', $dept);
-                    if (!empty($servedIds)) {
-                        $inner->whereIn('tickets.company_id', $servedIds);
-                    }
-                    // Empty servedIds = no auto-derived AND no pivot extras =
-                    // dept serves all companies (graceful default) → no filter.
+
+                    $inner->where(function ($w) use ($managerCompanyId, $dept) {
+                        // Strict: my company is the service provider.
+                        if ($managerCompanyId) {
+                            $w->where('tickets.service_company_id', $managerCompanyId);
+                        }
+
+                        // Legacy fallback: pre-migration tickets keep the
+                        // old cluster behaviour while service_company_id
+                        // backfill catches up.
+                        $servedIds = self::companiesServingDepartment($dept);
+                        $w->orWhere(function ($leg) use ($servedIds) {
+                            $leg->whereNull('tickets.service_company_id');
+                            if (!empty($servedIds)) {
+                                $leg->whereIn('tickets.company_id', $servedIds);
+                            }
+                        });
+                    });
                 });
             }
         });
@@ -501,6 +602,140 @@ class Ticket extends Model
             ->toArray();
 
         return array_values(array_unique(array_merge($autoIds, $extraIds)));
+    }
+
+    /**
+     * Public wrapper for defaultServedCompanyIdsForDepartment(). Used by the
+     * source-column backfill migration; keeps the private method's
+     * encapsulation while letting one-off scripts reuse the logic.
+     */
+    public static function defaultServedCompanyIdsForDepartmentPublic(string $department): array
+    {
+        return self::defaultServedCompanyIdsForDepartment($department);
+    }
+
+    // ── Service-provider resolution ────────────────────────────────────────
+
+    /**
+     * Returns the IDs of companies that have a team providing this department
+     * (i.e. source / service-provider companies). Derived from auto-membership
+     * — the same set used to populate Department Settings' company-first
+     * accordion. UNION with any company referenced as `source_company_id` in
+     * the pivot, so a company that's been explicitly named as a service
+     * provider for another's tickets is still surfaced even if its own
+     * auto-membership has been wiped.
+     */
+    public static function sourceCompanyIdsForDepartment(string $department): array
+    {
+        $autoIds = self::defaultServedCompanyIdsForDepartment($department);
+
+        $pivotSourceIds = DepartmentCompanyAccess::where('department', $department)
+            ->whereNotNull('source_company_id')
+            ->pluck('source_company_id')
+            ->map(fn($id) => (int) $id)
+            ->toArray();
+
+        return array_values(array_unique(array_merge($autoIds, $pivotSourceIds)));
+    }
+
+    /**
+     * Resolve the service-provider company for a (raiser_company, department)
+     * pair. Returns:
+     *   - int  → exactly one service provider; auto-route there
+     *   - null → ambiguous OR none found; caller (UI) must prompt for a pick
+     *
+     * Priority order:
+     *  1. If the raiser's own company has the department, route to itself.
+     *     "Self-service when possible" was the chosen default (decided 2026-05-13).
+     *  2. Pivot lookup: find rows where (department=$dept, company_id=$raiser).
+     *     If exactly one distinct source_company_id, route there.
+     *  3. Otherwise null — UI shows the Change picker with all (source, dept)
+     *     pairs that COULD serve the raiser (auto-members + pivot extras).
+     */
+    public static function resolveServiceCompanyId(?int $raiserCompanyId, string $department): ?int
+    {
+        if ($raiserCompanyId === null) {
+            return null;
+        }
+
+        // Rule 1: raiser self-service
+        $sources = self::sourceCompanyIdsForDepartment($department);
+        if (in_array($raiserCompanyId, $sources, true)) {
+            return $raiserCompanyId;
+        }
+
+        // Rule 2: pivot says this raiser is served by N source companies
+        $sourceCandidates = DepartmentCompanyAccess::where('department', $department)
+            ->where('company_id', $raiserCompanyId)
+            ->whereNotNull('source_company_id')
+            ->pluck('source_company_id')
+            ->map(fn($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->toArray();
+
+        if (count($sourceCandidates) === 1) {
+            return $sourceCandidates[0];
+        }
+
+        return null;
+    }
+
+    /**
+     * Returns every (source_company_id, department) pair that COULD legitimately
+     * serve the given raiser company — used to populate the Routing > Change
+     * picker on the create form.
+     *
+     * For each department:
+     *   - include the raiser's own company if it has the dept (self-service)
+     *   - include every source explicitly mapped to this raiser via the pivot
+     *
+     * Shape: [['company_id' => 5, 'company_name' => 'Foo', 'department' => 'Tech'], ...]
+     */
+    public static function serviceOptionsForRaiser(?int $raiserCompanyId): array
+    {
+        if ($raiserCompanyId === null) {
+            return [];
+        }
+
+        $pairs = [];
+
+        foreach (self::DEPARTMENTS as $dept) {
+            $deptSources = [];
+
+            // Self-service: raiser's company has the dept
+            $autoSources = self::defaultServedCompanyIdsForDepartment($dept);
+            if (in_array($raiserCompanyId, $autoSources, true)) {
+                $deptSources[] = $raiserCompanyId;
+            }
+
+            // Pivot: source companies explicitly serving this raiser for this dept
+            $pivotSources = DepartmentCompanyAccess::where('department', $dept)
+                ->where('company_id', $raiserCompanyId)
+                ->whereNotNull('source_company_id')
+                ->pluck('source_company_id')
+                ->map(fn($id) => (int) $id)
+                ->toArray();
+
+            $deptSources = array_values(array_unique(array_merge($deptSources, $pivotSources)));
+
+            foreach ($deptSources as $companyId) {
+                $pairs[] = ['company_id' => $companyId, 'department' => $dept];
+            }
+        }
+
+        if (empty($pairs)) {
+            return [];
+        }
+
+        $companyIds = array_unique(array_column($pairs, 'company_id'));
+        $names = Company::whereIn('id', $companyIds)->pluck('name', 'id')->toArray();
+
+        foreach ($pairs as &$pair) {
+            $pair['company_name'] = $names[$pair['company_id']] ?? '(unknown)';
+        }
+
+        return $pairs;
     }
 
     /**
@@ -776,22 +1011,25 @@ class Ticket extends Model
     /**
      * Returns a User query restricted to users eligible to be PIC for this ticket.
      * Includes managers + extra PIC-eligible roles (e.g. interns).
-     * Scoped to the ticket's chosen company — only that company's dept members
-     * are eligible (plus superadmin/sysadmin as catch-all).
+     * Scoped to the SERVICE-PROVIDER company — only that company's dept members
+     * are eligible (plus superadmin/sysadmin as catch-all). Falls back to the
+     * raiser's company on legacy tickets where service_company_id is null.
      */
     public function eligiblePicQuery()
     {
-        return self::picPoolForDeptAndCompany($this->department, $this->company_id, includePicExtras: true);
+        $serviceCompanyId = $this->service_company_id ?? $this->company_id;
+        return self::picPoolForDeptAndCompany($this->department, $serviceCompanyId, includePicExtras: true);
     }
 
     /**
      * Returns a User query of department managers (no interns) for this ticket.
      * Used for "new ticket" notifications and stale-ticket reminders when no
-     * PIC is assigned. Same company-scoped behaviour as eligiblePicQuery.
+     * PIC is assigned. Same service-company-scoped behaviour as eligiblePicQuery.
      */
     public function managersForNotification()
     {
-        return self::picPoolForDeptAndCompany($this->department, $this->company_id, includePicExtras: false);
+        $serviceCompanyId = $this->service_company_id ?? $this->company_id;
+        return self::picPoolForDeptAndCompany($this->department, $serviceCompanyId, includePicExtras: false);
     }
 
     /**
@@ -822,7 +1060,13 @@ class Ticket extends Model
             return Employee::query()->whereRaw('1 = 0');
         }
 
-        $servedCompanyNames = self::companyNamesServingDepartment($this->department);
+        // Narrow to the service-provider company's team. Legacy tickets
+        // without service_company_id fall back to the raiser's company.
+        $serviceCompanyId = $this->service_company_id ?? $this->company_id;
+        $canonicalName = $serviceCompanyId
+            ? Company::where('id', $serviceCompanyId)->value('name')
+            : null;
+        $serviceCompanyNames = $canonicalName ? self::companyNameVariants($canonicalName) : [];
 
         $q = Employee::where('work_role', 'manager')
             ->where('department', $this->department)
@@ -834,8 +1078,8 @@ class Ticket extends Model
                    ->orWhereHas('user', fn($u) => $u->where('is_active', false));
             });
 
-        if (!empty($servedCompanyNames)) {
-            $q->whereIn('company', $servedCompanyNames);
+        if (!empty($serviceCompanyNames)) {
+            $q->whereIn('company', $serviceCompanyNames);
         }
 
         return $q;
@@ -865,28 +1109,39 @@ class Ticket extends Model
      * defensive signal (empty companyId still falls back to admins-only), but
      * it does NOT narrow the pool any further than the dept-served cluster.
      */
-    public static function picPoolForDeptAndCompany(string $department, ?int $companyId, bool $includePicExtras = false)
+    /**
+     * Returns a User query for everyone eligible for the given department at
+     * the specific SERVICE-PROVIDER company. Unlike the previous cluster-wide
+     * model, this narrows to a single source company's team — so a ticket
+     * routed to Company A's Group IT is only assignable to A's Group IT
+     * members (plus catch-all admins).
+     *
+     * $serviceCompanyId = the company whose team handles this ticket
+     *                     (i.e. tickets.service_company_id), NOT the raiser.
+     */
+    public static function picPoolForDeptAndCompany(string $department, ?int $serviceCompanyId, bool $includePicExtras = false)
     {
         $query = User::where('is_active', true);
 
-        if (empty($companyId)) {
+        if (empty($serviceCompanyId)) {
             return $query->whereIn('role', ['superadmin', 'system_admin']);
         }
 
-        // Dept-served cluster (names — the employees.company column stores names,
-        // not ids). Empty list = dept serves all companies → no company filter.
-        $servedCompanyNames = self::companyNamesServingDepartment($department);
+        // Resolve the canonical and variant spellings of the service-provider
+        // company name (employees.company is a free-text string).
+        $canonicalName = Company::where('id', $serviceCompanyId)->value('name');
+        $serviceCompanyNames = $canonicalName ? self::companyNameVariants($canonicalName) : [];
 
         $isWorkRoleDept = in_array($department, self::WORK_ROLE_MANAGER_DEPARTMENTS, true);
 
-        $query->where(function ($outer) use ($department, $servedCompanyNames, $isWorkRoleDept, $includePicExtras) {
+        $query->where(function ($outer) use ($department, $serviceCompanyNames, $isWorkRoleDept, $includePicExtras) {
             // ── Path 1: Manager set ─────────────────────────────────────
             if ($isWorkRoleDept) {
-                $outer->whereHas('employee', function ($empQ) use ($department, $servedCompanyNames) {
+                $outer->whereHas('employee', function ($empQ) use ($department, $serviceCompanyNames) {
                     $empQ->where('work_role', 'manager')
                          ->where('department', $department);
-                    if (!empty($servedCompanyNames)) {
-                        $empQ->whereIn('company', $servedCompanyNames);
+                    if (!empty($serviceCompanyNames)) {
+                        $empQ->whereIn('company', $serviceCompanyNames);
                     }
                 });
             } else {
@@ -896,26 +1151,22 @@ class Ticket extends Model
                     : [];
                 $deptRoles = array_values(array_unique(array_merge($managerRoles, $extraRoles)));
 
-                $outer->where(function ($qq) use ($deptRoles, $servedCompanyNames) {
+                $outer->where(function ($qq) use ($deptRoles, $serviceCompanyNames) {
                     $qq->whereIn('role', $deptRoles);
-                    if (!empty($servedCompanyNames)) {
-                        $qq->whereHas('employee', function ($empQ) use ($servedCompanyNames) {
-                            $empQ->whereIn('company', $servedCompanyNames);
+                    if (!empty($serviceCompanyNames)) {
+                        $qq->whereHas('employee', function ($empQ) use ($serviceCompanyNames) {
+                            $empQ->whereIn('company', $serviceCompanyNames);
                         });
                     }
                 });
             }
 
             // ── Path 2: Department membership (PIC dropdown only) ───────
-            // Anyone whose employees.department exactly matches the dept name
-            // and whose company is in the served cluster. Activated only when
-            // $includePicExtras = true (i.e. the assign-PIC dropdown). Ensures
-            // notification emails (which pass false) stay scoped to managers.
             if ($includePicExtras) {
-                $outer->orWhereHas('employee', function ($empQ) use ($department, $servedCompanyNames) {
+                $outer->orWhereHas('employee', function ($empQ) use ($department, $serviceCompanyNames) {
                     $empQ->where('department', $department);
-                    if (!empty($servedCompanyNames)) {
-                        $empQ->whereIn('company', $servedCompanyNames);
+                    if (!empty($serviceCompanyNames)) {
+                        $empQ->whereIn('company', $serviceCompanyNames);
                     }
                 });
             }
@@ -925,6 +1176,26 @@ class Ticket extends Model
         });
 
         return $query;
+    }
+
+    /**
+     * Returns every spelling of a single company's name as it might appear in
+     * `employees.company` (e.g. "Enlinea Sdn. Bhd." vs "Enlinea Sdn Bhd").
+     * Used to constrain the PIC pool to one source company without missing
+     * employees whose company string normalises differently from the
+     * canonical `companies.name`.
+     */
+    public static function companyNameVariants(string $canonicalName): array
+    {
+        $canonicalNorm = self::normaliseCompanyName($canonicalName);
+        $variants = Employee::whereNotNull('company')
+            ->where('company', '!=', '')
+            ->distinct()
+            ->pluck('company')
+            ->filter(fn($n) => self::normaliseCompanyName($n) === $canonicalNorm)
+            ->values()
+            ->toArray();
+        return array_values(array_unique(array_merge([$canonicalName], $variants)));
     }
 
     /** Bootstrap badge color for status (used by views). */

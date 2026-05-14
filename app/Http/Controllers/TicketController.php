@@ -616,37 +616,50 @@ class TicketController extends Controller
         $user        = Auth::user();
         $userCompany = $user->employee?->company;
 
-        // All registered companies for the dropdown
+        // All registered companies — needed for the fallback Company dropdown
+        // (when the raiser has no employee record) AND for the service-options
+        // lookup that powers the Routing > Change picker.
         $companies = Company::orderBy('name')->get(['id', 'name']);
 
-        // Default selected company: user's own (matched by name) if registered;
-        // else the first company in the list. Use the model's normalised
-        // resolver so "Enlinea Sdn. Bhd." (employees.company) still matches
-        // "Enlinea Sdn Bhd" (companies.name).
-        $defaultCompanyId = null;
-        if ($userCompany) {
-            $defaultCompanyId = Ticket::resolveCompanyId($userCompany);
-        }
-        $defaultCompanyId ??= $companies->first()?->id;
+        $autoCompanyId   = $userCompany ? Ticket::resolveCompanyId($userCompany) : null;
+        $autoCompanyName = $autoCompanyId
+            ? optional($companies->firstWhere('id', $autoCompanyId))->name
+            : null;
 
-        // Pre-compute, for each company, the list of departments that ACTUALLY
-        // serve it (auto-derived members ∪ pivot extras). Strict filter applies
-        // to every user, including superadmin/system_admin — the user wants the
-        // dropdown to mirror the Department Settings view exactly. To raise a
-        // ticket against a department that has no members at this company, an
-        // employee in that role must be hired first, or the dept must be
-        // configured as an Extra for this company.
-        $departmentsByCompany = [];
-        foreach ($companies as $company) {
-            $departmentsByCompany[$company->id] = Ticket::departmentsForCompany($company->name);
+        $defaultCompanyId = $autoCompanyId ?? $companies->first()?->id;
+
+        // Available service-provider options for THIS raiser — every (source
+        // company, dept) pair that could legitimately handle their tickets.
+        // The Change picker on the form uses this; for each dept, the JS
+        // narrows the list to the matching options (usually one, sometimes
+        // multiple, occasionally none).
+        $serviceOptions = $autoCompanyId
+            ? Ticket::serviceOptionsForRaiser($autoCompanyId)
+            : [];
+
+        // Per-(subject_token, dept) auto-resolved service company — used by the
+        // JS to populate the Routing preview without a server round-trip.
+        // Shape: [department => service_company_id|null]. null = ambiguous,
+        // requires the user to use the Change picker.
+        $resolvedServiceByDept = [];
+        if ($autoCompanyId) {
+            foreach (Ticket::DEPARTMENTS as $dept) {
+                $resolvedServiceByDept[$dept] = Ticket::resolveServiceCompanyId($autoCompanyId, $dept);
+            }
         }
 
         return view('tickets.create', [
-            'companies'            => $companies,
-            'defaultCompanyId'     => $defaultCompanyId,
-            'departmentsByCompany' => $departmentsByCompany,
-            'priorities'           => Ticket::PRIORITIES,
-            'departmentSubjects'   => Ticket::DEPARTMENT_SUBJECTS,
+            'companies'              => $companies,
+            'autoCompanyId'          => $autoCompanyId,
+            'autoCompanyName'        => $autoCompanyName,
+            'defaultCompanyId'       => $defaultCompanyId,
+            'priorities'             => Ticket::PRIORITIES,
+            'departmentSubjects'     => Ticket::DEPARTMENT_SUBJECTS,
+            'subjectToDepartments'   => Ticket::subjectToDepartmentMap(),
+            'keywordHints'           => Ticket::SUBJECT_KEYWORD_HINTS,
+            'departmentsAll'         => Ticket::DEPARTMENTS,
+            'serviceOptions'         => $serviceOptions,
+            'resolvedServiceByDept'  => $resolvedServiceByDept,
         ]);
     }
 
@@ -656,55 +669,127 @@ class TicketController extends Controller
         $user = Auth::user();
 
         $data = $request->validate([
-            'company_id'        => 'required|exists:companies,id',
-            'subject'           => 'required|string|max:255',
-            'subject_other'     => 'nullable|string|max:255',
-            'description'       => 'required|string|max:10000',
-            'department'        => 'required|in:' . implode(',', Ticket::DEPARTMENTS),
-            'priority'          => 'required|in:' . implode(',', Ticket::PRIORITIES),
-            'attachments'       => 'nullable|array|max:10',
-            'attachments.*'     => 'file|max:10240|mimes:pdf,jpg,jpeg,png,gif,webp|valid_file_content',
+            'company_id'         => 'required|exists:companies,id',
+            'service_company_id' => 'nullable|exists:companies,id',
+            'subject'            => 'required|string|max:255',
+            'subject_other'      => 'nullable|string|max:255',
+            'description'        => 'required|string|max:10000',
+            'department'         => 'required|in:' . implode(',', Ticket::DEPARTMENTS),
+            'priority'           => 'required|in:' . implode(',', Ticket::PRIORITIES),
+            'attachments'        => 'nullable|array|max:10',
+            'attachments.*'      => 'file|max:10240|mimes:pdf,jpg,jpeg,png,gif,webp|valid_file_content',
         ]);
 
-        // Resolve company name (used for dept-serves check + denormalised storage)
-        $companyName = Company::where('id', $data['company_id'])->value('name');
-
-        // The chosen department must serve the chosen company. Superadmin/sysadmin bypass.
-        if (!$user->isSuperadmin() && !$user->isSystemAdmin()) {
-            if (!Ticket::departmentServesCompany($data['department'], $companyName)) {
-                return back()
-                    ->withErrors(['department' => 'Selected company does not have access to this department.'])
-                    ->withInput();
+        // Company (raiser/client) auto-override — same as before: if the
+        // raiser has an employee record, force the ticket onto their own
+        // company regardless of what the client submitted.
+        $userCompany = $user->employee?->company;
+        if ($userCompany) {
+            $autoCompanyId = Ticket::resolveCompanyId($userCompany);
+            if ($autoCompanyId) {
+                $data['company_id'] = $autoCompanyId;
             }
         }
 
-        // Subject vocabulary check — "Other" requires a custom subject text.
-        $allowedSubjects = Ticket::DEPARTMENT_SUBJECTS[$data['department']] ?? [];
-        if (!empty($allowedSubjects) && !in_array($data['subject'], $allowedSubjects, true)) {
-            return back()
-                ->withErrors(['subject' => 'Selected subject is not valid for the chosen department.'])
-                ->withInput();
-        }
+        $companyName = Company::where('id', $data['company_id'])->value('name');
 
-        $finalSubject = $data['subject'];
-        if ($data['subject'] === 'Other') {
+        // Subject-driven department resolution.
+        // For standardised subjects: re-derive department from the
+        //   subject→dept map (defence in depth — the client picked from a
+        //   specific optgroup, but we don't trust hand-crafted POSTs). For
+        //   subjects that map to multiple departments (e.g. "Brand Asset
+        //   Request" → Design or Marketing), accept the client's choice if
+        //   it's in the valid set.
+        // For "Other": trust the client-submitted department (set via
+        //   keyword inference or the manual override picker). Sanity-check
+        //   that keyword inference would have picked the same dept, but only
+        //   to log mismatches — don't reject.
+        if ($data['subject'] !== 'Other') {
+            $map = Ticket::subjectToDepartmentMap();
+            if (!isset($map[$data['subject']])) {
+                return back()
+                    ->withErrors(['subject' => 'Selected subject is not recognised.'])
+                    ->withInput();
+            }
+            $validDepts = $map[$data['subject']];
+            if (!in_array($data['department'], $validDepts, true)) {
+                if (count($validDepts) === 1) {
+                    // Auto-correct single-dept subjects (client likely tampered)
+                    $data['department'] = $validDepts[0];
+                } else {
+                    return back()
+                        ->withErrors(['department' => 'Please pick which department should handle this subject.'])
+                        ->withInput();
+                }
+            }
+        } else {
             $custom = trim($data['subject_other'] ?? '');
             if ($custom === '') {
                 return back()
                     ->withErrors(['subject_other' => 'Please describe the subject when picking "Other".'])
                     ->withInput();
             }
-            $finalSubject = 'Other — ' . $custom;
+        }
+
+        // Resolve the service-provider company for this (raiser, dept) pair.
+        // Priority: client-submitted service_company_id (if it's a legitimate
+        // candidate for this raiser) > auto-resolve via Ticket::resolveServiceCompanyId.
+        $validServiceOptions = Ticket::serviceOptionsForRaiser($data['company_id']);
+        $allowedServiceIdsForDept = array_values(array_unique(array_column(
+            array_filter($validServiceOptions, fn($p) => $p['department'] === $data['department']),
+            'company_id'
+        )));
+
+        $serviceCompanyId = null;
+
+        if (!empty($data['service_company_id'])) {
+            $clientPick = (int) $data['service_company_id'];
+            if (in_array($clientPick, $allowedServiceIdsForDept, true)) {
+                $serviceCompanyId = $clientPick;
+            } elseif ($user->isSuperadmin() || $user->isSystemAdmin()) {
+                // Admins can route to any company that has the dept's team.
+                $sourcePool = Ticket::sourceCompanyIdsForDepartment($data['department']);
+                if (in_array($clientPick, $sourcePool, true)) {
+                    $serviceCompanyId = $clientPick;
+                }
+            }
+        }
+
+        if ($serviceCompanyId === null) {
+            $serviceCompanyId = Ticket::resolveServiceCompanyId($data['company_id'], $data['department']);
+        }
+
+        if ($serviceCompanyId === null) {
+            if ($user->isSuperadmin() || $user->isSystemAdmin()) {
+                // Admin without an explicit pick — fall back to the raiser's
+                // own company if the dept exists there, else any source.
+                $sourcePool = Ticket::sourceCompanyIdsForDepartment($data['department']);
+                $serviceCompanyId = in_array($data['company_id'], $sourcePool, true)
+                    ? $data['company_id']
+                    : ($sourcePool[0] ?? null);
+            }
+        }
+
+        if ($serviceCompanyId === null) {
+            return back()
+                ->withErrors(['service_company_id' => 'No service provider is configured for this department for your company. Please use the Change picker to choose one, or contact a superadmin.'])
+                ->withInput();
+        }
+
+        $finalSubject = $data['subject'];
+        if ($data['subject'] === 'Other') {
+            $finalSubject = 'Other — ' . trim($data['subject_other']);
         }
 
         $ticket = Ticket::create([
-            'user_id'     => $user->id,
-            'company_id'  => $data['company_id'],
-            'department'  => $data['department'],
-            'priority'    => $data['priority'],
-            'subject'     => $finalSubject,
-            'description' => $data['description'],
-            'status'      => 'Open',
+            'user_id'            => $user->id,
+            'company_id'         => $data['company_id'],
+            'service_company_id' => $serviceCompanyId,
+            'department'         => $data['department'],
+            'priority'           => $data['priority'],
+            'subject'            => $finalSubject,
+            'description'        => $data['description'],
+            'status'             => 'Open',
         ]);
 
         // Process and store attachments (image-compress + secure save)

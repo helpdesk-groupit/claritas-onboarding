@@ -208,6 +208,116 @@
 </div>
 
 <div class="um-section">
+    <div class="um-section-title"><i class="bi bi-arrow-left-right"></i> Edit &mdash; re-routing a misfiled ticket</div>
+    <p>
+        If a raiser picked the wrong department (e.g. they chose <em>KOL</em> when the issue should have gone
+        to <em>Group IT</em>), you can re-route the ticket instead of asking them to raise a new one.
+    </p>
+
+    <p class="mt-3 mb-1"><strong>1. Find the Edit button</strong> on the ticket detail page (top-right of the ticket card, next to the status badge):</p>
+    <div class="um-mockup">
+        <div class="card" style="max-width:420px;margin:0 auto;border:1px solid #e2e8f0;">
+            <div class="card-body" style="padding:12px 14px;">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <h6 class="fw-semibold mb-0" style="font-size:13px;">TIC-2026-0012</h6>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:11px;cursor:default;">
+                            <i class="bi bi-arrow-left-right"></i> Edit
+                        </span>
+                        <span class="badge bg-secondary" style="font-size:10.5px;">Open</span>
+                    </div>
+                </div>
+                <p class="fw-semibold mb-1" style="font-size:12.5px;">Feature Request</p>
+                <p class="small text-muted mb-0" style="font-size:11px;">Please add dark mode to the dashboard&hellip;</p>
+            </div>
+        </div>
+        <div class="um-mockup-caption">The Edit button appears only when you opened this ticket from the <em>Ticket Management</em> page.</div>
+    </div>
+
+    <p class="mt-3 mb-1"><strong>2. Change the Department</strong> on the edit form. Most fields are locked &mdash; only Department and the optional Reason are editable:</p>
+    <div class="um-mockup">
+        <div style="max-width:520px;margin:0 auto;">
+            <div class="row g-2 mb-2">
+                <div class="col-6">
+                    <label class="form-label small fw-semibold mb-1" style="font-size:11px;">Company</label>
+                    <input type="text" class="form-control form-control-sm" value="Company A Sdn Bhd" disabled style="font-size:11.5px;">
+                </div>
+                <div class="col-6">
+                    <label class="form-label small fw-semibold mb-1" style="font-size:11px;">Priority</label>
+                    <input type="text" class="form-control form-control-sm" value="Medium" disabled style="font-size:11.5px;">
+                </div>
+            </div>
+            <div class="mb-2">
+                <label class="form-label small fw-semibold mb-1" style="font-size:11px;">
+                    Department <span class="text-danger">*</span>
+                    <span class="badge bg-warning-subtle text-warning-emphasis ms-1" style="font-size:9.5px;">Editable</span>
+                </label>
+                <select class="form-select form-select-sm" style="font-size:11.5px;">
+                    <option>Group IT</option>
+                </select>
+            </div>
+            <div class="mb-2">
+                <label class="form-label small fw-semibold mb-1" style="font-size:11px;">Subject</label>
+                <input type="text" class="form-control form-control-sm" value="Feature Request" disabled style="font-size:11.5px;">
+            </div>
+            <div class="mb-2">
+                <label class="form-label small fw-semibold mb-1" style="font-size:11px;">
+                    Reason <span class="text-muted fw-normal" style="font-size:10px;">(optional)</span>
+                    <span class="badge bg-warning-subtle text-warning-emphasis ms-1" style="font-size:9.5px;">Editable</span>
+                </label>
+                <input type="text" class="form-control form-control-sm" value="Raiser picked KOL &mdash; should have been Group IT" disabled style="font-size:11.5px;font-style:italic;color:#475569;">
+            </div>
+            <div class="d-flex justify-content-end gap-2 mt-2">
+                <span class="btn btn-light btn-sm" style="font-size:11px;cursor:default;">Cancel</span>
+                <span class="btn btn-primary btn-sm" style="font-size:11px;cursor:default;"><i class="bi bi-save me-1"></i>Save Changes</span>
+            </div>
+        </div>
+        <div class="um-mockup-caption">Only fields tagged <span class="badge bg-warning-subtle text-warning-emphasis" style="font-size:9.5px;">Editable</span> can be changed. Company, Priority, Subject, Description, and Attachments are deliberately read-only.</div>
+    </div>
+
+    <ol class="um-step-list">
+        <li><strong>Open the ticket from this page</strong> (not from My Tickets). The <em>Edit</em> button only appears when you reach the detail page via <em>Ticket Management</em>.</li>
+        <li>Click the <strong>Edit</strong> button.</li>
+        <li>Change the <strong>Department</strong> dropdown to the correct one.</li>
+        <li>Optionally add a <strong>Reason</strong> &mdash; it's saved into the edit log.</li>
+        <li>Click <strong>Save Changes</strong>.</li>
+    </ol>
+
+    <div class="um-warn"><i class="bi bi-exclamation-triangle-fill"></i><strong>What happens on save:</strong> the current PIC is cleared, status is reset to <strong>Open</strong>, and a fresh "new ticket" email + bell notification is sent to the new department's managers. The ticket leaves your inbox (unless you also manage the destination department).</div>
+    <div class="um-tip"><i class="bi bi-shield-check"></i><strong>Who can edit:</strong> superadmin / system admin, OR a manager of the ticket's <em>current</em> department. So a Tech manager can re-route a Tech ticket, but cannot edit a Marketing ticket.</div>
+
+    <p class="mt-3 mb-1"><strong>3. Every save is recorded</strong> in an <em>Edit log</em> card on the ticket detail page, visible to anyone who can view the ticket:</p>
+    <div class="um-mockup">
+        <div class="card" style="max-width:420px;margin:0 auto;border:1px solid #e2e8f0;">
+            <div class="card-body" style="padding:12px 14px;">
+                <h6 class="fw-semibold mb-2" style="font-size:13px;">
+                    <i class="bi bi-clock-history me-1"></i> Edit log
+                    <span class="badge bg-secondary ms-1" style="font-size:10px;">1</span>
+                </h6>
+                <div class="border rounded p-2" style="background:#f8fafc;font-size:12px;">
+                    <div class="d-flex justify-content-between align-items-start mb-1">
+                        <span class="fw-semibold">Alex Tan</span>
+                        <span class="text-muted" style="font-size:11px;">12 May 2026, 15:47</span>
+                    </div>
+                    <div class="mb-1">
+                        <span class="text-muted text-uppercase" style="font-size:10px;letter-spacing:.4px;">department</span>
+                        <div class="d-flex align-items-center gap-1 flex-wrap">
+                            <span class="badge bg-light text-dark border" style="font-weight:normal;">KOL</span>
+                            <i class="bi bi-arrow-right text-muted"></i>
+                            <span class="badge bg-light text-dark border" style="font-weight:normal;">Group IT</span>
+                        </div>
+                    </div>
+                    <div class="mt-1 pt-1 border-top" style="font-style:italic;color:#475569;font-size:11.5px;">
+                        <i class="bi bi-chat-quote me-1"></i>Raiser picked KOL &mdash; should have been Group IT
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="um-mockup-caption">Each entry shows who edited, when, the field change as <em>before &rarr; after</em>, and the reason (if you provided one).</div>
+    </div>
+</div>
+
+<div class="um-section">
     <div class="um-section-title"><i class="bi bi-diagram-3"></i> Status lifecycle</div>
     <p>The five statuses and how a ticket moves between them:</p>
     <div class="um-lifecycle">

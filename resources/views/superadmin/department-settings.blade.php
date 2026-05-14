@@ -171,24 +171,26 @@
                             @else
                                 @foreach($existingDepts as $dept)
                                     @php
-                                        $extraCompanyIds = $assignments[$dept] ?? [];
+                                        // Each (source_company, dept) row owns its own list of
+                                        // served extras — no more cross-row syncing.
+                                        $extraCompanyIds = $assignments[$company->id][$dept] ?? [];
                                         $otherCompanies  = $companies->where('id', '!=', $company->id);
                                     @endphp
-                                    <div class="ds-dept-row" data-dept="{{ $dept }}">
+                                    <div class="ds-dept-row" data-dept="{{ $dept }}" data-source-company-id="{{ $company->id }}">
                                         <div class="ds-dept-row-header">
                                             <span class="ds-dept-name">
                                                 <i class="bi bi-tag me-1"></i>{{ $dept }}
                                             </span>
                                             <span class="ds-pill auto">
                                                 <i class="bi bi-magic"></i> Auto-served
-                                                <span class="ds-pill-note">(member of this dept works here)</span>
+                                                <span class="ds-pill-note">(this company's own {{ $dept }} team)</span>
                                             </span>
                                         </div>
 
                                         <div class="ds-extras-block">
                                             <div class="ds-extras-label">
                                                 <i class="bi bi-share"></i>
-                                                Also serves these other companies (Extras)
+                                                This team also handles tickets from
                                             </div>
                                             @if($otherCompanies->isEmpty())
                                                 <div class="ds-extras-empty">No other companies registered.</div>
@@ -203,10 +205,8 @@
                                                             <input type="checkbox"
                                                                    class="form-check-input ds-extra-input"
                                                                    id="ds_extra_{{ $company->id }}_{{ $dept }}_{{ $other->id }}"
-                                                                   name="assignments[{{ $dept }}][]"
+                                                                   name="assignments[{{ $company->id }}][{{ $dept }}][]"
                                                                    value="{{ $other->id }}"
-                                                                   data-dept="{{ $dept }}"
-                                                                   data-company-id="{{ $other->id }}"
                                                                    @checked($isExtra)>
                                                             <span class="ds-extra-name">{{ $other->name }}</span>
                                                         </label>
@@ -271,32 +271,14 @@
     if (expandAllBtn) expandAllBtn.addEventListener('click', function () { setAll(true); });
     if (collapseAllBtn) collapseAllBtn.addEventListener('click', function () { setAll(false); });
 
-    // ── Extras toggles: visual on/off + sync siblings ─────────────────────
-    // If the same dept auto-derives at multiple companies, the same (dept,
-    // other_company) checkbox can appear in multiple rows. We keep them in
-    // sync so the visual state matches the underlying single pivot row.
-    function applyVisualState(input) {
-        var label = input.closest('.ds-extra-toggle');
-        if (label) label.classList.toggle('is-on', input.checked);
-    }
-
+    // ── Extras toggles: visual on/off only ────────────────────────────────
+    // In the service-provider model, each (source_company, dept) row is
+    // independent — toggling Company A's Tech > "also serves Nuren" does
+    // NOT affect Company B's Tech > Nuren. No cross-row sync.
     form.querySelectorAll('input.ds-extra-input').forEach(function (input) {
         input.addEventListener('change', function () {
-            applyVisualState(input);
-
-            // Sync any sibling checkboxes that target the same (dept, company) pair.
-            var dept = input.getAttribute('data-dept');
-            var companyId = input.getAttribute('data-company-id');
-            if (!dept || !companyId) return;
-            form.querySelectorAll(
-                'input.ds-extra-input[data-dept="' + dept + '"][data-company-id="' + companyId + '"]'
-            ).forEach(function (sibling) {
-                if (sibling === input) return;
-                if (sibling.checked !== input.checked) {
-                    sibling.checked = input.checked;
-                    applyVisualState(sibling);
-                }
-            });
+            var label = input.closest('.ds-extra-toggle');
+            if (label) label.classList.toggle('is-on', input.checked);
         });
     });
 })();
