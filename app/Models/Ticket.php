@@ -2,9 +2,9 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 
 class Ticket extends Model
@@ -19,8 +19,8 @@ class Ticket extends Model
     ];
 
     protected $casts = [
-        'assigned_at'           => 'datetime',
-        'resolved_at'           => 'datetime',
+        'assigned_at' => 'datetime',
+        'resolved_at' => 'datetime',
         'last_reminder_sent_at' => 'datetime',
     ];
 
@@ -31,7 +31,8 @@ class Ticket extends Model
         'Community', 'Consulting', 'Content', 'Design', 'Digital', 'Ecommerce',
         'KOL', 'Management', 'Marketing', 'Media', 'Production', 'Projects', 'Sales', 'Tech',
     ];
-    public const PRIORITIES  = ['Low', 'Medium', 'High', 'Urgent'];
+
+    public const PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'];
 
     /**
      * Status lifecycle:
@@ -54,7 +55,8 @@ class Ticket extends Model
      * Health card. Avg ≤ GOOD = green, ≤ AMBER = amber, > AMBER = red.
      * Tweak these to retune the dashboard performance bands.
      */
-    public const HEALTH_GOOD_MAX_MINUTES  = 1440;   // 24 hours
+    public const HEALTH_GOOD_MAX_MINUTES = 1440;   // 24 hours
+
     public const HEALTH_AMBER_MAX_MINUTES = 4320;   // 72 hours
 
     /**
@@ -66,10 +68,10 @@ class Ticket extends Model
      * determined by Employee.work_role + Employee.department instead.
      */
     public const DEPARTMENT_MANAGER_ROLES = [
-        'HRA'      => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin'],
+        'HRA' => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin'],
         'Group IT' => ['it_manager', 'it_executive', 'superadmin', 'system_admin'],
-        'Finance'  => ['finance_manager', 'finance_executive', 'superadmin', 'system_admin'],
-        'Admin'    => ['superadmin', 'system_admin'],
+        'Finance' => ['finance_manager', 'finance_executive', 'superadmin', 'system_admin'],
+        'Admin' => ['superadmin', 'system_admin'],
     ];
 
     /**
@@ -241,20 +243,20 @@ class Ticket extends Model
         // / Marketing terms. e.g. "Facebook password" routes to Digital (a
         // platform-specific query), not Group IT (which would match 'password').
         // Same reasoning for "Instagram ad campaign" vs Marketing's 'ad'/'campaign'.
-        'Digital'  => ['facebook', 'instagram', 'tiktok'],
+        'Digital' => ['facebook', 'instagram', 'tiktok'],
         'Group IT' => ['laptop', 'computer', 'email', 'outlook', 'wifi', 'network',
-                       'password', 'login', 'access', 'software', 'install',
-                       'printer', 'vpn', 'monitor', 'mouse', 'keyboard'],
-        'HRA'      => ['salary', 'payroll', 'leave', 'onboard', 'offboard',
-                       'resignat', 'benefit', 'employ', 'contract',
-                       'office', 'supply', 'maintenance', 'facility',
-                       'travel', 'booking', 'meeting room', 'stationery'],
-        'Finance'  => ['invoice', 'payment', 'expense', 'reimburs', 'tax',
-                       'budget', 'vendor', 'claim', 'receipt'],
-        'Marketing'=> ['campaign', 'seo', 'analytics', 'marketing', 'ad ', 'ads '],
-        'Design'   => ['design', 'logo', 'mockup', 'figma', 'graphic'],
-        'Tech'     => ['bug', 'deploy', 'code review', 'api', 'performance issue',
-                       'server error'],
+            'password', 'login', 'access', 'software', 'install',
+            'printer', 'vpn', 'monitor', 'mouse', 'keyboard'],
+        'HRA' => ['salary', 'payroll', 'leave', 'onboard', 'offboard',
+            'resignat', 'benefit', 'employ', 'contract',
+            'office', 'supply', 'maintenance', 'facility',
+            'travel', 'booking', 'meeting room', 'stationery'],
+        'Finance' => ['invoice', 'payment', 'expense', 'reimburs', 'tax',
+            'budget', 'vendor', 'claim', 'receipt'],
+        'Marketing' => ['campaign', 'seo', 'analytics', 'marketing', 'ad ', 'ads '],
+        'Design' => ['design', 'logo', 'mockup', 'figma', 'graphic'],
+        'Tech' => ['bug', 'deploy', 'code review', 'api', 'performance issue',
+            'server error'],
     ];
 
     /**
@@ -277,6 +279,7 @@ class Ticket extends Model
                 $map[$subject][] = $dept;
             }
         }
+
         return $map;
     }
 
@@ -301,6 +304,7 @@ class Ticket extends Model
                 }
             }
         }
+
         return null;
     }
 
@@ -319,7 +323,7 @@ class Ticket extends Model
      *   - Receive "new ticket raised" notifications (those go to managers only)
      */
     public const DEPARTMENT_PIC_EXTRA_ROLES = [
-        'HRA'      => ['hr_intern'],
+        'HRA' => ['hr_intern'],
         'Group IT' => ['it_intern'],
     ];
 
@@ -392,6 +396,15 @@ class Ticket extends Model
      * cluster check on company_id — keeps pre-migration tickets visible to
      * the historical audience until they're edited / backfilled.
      *
+     * Orphan-ticket safety net: a ticket whose service_company_id points at a
+     * company that is NOT a valid provider for its department (the usual
+     * cause is a superadmin-created ticket that fell back to an arbitrary
+     * company, or a pre-fix re-route that never updated the column) would
+     * otherwise be invisible to EVERY department manager. Such orphans are
+     * surfaced to all managers of that department whose own company is a
+     * legitimate provider — so a stranded Group IT ticket reappears for the
+     * Group IT managers instead of living only in the superadmin's archive.
+     *
      * Note: a user's own RAISED tickets are NOT included here — those belong
      * on the Self-Service page (/tickets), which has its own filter.
      */
@@ -417,22 +430,44 @@ class Ticket extends Model
                 $outer->orWhere(function ($inner) use ($dept, $managerCompanyId) {
                     $inner->where('tickets.department', $dept);
 
-                    $inner->where(function ($w) use ($managerCompanyId, $dept) {
-                        // Strict: my company is the service provider.
+                    // Valid providers for this department — the source-company
+                    // set (auto-derived members ∪ pivot extras). A ticket
+                    // whose service_company_id is outside this set is an
+                    // orphan and gets the safety-net treatment below.
+                    $validProviderIds = self::sourceCompanyIdsForDepartment($dept);
+                    $servedIds = self::companiesServingDepartment($dept);
+
+                    $inner->where(function ($w) use ($managerCompanyId, $validProviderIds, $servedIds) {
+                        // Strict (the common, correct path): my company is the
+                        // ticket's service provider.
                         if ($managerCompanyId) {
                             $w->where('tickets.service_company_id', $managerCompanyId);
                         }
 
-                        // Legacy fallback: pre-migration tickets keep the
-                        // old cluster behaviour while service_company_id
-                        // backfill catches up.
-                        $servedIds = self::companiesServingDepartment($dept);
+                        // Legacy fallback: pre-migration tickets (service
+                        // company never set) keep the old cluster behaviour
+                        // while the backfill catches up.
                         $w->orWhere(function ($leg) use ($servedIds) {
                             $leg->whereNull('tickets.service_company_id');
-                            if (!empty($servedIds)) {
+                            if (! empty($servedIds)) {
                                 $leg->whereIn('tickets.company_id', $servedIds);
                             }
                         });
+
+                        // Orphan safety net: service_company_id is set but is
+                        // NOT a valid provider for this dept. Show it to every
+                        // manager whose own company IS a valid provider, so
+                        // mis-routed tickets surface to the dept team instead
+                        // of vanishing. Skipped when the manager has no
+                        // resolvable company, or the dept has no providers.
+                        if ($managerCompanyId
+                            && ! empty($validProviderIds)
+                            && in_array($managerCompanyId, $validProviderIds, true)) {
+                            $w->orWhere(function ($orphan) use ($validProviderIds) {
+                                $orphan->whereNotNull('tickets.service_company_id')
+                                    ->whereNotIn('tickets.service_company_id', $validProviderIds);
+                            });
+                        }
                     });
                 });
             }
@@ -451,11 +486,13 @@ class Ticket extends Model
     {
         if (empty($userCompany)) {
             $query->whereRaw('1 = 0');
+
             return;
         }
         $companyId = self::resolveCompanyId($userCompany);
-        if (!$companyId) {
+        if (! $companyId) {
             $query->whereRaw('1 = 0');
+
             return;
         }
 
@@ -471,6 +508,7 @@ class Ticket extends Model
 
         if (empty($allowedDepts)) {
             $query->whereRaw('1 = 0');
+
             return;
         }
         $query->whereIn('tickets.department', $allowedDepts);
@@ -486,7 +524,9 @@ class Ticket extends Model
      */
     public static function orWhereInManagedDeptsServingCreator($query, array $managedDepartments): void
     {
-        if (empty($managedDepartments)) return;
+        if (empty($managedDepartments)) {
+            return;
+        }
 
         foreach ($managedDepartments as $dept) {
             // Combined served list: auto-derived from members + extras from pivot.
@@ -495,17 +535,18 @@ class Ticket extends Model
             if (empty($servedCompanies)) {
                 // Unconfigured dept (no members AND no extras) → serves all
                 $query->orWhere('tickets.department', $dept);
+
                 continue;
             }
 
             $query->orWhere(function ($q) use ($dept, $servedCompanies) {
                 $q->where('tickets.department', $dept)
-                  ->whereExists(function ($sub) use ($servedCompanies) {
-                      $sub->select(\DB::raw(1))
-                          ->from('employees')
-                          ->whereColumn('employees.user_id', 'tickets.user_id')
-                          ->whereIn('employees.company', $servedCompanies);
-                  });
+                    ->whereExists(function ($sub) use ($servedCompanies) {
+                        $sub->select(\DB::raw(1))
+                            ->from('employees')
+                            ->whereColumn('employees.user_id', 'tickets.user_id')
+                            ->whereIn('employees.company', $servedCompanies);
+                    });
             });
         }
     }
@@ -530,6 +571,7 @@ class Ticket extends Model
                 $managed[] = $dept;
             }
         }
+
         return $managed;
     }
 
@@ -553,13 +595,13 @@ class Ticket extends Model
         // Step 1: role / work-role check
         if (in_array($department, self::WORK_ROLE_MANAGER_DEPARTMENTS, true)) {
             $emp = $user->employee;
-            if (!$emp || $emp->work_role !== 'manager' || $emp->department !== $department) {
+            if (! $emp || $emp->work_role !== 'manager' || $emp->department !== $department) {
                 return false;
             }
             $userCompany = $emp->company;
         } else {
             $deptRoles = self::DEPARTMENT_MANAGER_ROLES[$department] ?? [];
-            if (!in_array($user->role, $deptRoles, true)) {
+            if (! in_array($user->role, $deptRoles, true)) {
                 return false;
             }
             $userCompany = $user->employee?->company;
@@ -574,6 +616,7 @@ class Ticket extends Model
             return false; // dept restricted but user has no company
         }
         $userCompanyId = self::resolveCompanyId($userCompany);
+
         return $userCompanyId && in_array($userCompanyId, $servedCompanyIds, true);
     }
 
@@ -598,7 +641,7 @@ class Ticket extends Model
         $autoIds = self::defaultServedCompanyIdsForDepartment($department);
         $extraIds = DepartmentCompanyAccess::where('department', $department)
             ->pluck('company_id')
-            ->map(fn($id) => (int) $id)
+            ->map(fn ($id) => (int) $id)
             ->toArray();
 
         return array_values(array_unique(array_merge($autoIds, $extraIds)));
@@ -632,7 +675,7 @@ class Ticket extends Model
         $pivotSourceIds = DepartmentCompanyAccess::where('department', $department)
             ->whereNotNull('source_company_id')
             ->pluck('source_company_id')
-            ->map(fn($id) => (int) $id)
+            ->map(fn ($id) => (int) $id)
             ->toArray();
 
         return array_values(array_unique(array_merge($autoIds, $pivotSourceIds)));
@@ -669,7 +712,7 @@ class Ticket extends Model
             ->where('company_id', $raiserCompanyId)
             ->whereNotNull('source_company_id')
             ->pluck('source_company_id')
-            ->map(fn($id) => (int) $id)
+            ->map(fn ($id) => (int) $id)
             ->unique()
             ->values()
             ->toArray();
@@ -679,6 +722,65 @@ class Ticket extends Model
         }
 
         return null;
+    }
+
+    /**
+     * Pick the service-provider company for a ticket whose department is being
+     * (re)assigned — used by the Edit-Department re-route and by the
+     * stranded-ticket backfill migration.
+     *
+     * "Same company, new dept" rule: if the raiser's own company has a team
+     * for $department, keep the ticket with that company — the most intuitive
+     * outcome (a misfiled "Acme Tech" ticket becomes an "Acme Group IT"
+     * ticket, not someone else's). Only when the raiser's company has no team
+     * for the new dept do we fall back to the normal auto-resolution.
+     *
+     * Returns:
+     *   - int  → a concrete service-provider company id
+     *   - null → no provider could be determined (ambiguous, or none exists);
+     *            the caller decides what to do (Edit form keeps the ticket
+     *            visible to admins; the backfill leaves it untouched).
+     *
+     * @param  int|null  $raiserCompanyId  tickets.company_id (the client).
+     * @param  string  $department  The department the ticket now belongs to.
+     */
+    public static function resolveServiceCompanyIdForDepartmentChange(?int $raiserCompanyId, string $department): ?int
+    {
+        if ($raiserCompanyId !== null) {
+            // Raiser's own company has a team for the new dept → keep it local.
+            $sources = self::sourceCompanyIdsForDepartment($department);
+            if (in_array($raiserCompanyId, $sources, true)) {
+                return $raiserCompanyId;
+            }
+        }
+
+        // Otherwise defer to the standard auto-resolution (self-service rule,
+        // then single-pivot-source rule). May still return null when ambiguous.
+        return self::resolveServiceCompanyId($raiserCompanyId, $department);
+    }
+
+    /**
+     * True when $serviceCompanyId is a legitimate service provider for
+     * $department — i.e. it appears in the department's source-company set.
+     *
+     * Used to detect "stranded" tickets: a ticket whose service_company_id
+     * points at a company that does NOT actually run that department (the
+     * usual cause is a superadmin-created ticket that fell back to an
+     * arbitrary company, or a re-route that never updated the column). Such
+     * tickets are invisible to every department manager under the strict
+     * scopeVisibleTo() match, so they need either backfill or the orphan
+     * safety branch.
+     *
+     * A null $serviceCompanyId is considered NOT valid (stranded) so legacy
+     * rows are caught too.
+     */
+    public static function isValidServiceCompanyForDepartment(?int $serviceCompanyId, string $department): bool
+    {
+        if ($serviceCompanyId === null) {
+            return false;
+        }
+
+        return in_array($serviceCompanyId, self::sourceCompanyIdsForDepartment($department), true);
     }
 
     /**
@@ -714,7 +816,7 @@ class Ticket extends Model
                 ->where('company_id', $raiserCompanyId)
                 ->whereNotNull('source_company_id')
                 ->pluck('source_company_id')
-                ->map(fn($id) => (int) $id)
+                ->map(fn ($id) => (int) $id)
                 ->toArray();
 
             $deptSources = array_values(array_unique(array_merge($deptSources, $pivotSources)));
@@ -759,13 +861,15 @@ class Ticket extends Model
             // App-role-gated: members = users with role in (manager + extras),
             // excluding system-wide admins
             $managerRoles = self::DEPARTMENT_MANAGER_ROLES[$department] ?? [];
-            $extraRoles   = self::DEPARTMENT_PIC_EXTRA_ROLES[$department] ?? [];
-            $memberRoles  = array_values(array_diff(
+            $extraRoles = self::DEPARTMENT_PIC_EXTRA_ROLES[$department] ?? [];
+            $memberRoles = array_values(array_diff(
                 array_merge($managerRoles, $extraRoles),
                 ['superadmin', 'system_admin']
             ));
 
-            if (empty($memberRoles)) return [];
+            if (empty($memberRoles)) {
+                return [];
+            }
 
             $companyNames = User::query()
                 ->join('employees', 'employees.user_id', '=', 'users.id')
@@ -778,7 +882,9 @@ class Ticket extends Model
                 ->toArray();
         }
 
-        if (empty($companyNames)) return [];
+        if (empty($companyNames)) {
+            return [];
+        }
 
         // Resolve each (possibly variant-spelled) employee company name to a
         // canonical companies.id. employees.company is a free-text column — it
@@ -788,8 +894,11 @@ class Ticket extends Model
         $companyIds = [];
         foreach ($companyNames as $name) {
             $id = self::resolveCompanyId($name);
-            if ($id) $companyIds[] = $id;
+            if ($id) {
+                $companyIds[] = $id;
+            }
         }
+
         return array_values(array_unique($companyIds));
     }
 
@@ -806,28 +915,38 @@ class Ticket extends Model
      */
     public static function resolveCompanyId(?string $name): ?int
     {
-        if (empty($name)) return null;
+        if (empty($name)) {
+            return null;
+        }
 
         $exact = Company::where('name', $name)->value('id');
-        if ($exact) return (int) $exact;
+        if ($exact) {
+            return (int) $exact;
+        }
 
         $target = self::normaliseCompanyName($name);
-        if ($target === '') return null;
+        if ($target === '') {
+            return null;
+        }
 
         foreach (Company::all(['id', 'name']) as $c) {
             if (self::normaliseCompanyName($c->name) === $target) {
                 return (int) $c->id;
             }
         }
+
         return null;
     }
 
     /** Normalise a company name for fuzzy comparison: lowercase, strip periods/commas, collapse whitespace. */
     public static function normaliseCompanyName(?string $name): string
     {
-        if ($name === null) return '';
+        if ($name === null) {
+            return '';
+        }
         $clean = str_replace(['.', ','], '', $name);
         $clean = preg_replace('/\s+/', ' ', $clean);
+
         return strtolower(trim($clean));
     }
 
@@ -846,7 +965,9 @@ class Ticket extends Model
     public static function companyNamesServingDepartment(string $department): array
     {
         $ids = self::companiesServingDepartment($department);
-        if (empty($ids)) return [];
+        if (empty($ids)) {
+            return [];
+        }
 
         $canonical = Company::whereIn('id', $ids)->pluck('name')->toArray();
 
@@ -858,7 +979,7 @@ class Ticket extends Model
             ->where('company', '!=', '')
             ->distinct()
             ->pluck('company')
-            ->filter(fn($n) => in_array(self::normaliseCompanyName($n), $canonicalNorm, true))
+            ->filter(fn ($n) => in_array(self::normaliseCompanyName($n), $canonicalNorm, true))
             ->values()
             ->toArray();
 
@@ -883,7 +1004,7 @@ class Ticket extends Model
             return self::DEPARTMENTS;
         }
         $companyId = self::resolveCompanyId($companyName);
-        if (!$companyId) {
+        if (! $companyId) {
             return self::DEPARTMENTS;
         }
 
@@ -894,6 +1015,7 @@ class Ticket extends Model
                 $result[] = $dept;
             }
         }
+
         return $result;
     }
 
@@ -911,10 +1033,11 @@ class Ticket extends Model
             return false;
         }
         $companyId = self::resolveCompanyId($companyName);
-        if (!$companyId) {
+        if (! $companyId) {
             return false;
         }
         $servedIds = self::companiesServingDepartment($department);
+
         return in_array($companyId, $servedIds, true);
     }
 
@@ -923,11 +1046,11 @@ class Ticket extends Model
      * filtered to the companies that the department is configured to serve
      * (per the department_company_access pivot table).
      *
-     * @param string $department         The ticket department.
-     * @param bool   $includePicExtras   When true, also includes DEPARTMENT_PIC_EXTRA_ROLES
-     *                                   (e.g. interns) — used for the PIC assignment pool.
-     *                                   When false, returns managers only — used for
-     *                                   new-ticket notifications and stale reminders.
+     * @param  string  $department  The ticket department.
+     * @param  bool  $includePicExtras  When true, also includes DEPARTMENT_PIC_EXTRA_ROLES
+     *                                  (e.g. interns) — used for the PIC assignment pool.
+     *                                  When false, returns managers only — used for
+     *                                  new-ticket notifications and stale reminders.
      */
     public static function eligibleManagersQuery(string $department, bool $includePicExtras = false)
     {
@@ -941,29 +1064,30 @@ class Ticket extends Model
             $query->where(function ($q) use ($department, $servedCompanies) {
                 $q->whereHas('employee', function ($empQ) use ($department, $servedCompanies) {
                     $empQ->where('work_role', 'manager')
-                         ->where('department', $department);
-                    if (!empty($servedCompanies)) {
+                        ->where('department', $department);
+                    if (! empty($servedCompanies)) {
                         $empQ->whereIn('company', $servedCompanies);
                     }
                 })->orWhereIn('role', ['superadmin', 'system_admin']);
             });
+
             return $query;
         }
 
         // App-role-gated department
         $managerRoles = self::DEPARTMENT_MANAGER_ROLES[$department] ?? [];
-        $extraRoles   = $includePicExtras
+        $extraRoles = $includePicExtras
             ? (self::DEPARTMENT_PIC_EXTRA_ROLES[$department] ?? [])
             : [];
         $deptRoles = array_values(array_unique(array_merge($managerRoles, $extraRoles)));
 
-        if (!empty($servedCompanies)) {
+        if (! empty($servedCompanies)) {
             $query->where(function ($q) use ($deptRoles, $servedCompanies) {
                 $q->where(function ($qq) use ($deptRoles, $servedCompanies) {
                     $qq->whereIn('role', $deptRoles)
-                       ->whereHas('employee', function ($empQ) use ($servedCompanies) {
-                           $empQ->whereIn('company', $servedCompanies);
-                       });
+                        ->whereHas('employee', function ($empQ) use ($servedCompanies) {
+                            $empQ->whereIn('company', $servedCompanies);
+                        });
                 })->orWhereIn('role', ['superadmin', 'system_admin']);
             });
         } else {
@@ -979,11 +1103,11 @@ class Ticket extends Model
      */
     public static function generateTicketNumber(): string
     {
-        $year   = date('Y');
+        $year = date('Y');
         $prefix = "TIC-{$year}-";
 
         return DB::transaction(function () use ($prefix) {
-            $latest = static::where('ticket_number', 'like', $prefix . '%')
+            $latest = static::where('ticket_number', 'like', $prefix.'%')
                 ->lockForUpdate()
                 ->orderByDesc('id')
                 ->first();
@@ -994,7 +1118,7 @@ class Ticket extends Model
                 $nextSeq = $lastSeq + 1;
             }
 
-            return $prefix . str_pad((string) $nextSeq, 4, '0', STR_PAD_LEFT);
+            return $prefix.str_pad((string) $nextSeq, 4, '0', STR_PAD_LEFT);
         });
     }
 
@@ -1018,6 +1142,7 @@ class Ticket extends Model
     public function eligiblePicQuery()
     {
         $serviceCompanyId = $this->service_company_id ?? $this->company_id;
+
         return self::picPoolForDeptAndCompany($this->department, $serviceCompanyId, includePicExtras: true);
     }
 
@@ -1029,6 +1154,7 @@ class Ticket extends Model
     public function managersForNotification()
     {
         $serviceCompanyId = $this->service_company_id ?? $this->company_id;
+
         return self::picPoolForDeptAndCompany($this->department, $serviceCompanyId, includePicExtras: false);
     }
 
@@ -1056,7 +1182,7 @@ class Ticket extends Model
      */
     public function unregisteredManagersForNotification()
     {
-        if (!in_array($this->department, self::WORK_ROLE_MANAGER_DEPARTMENTS, true)) {
+        if (! in_array($this->department, self::WORK_ROLE_MANAGER_DEPARTMENTS, true)) {
             return Employee::query()->whereRaw('1 = 0');
         }
 
@@ -1075,10 +1201,10 @@ class Ticket extends Model
             ->where('company_email', '!=', '')
             ->where(function ($qq) {
                 $qq->whereDoesntHave('user')
-                   ->orWhereHas('user', fn($u) => $u->where('is_active', false));
+                    ->orWhereHas('user', fn ($u) => $u->where('is_active', false));
             });
 
-        if (!empty($serviceCompanyNames)) {
+        if (! empty($serviceCompanyNames)) {
             $q->whereIn('company', $serviceCompanyNames);
         }
 
@@ -1139,21 +1265,21 @@ class Ticket extends Model
             if ($isWorkRoleDept) {
                 $outer->whereHas('employee', function ($empQ) use ($department, $serviceCompanyNames) {
                     $empQ->where('work_role', 'manager')
-                         ->where('department', $department);
-                    if (!empty($serviceCompanyNames)) {
+                        ->where('department', $department);
+                    if (! empty($serviceCompanyNames)) {
                         $empQ->whereIn('company', $serviceCompanyNames);
                     }
                 });
             } else {
                 $managerRoles = self::DEPARTMENT_MANAGER_ROLES[$department] ?? [];
-                $extraRoles   = $includePicExtras
+                $extraRoles = $includePicExtras
                     ? (self::DEPARTMENT_PIC_EXTRA_ROLES[$department] ?? [])
                     : [];
                 $deptRoles = array_values(array_unique(array_merge($managerRoles, $extraRoles)));
 
                 $outer->where(function ($qq) use ($deptRoles, $serviceCompanyNames) {
                     $qq->whereIn('role', $deptRoles);
-                    if (!empty($serviceCompanyNames)) {
+                    if (! empty($serviceCompanyNames)) {
                         $qq->whereHas('employee', function ($empQ) use ($serviceCompanyNames) {
                             $empQ->whereIn('company', $serviceCompanyNames);
                         });
@@ -1165,7 +1291,7 @@ class Ticket extends Model
             if ($includePicExtras) {
                 $outer->orWhereHas('employee', function ($empQ) use ($department, $serviceCompanyNames) {
                     $empQ->where('department', $department);
-                    if (!empty($serviceCompanyNames)) {
+                    if (! empty($serviceCompanyNames)) {
                         $empQ->whereIn('company', $serviceCompanyNames);
                     }
                 });
@@ -1192,9 +1318,10 @@ class Ticket extends Model
             ->where('company', '!=', '')
             ->distinct()
             ->pluck('company')
-            ->filter(fn($n) => self::normaliseCompanyName($n) === $canonicalNorm)
+            ->filter(fn ($n) => self::normaliseCompanyName($n) === $canonicalNorm)
             ->values()
             ->toArray();
+
         return array_values(array_unique(array_merge([$canonicalName], $variants)));
     }
 
@@ -1202,12 +1329,12 @@ class Ticket extends Model
     public function statusColor(): string
     {
         return match ($this->status) {
-            'Open'        => 'secondary',
+            'Open' => 'secondary',
             'In Progress' => 'warning',
-            'Pending'     => 'info',
-            'Resolved'    => 'success',
-            'Closed'      => 'dark',
-            default       => 'secondary',
+            'Pending' => 'info',
+            'Resolved' => 'success',
+            'Closed' => 'dark',
+            default => 'secondary',
         };
     }
 
@@ -1228,23 +1355,36 @@ class Ticket extends Model
      */
     public function timeToResolve(): ?string
     {
-        if (!$this->resolved_at) {
+        if (! $this->resolved_at) {
             return null;
         }
         $start = $this->assigned_at ?? $this->created_at;
-        if (!$start) {
+        if (! $start) {
             return null;
         }
         $diff = $start->diff($this->resolved_at);
 
         $parts = [];
-        if ($diff->y > 0) $parts[] = $diff->y . 'y';
-        if ($diff->m > 0) $parts[] = $diff->m . 'mo';
-        if ($diff->d > 0) $parts[] = $diff->d . 'd';
-        if ($diff->h > 0 && count($parts) < 2) $parts[] = $diff->h . 'h';
-        if ($diff->i > 0 && count($parts) < 2) $parts[] = $diff->i . 'm';
+        if ($diff->y > 0) {
+            $parts[] = $diff->y.'y';
+        }
+        if ($diff->m > 0) {
+            $parts[] = $diff->m.'mo';
+        }
+        if ($diff->d > 0) {
+            $parts[] = $diff->d.'d';
+        }
+        if ($diff->h > 0 && count($parts) < 2) {
+            $parts[] = $diff->h.'h';
+        }
+        if ($diff->i > 0 && count($parts) < 2) {
+            $parts[] = $diff->i.'m';
+        }
 
-        if (empty($parts)) return '< 1m';
+        if (empty($parts)) {
+            return '< 1m';
+        }
+
         return implode(' ', array_slice($parts, 0, 2));
     }
 
@@ -1255,18 +1395,29 @@ class Ticket extends Model
      */
     public static function formatMinutes(int $minutes): string
     {
-        if ($minutes <= 0) return '< 1m';
+        if ($minutes <= 0) {
+            return '< 1m';
+        }
 
-        $days  = intdiv($minutes, 1440);
+        $days = intdiv($minutes, 1440);
         $hours = intdiv($minutes % 1440, 60);
-        $mins  = $minutes % 60;
+        $mins = $minutes % 60;
 
         $parts = [];
-        if ($days > 0)  $parts[] = $days . 'd';
-        if ($hours > 0) $parts[] = $hours . 'h';
-        if ($mins > 0 && count($parts) < 2) $parts[] = $mins . 'm';
+        if ($days > 0) {
+            $parts[] = $days.'d';
+        }
+        if ($hours > 0) {
+            $parts[] = $hours.'h';
+        }
+        if ($mins > 0 && count($parts) < 2) {
+            $parts[] = $mins.'m';
+        }
 
-        if (empty($parts)) return '< 1m';
+        if (empty($parts)) {
+            return '< 1m';
+        }
+
         return implode(' ', array_slice($parts, 0, 2));
     }
 
@@ -1278,20 +1429,27 @@ class Ticket extends Model
      */
     public static function healthTier(?int $minutes): string
     {
-        if ($minutes === null || $minutes <= 0) return 'nodata';
-        if ($minutes <= self::HEALTH_GOOD_MAX_MINUTES)  return 'good';
-        if ($minutes <= self::HEALTH_AMBER_MAX_MINUTES) return 'amber';
+        if ($minutes === null || $minutes <= 0) {
+            return 'nodata';
+        }
+        if ($minutes <= self::HEALTH_GOOD_MAX_MINUTES) {
+            return 'good';
+        }
+        if ($minutes <= self::HEALTH_AMBER_MAX_MINUTES) {
+            return 'amber';
+        }
+
         return 'poor';
     }
 
     public function priorityColor(): string
     {
         return match ($this->priority) {
-            'Low'    => 'secondary',
+            'Low' => 'secondary',
             'Medium' => 'primary',
-            'High'   => 'warning',
+            'High' => 'warning',
             'Urgent' => 'danger',
-            default  => 'secondary',
+            default => 'secondary',
         };
     }
 }

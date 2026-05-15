@@ -20,8 +20,6 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
 
 class TicketController extends Controller
 {
@@ -41,17 +39,17 @@ class TicketController extends Controller
         // - 'assigned' = tickets the user is PIC of (any status; archived sorted last)
         // - 'archived' = tickets the user RAISED, status in ARCHIVED_STATUSES
         $scope = $request->query('scope', 'active');
-        if (!in_array($scope, ['active', 'assigned', 'archived'], true)) {
+        if (! in_array($scope, ['active', 'assigned', 'archived'], true)) {
             $scope = 'active';
         }
 
         // Tab counts (independent of current filter state)
         $counts = [
-            'active'   => Ticket::where('user_id', $user->id)
-                            ->whereIn('status', Ticket::ACTIVE_STATUSES)->count(),
+            'active' => Ticket::where('user_id', $user->id)
+                ->whereIn('status', Ticket::ACTIVE_STATUSES)->count(),
             'assigned' => Ticket::where('assigned_to', $user->id)->count(),
             'archived' => Ticket::where('user_id', $user->id)
-                            ->whereIn('status', Ticket::ARCHIVED_STATUSES)->count(),
+                ->whereIn('status', Ticket::ARCHIVED_STATUSES)->count(),
         ];
 
         $query = Ticket::with(['creator', 'assignee', 'company'])
@@ -60,19 +58,19 @@ class TicketController extends Controller
             // fallback to creator's employees.company). See Ticket::scopeVisibleTo
             // for the matching dept-served cluster used elsewhere.
             ->addSelect(DB::raw(
-                "COALESCE(
+                'COALESCE(
                     (SELECT name FROM companies WHERE companies.id = tickets.company_id),
                     (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
-                ) AS ticket_company_name"
+                ) AS ticket_company_name'
             ))
-            ->orderByRaw("CASE WHEN COALESCE(
+            ->orderByRaw('CASE WHEN COALESCE(
                     (SELECT name FROM companies WHERE companies.id = tickets.company_id),
                     (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
-                ) IS NULL THEN 1 ELSE 0 END")
-            ->orderByRaw("COALESCE(
+                ) IS NULL THEN 1 ELSE 0 END')
+            ->orderByRaw('COALESCE(
                     (SELECT name FROM companies WHERE companies.id = tickets.company_id),
                     (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
-                ) ASC")
+                ) ASC')
             ->orderBy('department')
             // FIELD() puts active statuses first, archived (Resolved/Closed) at
             // the bottom — matters most on the 'assigned' tab where both mix.
@@ -85,11 +83,11 @@ class TicketController extends Controller
             $statusOptions = Ticket::STATUSES;
         } elseif ($scope === 'archived') {
             $query->where('user_id', $user->id)
-                  ->whereIn('status', Ticket::ARCHIVED_STATUSES);
+                ->whereIn('status', Ticket::ARCHIVED_STATUSES);
             $statusOptions = Ticket::ARCHIVED_STATUSES;
         } else {
             $query->where('user_id', $user->id)
-                  ->whereIn('status', Ticket::ACTIVE_STATUSES);
+                ->whereIn('status', Ticket::ACTIVE_STATUSES);
             $statusOptions = Ticket::ACTIVE_STATUSES;
         }
 
@@ -107,7 +105,7 @@ class TicketController extends Controller
             ->groupBy(function ($t) {
                 return $t->ticket_company_name ?: '— Unassigned Company —';
             })
-            ->map(fn($byCompany) => $byCompany->groupBy('department'));
+            ->map(fn ($byCompany) => $byCompany->groupBy('department'));
 
         // PIC analytics cards — only shown on the "Assigned to Me" tab.
         // Same shape as the manage-page analytics so we can reuse the partials.
@@ -117,12 +115,12 @@ class TicketController extends Controller
         }
 
         return view('tickets.index', [
-            'tickets'       => $tickets,
-            'grouped'       => $grouped,
-            'scope'         => $scope,
-            'counts'        => $counts,
+            'tickets' => $tickets,
+            'grouped' => $grouped,
+            'scope' => $scope,
+            'counts' => $counts,
             'statusOptions' => $statusOptions,
-            'analytics'     => $analytics,
+            'analytics' => $analytics,
         ]);
     }
 
@@ -130,12 +128,12 @@ class TicketController extends Controller
     public function manage(Request $request)
     {
         $user = Auth::user();
-        if (!$user->canAccessTicketManagement()) {
+        if (! $user->canAccessTicketManagement()) {
             abort(403);
         }
 
         $scope = $request->query('scope', 'all');
-        if (!in_array($scope, ['all', 'assigned', 'archived'], true)) {
+        if (! in_array($scope, ['all', 'assigned', 'archived'], true)) {
             $scope = 'all';
         }
 
@@ -149,6 +147,7 @@ class TicketController extends Controller
             if ($request->filled('department') && in_array($request->department, Ticket::DEPARTMENTS, true)) {
                 $q->where('department', $request->department);
             }
+
             return $q;
         };
 
@@ -156,7 +155,7 @@ class TicketController extends Controller
 
         // Active tabs exclude terminal statuses; Archived tab shows only those.
         $counts = [
-            'all'      => $base()->whereIn('status', Ticket::ACTIVE_STATUSES)->count(),
+            'all' => $base()->whereIn('status', Ticket::ACTIVE_STATUSES)->count(),
             'assigned' => $base()->whereIn('status', Ticket::ACTIVE_STATUSES)->where('assigned_to', $user->id)->count(),
             'archived' => $base()->whereIn('status', Ticket::ARCHIVED_STATUSES)->count(),
         ];
@@ -170,20 +169,20 @@ class TicketController extends Controller
             // See note in index() — array-key alias on a DB::raw expression is
             // silently dropped by Laravel; embed AS directly in the raw SQL.
             ->addSelect(DB::raw(
-                "COALESCE(
+                'COALESCE(
                     (SELECT name FROM companies WHERE companies.id = tickets.company_id),
                     (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
-                ) AS ticket_company_name"
+                ) AS ticket_company_name'
             ))
             // Pin rows with no company at the bottom.
-            ->orderByRaw("CASE WHEN COALESCE(
+            ->orderByRaw('CASE WHEN COALESCE(
                     (SELECT name FROM companies WHERE companies.id = tickets.company_id),
                     (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
-                ) IS NULL THEN 1 ELSE 0 END")
-            ->orderByRaw("COALESCE(
+                ) IS NULL THEN 1 ELSE 0 END')
+            ->orderByRaw('COALESCE(
                     (SELECT name FROM companies WHERE companies.id = tickets.company_id),
                     (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
-                ) ASC")
+                ) ASC')
             ->orderBy('department')
             ->orderByRaw("FIELD(status, 'Open', 'In Progress', 'Pending', 'Resolved', 'Closed')")
             ->orderByDesc('created_at');
@@ -208,7 +207,7 @@ class TicketController extends Controller
             ->groupBy(function ($t) {
                 return $t->ticket_company_name ?: '— Unassigned Company —';
             })
-            ->map(fn($byCompany) => $byCompany->groupBy('department'));
+            ->map(fn ($byCompany) => $byCompany->groupBy('department'));
 
         // For the superadmin table — one row per ticket needs its department's
         // manager list. Fetch once per unique department on the current page.
@@ -236,18 +235,18 @@ class TicketController extends Controller
         $analytics = null;
         if ($user->canViewAllTickets()) {
             $analytics = $this->buildAnalytics();
-        } elseif (!empty($managedDepartments)) {
+        } elseif (! empty($managedDepartments)) {
             $analytics = $this->buildManagerAnalytics($managedDepartments);
         }
 
         return view('tickets.manage', [
-            'tickets'            => $tickets,
-            'grouped'            => $grouped,
+            'tickets' => $tickets,
+            'grouped' => $grouped,
             'managedDepartments' => $managedDepartments,
-            'scope'              => $scope,
-            'counts'             => $counts,
+            'scope' => $scope,
+            'counts' => $counts,
             'departmentManagers' => $departmentManagers,
-            'analytics'          => $analytics,
+            'analytics' => $analytics,
         ]);
     }
 
@@ -272,9 +271,9 @@ class TicketController extends Controller
         );
 
         return array_merge([
-            'mode'        => 'superadmin',
+            'mode' => 'superadmin',
             'totalActive' => array_sum($byPriority),
-            'byPriority'  => $byPriority,
+            'byPriority' => $byPriority,
         ], $resolutionData);
     }
 
@@ -309,10 +308,10 @@ class TicketController extends Controller
         );
 
         return array_merge([
-            'mode'                => 'manager',
-            'totalActive'         => array_sum($byPriority),
-            'byPriority'          => $byPriority,
-            'managedDepartments'  => $managedDepartments,
+            'mode' => 'manager',
+            'totalActive' => array_sum($byPriority),
+            'byPriority' => $byPriority,
+            'managedDepartments' => $managedDepartments,
         ], $resolutionData);
     }
 
@@ -333,18 +332,19 @@ class TicketController extends Controller
         foreach (Ticket::PRIORITIES as $p) {
             $byPriority[$p] = (int) ($raw[$p] ?? 0);
         }
+
         return $byPriority;
     }
 
     /**
      * Build Card 2 (PIC stats) and Card 3 (department health) data.
      *
-     * @param Builder       $baseQuery          Scope of tickets (unrestricted for
-     *                                          superadmin; managed-dept restricted
-     *                                          for managers).
-     * @param Collection    $availableCompanies Companies shown in the filter dropdown.
-     * @param array|null    $deptList           Departments to enumerate for Card 3
-     *                                          (null = all DEPARTMENTS).
+     * @param  Builder  $baseQuery  Scope of tickets (unrestricted for
+     *                              superadmin; managed-dept restricted
+     *                              for managers).
+     * @param  Collection  $availableCompanies  Companies shown in the filter dropdown.
+     * @param  array|null  $deptList  Departments to enumerate for Card 3
+     *                                (null = all DEPARTMENTS).
      */
     private function computeResolutionStats($baseQuery, $availableCompanies, ?array $deptList): array
     {
@@ -368,7 +368,7 @@ class TicketController extends Controller
             ->get();
 
         // Resolve PIC names in one query
-        $picIds   = $picRows->pluck('assigned_to')->unique()->values();
+        $picIds = $picRows->pluck('assigned_to')->unique()->values();
         $picNames = User::whereIn('id', $picIds)->pluck('name', 'id');
 
         // Build per-company and aggregated structures
@@ -381,10 +381,10 @@ class TicketController extends Controller
         // First aggregate per PIC across all companies for the "__all__" view
         $picAllAccum = []; // [picId => ['weightedSum' => x, 'totalCount' => y]]
         foreach ($picRows as $row) {
-            $picId        = (int) $row->assigned_to;
-            $companyId    = $row->company_id ? (string) $row->company_id : null;
-            $cnt          = (int) $row->cnt;
-            $avgMinutes   = (int) round((float) $row->avg_minutes);
+            $picId = (int) $row->assigned_to;
+            $companyId = $row->company_id ? (string) $row->company_id : null;
+            $cnt = (int) $row->cnt;
+            $avgMinutes = (int) round((float) $row->avg_minutes);
 
             // Per-company entry
             if ($companyId !== null && isset($picStats[$companyId])) {
@@ -396,7 +396,7 @@ class TicketController extends Controller
             // Accumulate for "all companies"
             $picAllAccum[$picId] ??= ['weightedSum' => 0, 'totalCount' => 0];
             $picAllAccum[$picId]['weightedSum'] += $avgMinutes * $cnt;
-            $picAllAccum[$picId]['totalCount']  += $cnt;
+            $picAllAccum[$picId]['totalCount'] += $cnt;
         }
 
         foreach ($picAllAccum as $picId => $acc) {
@@ -408,7 +408,7 @@ class TicketController extends Controller
 
         // Sort each list: fastest first
         foreach ($picStats as $key => $list) {
-            usort($list, fn($a, $b) => $a['avg_minutes'] <=> $b['avg_minutes']);
+            usort($list, fn ($a, $b) => $a['avg_minutes'] <=> $b['avg_minutes']);
             $picStats[$key] = $list;
         }
 
@@ -455,10 +455,12 @@ class TicketController extends Controller
 
         $deptAllAccum = []; // [dept => ['weightedSum' => x, 'totalCount' => y]]
         foreach ($deptRows as $row) {
-            $dept       = $row->department;
-            if (!in_array($dept, $deptList, true)) continue;
-            $companyId  = $row->company_id ? (string) $row->company_id : null;
-            $cnt        = (int) $row->cnt;
+            $dept = $row->department;
+            if (! in_array($dept, $deptList, true)) {
+                continue;
+            }
+            $companyId = $row->company_id ? (string) $row->company_id : null;
+            $cnt = (int) $row->cnt;
             $avgMinutes = (int) round((float) $row->avg_minutes);
 
             // Only fill the per-company cell if we seeded it (i.e. the dept
@@ -474,7 +476,7 @@ class TicketController extends Controller
 
             $deptAllAccum[$dept] ??= ['weightedSum' => 0, 'totalCount' => 0];
             $deptAllAccum[$dept]['weightedSum'] += $avgMinutes * $cnt;
-            $deptAllAccum[$dept]['totalCount']  += $cnt;
+            $deptAllAccum[$dept]['totalCount'] += $cnt;
         }
 
         foreach ($deptAllAccum as $dept => $acc) {
@@ -490,7 +492,10 @@ class TicketController extends Controller
             $arr = array_values($list);
             usort($arr, function ($a, $b) use ($tierOrder) {
                 $tierCmp = ($tierOrder[$a['tier']] ?? 9) <=> ($tierOrder[$b['tier']] ?? 9);
-                if ($tierCmp !== 0) return $tierCmp;
+                if ($tierCmp !== 0) {
+                    return $tierCmp;
+                }
+
                 return ($a['avg_minutes'] ?? PHP_INT_MAX) <=> ($b['avg_minutes'] ?? PHP_INT_MAX);
             });
             $deptStats[$key] = $arr;
@@ -508,10 +513,10 @@ class TicketController extends Controller
         }
 
         return [
-            'picStats'           => $picStats,             // { '__all__'|companyId => [{name, count, avg_minutes, formatted, tier, width_pct}] }
-            'deptStats'          => $deptStats,            // { '__all__'|companyId => [{department, count, avg_minutes, formatted, tier, width_pct}] }
-            'deptTierCounts'     => $deptTierCounts,       // { '__all__'|companyId => {good, amber, poor, nodata} }
-            'availableCompanies' => $availableCompanies->map(fn($c) => ['id' => (string) $c->id, 'name' => $c->name])->values()->toArray(),
+            'picStats' => $picStats,             // { '__all__'|companyId => [{name, count, avg_minutes, formatted, tier, width_pct}] }
+            'deptStats' => $deptStats,            // { '__all__'|companyId => [{department, count, avg_minutes, formatted, tier, width_pct}] }
+            'deptTierCounts' => $deptTierCounts,       // { '__all__'|companyId => {good, amber, poor, nodata} }
+            'availableCompanies' => $availableCompanies->map(fn ($c) => ['id' => (string) $c->id, 'name' => $c->name])->values()->toArray(),
         ];
     }
 
@@ -540,7 +545,7 @@ class TicketController extends Controller
             ->selectRaw('COUNT(*) AS cnt, AVG(TIMESTAMPDIFF(MINUTE, COALESCE(assigned_at, created_at), resolved_at)) AS avg_minutes')
             ->first();
 
-        $myCount      = (int) ($myStats->cnt ?? 0);
+        $myCount = (int) ($myStats->cnt ?? 0);
         $myAvgMinutes = $myCount > 0 ? (int) round((float) $myStats->avg_minutes) : null;
 
         $picStats = ['__all__' => []];
@@ -564,7 +569,7 @@ class TicketController extends Controller
                 ->selectRaw('COUNT(*) AS cnt, AVG(TIMESTAMPDIFF(MINUTE, COALESCE(assigned_at, created_at), resolved_at)) AS avg_minutes')
                 ->first();
 
-            $deptCount      = (int) ($deptRow->cnt ?? 0);
+            $deptCount = (int) ($deptRow->cnt ?? 0);
             $deptAvgMinutes = $deptCount > 0 ? (int) round((float) $deptRow->avg_minutes) : null;
 
             $entry = $this->buildPerfRow(
@@ -577,12 +582,12 @@ class TicketController extends Controller
         }
 
         return [
-            'mode'               => 'pic',
-            'totalActive'        => array_sum($byPriority),
-            'byPriority'         => $byPriority,
-            'picStats'           => $picStats,
-            'deptStats'          => $deptStats,
-            'deptTierCounts'     => $deptTierCounts,
+            'mode' => 'pic',
+            'totalActive' => array_sum($byPriority),
+            'byPriority' => $byPriority,
+            'picStats' => $picStats,
+            'deptStats' => $deptStats,
+            'deptTierCounts' => $deptTierCounts,
             // No company-filter dropdown for the PIC view — it's a one-row card.
             'availableCompanies' => [],
         ];
@@ -601,19 +606,20 @@ class TicketController extends Controller
         if ($avgMinutes !== null && $avgMinutes > 0) {
             $widthPct = min(100, ($avgMinutes / Ticket::HEALTH_AMBER_MAX_MINUTES) * 100);
         }
+
         return array_merge($base, [
-            'count'       => $count,
+            'count' => $count,
             'avg_minutes' => $avgMinutes,
-            'formatted'   => $avgMinutes !== null ? Ticket::formatMinutes($avgMinutes) : '—',
-            'tier'        => Ticket::healthTier($avgMinutes),
-            'width_pct'   => $widthPct,
+            'formatted' => $avgMinutes !== null ? Ticket::formatMinutes($avgMinutes) : '—',
+            'tier' => Ticket::healthTier($avgMinutes),
+            'width_pct' => $widthPct,
         ]);
     }
 
     // ── Create form ───────────────────────────────────────────────────────
     public function create()
     {
-        $user        = Auth::user();
+        $user = Auth::user();
         $userCompany = $user->employee?->company;
 
         // All registered companies — needed for the fallback Company dropdown
@@ -621,7 +627,7 @@ class TicketController extends Controller
         // lookup that powers the Routing > Change picker.
         $companies = Company::orderBy('name')->get(['id', 'name']);
 
-        $autoCompanyId   = $userCompany ? Ticket::resolveCompanyId($userCompany) : null;
+        $autoCompanyId = $userCompany ? Ticket::resolveCompanyId($userCompany) : null;
         $autoCompanyName = $autoCompanyId
             ? optional($companies->firstWhere('id', $autoCompanyId))->name
             : null;
@@ -649,17 +655,17 @@ class TicketController extends Controller
         }
 
         return view('tickets.create', [
-            'companies'              => $companies,
-            'autoCompanyId'          => $autoCompanyId,
-            'autoCompanyName'        => $autoCompanyName,
-            'defaultCompanyId'       => $defaultCompanyId,
-            'priorities'             => Ticket::PRIORITIES,
-            'departmentSubjects'     => Ticket::DEPARTMENT_SUBJECTS,
-            'subjectToDepartments'   => Ticket::subjectToDepartmentMap(),
-            'keywordHints'           => Ticket::SUBJECT_KEYWORD_HINTS,
-            'departmentsAll'         => Ticket::DEPARTMENTS,
-            'serviceOptions'         => $serviceOptions,
-            'resolvedServiceByDept'  => $resolvedServiceByDept,
+            'companies' => $companies,
+            'autoCompanyId' => $autoCompanyId,
+            'autoCompanyName' => $autoCompanyName,
+            'defaultCompanyId' => $defaultCompanyId,
+            'priorities' => Ticket::PRIORITIES,
+            'departmentSubjects' => Ticket::DEPARTMENT_SUBJECTS,
+            'subjectToDepartments' => Ticket::subjectToDepartmentMap(),
+            'keywordHints' => Ticket::SUBJECT_KEYWORD_HINTS,
+            'departmentsAll' => Ticket::DEPARTMENTS,
+            'serviceOptions' => $serviceOptions,
+            'resolvedServiceByDept' => $resolvedServiceByDept,
         ]);
     }
 
@@ -669,15 +675,15 @@ class TicketController extends Controller
         $user = Auth::user();
 
         $data = $request->validate([
-            'company_id'         => 'required|exists:companies,id',
+            'company_id' => 'required|exists:companies,id',
             'service_company_id' => 'nullable|exists:companies,id',
-            'subject'            => 'required|string|max:255',
-            'subject_other'      => 'nullable|string|max:255',
-            'description'        => 'required|string|max:10000',
-            'department'         => 'required|in:' . implode(',', Ticket::DEPARTMENTS),
-            'priority'           => 'required|in:' . implode(',', Ticket::PRIORITIES),
-            'attachments'        => 'nullable|array|max:10',
-            'attachments.*'      => 'file|max:10240|mimes:pdf,jpg,jpeg,png,gif,webp|valid_file_content',
+            'subject' => 'required|string|max:255',
+            'subject_other' => 'nullable|string|max:255',
+            'description' => 'required|string|max:10000',
+            'department' => 'required|in:'.implode(',', Ticket::DEPARTMENTS),
+            'priority' => 'required|in:'.implode(',', Ticket::PRIORITIES),
+            'attachments' => 'nullable|array|max:10',
+            'attachments.*' => 'file|max:10240|mimes:pdf,jpg,jpeg,png,gif,webp|valid_file_content',
         ]);
 
         // Company (raiser/client) auto-override — same as before: if the
@@ -706,13 +712,13 @@ class TicketController extends Controller
         //   to log mismatches — don't reject.
         if ($data['subject'] !== 'Other') {
             $map = Ticket::subjectToDepartmentMap();
-            if (!isset($map[$data['subject']])) {
+            if (! isset($map[$data['subject']])) {
                 return back()
                     ->withErrors(['subject' => 'Selected subject is not recognised.'])
                     ->withInput();
             }
             $validDepts = $map[$data['subject']];
-            if (!in_array($data['department'], $validDepts, true)) {
+            if (! in_array($data['department'], $validDepts, true)) {
                 if (count($validDepts) === 1) {
                     // Auto-correct single-dept subjects (client likely tampered)
                     $data['department'] = $validDepts[0];
@@ -736,13 +742,13 @@ class TicketController extends Controller
         // candidate for this raiser) > auto-resolve via Ticket::resolveServiceCompanyId.
         $validServiceOptions = Ticket::serviceOptionsForRaiser($data['company_id']);
         $allowedServiceIdsForDept = array_values(array_unique(array_column(
-            array_filter($validServiceOptions, fn($p) => $p['department'] === $data['department']),
+            array_filter($validServiceOptions, fn ($p) => $p['department'] === $data['department']),
             'company_id'
         )));
 
         $serviceCompanyId = null;
 
-        if (!empty($data['service_company_id'])) {
+        if (! empty($data['service_company_id'])) {
             $clientPick = (int) $data['service_company_id'];
             if (in_array($clientPick, $allowedServiceIdsForDept, true)) {
                 $serviceCompanyId = $clientPick;
@@ -778,18 +784,18 @@ class TicketController extends Controller
 
         $finalSubject = $data['subject'];
         if ($data['subject'] === 'Other') {
-            $finalSubject = 'Other — ' . trim($data['subject_other']);
+            $finalSubject = 'Other — '.trim($data['subject_other']);
         }
 
         $ticket = Ticket::create([
-            'user_id'            => $user->id,
-            'company_id'         => $data['company_id'],
+            'user_id' => $user->id,
+            'company_id' => $data['company_id'],
             'service_company_id' => $serviceCompanyId,
-            'department'         => $data['department'],
-            'priority'           => $data['priority'],
-            'subject'            => $finalSubject,
-            'description'        => $data['description'],
-            'status'             => 'Open',
+            'department' => $data['department'],
+            'priority' => $data['priority'],
+            'subject' => $finalSubject,
+            'description' => $data['description'],
+            'status' => 'Open',
         ]);
 
         // Process and store attachments (image-compress + secure save)
@@ -849,10 +855,10 @@ class TicketController extends Controller
         }
 
         return view('tickets.show', [
-            'ticket'       => $ticket,
+            'ticket' => $ticket,
             'assigneePool' => $assigneePool,
-            'canManage'    => $canManage,
-            'statuses'     => Ticket::STATUSES,
+            'canManage' => $canManage,
+            'statuses' => Ticket::STATUSES,
         ]);
     }
 
@@ -869,10 +875,10 @@ class TicketController extends Controller
         $ticket->load('attachments', 'company', 'creator');
 
         return view('tickets.edit-admin', [
-            'ticket'      => $ticket,
-            'companies'   => Company::orderBy('name')->get(['id', 'name']),
+            'ticket' => $ticket,
+            'companies' => Company::orderBy('name')->get(['id', 'name']),
             'departments' => Ticket::DEPARTMENTS,
-            'priorities'  => Ticket::PRIORITIES,
+            'priorities' => Ticket::PRIORITIES,
         ]);
     }
 
@@ -881,8 +887,8 @@ class TicketController extends Controller
         $this->authorizeEdit($ticket);
 
         $data = $request->validate([
-            'department' => 'required|in:' . implode(',', Ticket::DEPARTMENTS),
-            'note'       => 'nullable|string|max:1000',
+            'department' => 'required|in:'.implode(',', Ticket::DEPARTMENTS),
+            'note' => 'nullable|string|max:1000',
         ]);
 
         if ($data['department'] === $ticket->department) {
@@ -894,22 +900,45 @@ class TicketController extends Controller
             'department' => ['from' => $ticket->department, 'to' => $data['department']],
         ];
 
-        DB::transaction(function () use ($ticket, $data, $changes) {
+        // Re-route also has to move the ticket onto the NEW department's
+        // service-provider company. Without this, service_company_id keeps
+        // pointing at the OLD dept's provider — and Ticket::scopeVisibleTo()
+        // (which matches a manager's company against service_company_id)
+        // would strand the ticket: invisible to every manager of the new
+        // department. "Same company, new dept" — keep it with the raiser's
+        // own company when that company runs the new dept, else auto-resolve.
+        $newServiceCompanyId = Ticket::resolveServiceCompanyIdForDepartmentChange(
+            $ticket->company_id,
+            $data['department']
+        );
+        // Fall back to the existing value when nothing could be resolved, so
+        // we never blank out an already-valid routing into NULL.
+        $newServiceCompanyId ??= $ticket->service_company_id;
+
+        if ($newServiceCompanyId !== $ticket->service_company_id) {
+            $changes['service_company_id'] = [
+                'from' => $ticket->service_company_id,
+                'to' => $newServiceCompanyId,
+            ];
+        }
+
+        DB::transaction(function () use ($ticket, $data, $changes, $newServiceCompanyId) {
             // Old PIC is no longer in the new dept's eligible pool. Clear PIC +
             // assigned_at so the new dept managers take it from scratch. Status
             // returns to Open so the new owners see it as fresh.
             $ticket->update([
-                'department'  => $data['department'],
+                'department' => $data['department'],
+                'service_company_id' => $newServiceCompanyId,
                 'assigned_to' => null,
                 'assigned_at' => null,
-                'status'      => 'Open',
+                'status' => 'Open',
             ]);
 
             TicketEditLog::create([
-                'ticket_id'         => $ticket->id,
+                'ticket_id' => $ticket->id,
                 'edited_by_user_id' => Auth::id(),
-                'changes'           => $changes,
-                'note'              => $data['note'] ?? null,
+                'changes' => $changes,
+                'note' => $data['note'] ?? null,
             ]);
         });
 
@@ -947,7 +976,7 @@ class TicketController extends Controller
         }
 
         return redirect()->route('tickets.manage')
-            ->with('success', 'Ticket moved to ' . $ticket->department . '. Its new department\'s managers have been notified, and it is no longer in your inbox.');
+            ->with('success', 'Ticket moved to '.$ticket->department.'. Its new department\'s managers have been notified, and it is no longer in your inbox.');
     }
 
     /**
@@ -963,7 +992,7 @@ class TicketController extends Controller
             && ($user->isSuperadmin()
                 || $user->isSystemAdmin()
                 || $user->canManageTicketsForDepartment($ticket->department));
-        if (!$allowed) {
+        if (! $allowed) {
             abort(403);
         }
     }
@@ -972,8 +1001,8 @@ class TicketController extends Controller
     public function assignPic(Request $request, Ticket $ticket)
     {
         $user = Auth::user();
-        if (!$user->canManageTicketsForDepartment($ticket->department)
-            && !$user->isSuperadmin() && !$user->isSystemAdmin()) {
+        if (! $user->canManageTicketsForDepartment($ticket->department)
+            && ! $user->isSuperadmin() && ! $user->isSystemAdmin()) {
             abort(403);
         }
 
@@ -981,12 +1010,13 @@ class TicketController extends Controller
 
         // Remove PIC — clear assignment, return to Open. Also clear assigned_at
         // so the next PIC's clock starts fresh from their own assignment time.
-        if (!$picUserId) {
+        if (! $picUserId) {
             $previousPic = $ticket->assigned_to ? User::find($ticket->assigned_to) : null;
             $ticket->update(['assigned_to' => null, 'assigned_at' => null, 'status' => 'Open']);
             if ($previousPic) {
                 $previousPic->notify(new TicketUnassignedNotification($ticket->fresh(), $user));
             }
+
             return back()->with('success', 'PIC removed.');
         }
 
@@ -1003,7 +1033,7 @@ class TicketController extends Controller
         $isEligible = $ticket->eligiblePicQuery()
             ->where('users.id', $picUserId)
             ->exists();
-        if (!$isEligible) {
+        if (! $isEligible) {
             return back()->withErrors(['assigned_pic_user_id' => 'Selected user is not eligible to be PIC for this ticket.']);
         }
 
@@ -1024,7 +1054,7 @@ class TicketController extends Controller
         $ticket->update([
             'assigned_to' => $picUserId,
             'assigned_at' => now(),
-            'status'      => $newStatus,
+            'status' => $newStatus,
         ]);
 
         Mail::to($candidate->work_email)->queue(new TicketAssignedMail($ticket->fresh(['creator', 'assignee']), $candidate));
@@ -1041,16 +1071,16 @@ class TicketController extends Controller
                      || $user->isSuperadmin() || $user->isSystemAdmin();
         $isAssignee = $ticket->assigned_to === $user->id;
 
-        if (!$isManager && !$isAssignee) {
+        if (! $isManager && ! $isAssignee) {
             abort(403);
         }
 
         $request->validate([
-            'status' => 'required|in:' . implode(',', Ticket::STATUSES),
+            'status' => 'required|in:'.implode(',', Ticket::STATUSES),
         ]);
 
         $previousStatus = $ticket->status;
-        $newStatus      = $request->status;
+        $newStatus = $request->status;
 
         // Block setting "In Progress" on a ticket with no PIC — it's auto-set
         // when a PIC is assigned, not user-selectable in that state.
@@ -1061,7 +1091,7 @@ class TicketController extends Controller
         // Resolution event: transitioning INTO Resolved from a non-terminal state.
         // Triggers the resolution email + bell notification to the creator.
         $isResolutionEvent = $newStatus === 'Resolved'
-            && !in_array($previousStatus, Ticket::ARCHIVED_STATUSES, true);
+            && ! in_array($previousStatus, Ticket::ARCHIVED_STATUSES, true);
 
         $update = ['status' => $newStatus];
 
@@ -1071,7 +1101,7 @@ class TicketController extends Controller
         }
         // Re-opening from a terminal state — clear resolved_at
         elseif (in_array($previousStatus, Ticket::ARCHIVED_STATUSES, true)
-                && !in_array($newStatus, Ticket::ARCHIVED_STATUSES, true)) {
+                && ! in_array($newStatus, Ticket::ARCHIVED_STATUSES, true)) {
             $update['resolved_at'] = null;
         }
 
@@ -1110,7 +1140,7 @@ class TicketController extends Controller
         $meta = \App\Services\AttachmentProcessor::store(
             $file,
             'ticket_attachments',
-            $ticket->id . '_'
+            $ticket->id.'_'
         );
         TicketAttachment::create(array_merge(['ticket_id' => $ticket->id], $meta));
     }
