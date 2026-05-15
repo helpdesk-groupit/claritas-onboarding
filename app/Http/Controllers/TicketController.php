@@ -809,6 +809,16 @@ class TicketController extends Controller
         // Excludes interns — they only get notified when actually assigned.
         $managers = $ticket->managersForNotification()->get();
 
+        // Same-department tickets also notify the raiser's reporting manager
+        // (their direct line manager). This is notification-only — it does NOT
+        // change ticket visibility or the PIC pool. Skipped for cross-dept
+        // tickets, and de-duplicated against the department-manager pool above
+        // so a reporting manager who is also a dept manager isn't pinged twice.
+        $reportingManager = $ticket->reportingManagerForSameDeptNotification();
+        if ($reportingManager && ! $managers->contains('id', $reportingManager->id)) {
+            $managers->push($reportingManager);
+        }
+
         foreach ($managers as $manager) {
             if ($manager->work_email) {
                 Mail::to($manager->work_email)->queue(new TicketCreatedMail($ticket, $manager));
@@ -820,8 +830,18 @@ class TicketController extends Controller
         // the User row hasn't been created yet, so they're invisible to the
         // User-keyed query above. The bell ping can't reach them (notifications
         // table FKs to users) until they register.
+        $unregisteredEmployeeIds = [];
         foreach ($ticket->unregisteredManagersForNotification()->get() as $unregEmp) {
             Mail::to($unregEmp->company_email)->queue(new TicketCreatedMail($ticket, $unregEmp));
+            $unregisteredEmployeeIds[] = $unregEmp->id;
+        }
+
+        // Same-dept reporting manager who has no (or an inactive) User account
+        // — email-only, same as the unregistered-manager fallback. Skipped if
+        // already emailed as an unregistered department manager just above.
+        $reportingManagerEmp = $ticket->reportingManagerEmployeeForEmailOnly();
+        if ($reportingManagerEmp && ! in_array($reportingManagerEmp->id, $unregisteredEmployeeIds, true)) {
+            Mail::to($reportingManagerEmp->company_email)->queue(new TicketCreatedMail($ticket, $reportingManagerEmp));
         }
 
         return redirect()->route('tickets.show', $ticket)->with('success', 'Ticket created.');
@@ -949,6 +969,15 @@ class TicketController extends Controller
         // raised in their queue. Old dept managers are not re-notified — the
         // ticket leaves their inbox by virtue of the dept-scoped visibility.
         $managers = $ticket->managersForNotification()->get();
+
+        // If the re-routed department now matches the raiser's own department,
+        // their reporting manager is notified too (notification-only, same
+        // rule as ticket creation). De-duplicated against the dept-manager set.
+        $reportingManager = $ticket->reportingManagerForSameDeptNotification();
+        if ($reportingManager && ! $managers->contains('id', $reportingManager->id)) {
+            $managers->push($reportingManager);
+        }
+
         foreach ($managers as $manager) {
             if ($manager->work_email) {
                 Mail::to($manager->work_email)->queue(new TicketCreatedMail($ticket, $manager));
@@ -957,8 +986,14 @@ class TicketController extends Controller
         if ($managers->isNotEmpty()) {
             Notification::send($managers, new TicketRaisedNotification($ticket->fresh(['creator'])));
         }
+        $unregisteredEmployeeIds = [];
         foreach ($ticket->unregisteredManagersForNotification()->get() as $unregEmp) {
             Mail::to($unregEmp->company_email)->queue(new TicketCreatedMail($ticket, $unregEmp));
+            $unregisteredEmployeeIds[] = $unregEmp->id;
+        }
+        $reportingManagerEmp = $ticket->reportingManagerEmployeeForEmailOnly();
+        if ($reportingManagerEmp && ! in_array($reportingManagerEmp->id, $unregisteredEmployeeIds, true)) {
+            Mail::to($reportingManagerEmp->company_email)->queue(new TicketCreatedMail($ticket, $reportingManagerEmp));
         }
 
         // After a dept change, the editor may no longer have manage rights on

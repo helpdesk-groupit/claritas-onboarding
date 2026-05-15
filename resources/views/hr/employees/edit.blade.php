@@ -483,45 +483,48 @@
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Reporting Manager <span class="text-danger">*</span></label>
+                    {{-- The picker lists every active employee (the org-chart line
+                         manager is any employee, not just an HR/IT app-admin).
+                         The option value is the canonical full_name; the synced
+                         hidden manager_id field carries the FK. Display format:
+                         "Preferred Name (Full Name) — Department". --}}
                     <select name="reporting_manager" id="edit_reporting_manager"
                             class="form-select @error('reporting_manager') is-invalid @enderror" required>
                         <option value="">— Select manager —</option>
                         @php
-                            $currentMgr = old('reporting_manager', $employee->reporting_manager);
-                            $mgrInList  = $managers->pluck('name')->contains($currentMgr);
+                            $currentMgr  = old('reporting_manager', $employee->reporting_manager);
+                            $mgrInList   = $managers->pluck('full_name')->contains($currentMgr);
                         @endphp
-                        {{-- If the current manager is not in the active list, show them as a fallback --}}
+                        {{-- If the stored manager isn't in the active-employee list
+                             (legacy free-text, typo, or a manager who has since
+                             left), show it as a non-resolvable fallback so the
+                             field isn't silently blanked. Superadmin should
+                             re-pick a real employee to populate manager_id. --}}
                         @if($currentMgr && !$mgrInList)
-                            <option value="{{ $currentMgr }}" data-employee-id="{{ $employee->manager_id }}" selected>{{ $currentMgr }} (current)</option>
+                            <option value="{{ $currentMgr }}" data-employee-id="" selected>
+                                {{ $currentMgr }} (current — not linked, please re-select)
+                            </option>
                         @endif
                         @foreach($managers as $mgr)
                             @php
-                                $roleLabelsEmp = [
-                                    'hr_manager'          => 'HR Manager',
-                                    'hr_executive'        => 'HR Executive',
-                                    'hr_intern'           => 'HR Intern',
-                                    'it_manager'          => 'IT Manager',
-                                    'it_executive'        => 'IT Executive',
-                                    'it_intern'           => 'IT Intern',
-                                    'superadmin'          => 'SuperAdmin',
-                                    'system_admin'        => 'System Admin',
-                                    'manager'             => 'Manager',
-                                    'senior_executive'    => 'Senior Executive',
-                                    'executive_associate' => 'Executive / Associate',
-                                    'director_hod'        => 'Director / HOD',
-                                    'others'              => 'Others',
-                                ];
+                                $mgrDisplay = trim($mgr->preferred_name) !== ''
+                                    ? $mgr->preferred_name.' ('.$mgr->full_name.')'
+                                    : $mgr->full_name;
+                                if ($mgr->department) {
+                                    $mgrDisplay .= ' — '.$mgr->department;
+                                }
                             @endphp
-                            <option value="{{ $mgr->name }}"
-                                data-company="{{ $mgr->employee?->company }}"
-                                data-employee-id="{{ $mgr->employee?->id }}"
-                                {{ $currentMgr == $mgr->name ? 'selected' : '' }}>
-                                {{ $mgr->name }} ({{ $roleLabelsEmp[$mgr->role ?? ''] ?? ucfirst(str_replace('_',' ',$mgr->role ?? '')) }})
+                            <option value="{{ $mgr->full_name }}"
+                                data-company="{{ $mgr->company }}"
+                                data-employee-id="{{ $mgr->id }}"
+                                {{ $currentMgr === $mgr->full_name ? 'selected' : '' }}>
+                                {{ $mgrDisplay }}
                             </option>
                         @endforeach
                     </select>
                     <input type="hidden" name="manager_id" id="edit_manager_id" value="{{ old('manager_id', $employee->manager_id) }}">
                     @error('reporting_manager')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    <div class="form-text">Pick the employee this person reports to. Tickets they raise for their own department route to this manager.</div>
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Start Date <span class="text-danger">*</span></label>

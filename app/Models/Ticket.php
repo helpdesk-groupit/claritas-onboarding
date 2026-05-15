@@ -1325,6 +1325,85 @@ class Ticket extends Model
         return array_values(array_unique(array_merge([$canonicalName], $variants)));
     }
 
+    /**
+     * The User account of the raiser's reporting manager, but ONLY when this
+     * is a "same-department" ticket — i.e. the raiser filed it for their own
+     * department (raiser's employees.department === this ticket's department).
+     *
+     * Used to send the raiser's direct line manager an extra new-ticket
+     * notification (email + bell) on top of the standard department-manager
+     * pool. This does NOT affect ticket visibility or the PIC pool — it is
+     * purely an additional notification recipient.
+     *
+     * Returns null when:
+     *   - the raiser has no employee record, or no department, or no manager_id
+     *   - the ticket is cross-department (raiser's dept ≠ ticket department):
+     *     cross-dept tickets route to the target department's head, not the
+     *     raiser's own line manager
+     *   - the resolved manager has no active User account (cannot be bell-
+     *     notified; the caller emails them separately via the employee record)
+     */
+    public function reportingManagerForSameDeptNotification(): ?User
+    {
+        $raiserEmployee = $this->creator?->employee;
+        if (! $raiserEmployee || empty($raiserEmployee->department) || empty($raiserEmployee->manager_id)) {
+            return null;
+        }
+
+        // Same-department gate: only own-department tickets route to the
+        // raiser's reporting manager.
+        if ($raiserEmployee->department !== $this->department) {
+            return null;
+        }
+
+        $managerEmployee = Employee::find($raiserEmployee->manager_id);
+        if (! $managerEmployee) {
+            return null;
+        }
+
+        $managerUser = $managerEmployee->user;
+        if (! $managerUser || ! $managerUser->is_active) {
+            return null;
+        }
+
+        return $managerUser;
+    }
+
+    /**
+     * Same as reportingManagerForSameDeptNotification() but returns the
+     * Employee record instead of the User — used for the email-only path when
+     * the reporting manager has no (or an inactive) User account, mirroring
+     * how unregisteredManagersForNotification() reaches managers by email.
+     *
+     * Returns null when there is no same-department reporting manager, or when
+     * that manager DOES have an active User account (in which case the
+     * User-returning method above already covers them — avoids double-emailing).
+     */
+    public function reportingManagerEmployeeForEmailOnly(): ?Employee
+    {
+        $raiserEmployee = $this->creator?->employee;
+        if (! $raiserEmployee || empty($raiserEmployee->department) || empty($raiserEmployee->manager_id)) {
+            return null;
+        }
+        if ($raiserEmployee->department !== $this->department) {
+            return null;
+        }
+
+        $managerEmployee = Employee::find($raiserEmployee->manager_id);
+        if (! $managerEmployee || empty($managerEmployee->company_email)) {
+            return null;
+        }
+
+        // If they have an active User account they're covered by the
+        // User-returning method — don't email them twice.
+        $managerUser = $managerEmployee->user;
+        if ($managerUser && $managerUser->is_active) {
+            return null;
+        }
+
+        return $managerEmployee;
+    }
+
     /** Bootstrap badge color for status (used by views). */
     public function statusColor(): string
     {
