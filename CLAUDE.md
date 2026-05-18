@@ -228,7 +228,7 @@ Path 2 requires the `employees.department` value to **exactly match** the canoni
 
 **Page access — managers vs everyone else:**
 - `/tickets/manage` (Ticket Management page) is gated by `User::canAccessTicketManagement()`, which is now **strict**: superadmin/system_admin, or `users.role` ∈ `[hr_manager, it_manager, finance_manager]`, or `employees.work_role = 'manager'`. Executives, interns, and regular employees do NOT get this page even if they're PIC-eligible.
-- Non-managers see their assigned tickets via the **Assigned to Me** tab on `/tickets` (My Tickets), placed between Active and Archived. The tab queries `tickets.assigned_to = user.id` (any status) and uses `FIELD(status, ...)` ordering so Active statuses come first and Resolved/Closed sink to the bottom.
+- Non-managers see their assigned tickets via the **Assigned to Me** tab on `/tickets` (My Tickets), placed between Active and Archived. The tab queries `tickets.assigned_to = user.id` AND `status IN ACTIVE_STATUSES` — terminal (Resolved/Closed) assigned tickets are excluded here and fall through to the Archived tab. The **Archived** tab on `/tickets` shows terminal tickets the user either RAISED **or** is PIC of (`(user_id = me OR assigned_to = me) AND status IN ARCHIVED_STATUSES`), so a PIC keeps sight of their finished assigned work. All three tab badge counts mirror exactly what their tab renders.
 - The stricter `canAccessTicketManagement()` is intentionally narrower than `Ticket::isManagerOf()` — the latter still includes executives so they continue to receive new-ticket notifications and dept-team visibility.
 
 **Resolution-time metric — measured from `assigned_at`, not `created_at`:**

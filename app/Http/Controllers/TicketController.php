@@ -36,20 +36,24 @@ class TicketController extends Controller
 
         // Tab scope: 'active' (default), 'assigned', or 'archived'
         // - 'active'   = tickets the user RAISED, status in ACTIVE_STATUSES
-        // - 'assigned' = tickets the user is PIC of (any status; archived sorted last)
-        // - 'archived' = tickets the user RAISED, status in ARCHIVED_STATUSES
+        // - 'assigned' = tickets the user is PIC of, status in ACTIVE_STATUSES
+        // - 'archived' = tickets the user RAISED or is PIC of, status in ARCHIVED_STATUSES
         $scope = $request->query('scope', 'active');
         if (! in_array($scope, ['active', 'assigned', 'archived'], true)) {
             $scope = 'active';
         }
 
-        // Tab counts (independent of current filter state)
+        // Tab counts (independent of current filter state). Each count must
+        // match exactly what its tab renders below.
         $counts = [
             'active' => Ticket::where('user_id', $user->id)
                 ->whereIn('status', Ticket::ACTIVE_STATUSES)->count(),
-            'assigned' => Ticket::where('assigned_to', $user->id)->count(),
-            'archived' => Ticket::where('user_id', $user->id)
-                ->whereIn('status', Ticket::ARCHIVED_STATUSES)->count(),
+            'assigned' => Ticket::where('assigned_to', $user->id)
+                ->whereIn('status', Ticket::ACTIVE_STATUSES)->count(),
+            'archived' => Ticket::where(function ($q) use ($user) {
+                $q->where('user_id', $user->id)
+                    ->orWhere('assigned_to', $user->id);
+            })->whereIn('status', Ticket::ARCHIVED_STATUSES)->count(),
         ];
 
         $query = Ticket::with(['creator', 'assignee', 'company'])
@@ -72,18 +76,27 @@ class TicketController extends Controller
                     (SELECT company FROM employees WHERE employees.user_id = tickets.user_id LIMIT 1)
                 ) ASC')
             ->orderBy('department')
-            // FIELD() puts active statuses first, archived (Resolved/Closed) at
-            // the bottom — matters most on the 'assigned' tab where both mix.
+            // FIELD() gives a stable status order within each department group;
+            // each tab is single-statuses-set now, so this is mainly cosmetic.
             ->orderByRaw("FIELD(status, 'Open', 'In Progress', 'Pending', 'Resolved', 'Closed')")
             ->orderByDesc('created_at');
 
         // Apply tab filter — three branches.
         if ($scope === 'assigned') {
-            $query->where('assigned_to', $user->id);
-            $statusOptions = Ticket::STATUSES;
+            // Assigned to Me = ACTIVE tickets the user is PIC of. Resolved/Closed
+            // assigned tickets fall through to the Archived tab (see below), so
+            // this tab never mixes terminal statuses.
+            $query->where('assigned_to', $user->id)
+                ->whereIn('status', Ticket::ACTIVE_STATUSES);
+            $statusOptions = Ticket::ACTIVE_STATUSES;
         } elseif ($scope === 'archived') {
-            $query->where('user_id', $user->id)
-                ->whereIn('status', Ticket::ARCHIVED_STATUSES);
+            // Archived = terminal tickets the user either RAISED or was PIC of,
+            // so a PIC keeps sight of their finished work after it leaves the
+            // Assigned to Me tab.
+            $query->where(function ($q) use ($user) {
+                $q->where('user_id', $user->id)
+                    ->orWhere('assigned_to', $user->id);
+            })->whereIn('status', Ticket::ARCHIVED_STATUSES);
             $statusOptions = Ticket::ARCHIVED_STATUSES;
         } else {
             $query->where('user_id', $user->id)
