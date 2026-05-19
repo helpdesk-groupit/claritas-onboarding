@@ -61,7 +61,18 @@ class WeeklyPendingSweep extends Command
         }
 
         // ── 2. AARF — remind the employee (unacknowledged) ───────────────
+        // Only chase employees who (a) are still active (active_until IS NULL)
+        // and (b) currently hold at least one asset (an asset_assignments row
+        // with status 'assigned'). A resigned employee who has returned their
+        // asset has no 'assigned' rows left, so the weekly nag stops on its
+        // own — they have nothing left to acknowledge.
         $pendingAarfEmployee = Aarf::where('acknowledged', false)
+            ->whereHas('employee', function ($e) {
+                $e->whereNull('active_until')
+                  ->whereHas('assetAssignments', function ($a) {
+                      $a->where('status', 'assigned');
+                  });
+            })
             ->with('employee.user')
             ->get();
 
@@ -92,7 +103,20 @@ class WeeklyPendingSweep extends Command
         }
 
         // ── 3. AARF — notify IT managers (pending employee acknowledgements) ─
+        // Same exclusion as the employee reminder: drop AARFs whose employee
+        // has offboarded or no longer holds an asset. Onboarding-stage AARFs
+        // (employee_id still NULL — asset link runs through onboarding_id) are
+        // kept, since those represent new hires who genuinely owe an ack.
         $pendingAarfIt = Aarf::where('acknowledged', false)
+            ->where(function ($q) {
+                $q->whereNull('employee_id')
+                  ->orWhereHas('employee', function ($e) {
+                      $e->whereNull('active_until')
+                        ->whereHas('assetAssignments', function ($a) {
+                            $a->where('status', 'assigned');
+                        });
+                  });
+            })
             ->with('employee')
             ->get();
 
