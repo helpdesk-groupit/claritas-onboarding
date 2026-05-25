@@ -382,8 +382,16 @@
                     </div>
                     <div class="col-md-3">
                         <label class="form-label fw-semibold">Model <span class="text-danger">*</span></label>
-                        <input type="text" name="model" class="form-control @error('model') is-invalid @enderror"
-                               value="{{ old('model') }}" required>
+                        <input type="text" name="model" id="addModelInput"
+                               class="form-control @error('model') is-invalid @enderror"
+                               value="{{ old('model') }}"
+                               list="addModelSuggestions"
+                               autocomplete="off"
+                               placeholder="Pick from list or type your own" required>
+                        <datalist id="addModelSuggestions"></datalist>
+                        <div class="form-text text-muted small" id="addModelHint" style="display:none;">
+                            <i class="bi bi-lightbulb me-1"></i>Suggestions are filled from common market models. You can also type any other model.
+                        </div>
                         @error('model')<div class="invalid-feedback">{{ $message }}</div>@enderror
                     </div>
                     <div class="col-md-3">
@@ -871,6 +879,25 @@ function updateTypeDropdown(categorySelect, typeSelect, preselected) {
     typeSelect.innerHTML = html;
 }
 
+/**
+ * Refresh the <datalist> of model suggestions for the given type+brand.
+ * Suggestions come from config('asset-categories.models')[type][brand].
+ * Free-text entry is always allowed — this is a hint, not a constraint.
+ */
+function updateModelSuggestions(typeValue, brandValue, datalistId, hintId) {
+    const dl   = document.getElementById(datalistId);
+    const hint = hintId ? document.getElementById(hintId) : null;
+    if (!dl) return;
+    const models = (assetCatConfig.models?.[typeValue]?.[brandValue]) || [];
+    let html = '';
+    models.forEach(m => {
+        const safe = String(m).replace(/"/g, '&quot;');
+        html += `<option value="${safe}"></option>`;
+    });
+    dl.innerHTML = html;
+    if (hint) hint.style.display = models.length ? '' : 'none';
+}
+
 function updateBrandField(typeValue, brandSelect, brandText, preselected) {
     const brands = assetCatConfig.brands[typeValue];
 
@@ -926,14 +953,30 @@ function updateBrandField(typeValue, brandSelect, brandText, preselected) {
     const oldType  = @json(old('asset_type', ''));
     const oldBrand = @json(old('brand', ''));
 
+    // Read whichever brand input is currently active (select for known brands, text otherwise)
+    function currentBrand() {
+        if (brandSelect.style.display !== 'none' && !brandSelect.disabled) return brandSelect.value || '';
+        if (brandText.style.display   !== 'none' && !brandText.disabled)   return brandText.value   || '';
+        return '';
+    }
+
+    function refreshModels() {
+        updateModelSuggestions(typeSelect.value, currentBrand(), 'addModelSuggestions', 'addModelHint');
+    }
+
     catSelect.addEventListener('change', function () {
         updateTypeDropdown(catSelect, typeSelect, null);
         updateBrandField('', brandSelect, brandText, null);
+        refreshModels();
     });
 
     typeSelect.addEventListener('change', function () {
         updateBrandField(typeSelect.value, brandSelect, brandText, null);
+        refreshModels();
     });
+
+    brandSelect.addEventListener('change', refreshModels);
+    brandText.addEventListener('input',   refreshModels);
 
     // Initialise on load (handles old() repopulation after validation error)
     if (catSelect.value) {
@@ -942,6 +985,7 @@ function updateBrandField(typeValue, brandSelect, brandText, preselected) {
             updateBrandField(typeSelect.value, brandSelect, brandText, oldBrand);
         }
     }
+    refreshModels();
 })();
 
     // Auto-activate the correct tab based on URL ?tab= param

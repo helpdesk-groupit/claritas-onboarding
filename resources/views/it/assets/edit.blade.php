@@ -54,7 +54,16 @@
             <input type="text" name="brand" id="editBrandText" class="form-control"
                    placeholder="Enter brand" style="display:none" disabled></div>
         <div class="col-md-3"><label class="form-label fw-semibold">Model <span class="text-danger">*</span></label>
-            <input type="text" name="model" class="form-control" value="{{ old('model',$asset->model) }}" required></div>
+            <input type="text" name="model" id="editModelInput" class="form-control"
+                   value="{{ old('model',$asset->model) }}"
+                   list="editModelSuggestions"
+                   autocomplete="off"
+                   placeholder="Pick from list or type your own" required>
+            <datalist id="editModelSuggestions"></datalist>
+            <div class="form-text text-muted small" id="editModelHint" style="display:none;">
+                <i class="bi bi-lightbulb me-1"></i>Suggestions are filled from common market models. You can also type any other model.
+            </div>
+        </div>
         <div class="col-md-3"><label class="form-label fw-semibold">Serial Number <span class="text-danger">*</span></label>
             <input type="text" name="serial_number" class="form-control @error('serial_number') is-invalid @enderror" value="{{ old('serial_number',$asset->serial_number) }}" required>
             @error('serial_number')<div class="invalid-feedback">{{ $message }}</div>@enderror</div>
@@ -383,6 +392,24 @@ function updateTypeDropdown(categorySelect, typeSelect, preselected) {
     typeSelect.innerHTML = html;
 }
 
+/**
+ * Refresh the <datalist> of model suggestions for the given type+brand.
+ * Free-text entry is still allowed — this is a hint, not a constraint.
+ */
+function updateModelSuggestions(typeValue, brandValue, datalistId, hintId) {
+    const dl   = document.getElementById(datalistId);
+    const hint = hintId ? document.getElementById(hintId) : null;
+    if (!dl) return;
+    const models = (assetCatConfig.models?.[typeValue]?.[brandValue]) || [];
+    let html = '';
+    models.forEach(m => {
+        const safe = String(m).replace(/"/g, '&quot;');
+        html += `<option value="${safe}"></option>`;
+    });
+    dl.innerHTML = html;
+    if (hint) hint.style.display = models.length ? '' : 'none';
+}
+
 function updateBrandField(typeValue, brandSelect, brandText, preselected) {
     const brands = assetCatConfig.brands[typeValue];
 
@@ -436,14 +463,31 @@ function updateBrandField(typeValue, brandSelect, brandText, preselected) {
     const savedType  = @json(old('asset_type', $asset->asset_type ?? ''));
     const savedBrand = @json(old('brand', $asset->brand ?? ''));
 
+    function currentBrand() {
+        if (brandSelect.style.display !== 'none' && !brandSelect.disabled) return brandSelect.value || '';
+        if (brandText.style.display   !== 'none' && !brandText.disabled)   return brandText.value   || '';
+        return '';
+    }
+
+    function refreshModels() {
+        if (typeof updateModelSuggestions === 'function') {
+            updateModelSuggestions(typeSelect.value, currentBrand(), 'editModelSuggestions', 'editModelHint');
+        }
+    }
+
     catSelect.addEventListener('change', function () {
         updateTypeDropdown(catSelect, typeSelect, null);
         updateBrandField('', brandSelect, brandText, null);
+        refreshModels();
     });
 
     typeSelect.addEventListener('change', function () {
         updateBrandField(typeSelect.value, brandSelect, brandText, null);
+        refreshModels();
     });
+
+    brandSelect.addEventListener('change', refreshModels);
+    brandText.addEventListener('input',   refreshModels);
 
     // Initialise on load with saved values
     if (catSelect.value) {
@@ -463,6 +507,8 @@ function updateBrandField(typeValue, brandSelect, brandText, preselected) {
         brandText.required = true;
         brandText.value = savedBrand;
     }
+
+    refreshModels();
 })();
 
 // ── Ownership toggle (Edit form) ─────────────────────────────────────

@@ -1,13 +1,18 @@
 <?php
 
 /**
- * Asset Category → Type → Brand cascading data map.
+ * Asset Category → Type → Brand → Model cascading data map.
  * Used by both Blade views and JS for cascading dropdowns.
+ *
+ * 'models' is OPTIONAL per type→brand. When present, the UI shows a <datalist>
+ * with suggestions while still allowing free-text entry (so unlisted/new models
+ * are never blocked). Validation stays at string|max:100.
  */
 return [
     'categories' => [
         'office_furniture'   => 'Office Furniture',
         'it_equipment'       => 'IT Equipment / Hardware',
+        'video_equipment'    => 'Video Equipment',
         'office_equipment'   => 'Office Equipment',
         'software'           => 'Software',
         'office_supplies'    => 'Office Supplies / Current Assets',
@@ -39,6 +44,19 @@ return [
             'converter'   => 'Converter / Adapter',
             'accessories' => 'Accessories',
         ],
+        'video_equipment' => [
+            'camera'        => 'Camera (Mirrorless / DSLR / Cinema)',
+            'camcorder'     => 'Camcorder',
+            'action_camera' => 'Action Camera',
+            'lens'          => 'Lens',
+            'lighting'      => 'Lighting',
+            'audio'         => 'Audio / Microphone',
+            'gimbal'        => 'Gimbal / Stabiliser',
+            'drone'         => 'Drone',
+            'tripod_rig'    => 'Tripod / Rig / Slider',
+            'recorder'      => 'Field Recorder / Monitor',
+            'video_accessories' => 'Accessories (Cards, Batteries, Cages)',
+        ],
         'office_equipment' => [
             'photocopier'      => 'Photocopier',
             'fax_machine'      => 'Fax Machine',
@@ -67,9 +85,9 @@ return [
         ],
     ],
 
-    // Type key → brand options. 'text' means free-text input, array means dropdown.
+    // Type key → brand options. Array means dropdown; missing key falls back to free-text.
     'brands' => [
-        // IT Equipment — dropdown brands
+        // IT Equipment
         'desktop'  => ['Dell', 'HP', 'Lenovo', 'Apple', 'Asus', 'Acer', 'MSI', 'Intel NUC', 'Other'],
         'laptop'   => ['Dell', 'HP', 'Lenovo', 'Apple', 'Asus', 'Acer', 'MSI', 'Samsung', 'Microsoft', 'Huawei', 'Other'],
         'server'   => ['Dell', 'HP Enterprise', 'Lenovo', 'Supermicro', 'Cisco', 'IBM', 'Fujitsu', 'Other'],
@@ -83,6 +101,182 @@ return [
         'converter'   => ['Anker', 'Ugreen', 'Baseus', 'Belkin', 'HyperDrive', 'Satechi', 'Other'],
         'accessories' => ['Logitech', 'Jabra', 'Anker', 'Microsoft', 'Apple', 'Baseus', 'Targus', 'Kensington', 'Other'],
 
-        // Everything else uses free-text input (return 'text')
+        // Video Equipment
+        'camera'        => ['Sony', 'Canon', 'Nikon', 'Panasonic', 'Fujifilm', 'Blackmagic Design', 'RED', 'ARRI', 'Z CAM', 'Leica', 'Sigma', 'Other'],
+        'camcorder'     => ['Sony', 'Canon', 'Panasonic', 'JVC', 'Blackmagic Design', 'Other'],
+        'action_camera' => ['GoPro', 'DJI', 'Insta360', 'Sony', 'AKASO', 'Other'],
+        'lens'          => ['Sony', 'Canon', 'Nikon', 'Sigma', 'Tamron', 'Tokina', 'Zeiss', 'Fujifilm', 'Panasonic', 'Samyang', 'Rokinon', 'Laowa', 'Viltrox', 'Other'],
+        'lighting'      => ['Aputure', 'Godox', 'Nanlite', 'ARRI', 'Litepanels', 'Amaran', 'Neewer', 'Hive Lighting', 'Quasar Science', 'Other'],
+        'audio'         => ['Rode', 'Sennheiser', 'Shure', 'Audio-Technica', 'DPA', 'Deity', 'Saramonic', 'Zoom', 'Tascam', 'Sony', 'Other'],
+        'gimbal'        => ['DJI', 'Zhiyun', 'Moza', 'FeiyuTech', 'Hohem', 'Other'],
+        'drone'         => ['DJI', 'Autel Robotics', 'Skydio', 'Parrot', 'Other'],
+        'tripod_rig'    => ['Manfrotto', 'Sachtler', 'SmallRig', 'Tilta', 'Benro', 'Sirui', 'Gitzo', 'Vanguard', 'Edelkrone', 'Other'],
+        'recorder'      => ['Zoom', 'Tascam', 'Sound Devices', 'Atomos', 'SmallHD', 'Blackmagic Design', 'Other'],
+        'video_accessories' => ['SanDisk', 'Sony', 'Lexar', 'Angelbird', 'ProGrade Digital', 'SmallRig', 'Tilta', 'Anton/Bauer', 'Core SWX', 'Other'],
+
+        // Everything else uses free-text input
+    ],
+
+    // Type key → brand → array of common market models.
+    // Used to populate a <datalist> for the Model field. Free-text entry still allowed.
+    // Keep lists tight (≤ ~12 per brand) — these are suggestions, not an exhaustive catalogue.
+    'models' => [
+        'laptop' => [
+            'Dell'      => ['Latitude 5440', 'Latitude 5450', 'Latitude 7440', 'Latitude 7450', 'XPS 13', 'XPS 15', 'Precision 5680', 'Inspiron 15', 'Vostro 3530'],
+            'HP'        => ['EliteBook 840 G10', 'EliteBook 840 G11', 'ProBook 450 G10', 'ProBook 450 G11', 'ZBook Firefly 14 G10', 'Pavilion 15', 'Spectre x360 14'],
+            'Lenovo'    => ['ThinkPad X1 Carbon Gen 11', 'ThinkPad X1 Carbon Gen 12', 'ThinkPad T14 Gen 4', 'ThinkPad T14 Gen 5', 'ThinkPad L14 Gen 4', 'IdeaPad 5', 'Yoga Slim 7', 'Legion 5 Pro'],
+            'Apple'     => ['MacBook Air 13" M2', 'MacBook Air 15" M2', 'MacBook Air 13" M3', 'MacBook Air 15" M3', 'MacBook Pro 14" M3', 'MacBook Pro 14" M3 Pro', 'MacBook Pro 16" M3 Max', 'MacBook Pro 14" M4', 'MacBook Pro 16" M4 Pro'],
+            'Asus'      => ['ZenBook 14 OLED', 'ZenBook 14 UX3405', 'ROG Zephyrus G14', 'ROG Zephyrus G16', 'VivoBook 15', 'ExpertBook B5'],
+            'Acer'      => ['Swift 14', 'Swift Go 14', 'Aspire 5', 'Predator Helios 16', 'TravelMate P4'],
+            'MSI'       => ['Prestige 14 AI', 'Stealth 16 AI Studio', 'Raider GE78 HX', 'Modern 14', 'Cyborg 15'],
+            'Samsung'   => ['Galaxy Book4 Pro', 'Galaxy Book4 Ultra', 'Galaxy Book3 360'],
+            'Microsoft' => ['Surface Laptop 6', 'Surface Laptop 7', 'Surface Pro 10', 'Surface Pro 11', 'Surface Laptop Studio 2'],
+            'Huawei'    => ['MateBook X Pro 2024', 'MateBook 14', 'MateBook D 16'],
+        ],
+        'desktop' => [
+            'Dell'   => ['OptiPlex 7020', 'OptiPlex 7010', 'OptiPlex Micro 7020', 'Precision 3680', 'Precision 5860 Tower'],
+            'HP'     => ['EliteDesk 800 G9', 'ProDesk 400 G9', 'Z2 Tower G9', 'Z4 G5 Workstation'],
+            'Lenovo' => ['ThinkCentre M70q Gen 5', 'ThinkCentre M90s Gen 5', 'ThinkStation P3 Tower', 'ThinkStation P5'],
+            'Apple'  => ['Mac mini M2', 'Mac mini M2 Pro', 'Mac mini M4', 'Mac mini M4 Pro', 'iMac 24" M3', 'iMac 24" M4', 'Mac Studio M2 Max', 'Mac Studio M2 Ultra', 'Mac Pro M2 Ultra'],
+            'Asus'   => ['ExpertCenter D5', 'ROG Strix G35CA'],
+            'Intel NUC' => ['NUC 13 Pro', 'NUC 13 Extreme', 'NUC 14 Pro'],
+        ],
+        'monitor' => [
+            'Dell'      => ['U2723QE', 'U2724D', 'U2724DE', 'U2725QE', 'U3225QE', 'P2422H', 'P2423D', 'S2722QC'],
+            'HP'        => ['E24 G5', 'E27 G5', 'Z27k G3', 'Z32k G3'],
+            'Lenovo'    => ['ThinkVision T24i-30', 'ThinkVision T27p-30', 'ThinkVision P27h-30'],
+            'LG'        => ['27UP850N-W', '27UP650-W', '34WP65C-B', '27GP850-B UltraGear'],
+            'Samsung'   => ['ViewFinity S6', 'ViewFinity S8', 'Odyssey G7', 'Odyssey G9 OLED', 'M70D Smart Monitor'],
+            'Asus'      => ['ProArt PA279CV', 'ProArt PA32UCG', 'ROG Swift PG279QM', 'TUF VG27AQ'],
+            'BenQ'      => ['GW2480', 'PD2725U', 'PD3220U', 'SW272U'],
+            'AOC'       => ['24B2XH', 'Q27G2S', 'U27P2'],
+            'ViewSonic' => ['VA2447-MH', 'VG2755-2K', 'VP2768a'],
+            'Philips'   => ['243V7QDSB', '276E9QDSB', '329P9H'],
+        ],
+        'phone' => [
+            'Apple'    => ['iPhone 13', 'iPhone 14', 'iPhone 14 Plus', 'iPhone 14 Pro', 'iPhone 15', 'iPhone 15 Plus', 'iPhone 15 Pro', 'iPhone 15 Pro Max', 'iPhone 16', 'iPhone 16 Plus', 'iPhone 16 Pro', 'iPhone 16 Pro Max'],
+            'Samsung'  => ['Galaxy S23', 'Galaxy S23 Ultra', 'Galaxy S24', 'Galaxy S24+', 'Galaxy S24 Ultra', 'Galaxy S25', 'Galaxy S25 Ultra', 'Galaxy A55', 'Galaxy Z Flip6', 'Galaxy Z Fold6'],
+            'Huawei'   => ['Pura 70', 'Pura 70 Pro', 'Mate 60 Pro', 'Mate XT', 'Nova 12'],
+            'Xiaomi'   => ['Redmi Note 13 Pro', 'Redmi Note 14 Pro', '14T Pro', '14 Ultra', '15 Pro'],
+            'Oppo'     => ['Reno 11 Pro', 'Reno 12 Pro', 'Find X7 Ultra', 'A98 5G'],
+            'Vivo'     => ['V30 Pro', 'V40 Pro', 'X100 Pro', 'Y100'],
+            'OnePlus'  => ['12', '12R', '13', 'Nord 4'],
+            'Google'   => ['Pixel 8', 'Pixel 8 Pro', 'Pixel 9', 'Pixel 9 Pro', 'Pixel 9 Pro XL', 'Pixel 9 Pro Fold'],
+            'Sony'     => ['Xperia 1 V', 'Xperia 1 VI', 'Xperia 5 V', 'Xperia 10 VI'],
+        ],
+        'printer' => [
+            'HP'       => ['LaserJet Pro M404dn', 'LaserJet Pro MFP M428fdw', 'OfficeJet Pro 9015e', 'Color LaserJet Pro M255dw'],
+            'Canon'    => ['imageCLASS MF445dw', 'PIXMA G3010', 'PIXMA TR8620', 'imageRUNNER 2425'],
+            'Epson'    => ['EcoTank L3250', 'EcoTank L5290', 'WorkForce Pro WF-C5790', 'EcoTank L15150'],
+            'Brother'  => ['HL-L2375DW', 'MFC-L2750DW', 'MFC-L8900CDW'],
+        ],
+
+        // Video Equipment — current market workhorses
+        'camera' => [
+            'Sony'      => ['Alpha 7 IV (ILCE-7M4)', 'Alpha 7S III (ILCE-7SM3)', 'Alpha 7C II', 'Alpha 7R V', 'Alpha 9 III', 'Alpha 1', 'ZV-E10', 'ZV-E10 II', 'ZV-E1', 'FX3 (ILME-FX3)', 'FX6 (PXW-FX6)', 'FX30', 'FX9 (PXW-FX9)', 'BURANO'],
+            'Canon'     => ['EOS R5', 'EOS R5 Mark II', 'EOS R6 Mark II', 'EOS R7', 'EOS R8', 'EOS R10', 'EOS R3', 'EOS R1', 'EOS C70', 'EOS C300 Mark III', 'EOS C400', 'EOS C500 Mark II'],
+            'Nikon'     => ['Z 6 II', 'Z 6III', 'Z 7 II', 'Z 8', 'Z 9', 'Z 50 II', 'Z f', 'Z fc'],
+            'Panasonic' => ['Lumix S5 IIX', 'Lumix S5 II', 'Lumix GH6', 'Lumix GH7', 'Lumix S1H', 'Lumix BS1H', 'Lumix BGH1'],
+            'Fujifilm'  => ['X-T5', 'X-H2', 'X-H2S', 'X-S20', 'X100VI', 'GFX 100 II', 'GFX 100S II'],
+            'Blackmagic Design' => ['Pocket Cinema Camera 6K G2', 'Pocket Cinema Camera 6K Pro', 'Cinema Camera 6K', 'URSA Mini Pro 12K', 'URSA Cine 12K LF', 'PYXIS 6K'],
+            'RED'       => ['KOMODO 6K', 'KOMODO-X 6K', 'V-RAPTOR 8K VV', 'V-RAPTOR [X] 8K VV', 'V-RAPTOR XL 8K VV'],
+            'ARRI'      => ['ALEXA Mini LF', 'ALEXA 35', 'AMIRA'],
+            'Z CAM'     => ['E2-M4', 'E2-F6', 'E2-F8', 'E2-S6G2'],
+            'Sigma'     => ['fp', 'fp L'],
+        ],
+        'camcorder' => [
+            'Sony'      => ['HXR-NX80', 'PXW-Z90', 'PXW-Z150', 'PXW-Z200', 'FX6', 'FX9'],
+            'Canon'     => ['XA60', 'XA65', 'XA70', 'XA75', 'XF605'],
+            'Panasonic' => ['HC-X20', 'HC-X1500', 'HC-X2000', 'AG-CX10', 'AG-CX350'],
+            'JVC'       => ['GY-HM250', 'GY-HC500', 'GY-HC900'],
+        ],
+        'action_camera' => [
+            'GoPro'   => ['HERO11 Black', 'HERO12 Black', 'HERO13 Black', 'MAX', 'HERO (2024)'],
+            'DJI'     => ['Osmo Action 4', 'Osmo Action 5 Pro', 'Osmo Pocket 3'],
+            'Insta360' => ['X3', 'X4', 'Ace Pro', 'GO 3', 'GO 3S', 'ONE RS'],
+            'Sony'    => ['HDR-AS300', 'FDR-X3000'],
+            'AKASO'   => ['Brave 7', 'Brave 8', 'EK7000 Pro'],
+        ],
+        'lens' => [
+            'Sony'     => ['FE 24-70mm f/2.8 GM II', 'FE 70-200mm f/2.8 GM OSS II', 'FE 16-35mm f/2.8 GM II', 'FE 35mm f/1.4 GM', 'FE 50mm f/1.2 GM', 'FE 85mm f/1.4 GM', 'FE 24mm f/1.4 GM', 'FE PZ 16-35mm f/4 G', 'FE 70-200mm f/4 Macro G OSS II'],
+            'Canon'    => ['RF 24-70mm f/2.8L IS USM', 'RF 70-200mm f/2.8L IS USM Z', 'RF 15-35mm f/2.8L IS USM', 'RF 24-105mm f/4L IS USM', 'RF 50mm f/1.2L USM', 'RF 85mm f/1.2L USM', 'RF 28-70mm f/2L USM'],
+            'Nikon'    => ['Z 24-70mm f/2.8 S', 'Z 70-200mm f/2.8 VR S', 'Z 14-24mm f/2.8 S', 'Z 50mm f/1.2 S', 'Z 85mm f/1.2 S', 'Z 24-120mm f/4 S'],
+            'Sigma'    => ['24-70mm f/2.8 DG DN II Art', '70-200mm f/2.8 DG DN OS Sports', '14-24mm f/2.8 DG DN Art', '35mm f/1.2 DG DN Art', '85mm f/1.4 DG DN Art', '28-45mm f/1.8 DG DN Art', '500mm f/5.6 DG DN OS Sports'],
+            'Tamron'   => ['28-75mm f/2.8 Di III VXD G2', '70-180mm f/2.8 Di III VC VXD G2', '35-150mm f/2-2.8 Di III VXD', '17-50mm f/4 Di III VXD'],
+            'Tokina'   => ['atx-i 11-16mm f/2.8 CF', 'atx-m 23mm f/1.4', 'atx-m 33mm f/1.4'],
+            'Zeiss'    => ['Otus 28mm f/1.4', 'Otus 85mm f/1.4', 'Batis 25mm f/2', 'Loxia 50mm f/2'],
+            'Fujifilm' => ['XF 16-55mm f/2.8 R LM WR II', 'XF 50-140mm f/2.8 R LM OIS WR', 'XF 56mm f/1.2 R WR', 'XF 18mm f/1.4 R LM WR', 'XF 8-16mm f/2.8 R LM WR'],
+            'Panasonic'=> ['Lumix S Pro 24-70mm f/2.8', 'Lumix S 70-200mm f/2.8 O.I.S.', 'Lumix S 18mm f/1.8', 'Leica DG Vario-Elmarit 8-18mm'],
+            'Samyang'  => ['AF 35mm f/1.4 FE II', 'AF 75mm f/1.8 FE', 'V-AF 35mm T1.9'],
+            'Rokinon'  => ['85mm T1.5 Cine DSX', '35mm T1.5 Cine DSX', '24mm T1.5 Cine DSX'],
+            'Laowa'    => ['9mm T2.9 Zero-D Cine', '15mm f/4.5 Zero-D Shift', '24mm f/14 Probe', 'Nanomorph 27mm T2.8 1.5x'],
+            'Viltrox'  => ['AF 27mm f/1.2 Pro', 'AF 75mm f/1.2 Pro', 'AF 16mm f/1.8 FE'],
+        ],
+        'lighting' => [
+            'Aputure'     => ['Amaran 60d', 'Amaran 100x S', 'Amaran 200d S', 'Amaran 300c', 'LS 600c Pro', 'LS 1200d Pro', 'Nova P300c', 'Nova P600c', 'MT Pro RGBWW Tube'],
+            'Godox'       => ['SL150 III Bi', 'SL300 III', 'VL300 II', 'SZ300R', 'KNOWLED M200Bi', 'KNOWLED M600D', 'LC500R RGB'],
+            'Nanlite'     => ['Forza 60C', 'Forza 150B', 'Forza 500B II', 'Forza 720B', 'PavoTube II 30X', 'PavoTube II 6C'],
+            'ARRI'        => ['SkyPanel S60-C', 'Orbiter', 'L7-C', 'L10-C'],
+            'Litepanels'  => ['Astra 6X Bi-Color', 'Gemini 2x1 Hard RGBWW', 'Sola ENG'],
+            'Amaran'      => ['P60c', 'P60x', 'T2c Tube', 'F22c Flex'],
+            'Neewer'      => ['CB60', 'CB200B', 'RP19C', 'PL60C'],
+            'Hive Lighting'   => ['Wasp 100-C', 'Bee 50-C'],
+            'Quasar Science' => ['Rainbow 2 RR100', 'Double Rainbow LR1', 'Crossfade X'],
+        ],
+        'audio' => [
+            'Rode'         => ['VideoMic NTG', 'VideoMic Pro+', 'VideoMic GO II', 'Wireless GO II', 'Wireless PRO', 'NTG5', 'NT-USB+', 'PodMic'],
+            'Sennheiser'   => ['MKE 600', 'MKE 400', 'MKH 416', 'EW-DP ENG Set', 'EW 112P G4', 'MD 46'],
+            'Shure'        => ['SM7B', 'MV7+', 'VP83F', 'SM58', 'Beta 87A'],
+            'Audio-Technica' => ['AT875R', 'AT897', 'BP4029', 'AT2020', 'ATH-M50x'],
+            'DPA'          => ['4017B Shotgun', '4060 Lavalier', '6066 Headset'],
+            'Deity'        => ['S-Mic 2', 'V-Mic D4 Duo', 'TC-1 Theos', 'Connect 2.4G'],
+            'Saramonic'    => ['Blink Me B2', 'Blink 500 Pro B2', 'UwMic9 Kit2', 'SR-VRM1'],
+            'Zoom'         => ['H4essential', 'H5studio', 'H6essential', 'H8', 'F3', 'F6', 'F8n Pro'],
+            'Tascam'       => ['DR-40X', 'DR-60DmkII', 'Portacapture X8', 'Portacapture X6'],
+            'Sony'         => ['ECM-B10', 'ECM-W3', 'UWP-D21', 'UWP-D27'],
+        ],
+        'gimbal' => [
+            'DJI'       => ['RS 3 Mini', 'RS 3', 'RS 3 Pro', 'RS 4', 'RS 4 Pro', 'Ronin 4D', 'Osmo Mobile 6', 'Osmo Mobile SE'],
+            'Zhiyun'    => ['Crane M3S', 'Crane 4', 'Weebill 3', 'Weebill 3S', 'Smooth 5S'],
+            'Moza'      => ['AirCross 3', 'Mini-P MAX', 'Slypod Pro'],
+            'FeiyuTech' => ['SCORP-C', 'SCORP Pro', 'AK2000C', 'Vlog Pocket 3'],
+            'Hohem'     => ['iSteady M6', 'iSteady V2', 'MT2 Kit'],
+        ],
+        'drone' => [
+            'DJI'             => ['Mini 4 Pro', 'Mini 4K', 'Air 3', 'Air 3S', 'Mavic 3 Pro', 'Mavic 3 Classic', 'Avata 2', 'Inspire 3', 'Matrice 350 RTK', 'Matrice 4'],
+            'Autel Robotics'  => ['EVO Lite+', 'EVO Nano+', 'EVO II Pro V3', 'EVO Max 4T'],
+            'Skydio'          => ['X10', 'X10D'],
+            'Parrot'          => ['Anafi Ai', 'Anafi USA'],
+        ],
+        'tripod_rig' => [
+            'Manfrotto' => ['MVK504XTWINGA', 'MVK608TWINGA Nitrotech', 'MT055CXPRO3', 'MVK500AM'],
+            'Sachtler'  => ['flowtech 75 MS', 'Ace XL', 'aktiv 8', 'Video 18 S2'],
+            'SmallRig'  => ['AD-100 Tripod', 'CT-20 Carbon Tripod', 'Cage for Sony FX3', 'Cage for Sony a7 IV', 'Matte Box Star MB-T28', 'MagicFIZ Wireless Follow Focus'],
+            'Tilta'     => ['Nucleus-M', 'Nucleus-Nano II', 'Mirage MB-T16', 'Camera Cage for Sony FX3/FX30', 'Float Handheld Support'],
+            'Benro'     => ['S6Pro', 'S8Pro', 'Mach3 9X', 'Slim Travel Kit'],
+            'Sirui'     => ['VA-5 Fluid Head', 'AM-25S', 'P-326S Monopod'],
+            'Gitzo'     => ['GT3543LS Systematic', 'GT2542 Mountaineer', 'GT5563GS Series 5'],
+            'Vanguard'  => ['Alta Pro 263AB 100', 'VEO 3T+ 234CB'],
+            'Edelkrone' => ['SliderPLUS PRO', 'JibONE', 'HeadONE'],
+        ],
+        'recorder' => [
+            'Zoom'      => ['H4essential', 'H5studio', 'H6essential', 'F3', 'F6', 'F8n Pro'],
+            'Tascam'    => ['DR-10L Pro', 'DR-40X', 'DR-60DmkII', 'Portacapture X8'],
+            'Sound Devices' => ['MixPre-3 II', 'MixPre-6 II', 'MixPre-10 II', '888', 'Scorpio'],
+            'Atomos'    => ['Ninja V', 'Ninja V+', 'Ninja Phone', 'Shogun Connect', 'Shogun Ultra', 'Sumo 19 SE'],
+            'SmallHD'   => ['Indie 7', 'Cine 7', 'Indie 5', '1303 HDR'],
+            'Blackmagic Design' => ['Video Assist 5" 12G HDR', 'Video Assist 7" 12G HDR'],
+        ],
+        'video_accessories' => [
+            'SanDisk'         => ['Extreme PRO SDXC 128GB UHS-II', 'Extreme PRO CFexpress Type B 256GB', 'Extreme PRO CFexpress Type A 160GB'],
+            'Sony'            => ['TOUGH SDXC 128GB UHS-II', 'CFexpress Type A 160GB', 'NP-FZ100 Battery', 'NP-FW50 Battery'],
+            'Lexar'           => ['Professional 2000x SDXC 128GB', 'Professional CFexpress Type B GOLD 256GB'],
+            'Angelbird'       => ['AV PRO CFexpress 2.0 Type B SX 512GB', 'AV PRO SD MK2 V90 128GB'],
+            'ProGrade Digital' => ['CFexpress 4.0 Type B Cobalt 325GB', 'SDXC UHS-II V90 256GB'],
+            'SmallRig'        => ['NP-F970 Battery 7800mAh', 'V-Mount Battery 99Wh', 'VB99 SE'],
+            'Tilta'           => ['Power Plate', 'Nucleus-M Hand Wheel'],
+            'Anton/Bauer'     => ['Titon 90 V-Mount', 'Titon Base 95', 'Dionic XT 90'],
+            'Core SWX'        => ['HyperCore NEO 9 Mini', 'NANO MICRO 98', 'Helix Max 98'],
+        ],
     ],
 ];
