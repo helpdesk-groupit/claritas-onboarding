@@ -106,10 +106,18 @@ class WeeklyPendingSweep extends Command
         // Same exclusion as the employee reminder: drop AARFs whose employee
         // has offboarded or no longer holds an asset. Onboarding-stage AARFs
         // (employee_id still NULL — asset link runs through onboarding_id) are
-        // kept, since those represent new hires who genuinely owe an ack.
+        // kept ONLY when the onboarding actually has an assigned asset. An AARF
+        // row is created for EVERY onboarding regardless of assets, so without
+        // this guard an asset-less onboarding form (nothing to acknowledge)
+        // would clutter the IT reminder — often with a blank employee name.
         $pendingAarfIt = Aarf::where('acknowledged', false)
             ->where(function ($q) {
-                $q->whereNull('employee_id')
+                $q->where(function ($n) {
+                    $n->whereNull('employee_id')
+                      ->whereHas('onboarding.assetAssignments', function ($a) {
+                          $a->where('status', 'assigned');
+                      });
+                })
                   ->orWhereHas('employee', function ($e) {
                       $e->whereNull('active_until')
                         ->whereHas('assetAssignments', function ($a) {
