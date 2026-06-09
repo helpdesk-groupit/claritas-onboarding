@@ -121,9 +121,12 @@ class ActivateEmployees extends Command
             }
         }
 
-        // ── 2. OFFBOARD: employees whose exit_date == today, at 23:59 only ──
+        // ── 2. OFFBOARD: employees whose exit_date is today or already past, at 23:59 only ──
         // We only run this block when the clock is at or past 23:59 so that
         // employees remain visible in the system until the very end of their exit day.
+        // The "<= today" comparison (rather than "== today") makes this self-healing:
+        // if an exit_date is backfilled AFTER the exit day has passed, the sweep still
+        // catches and offboards the row on its next run instead of skipping it forever.
         $now         = Carbon::now();
         $offboarded  = 0;
 
@@ -131,7 +134,7 @@ class ActivateEmployees extends Command
             $this->info('Offboard check skipped — will run at 23:59.');
         } else {
             $exiting = Employee::whereNotNull('exit_date')
-                ->whereDate('exit_date', $today)
+                ->whereDate('exit_date', '<=', $today)
                 ->whereNull('active_until')
                 ->get();
 
