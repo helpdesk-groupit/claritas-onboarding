@@ -34,8 +34,9 @@ This is a **multi-role HR platform** built on Laravel 12 with Blade + Tailwind C
 - **Core:** Onboarding / Offboarding / Employee records
 - **HR Operations:** Leave management, payroll & payslips, attendance tracking, expense claims (eClaim), EA forms
 - **IT Operations:** Asset inventory, provisioning, AARF acknowledgements
-- **Finance:** Accounting module (Chart of Accounts, AR/AP, GL, invoices, purchase orders, budgeting, tax returns) under `app/Http/Controllers/Accounting/`
-- **Admin:** Company management, knowledge base, system overview/reports, role/permission assignment
+- **Finance:** Accounting module (Chart of Accounts, AR/AP, GL, invoices, purchase orders, budgeting, tax returns, fixed-asset depreciation, bank reconciliation, AI invoice scanning) under `app/Http/Controllers/Accounting/` — ~38 models under `app/Models/Accounting/`, business logic in `AccountingService` / `AiAccountingService`
+- **Helpdesk:** Ticketing module (see the detailed Ticketing section below) — company-scoped routing across 17 departments
+- **Admin:** Company management, knowledge base, announcements, system overview/reports, role/permission assignment
 
 ### Frontend Patterns Reference
 See `FRONTEND-PATTERNS.md` for a detailed reference of how each page's JavaScript works — event handlers, CSP compliance, dynamic form patterns, file upload patterns, and a per-page interaction map. **Consult before modifying any Blade view with JavaScript** to avoid breaking existing functionality.
@@ -56,6 +57,8 @@ Route middleware enforces role access. Check `routes/web.php` and `app/Providers
 
 ### Authentication
 Uses a **custom authentication provider** (`WorkEmailUserProvider`) that authenticates against the employee's work email instead of a personal email. Configured in `config/auth.php` as `work_email_eloquent` provider. Password reset expiry is 60 minutes, timeout is 3 hours.
+
+**Two-factor auth (TOTP):** `pragmarx/google2fa-laravel` + `bacon/bacon-qr-code`. `TwoFactorController` handles setup/confirm/disable and a pre-auth `/two-factor-challenge` (session-gated, `throttle:5,1`). The `EnforceTwoFactor` middleware sits in the main `auth` group and redirects users who haven't completed their 2FA challenge. Superadmin can reset a user's 2FA via `superadmin.accounts.reset-2fa`.
 
 ### Employee Lifecycle Flow
 ```
@@ -132,13 +135,13 @@ Notable mail classes:
 - No JS framework; vanilla JS only. Always escape user-entered values before `innerHTML` insertion using the project-standard `escHtml(s)` / `obEsc(s)` helpers.
 
 ### Testing
-- PHPUnit with two suites: `Unit` (`tests/Unit/`) and `Feature` (`tests/Feature/`)
-- Tests use SQLite in-memory database (`DB_CONNECTION=sqlite`, `DB_DATABASE=:memory:`)
-- Array drivers for cache and mail in test environment
+- PHPUnit 11 with two suites: `Unit` (`tests/Unit/`) and `Feature` (`tests/Feature/`)
+- Tests run against a **separate MySQL database** `claritas_onboarding_test` (`DB_CONNECTION=mysql`, `127.0.0.1:3306`, user `root`) — configured in `phpunit.xml`, not SQLite. The test DB must exist locally before running the suite.
+- Array drivers for cache, mail, and session; `QUEUE_CONNECTION=sync`; `BCRYPT_ROUNDS=4` in the test environment
 
 ### Database
-- MySQL in production/local (`claritas_onboarding`), SQLite in-memory for tests
-- ~90 migrations; the first 4 (prefixed `2024_01_`) define the core schema, subsequent `2026_03_` through `2026_05_` migrations are incremental enhancements
+- MySQL everywhere: `claritas_onboarding` for production/local, `claritas_onboarding_test` for the test suite
+- ~98 migrations spanning 2024-01 to 2026-06; the first 4 (prefixed `2024_01_`) define the core schema, subsequent `2026_03_` through `2026_06_` migrations are incremental enhancements (the bulk of the ticketing, leave/payroll, accounting, and security work)
 - Timezone: `Asia/Kuala_Lumpur` (set in `config/app.php`)
 
 ### Onboarding Staging JSON (`invite_staging_json`)

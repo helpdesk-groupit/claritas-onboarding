@@ -14,6 +14,7 @@ return [
         'it_equipment'       => 'IT Equipment / Hardware',
         'video_equipment'    => 'Video Equipment',
         'office_equipment'   => 'Office Equipment',
+        'terminal'           => 'Terminal',
         'software'           => 'Software',
         'office_supplies'    => 'Office Supplies / Current Assets',
         'leasehold'          => 'Leasehold Improvements',
@@ -62,6 +63,11 @@ return [
             'fax_machine'      => 'Fax Machine',
             'shredder'         => 'Shredder',
             'telephone_system' => 'Telephone System',
+        ],
+        'terminal' => [
+            'pinelab' => 'PineLab',
+            'maybank' => 'Maybank',
+            'cimb'    => 'CIMB',
         ],
         'software' => [
             'license'      => 'License',
@@ -113,6 +119,11 @@ return [
         'tripod_rig'    => ['Manfrotto', 'Sachtler', 'SmallRig', 'Tilta', 'Benro', 'Sirui', 'Gitzo', 'Vanguard', 'Edelkrone', 'Other'],
         'recorder'      => ['Zoom', 'Tascam', 'Sound Devices', 'Atomos', 'SmallHD', 'Blackmagic Design', 'Other'],
         'video_accessories' => ['SanDisk', 'Sony', 'Lexar', 'Angelbird', 'ProGrade Digital', 'SmallRig', 'Tilta', 'Anton/Bauer', 'Core SWX', 'Other'],
+
+        // Terminal
+        'pinelab' => ['PineLab', 'Maybank', 'CIMB', 'Other'],
+        'maybank' => ['PineLab', 'Maybank', 'CIMB', 'Other'],
+        'cimb'    => ['PineLab', 'Maybank', 'CIMB', 'Other'],
 
         // Everything else uses free-text input
     ],
