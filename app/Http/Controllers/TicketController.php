@@ -892,6 +892,7 @@ class TicketController extends Controller
             'assigneePool' => $assigneePool,
             'canManage' => $canManage,
             'statuses' => Ticket::STATUSES,
+            'departments' => Ticket::DEPARTMENTS,
         ]);
     }
 
@@ -900,21 +901,8 @@ class TicketController extends Controller
     // the wrong dept. Changing it clears PIC + assigned_at, resets status to
     // Open, and re-fires the new-ticket notifications to the new dept's pool.
     // The edit log is recorded for every change; only superadmin/system_admin
-    // see it on the ticket detail page (gated in the view).
-    public function editAdmin(Ticket $ticket)
-    {
-        $this->authorizeEdit($ticket);
-
-        $ticket->load('attachments', 'company', 'creator');
-
-        return view('tickets.edit-admin', [
-            'ticket' => $ticket,
-            'companies' => Company::orderBy('name')->get(['id', 'name']),
-            'departments' => Ticket::DEPARTMENTS,
-            'priorities' => Ticket::PRIORITIES,
-        ]);
-    }
-
+    // see it on the ticket detail page (gated in the view). Triggered from the
+    // re-route modal on the ticket detail page (tickets.show).
     public function updateAdmin(Request $request, Ticket $ticket)
     {
         $this->authorizeEdit($ticket);

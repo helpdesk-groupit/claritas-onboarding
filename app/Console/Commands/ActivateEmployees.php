@@ -47,32 +47,61 @@ class ActivateEmployees extends Command
                 $activated++;
             }
 
-            // Rehire reactivation: when an offboarded employee rejoins under the
-            // same company email, the user row from their previous tenure is
-            // still flagged is_active=false (set by the offboard branch below).
-            // Flip it back on and re-link the new Employee row so they can log
-            // in from day one. Past offboarding records on the old Employee row
-            // are not touched — they remain as historical exit data.
-            $companyEmail = $employee->company_email;
-            if ($companyEmail) {
-                $priorOffboarded = Employee::where('company_email', $companyEmail)
-                    ->whereNotNull('active_until')
-                    ->where('id', '!=', $employee->id)
-                    ->exists();
-                if ($priorOffboarded) {
-                    $rehireUser = \App\Models\User::where('work_email', $companyEmail)
-                        ->where('is_active', false)
-                        ->first();
-                    if ($rehireUser) {
-                        $rehireUser->update([
+            // ── Link the active Employee row to its login account ──────────────
+            // Without this, $user->employee resolves to null and the portal
+            // breaks (can't raise tickets, can't save profile). All matching is
+            // resilient to a missing company_email — common for a rehire before
+            // their new email is assigned — by falling back to identity keys
+            // (NRIC, then personal email) against a prior linked tenure.
+            if (empty($employee->user_id)) {
+                $linkUserId = null;
+
+                // 1. New hire who registered: their User exists, keyed by company email.
+                if ($employee->company_email) {
+                    $linkUserId = \App\Models\User::where('work_email', $employee->company_email)->value('id');
+                }
+                // 2. Rehire: borrow the user_id from a prior tenure of the same person.
+                if (!$linkUserId && $employee->official_document_id) {
+                    $linkUserId = Employee::where('id', '!=', $employee->id)
+                        ->whereNotNull('user_id')
+                        ->where('official_document_id', $employee->official_document_id)
+                        ->value('user_id');
+                }
+                if (!$linkUserId && $employee->personal_email) {
+                    $linkUserId = Employee::where('id', '!=', $employee->id)
+                        ->whereNotNull('user_id')
+                        ->where('personal_email', $employee->personal_email)
+                        ->value('user_id');
+                }
+
+                if ($linkUserId) {
+                    $employee->update(['user_id' => $linkUserId]);
+                    $this->info("  Linked Employee #{$employee->id} → User #{$linkUserId} ({$employee->full_name})");
+                }
+            }
+
+            // ── Reactivate a returning employee's dormant login account ─────────
+            // When an offboarded employee rejoins, the user row from their prior
+            // tenure is still is_active=false (set by the offboard branch below).
+            // Flip it back on so they can log in from day one. Keyed off the
+            // resolved user_id (not company_email), so it works even when the new
+            // company email hasn't been assigned yet. Guarded by the presence of a
+            // prior OFFBOARDED tenure so we never auto-unlock a deliberately locked
+            // brand-new account. Past offboarding records are left untouched.
+            if ($employee->user_id) {
+                $account = \App\Models\User::find($employee->user_id);
+                if ($account && !$account->is_active) {
+                    $hasPriorOffboarded = Employee::where('id', '!=', $employee->id)
+                        ->where('user_id', $account->id)
+                        ->whereNotNull('active_until')
+                        ->exists();
+                    if ($hasPriorOffboarded) {
+                        $account->update([
                             'is_active'           => true,
                             'login_attempts'      => 0,
                             'deactivation_reason' => null,
                             'deactivated_at'      => null,
                         ]);
-                        if ($employee->user_id !== $rehireUser->id) {
-                            $employee->update(['user_id' => $rehireUser->id]);
-                        }
                         $this->info("  Reactivated user account for rehire: {$employee->full_name}");
                     }
                 }

@@ -164,8 +164,7 @@
                            data-bs-toggle="modal" data-bs-target="#photoLightbox"
                            data-photo-src="{{ asset('storage/'.$photo) }}"
                            data-photo-idx="{{ $idx + 1 }}"
-                           data-photo-total="{{ count($photos) }}"
-                           onclick="openPhotoLightbox(this); return false;">
+                           data-photo-total="{{ count($photos) }}">
                             <img src="{{ asset('storage/'.$photo) }}"
                                  style="width:100px;height:80px;object-fit:cover;border-radius:6px;border:1px solid #dee2e6;cursor:pointer;"
                                  title="Photo {{ $idx + 1 }}">
@@ -230,12 +229,21 @@
 
 @push('scripts')
 <script nonce="{{ $cspNonce ?? '' }}">
-function openPhotoLightbox(el) {
-    document.getElementById('photoLightboxImg').src  = el.dataset.photoSrc;
-    document.getElementById('photoLightboxLabel').textContent =
-        'Photo ' + el.dataset.photoIdx + ' of ' + el.dataset.photoTotal;
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('photoLightbox')).show();
-}
+(function () {
+    'use strict';
+    // CSP-compliant lightbox: populate the modal image from the clicked
+    // thumbnail via Bootstrap's show.bs.modal event (relatedTarget = the
+    // <a> that opened it) instead of a blocked inline onclick handler.
+    var lightbox = document.getElementById('photoLightbox');
+    if (!lightbox) return;
+    lightbox.addEventListener('show.bs.modal', function (event) {
+        var el = event.relatedTarget;
+        if (!el) return;
+        document.getElementById('photoLightboxImg').src = el.dataset.photoSrc;
+        document.getElementById('photoLightboxLabel').textContent =
+            'Photo ' + el.dataset.photoIdx + ' of ' + el.dataset.photoTotal;
+    });
+})();
 </script>
 @endpush
 

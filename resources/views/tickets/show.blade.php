@@ -80,16 +80,6 @@
                 <div class="d-flex align-items-center justify-content-between mb-2">
                     <h6 class="fw-semibold mb-0">{{ $ticket->ticket_number }}</h6>
                     <div class="d-flex align-items-center gap-2">
-                        {{-- Edit (department re-route) — only when this page was reached from
-                             /tickets/manage AND the viewer can manage this dept. Same gating as
-                             the Assign-PIC / Update-Status controls; absent on /tickets. --}}
-                        @if($canManage)
-                            <a href="{{ route('tickets.edit-admin', $ticket) }}"
-                               class="btn btn-outline-secondary btn-sm py-0 px-2"
-                               title="Re-route this ticket to a different department">
-                                <i class="bi bi-arrow-left-right"></i> Edit
-                            </a>
-                        @endif
                         <span class="badge bg-{{ $ticket->statusColor() }}" id="ticketStatusBadge">{{ $ticket->status }}</span>
                     </div>
                 </div>
@@ -228,6 +218,71 @@
                         <i class="bi bi-arrow-repeat me-1"></i> Update Status
                     </button>
                 </form>
+            </div>
+        </div>
+        @endif
+
+        {{-- Department re-route — prominent card + modal. Same gating as the
+             Assign-PIC / Update-Status controls (manager reached via /tickets/manage);
+             absent on /tickets. Posts to the same tickets.update-admin endpoint the
+             old standalone Edit page used. --}}
+        @if($canManage)
+        <div class="card mt-3">
+            <div class="card-body text-center">
+                <h6 class="fw-semibold mb-1"><i class="bi bi-signpost-split me-1"></i> Ticket not for your department?</h6>
+                <p class="small text-muted mb-3">Re-route it to the correct department. This clears the PIC, resets status to Open, and notifies the new department's managers.</p>
+                <button type="button" class="btn btn-sm fw-semibold w-100"
+                        style="background-color:#facc15;color:#1e293b;"
+                        data-bs-toggle="modal" data-bs-target="#rerouteModal">
+                    <i class="bi bi-arrow-left-right me-1"></i> Edit
+                </button>
+            </div>
+        </div>
+
+        {{-- Re-route modal — only Department + Reason are editable (everything else
+             on the ticket is fixed), matching what updateAdmin() accepts. --}}
+        <div class="modal fade" id="rerouteModal" tabindex="-1" aria-labelledby="rerouteModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <form method="POST" action="{{ route('tickets.update-admin', $ticket) }}" id="rerouteForm">
+                        @csrf
+                        @method('PUT')
+                        <div class="modal-header">
+                            <h6 class="modal-title fw-semibold" id="rerouteModalLabel">
+                                <i class="bi bi-arrow-left-right me-1"></i> Re-route {{ $ticket->ticket_number }}
+                            </h6>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label small fw-semibold">
+                                    Department <span class="text-danger">*</span>
+                                </label>
+                                <select name="department" class="form-select" required>
+                                    @foreach($departments as $d)
+                                        <option value="{{ $d }}" @selected($ticket->department === $d)>{{ $d }}</option>
+                                    @endforeach
+                                </select>
+                                <small class="text-muted d-block mt-1" style="font-size:11px;">
+                                    <i class="bi bi-info-circle me-1"></i>Pick the department this ticket should have been raised under.
+                                </small>
+                            </div>
+                            <div class="mb-1">
+                                <label class="form-label small fw-semibold">
+                                    Reason <span class="text-muted fw-normal" style="font-size:11px;">(optional — saved in the edit log)</span>
+                                </label>
+                                <input type="text" name="note" class="form-control" maxlength="1000"
+                                       placeholder="e.g. Raiser picked KOL — should have been Group IT">
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
+                            <button type="submit" class="btn btn-primary" id="rerouteSubmit">
+                                <i class="bi bi-save me-1"></i> Save Changes
+                            </button>
+                        </div>
+                    </form>
+                </div>
             </div>
         </div>
         @endif
@@ -665,6 +720,25 @@
     // ── Initial load: pull all messages from id=0 ────────────────────────
     poll();
     startPolling();
+})();
+</script>
+<script nonce="{{ $cspNonce ?? '' }}">
+(function () {
+    'use strict';
+    // Double-submit guard for the re-route modal (mirrors the old Edit page).
+    var form = document.getElementById('rerouteForm');
+    var btn  = document.getElementById('rerouteSubmit');
+    var sending = false;
+    if (form && btn) {
+        form.addEventListener('submit', function (e) {
+            if (sending) { e.preventDefault(); return; }
+            sending = true;
+            btn.disabled = true;
+            btn.setAttribute('aria-busy', 'true');
+            btn.innerHTML =
+                '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Saving…';
+        });
+    }
 })();
 </script>
 @endpush

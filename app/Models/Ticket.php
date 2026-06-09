@@ -105,6 +105,7 @@ class Ticket extends Model
             'Onboarding Issue',
             'Offboarding / Resignation',
             'Employment Letter Request',
+            'Claim Approval Request',
             'Other',
         ],
         'Group IT' => [
@@ -115,6 +116,7 @@ class Ticket extends Model
             'Account Lockout',
             'Password Reset',
             'Printer Issue',
+            'Claim Approval Request',
             'Other',
         ],
         'Finance' => [
@@ -123,6 +125,7 @@ class Ticket extends Model
             'Vendor Payment',
             'Tax / Compliance Query',
             'Budget Request',
+            'Claim Approval Request',
             'Other',
         ],
         'Admin' => [
@@ -131,6 +134,7 @@ class Ticket extends Model
             'Travel Booking',
             'Meeting Room Booking',
             'General Enquiry',
+            'Claim Approval Request',
             'Other',
         ],
         // Extended
@@ -138,30 +142,35 @@ class Ticket extends Model
             'Member Enquiry',
             'Event Coordination',
             'Communications Request',
+            'Claim Approval Request',
             'Other',
         ],
         'Consulting' => [
             'Client Engagement',
             'Resource Allocation',
             'Project Scoping',
+            'Claim Approval Request',
             'Other',
         ],
         'Content' => [
             'Content Request',
             'Editorial Review',
             'Publishing Issue',
+            'Claim Approval Request',
             'Other',
         ],
         'Design' => [
             'Design Request',
             'Brand Asset Request',
             'Approval Required',
+            'Claim Approval Request',
             'Other',
         ],
         'Digital' => [
             'Website Issue',
             'SEO / Analytics Query',
             'Digital Tool Access',
+            'Claim Approval Request',
             'Other',
         ],
         'Ecommerce' => [
@@ -169,6 +178,7 @@ class Ticket extends Model
             'Payment Issue',
             'Inventory Query',
             'Customer Complaint',
+            'Claim Approval Request',
             'Other',
         ],
         'KOL' => [
@@ -177,12 +187,14 @@ class Ticket extends Model
             'Campaign Brief',
             'Contract / Agreement',
             'Payment / Compensation',
+            'Claim Approval Request',
             'Other',
         ],
         'Management' => [
             'Approval Request',
             'Policy Query',
             'Strategic Discussion',
+            'Claim Approval Request',
             'Other',
         ],
         'Marketing' => [
@@ -190,12 +202,14 @@ class Ticket extends Model
             'Content Approval',
             'Brand Asset Request',
             'Analytics Query',
+            'Claim Approval Request',
             'Other',
         ],
         'Media' => [
             'Media Request',
             'Press Enquiry',
             'Asset Distribution',
+            'Claim Approval Request',
             'Other',
         ],
         'Production' => [
@@ -203,6 +217,7 @@ class Ticket extends Model
             'Schedule Change',
             'Quality Issue',
             'Material Request',
+            'Claim Approval Request',
             'Other',
         ],
         'Projects' => [
@@ -210,6 +225,7 @@ class Ticket extends Model
             'Resource Request',
             'Timeline Change',
             'Risk / Issue Report',
+            'Claim Approval Request',
             'Other',
         ],
         'Sales' => [
@@ -217,6 +233,7 @@ class Ticket extends Model
             'Pricing Approval',
             'Contract Review',
             'Commission Issue',
+            'Claim Approval Request',
             'Other',
         ],
         'Tech' => [
@@ -225,6 +242,7 @@ class Ticket extends Model
             'Code Review Request',
             'Deployment Issue',
             'Performance Issue',
+            'Claim Approval Request',
             'Other',
         ],
     ];

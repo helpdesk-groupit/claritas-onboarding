@@ -187,7 +187,7 @@
                 </h6>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
-            <form action="{{ route('it.assign.pic', $ob) }}" method="POST">
+            <form action="{{ route('it.assign.pic', $ob) }}" method="POST" class="js-assign-pic-form">
                 @csrf
                 <div class="modal-body">
                     <p class="small text-muted mb-2">{{ $ob->personalDetail?->full_name ?? '—' }}</p>
@@ -225,3 +225,23 @@
 @endif
 
 @endsection
+
+@push('scripts')
+<script nonce="{{ $cspNonce ?? '' }}">
+(function () {
+    'use strict';
+    // Double-submit guard: prevent a double-click / retry on "Assign" from
+    // firing two assign-PIC requests (which previously created duplicate IT
+    // tasks). Backend is now idempotent too, but this stops the wasted round-trip.
+    document.querySelectorAll('form.js-assign-pic-form').forEach(function (form) {
+        form.addEventListener('submit', function () {
+            var btn = form.querySelector('button[type="submit"]');
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Assigning…';
+            }
+        });
+    });
+})();
+</script>
+@endpush

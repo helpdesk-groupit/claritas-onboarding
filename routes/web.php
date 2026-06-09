@@ -567,8 +567,8 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     Route::get('/tickets/{ticket}',                         [TicketController::class, 'show'])->name('tickets.show');
     Route::post('/tickets/{ticket}/assign-pic',             [TicketController::class, 'assignPic'])->name('tickets.assign-pic');
     Route::post('/tickets/{ticket}/status',                 [TicketController::class, 'updateStatus'])->name('tickets.status');
-    // Admin edit (superadmin / system_admin only) — edit company/dept/priority/subject/description
-    Route::get('/tickets/{ticket}/edit-admin',              [TicketController::class, 'editAdmin'])->name('tickets.edit-admin');
+    // Department re-route (manager of current dept / superadmin) — handled by the
+    // re-route modal on the ticket detail page; only Department + Reason are editable.
     Route::put('/tickets/{ticket}/edit-admin',              [TicketController::class, 'updateAdmin'])->name('tickets.update-admin');
     // Chat — AJAX poll (GET) + send (POST). Uploads throttled.
     Route::get('/tickets/{ticket}/messages',                [TicketMessageController::class, 'index'])->name('tickets.messages.index');

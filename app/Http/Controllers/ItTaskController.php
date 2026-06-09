@@ -8,6 +8,7 @@ use App\Models\Offboarding;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 class ItTaskController extends Controller
 {
@@ -64,45 +65,51 @@ class ItTaskController extends Controller
 
         $picUserId = $request->input('assigned_pic_user_id');
 
-        // Always delete existing tasks when PIC changes or is removed
-        ItTask::where('onboarding_id', $onboarding->id)
-            ->whereIn('task_type', ['asset_preparation', 'work_email'])
-            ->delete();
-
         // Remove PIC — clear tasks and PIC assignment, reset statuses
         if (!$picUserId) {
-            $onboarding->update([
-                'assigned_pic_user_id'     => null,
-                'asset_preparation_status' => 'pending',
-                'work_email_status'        => 'pending',
-            ]);
+            DB::transaction(function () use ($onboarding) {
+                ItTask::where('onboarding_id', $onboarding->id)
+                    ->whereIn('task_type', ['asset_preparation', 'work_email'])
+                    ->delete();
+                $onboarding->update([
+                    'assigned_pic_user_id'     => null,
+                    'asset_preparation_status' => 'pending',
+                    'work_email_status'        => 'pending',
+                ]);
+            });
             return back()->with('success', 'PIC removed.');
         }
 
         $request->validate(['assigned_pic_user_id' => 'required|exists:users,id']);
 
-        $onboarding->update([
-            'assigned_pic_user_id'     => $picUserId,
-            'asset_preparation_status' => 'pending',
-            'work_email_status'        => 'pending',
-        ]);
-
-        // Create fresh tasks for the new PIC
         $taskDefs = [
             ['type' => 'asset_preparation', 'title' => 'Asset Preparation — ' . ($onboarding->personalDetail?->full_name ?? 'New Hire')],
             ['type' => 'work_email',        'title' => 'Work Email / Google ID Setup — ' . ($onboarding->personalDetail?->full_name ?? 'New Hire')],
         ];
 
-        foreach ($taskDefs as $def) {
-            ItTask::create([
-                'onboarding_id' => $onboarding->id,
-                'task_type'     => $def['type'],
-                'assigned_to'   => $picUserId,
-                'assigned_by'   => $user->id,
-                'title'         => $def['title'],
-                'status'        => 'pending',
+        // Atomic + idempotent: updateOrCreate keyed on (onboarding_id, task_type)
+        // so a double-submit / race can't produce duplicate task rows. The unique
+        // index on (onboarding_id, task_type) is the DB-level backstop.
+        DB::transaction(function () use ($onboarding, $picUserId, $user, $taskDefs) {
+            $onboarding->update([
+                'assigned_pic_user_id'     => $picUserId,
+                'asset_preparation_status' => 'pending',
+                'work_email_status'        => 'pending',
             ]);
-        }
+
+            foreach ($taskDefs as $def) {
+                ItTask::updateOrCreate(
+                    ['onboarding_id' => $onboarding->id, 'task_type' => $def['type']],
+                    [
+                        'assigned_to'  => $picUserId,
+                        'assigned_by'  => $user->id,
+                        'title'        => $def['title'],
+                        'status'       => 'pending',
+                        'completed_at' => null,
+                    ]
+                );
+            }
+        });
 
         return back()->with('success', 'PIC assigned and tasks created.');
     }
@@ -115,48 +122,54 @@ class ItTaskController extends Controller
 
         $picUserId = $request->input('assigned_pic_user_id');
 
-        // Always delete existing offboarding tasks when PIC changes or is removed
-        ItTask::where('offboarding_id', $offboarding->id)
-            ->whereIn('task_type', ['asset_cleaning', 'deactivation'])
-            ->delete();
-
         // Remove PIC — clear tasks and PIC assignment, reset statuses
         if (!$picUserId) {
-            $offboarding->update([
-                'assigned_pic_user_id'  => null,
-                'asset_cleaning_status' => 'pending',
-                'deactivation_status'   => 'pending',
-            ]);
+            DB::transaction(function () use ($offboarding) {
+                ItTask::where('offboarding_id', $offboarding->id)
+                    ->whereIn('task_type', ['asset_cleaning', 'deactivation'])
+                    ->delete();
+                $offboarding->update([
+                    'assigned_pic_user_id'  => null,
+                    'asset_cleaning_status' => 'pending',
+                    'deactivation_status'   => 'pending',
+                ]);
+            });
             return back()->with('success', 'PIC removed.');
         }
 
         $request->validate(['assigned_pic_user_id' => 'required|exists:users,id']);
 
-        $offboarding->update([
-            'assigned_pic_user_id'  => $picUserId,
-            'asset_cleaning_status' => 'pending',
-            'deactivation_status'   => 'pending',
-        ]);
-
         $empName = $offboarding->full_name ?? 'Employee';
 
-        // Create fresh tasks for the new PIC
         $taskDefs = [
             ['type' => 'asset_cleaning', 'title' => 'Asset Retrieval & Cleaning — ' . $empName],
             ['type' => 'deactivation',   'title' => 'Work Email/GID Deactivation — ' . $empName],
         ];
 
-        foreach ($taskDefs as $def) {
-            ItTask::create([
-                'offboarding_id' => $offboarding->id,
-                'onboarding_id'  => null,
-                'task_type'      => $def['type'],
-                'assigned_to'    => $picUserId,
-                'assigned_by'    => $user->id,
-                'title'          => $def['title'],
-                'status'         => 'pending',
+        // Atomic + idempotent: updateOrCreate keyed on (offboarding_id, task_type)
+        // so a double-submit / race can't produce duplicate task rows. The unique
+        // index on (offboarding_id, task_type) is the DB-level backstop.
+        DB::transaction(function () use ($offboarding, $picUserId, $user, $taskDefs) {
+            $offboarding->update([
+                'assigned_pic_user_id'  => $picUserId,
+                'asset_cleaning_status' => 'pending',
+                'deactivation_status'   => 'pending',
             ]);
-        }
+
+            foreach ($taskDefs as $def) {
+                ItTask::updateOrCreate(
+                    ['offboarding_id' => $offboarding->id, 'task_type' => $def['type']],
+                    [
+                        'onboarding_id' => null,
+                        'assigned_to'   => $picUserId,
+                        'assigned_by'   => $user->id,
+                        'title'         => $def['title'],
+                        'status'        => 'pending',
+                        'completed_at'  => null,
+                    ]
+                );
+            }
+        });
 
         return back()->with('success', 'PIC assigned and offboarding tasks created.');
     }
