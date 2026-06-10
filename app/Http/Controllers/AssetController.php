@@ -300,21 +300,43 @@ class AssetController extends Controller
         if ($request->hasFile('invoice_document')) {
             $data['invoice_document'] = $request->file('invoice_document')->store('invoices', 'local');
         }
-        if ($request->hasFile('invoice_documents')) {
-            $existing = $asset->invoice_documents ?? [];
-            $paths = $existing;
-            foreach ($request->file('invoice_documents') as $file) {
-                $paths[] = $file->store('invoices', 'local');
+
+        // Invoices: honor per-file keep/remove, then append new uploads
+        $invoicePaths = $asset->invoice_documents ?? [];
+        if ($request->has('invoice_keep_submitted')) {
+            $keep    = (array) $request->input('invoice_keep_paths', []);
+            $removed = array_diff($invoicePaths, $keep);
+            foreach ($removed as $r) {
+                \Illuminate\Support\Facades\Storage::disk('local')->delete($r);
             }
-            $data['invoice_documents'] = $paths;
+            $invoicePaths = array_values(array_intersect($invoicePaths, $keep));
+        }
+        if ($request->hasFile('invoice_documents')) {
+            foreach ($request->file('invoice_documents') as $file) {
+                $invoicePaths[] = $file->store('invoices', 'local');
+            }
+        }
+        if ($request->has('invoice_keep_submitted') || $request->hasFile('invoice_documents')) {
+            $data['invoice_documents'] = !empty($invoicePaths) ? $invoicePaths : null;
+        }
+
+        // Contract docs: honor per-file keep/remove, then append new uploads
+        $contractPaths = $asset->rental_contract_documents ?? [];
+        if ($request->has('contract_keep_submitted')) {
+            $keep    = (array) $request->input('contract_keep_paths', []);
+            $removed = array_diff($contractPaths, $keep);
+            foreach ($removed as $r) {
+                \Illuminate\Support\Facades\Storage::disk('local')->delete($r);
+            }
+            $contractPaths = array_values(array_intersect($contractPaths, $keep));
         }
         if ($request->hasFile('rental_contract_documents')) {
-            $existing = $asset->rental_contract_documents ?? [];
-            $paths = $existing;
             foreach ($request->file('rental_contract_documents') as $file) {
-                $paths[] = $file->store('rental_contracts', 'local');
+                $contractPaths[] = $file->store('rental_contracts', 'local');
             }
-            $data['rental_contract_documents'] = $paths;
+        }
+        if ($request->has('contract_keep_submitted') || $request->hasFile('rental_contract_documents')) {
+            $data['rental_contract_documents'] = !empty($contractPaths) ? $contractPaths : null;
         }
 
         // Handle photo keep/remove + new uploads
@@ -565,11 +587,15 @@ class AssetController extends Controller
             }
         }
 
+        // Preserve listing filters (passed through the form action query string) so the
+        // detail page's Back button returns to the same filtered/paginated list.
+        $filters = $request->query();
+
         if ($asset->asset_condition === 'not_good') {
-            return redirect()->route('assets.disposed.show', $asset)->with('success', 'Asset updated successfully.');
+            return redirect()->route('assets.disposed.show', array_merge($filters, ['asset' => $asset->id]))->with('success', 'Asset updated successfully.');
         }
 
-        return redirect()->route('assets.show', $asset)->with('success', 'Asset updated successfully.');
+        return redirect()->route('assets.show', array_merge($filters, ['asset' => $asset->id]))->with('success', 'Asset updated successfully.');
     }
 
     // ── Damaged Assets page (view-only) ────────────────────────────────────

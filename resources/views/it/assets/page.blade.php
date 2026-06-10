@@ -161,9 +161,9 @@
                         <td>{{ $a->resolvedAssigneeName() }}</td>
                         <td>
                             <div class="d-flex gap-1">
-                                <a href="{{ route('assets.show', $a) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-eye"></i></a>
+                                <a href="{{ route('assets.show', array_merge(request()->query(), ['asset' => $a->id])) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-eye"></i></a>
                                 @if(Auth::user()->canEditAsset())
-                                    <a href="{{ route('assets.edit', $a) }}" class="btn btn-sm btn-outline-warning"><i class="bi bi-pencil"></i></a>
+                                    <a href="{{ route('assets.edit', array_merge(request()->query(), ['asset' => $a->id])) }}" class="btn btn-sm btn-outline-warning"><i class="bi bi-pencil"></i></a>
                                     @if($a->status === 'assigned')
                                     <button type="button"
                                             class="btn btn-sm btn-danger release-asset-btn"
@@ -282,12 +282,12 @@
                         <td>
                             <div class="d-flex gap-1">
                                 @if($d->asset)
-                                    <a href="{{ route('assets.disposed.show', $d->asset) }}"
+                                    <a href="{{ route('assets.disposed.show', array_merge(request()->query(), ['asset' => $d->asset->id])) }}"
                                        class="btn btn-sm btn-outline-secondary" title="View">
                                         <i class="bi bi-eye"></i>
                                     </a>
                                     @if(Auth::user()->canEditAsset())
-                                    <a href="{{ route('assets.edit', $d->asset) }}"
+                                    <a href="{{ route('assets.edit', array_merge(request()->query(), ['asset' => $d->asset->id])) }}"
                                        class="btn btn-sm btn-outline-warning" title="Edit">
                                         <i class="bi bi-pencil"></i>
                                     </a>

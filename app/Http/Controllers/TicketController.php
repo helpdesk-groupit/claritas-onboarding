@@ -907,6 +907,15 @@ class TicketController extends Controller
     {
         $this->authorizeEdit($ticket);
 
+        // Archived tickets are frozen — re-routing resets status to Open, which
+        // would un-archive them, so it's blocked while terminal (matches the
+        // status-update lock).
+        if ($ticket->isArchivedStatus()) {
+            return back()->withErrors([
+                'department' => 'This ticket is '.$ticket->status.' and locked. Archived tickets cannot be re-routed.',
+            ]);
+        }
+
         $data = $request->validate([
             'department' => 'required|in:'.implode(',', Ticket::DEPARTMENTS),
             'note' => 'nullable|string|max:1000',
@@ -1042,6 +1051,15 @@ class TicketController extends Controller
             abort(403);
         }
 
+        // Archived tickets are frozen. Assigning/removing a PIC resets status to
+        // Open / In Progress, which would un-archive the ticket — block it to keep
+        // terminal tickets terminal (matches the status-update + re-route locks).
+        if ($ticket->isArchivedStatus()) {
+            return back()->withErrors([
+                'assigned_pic_user_id' => 'This ticket is '.$ticket->status.' and locked. Archived tickets cannot be reassigned.',
+            ]);
+        }
+
         $picUserId = $request->input('assigned_pic_user_id');
 
         // Remove PIC — clear assignment, return to Open. Also clear assigned_at
@@ -1109,6 +1127,14 @@ class TicketController extends Controller
 
         if (! $isManager && ! $isAssignee) {
             abort(403);
+        }
+
+        // Archived tickets (Resolved/Closed) are terminal and frozen — no one,
+        // including managers/PIC/admin, may change the status or re-open them.
+        if ($ticket->isArchivedStatus()) {
+            return back()->withErrors([
+                'status' => 'This ticket is '.$ticket->status.' and locked. Archived tickets can no longer be updated.',
+            ]);
         }
 
         $request->validate([

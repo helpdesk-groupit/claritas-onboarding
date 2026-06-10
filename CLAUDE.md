@@ -38,8 +38,10 @@ This is a **multi-role HR platform** built on Laravel 12 with Blade + Tailwind C
 - **Helpdesk:** Ticketing module (see the detailed Ticketing section below) — company-scoped routing across 17 departments
 - **Admin:** Company management, knowledge base, announcements, system overview/reports, role/permission assignment
 
-### Frontend Patterns Reference
-See `FRONTEND-PATTERNS.md` for a detailed reference of how each page's JavaScript works — event handlers, CSP compliance, dynamic form patterns, file upload patterns, and a per-page interaction map. **Consult before modifying any Blade view with JavaScript** to avoid breaking existing functionality.
+### Reference Docs
+- `FRONTEND-PATTERNS.md` — detailed reference of how each page's JavaScript works (event handlers, CSP compliance, dynamic form patterns, file upload patterns, per-page interaction map). **Consult before modifying any Blade view with JavaScript** to avoid breaking existing functionality.
+- `docs/BACKUP-STRATEGY.md` — backup/restore design behind the `backup:run` command.
+- `docs/THREAT-MODEL.md` — security threat model behind the middleware/services in the Security Architecture section.
 
 **Critical rule (most common bug class in this codebase):** CSP blocks ALL inline event handler attributes — `onclick`, `onchange`, `oninput`, `onsubmit`, etc. — including those injected dynamically into `innerHTML` template literals. Always use `addEventListener` inside a nonce-protected `<script>` block. For dynamically created elements, use event delegation or `createElement` + `addEventListener`. Typical symptoms: button does nothing, form submit button stays disabled, validators never run, password visibility toggle fails.
 
@@ -93,8 +95,9 @@ AssetInventory → AssetAssignment (to employee) → AssetProvisioning → retur
 - `tickets:remind-stale` — hourly; emails + bell-notifies PIC (or department managers if unassigned) for any non-archived ticket idle 24h+. Throttled to one reminder per 24h via `tickets.last_reminder_sent_at`. Also auto-flips `Open → Pending` after 24h with no PIC.
 - `security:audit-report` — hourly
 - `log:verify-integrity` — daily at 3 AM via `LogIntegrity` service
-- `backup:run` — daily at 2 AM (full encrypted backup) + database snapshots every 6 hours; 30-day retention
-- `RefreshSystemMetadata` — hourly; caches dashboard/knowledge-base metadata (1-hour TTL) via `SystemMetadataService`
+- `backup:run` — daily at 2 AM (full encrypted backup, 30-day retention) + database snapshots daily (`--type=database`, 7-day retention)
+- `system:refresh-metadata` — hourly; caches dashboard/knowledge-base metadata (1-hour TTL) via `SystemMetadataService`
+- `system:check-updates` — daily at 6 AM; checks for dependency/system updates via `UpdateCheckerService` (24-hour cache)
 
 ### Security Architecture
 - **`EnforceSingleSession`** middleware — prevents concurrent logins by rotating session tokens; kicks prior session when a new login occurs
@@ -176,6 +179,8 @@ Both views display Sections F–I via `partials.employee-extra-sections-view`. T
 - `ImageSanitizer` — strips EXIF metadata from uploaded images
 - `AccountingService` / `AiAccountingService` — accounting module business logic and AI invoice scanning
 - `AttachmentProcessor` — centralised secure-storage + image-compression pipeline for ticket uploads (resizes images to 1920px max width via GD, re-encodes to strip EXIF, moves PDFs/other files as-is). Used by both `TicketAttachment` (creation) and `TicketMessageAttachment` (chat).
+- `SecurityScoreService` — computes a cached (1-hour TTL) security-posture score/breakdown from `SecurityAuditLog` + config/schema checks; surfaced on the admin security dashboard
+- `UpdateCheckerService` — checks for dependency/system updates via HTTP; results cached 24 hours, refreshed by `system:check-updates`
 
 ### Ticketing Module
 Internal helpdesk-style tickets with company-scoped routing across 17 departments. Self-service at `/tickets` (raise + view own); management at `/tickets/manage` (PIC inbox).

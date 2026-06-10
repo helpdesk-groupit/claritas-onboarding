@@ -3,7 +3,7 @@
 @section('page-title','Edit Asset')
 @section('content')
 <div class="d-flex gap-2 mb-3">
-    <a href="{{ $asset->asset_condition === 'not_good' ? route('assets.disposed.show', $asset) : route('assets.show', $asset) }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back</a>
+    <a href="{{ $asset->asset_condition === 'not_good' ? route('assets.disposed.show', array_merge(request()->query(), ['asset' => $asset->id])) : route('assets.show', array_merge(request()->query(), ['asset' => $asset->id])) }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back</a>
     @if(Auth::user()->canEditAsset() && ($asset->assigned_employee_id || $asset->status === 'assigned'))
     @php $assignedName = $asset->resolvedAssigneeName(); @endphp
     <button type="button" class="btn btn-sm btn-danger"
@@ -14,7 +14,7 @@
 </div>
 @php $canAll = Auth::user()->canEditAllAssetSections(); @endphp
 
-<form action="{{ route('assets.update',$asset) }}" method="POST" enctype="multipart/form-data">
+<form action="{{ route('assets.update', array_merge(request()->query(), ['asset' => $asset->id])) }}" method="POST" enctype="multipart/form-data">
 @csrf @method('PUT')
 @if($errors->any())<div class="alert alert-danger"><ul class="mb-0">@foreach($errors->all() as $e)<li>{{ $e }}</li>@endforeach</ul></div>@endif
 @if(!$canAll)<div class="alert alert-info small"><i class="bi bi-info-circle me-1"></i>As IT Executive, you can edit Sections A, B, and C only.</div>@endif
@@ -102,6 +102,11 @@
                 </div>
             </div>
         </div>
+        @php
+            $ownershipType     = old('ownership_type', $asset->ownership_type ?? 'company');
+            $existingInvoices  = $asset->invoice_documents ?? [];
+            $existingContracts = $asset->rental_contract_documents ?? [];
+        @endphp
         <div id="companyFields" class="row g-3" style="{{ old('ownership_type', $asset->ownership_type ?? 'company') === 'rental' ? 'display:none;' : '' }}">
             <div class="col-md-4"><label class="form-label fw-semibold">Company Name</label>
                 <select name="company_name" class="form-select">
@@ -122,7 +127,22 @@
                 <input type="date" name="warranty_expiry_date" class="form-control" value="{{ old('warranty_expiry_date',$asset->warranty_expiry_date?->format('Y-m-d')) }}"></div>
             <div class="col-md-4"><label class="form-label fw-semibold">Invoice(s) {{ $asset->invoice_documents ? '— '.count($asset->invoice_documents).' file(s)' : '' }}</label>
                 <input type="file" name="invoice_documents[]" id="editCompanyInvoiceInput" class="form-control" accept=".pdf,.jpg,.jpeg,.png" multiple>
-                <div class="form-text text-muted small">PDF or images. Multiple files allowed.</div></div>
+                <div class="form-text text-muted small">PDF or images. Multiple files allowed.</div>
+                @if($ownershipType !== 'rental' && !empty($existingInvoices))
+                <input type="hidden" name="invoice_keep_submitted" value="1">
+                <div id="invoiceExistingList" class="d-flex flex-column gap-1 mt-2">
+                    @foreach($existingInvoices as $idx => $path)
+                    <div class="d-flex align-items-center gap-2 doc-keep-item border rounded px-2 py-1">
+                        <a href="{{ secure_file_url($path) }}" target="_blank" class="text-decoration-none flex-grow-1 text-truncate small">
+                            <i class="bi bi-{{ str_ends_with(strtolower($path), '.pdf') ? 'file-earmark-pdf text-danger' : 'file-earmark-image text-primary' }} me-1"></i>Invoice {{ $idx + 1 }}
+                        </a>
+                        <input type="hidden" name="invoice_keep_paths[]" value="{{ $path }}" class="doc-keep-input">
+                        <button type="button" class="btn btn-outline-danger btn-sm py-0 px-1 doc-remove-btn" title="Remove"><i class="bi bi-x"></i></button>
+                    </div>
+                    @endforeach
+                </div>
+                @endif
+            </div>
         </div>
         <div id="rentalFields" class="row g-3" style="{{ old('ownership_type', $asset->ownership_type) === 'rental' ? '' : 'display:none;' }}">
             <div class="col-md-4"><label class="form-label fw-semibold">Rental Vendor <span class="text-danger">*</span></label>
@@ -140,10 +160,40 @@
             <div class="col-md-3"><label class="form-label fw-semibold">Invoice(s) {{ $asset->invoice_documents ? '— '.count($asset->invoice_documents).' file(s)' : '' }}</label>
                 <input type="file" name="invoice_documents[]" id="editRentalInvoiceInput" class="form-control" accept=".pdf,.jpg,.jpeg,.png" multiple
                     {{ old('ownership_type', $asset->ownership_type) !== 'rental' ? 'disabled' : '' }}>
-                <div class="form-text text-muted small">PDF or images.</div></div>
+                <div class="form-text text-muted small">PDF or images.</div>
+                @if($ownershipType === 'rental' && !empty($existingInvoices))
+                <input type="hidden" name="invoice_keep_submitted" value="1">
+                <div id="invoiceExistingList" class="d-flex flex-column gap-1 mt-2">
+                    @foreach($existingInvoices as $idx => $path)
+                    <div class="d-flex align-items-center gap-2 doc-keep-item border rounded px-2 py-1">
+                        <a href="{{ secure_file_url($path) }}" target="_blank" class="text-decoration-none flex-grow-1 text-truncate small">
+                            <i class="bi bi-{{ str_ends_with(strtolower($path), '.pdf') ? 'file-earmark-pdf text-danger' : 'file-earmark-image text-primary' }} me-1"></i>Invoice {{ $idx + 1 }}
+                        </a>
+                        <input type="hidden" name="invoice_keep_paths[]" value="{{ $path }}" class="doc-keep-input">
+                        <button type="button" class="btn btn-outline-danger btn-sm py-0 px-1 doc-remove-btn" title="Remove"><i class="bi bi-x"></i></button>
+                    </div>
+                    @endforeach
+                </div>
+                @endif
+            </div>
             <div class="col-md-4"><label class="form-label fw-semibold">Contract Doc(s) {{ $asset->rental_contract_documents ? '— '.count($asset->rental_contract_documents).' file(s)' : '' }}</label>
                 <input type="file" name="rental_contract_documents[]" class="form-control" accept=".pdf,.jpg,.jpeg,.png" multiple>
-                <div class="form-text text-muted small">Upload rental/lease contract.</div></div>
+                <div class="form-text text-muted small">Upload rental/lease contract.</div>
+                @if(!empty($existingContracts))
+                <input type="hidden" name="contract_keep_submitted" value="1">
+                <div id="contractExistingList" class="d-flex flex-column gap-1 mt-2">
+                    @foreach($existingContracts as $idx => $path)
+                    <div class="d-flex align-items-center gap-2 doc-keep-item border rounded px-2 py-1">
+                        <a href="{{ secure_file_url($path) }}" target="_blank" class="text-decoration-none flex-grow-1 text-truncate small">
+                            <i class="bi bi-{{ str_ends_with(strtolower($path), '.pdf') ? 'file-earmark-pdf text-danger' : 'file-earmark-image text-primary' }} me-1"></i>Contract {{ $idx + 1 }}
+                        </a>
+                        <input type="hidden" name="contract_keep_paths[]" value="{{ $path }}" class="doc-keep-input">
+                        <button type="button" class="btn btn-outline-danger btn-sm py-0 px-1 doc-remove-btn" title="Remove"><i class="bi bi-x"></i></button>
+                    </div>
+                    @endforeach
+                </div>
+                @endif
+            </div>
             <div class="col-md-4"><label class="form-label fw-semibold">Supplied To (Company)</label>
                 <select name="company_supplied_to" class="form-select">
                     <option value="">— Select Company —</option>
@@ -371,7 +421,7 @@
 @endif
 
 <div class="d-flex gap-2 justify-content-end">
-    <a href="{{ $asset->asset_condition === 'not_good' ? route('assets.disposed.show', $asset) : route('assets.show', $asset) }}" class="btn btn-outline-secondary">Cancel</a>
+    <a href="{{ $asset->asset_condition === 'not_good' ? route('assets.disposed.show', array_merge(request()->query(), ['asset' => $asset->id])) : route('assets.show', array_merge(request()->query(), ['asset' => $asset->id])) }}" class="btn btn-outline-secondary">Cancel</a>
     <button type="submit" class="btn btn-primary px-4"><i class="bi bi-check-circle me-2"></i>Save Changes</button>
 </div>
 </form>
@@ -688,6 +738,24 @@ document.addEventListener('DOMContentLoaded', function () {
             btn.disabled = true;
         });
     }
+})();
+
+// ── Remove existing Procurement documents (invoices / contract docs) ───────
+(function () {
+    ['invoiceExistingList', 'contractExistingList'].forEach(function (listId) {
+        var list = document.getElementById(listId);
+        if (!list) return;
+        list.addEventListener('click', function (e) {
+            var btn = e.target.closest('.doc-remove-btn');
+            if (!btn) return;
+            var item = btn.closest('.doc-keep-item');
+            var keepInput = item.querySelector('.doc-keep-input');
+            if (keepInput) keepInput.disabled = true;   // dropped from submitted keep[] → deleted on save
+            item.style.opacity = '0.4';
+            item.style.pointerEvents = 'none';
+            btn.disabled = true;
+        });
+    });
 })();
 
 // ── Image compression utility ─────────────────────────────────────────────

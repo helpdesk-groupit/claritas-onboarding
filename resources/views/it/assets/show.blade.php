@@ -3,9 +3,9 @@
 @section('page-title','Asset Detail')
 @section('content')
 <div class="d-flex gap-2 mb-3 flex-wrap">
-    <a href="{{ route('assets.index') }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back</a>
+    <a href="{{ route('assets.index', request()->query()) }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back</a>
     @if(Auth::user()->canEditAsset())
-        <a href="{{ route('assets.edit',$asset) }}" class="btn btn-sm btn-warning"><i class="bi bi-pencil me-1"></i>Edit</a>
+        <a href="{{ route('assets.edit', array_merge(request()->query(), ['asset' => $asset->id])) }}" class="btn btn-sm btn-warning"><i class="bi bi-pencil me-1"></i>Edit</a>
     @endif
 </div>
 

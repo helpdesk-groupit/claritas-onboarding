@@ -4,11 +4,11 @@
 @section('content')
 
 <div class="d-flex gap-2 mb-3 flex-wrap">
-    <a href="{{ route('assets.index', ['tab' => 'damaged']) }}" class="btn btn-sm btn-outline-secondary">
+    <a href="{{ route('assets.index', array_merge(['tab' => 'damaged'], request()->query())) }}" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-arrow-left me-1"></i>Back to Decommissioning Assets
     </a>
     @if(Auth::user()->canEditAsset())
-    <a href="{{ route('assets.edit', $asset) }}" class="btn btn-sm btn-warning">
+    <a href="{{ route('assets.edit', array_merge(request()->query(), ['asset' => $asset->id])) }}" class="btn btn-sm btn-warning">
         <i class="bi bi-pencil me-1"></i>Edit
     </a>
     @endif

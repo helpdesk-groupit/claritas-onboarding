@@ -160,7 +160,7 @@
                     <p class="small text-muted mb-2">No PIC assigned yet.</p>
                 @endif
 
-                @if($canManage)
+                @if($canManage && ! $ticket->isArchivedStatus())
                     @if($ticket->assigned_to)
                         {{-- A PIC is already assigned — must be removed before reassignment --}}
                         <form method="POST" action="{{ route('tickets.assign-pic', $ticket) }}">
@@ -207,17 +207,24 @@
         <div class="card">
             <div class="card-body">
                 <h6 class="fw-semibold mb-3"><i class="bi bi-flag me-1"></i> Status</h6>
-                <form method="POST" action="{{ route('tickets.status', $ticket) }}">
-                    @csrf
-                    <select name="status" class="form-select form-select-sm mb-2">
-                        @foreach($statuses as $s)
-                            <option value="{{ $s }}" @selected($ticket->status === $s)>{{ $s }}</option>
-                        @endforeach
-                    </select>
-                    <button type="submit" class="btn btn-sm btn-outline-primary w-100">
-                        <i class="bi bi-arrow-repeat me-1"></i> Update Status
-                    </button>
-                </form>
+                @if($ticket->isArchivedStatus())
+                    <div class="d-flex align-items-start gap-2 small text-muted">
+                        <i class="bi bi-lock-fill mt-1"></i>
+                        <span>This ticket is <strong>{{ $ticket->status }}</strong> and locked. Archived tickets can no longer be updated.</span>
+                    </div>
+                @else
+                    <form method="POST" action="{{ route('tickets.status', $ticket) }}">
+                        @csrf
+                        <select name="status" class="form-select form-select-sm mb-2">
+                            @foreach($statuses as $s)
+                                <option value="{{ $s }}" @selected($ticket->status === $s)>{{ $s }}</option>
+                            @endforeach
+                        </select>
+                        <button type="submit" class="btn btn-sm btn-outline-primary w-100">
+                            <i class="bi bi-arrow-repeat me-1"></i> Update Status
+                        </button>
+                    </form>
+                @endif
             </div>
         </div>
         @endif
@@ -226,7 +233,7 @@
              Assign-PIC / Update-Status controls (manager reached via /tickets/manage);
              absent on /tickets. Posts to the same tickets.update-admin endpoint the
              old standalone Edit page used. --}}
-        @if($canManage)
+        @if($canManage && ! $ticket->isArchivedStatus())
         <div class="card mt-3">
             <div class="card-body text-center">
                 <h6 class="fw-semibold mb-1"><i class="bi bi-signpost-split me-1"></i> Ticket not for your department?</h6>
@@ -392,9 +399,6 @@
                 <div id="chatClosedBanner" class="chat-closed-banner" style="display:none;">
                     <i class="bi bi-lock-fill"></i>
                     <strong>This ticket is <span id="chatClosedStatus">Resolved</span>.</strong> Chat is no longer available.
-                    @if($canManage || $ticket->assigned_to === Auth::id())
-                        <span class="hint">Re-open the ticket via the status dropdown to continue the conversation.</span>
-                    @endif
                 </div>
             </div>
         </div>
