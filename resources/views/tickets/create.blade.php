@@ -532,19 +532,37 @@
         setRouting(dept, companyId, 'manual');
     });
 
-    // ── Live attachment preview ──────────────────────────────────────────
+    // ── Live attachment preview (image thumbnails + open-in-new-tab) ──────
+    // Object URLs let the raiser view each file before submitting. We revoke
+    // the previous selection's URLs on every change to avoid memory leaks.
+    var attachmentUrls = [];
     fileInput.addEventListener('change', function () {
+        attachmentUrls.forEach(function (u) { URL.revokeObjectURL(u); });
+        attachmentUrls = [];
+
         preview.innerHTML = '';
         var files = Array.from(fileInput.files);
         if (files.length === 0) return;
         var html = '<div class="border rounded p-2" style="background:#f8fafc;">';
         files.forEach(function (f) {
-            var sizeKB = Math.ceil(f.size / 1024);
-            var icon = f.type.indexOf('image/') === 0 ? 'bi-image' : 'bi-file-earmark-pdf';
+            var sizeKB  = Math.ceil(f.size / 1024);
+            var isImage = f.type.indexOf('image/') === 0;
+            var url     = URL.createObjectURL(f);
+            attachmentUrls.push(url);
+
+            var thumb = isImage
+                ? '<a href="' + url + '" target="_blank" rel="noopener">' +
+                    '<img src="' + url + '" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid #e2e8f0;">' +
+                  '</a>'
+                : '<i class="bi bi-file-earmark-pdf text-danger" style="font-size:26px;"></i>';
+
             html += '<div class="d-flex align-items-center gap-2 py-1" style="font-size:12px;">' +
-                      '<i class="bi ' + icon + ' text-primary"></i>' +
-                      '<span class="flex-grow-1 text-truncate">' + escapeHtml(f.name) + '</span>' +
+                      thumb +
+                      '<a href="' + url + '" target="_blank" rel="noopener" class="flex-grow-1 text-truncate text-decoration-none" title="Open in new tab">' +
+                        escapeHtml(f.name) +
+                      '</a>' +
                       '<span class="text-muted">' + sizeKB + ' KB</span>' +
+                      '<a href="' + url + '" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary py-0 px-1" title="View"><i class="bi bi-eye"></i></a>' +
                     '</div>';
         });
         html += '</div>';
