@@ -2,15 +2,51 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\TrustedDevice;
+use App\Services\TrustedDeviceService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Password;
 
 class AccountController extends Controller
 {
-    public function show()
+    public function show(Request $request)
     {
-        return view('user.account');
+        // Active (non-expired) remembered devices, most-recently-used first.
+        $trustedDevices = Auth::user()->trustedDevices()
+            ->where('expires_at', '>', now())
+            ->orderByDesc('last_used_at')
+            ->get();
+
+        // Mark the row matching the current browser's cookie so the UI can label it.
+        $currentSelector = null;
+        $raw = $request->cookie(config('trusted-device.cookie', 'td_token'));
+        if (is_string($raw) && str_contains($raw, ':')) {
+            $currentSelector = explode(':', $raw, 2)[0];
+        }
+
+        return view('user.account', compact('trustedDevices', 'currentSelector'));
+    }
+
+    // ── Trusted devices: revoke one ───────────────────────────────────────
+    public function revokeTrustedDevice(Request $request, TrustedDevice $device)
+    {
+        abort_unless($device->user_id === Auth::id(), 403);
+
+        TrustedDeviceService::revoke($device, $request);
+
+        return back()->with('success', 'That device has been signed out of trusted status and will require 2FA next time.');
+    }
+
+    // ── Trusted devices: revoke all ───────────────────────────────────────
+    public function revokeAllTrustedDevices(Request $request)
+    {
+        TrustedDeviceService::revokeAll(Auth::user());
+        \Illuminate\Support\Facades\Cookie::queue(
+            \Illuminate\Support\Facades\Cookie::forget(config('trusted-device.cookie', 'td_token'))
+        );
+
+        return back()->with('success', 'All trusted devices have been removed. 2FA will be required on every device at next login.');
     }
 
     // ── Change Password: log out → redirect to Reset Password page ────────

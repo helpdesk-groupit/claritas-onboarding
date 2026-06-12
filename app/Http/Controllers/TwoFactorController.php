@@ -85,6 +85,9 @@ class TwoFactorController extends Controller
             'two_factor_confirmed_at'   => null,
         ]);
 
+        // No 2FA → trusted devices are meaningless; clear them.
+        \App\Services\TrustedDeviceService::revokeAll($request->user());
+
         return redirect()->route('profile')->with('success', 'Two-factor authentication has been disabled.');
     }
 
@@ -146,6 +149,12 @@ class TwoFactorController extends Controller
         $token = Str::random(60);
         $user->update(['session_token' => $token, 'login_attempts' => 0]);
         session(['_single_session_token' => $token]);
+
+        // If the user opted to trust this device, mint a trusted-device cookie so
+        // future logins from this same device/country skip the 2FA challenge.
+        if ($request->boolean('remember_device')) {
+            \App\Services\TrustedDeviceService::issue($user, $request);
+        }
 
         // Clean up 2FA session data
         $request->session()->forget(['2fa_user_id', '2fa_remember', '2fa_redirect']);

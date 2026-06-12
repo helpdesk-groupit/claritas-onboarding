@@ -130,6 +130,8 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::post('/account/change-password', [AccountController::class, 'changePassword'])->name('account.change-password');
     Route::post('/account/language',        [AccountController::class, 'setLanguage'])->name('account.language');
     Route::post('/account/avatar',          [AccountController::class, 'uploadProfilePicture'])->name('account.avatar')->middleware('throttle:uploads');
+    Route::post('/account/trusted-devices/revoke-all',      [AccountController::class, 'revokeAllTrustedDevices'])->name('account.trusted-devices.revoke-all');
+    Route::post('/account/trusted-devices/{device}/revoke', [AccountController::class, 'revokeTrustedDevice'])->name('account.trusted-devices.revoke');
 
     // Onboarding (HR)
     Route::get('/onboarding',                   [OnboardingController::class, 'index'])->name('onboarding.index');

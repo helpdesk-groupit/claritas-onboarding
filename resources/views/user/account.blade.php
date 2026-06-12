@@ -120,6 +120,63 @@
             </div>
         </div>
 
+        {{-- Trusted Devices (only relevant when 2FA is enabled) --}}
+        @if(Auth::user()->hasTwoFactorEnabled())
+        <div class="card mb-4">
+            <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+                <h6 class="mb-0 fw-bold"><i class="bi bi-laptop me-2 text-primary"></i>Trusted Devices</h6>
+                @if(isset($trustedDevices) && $trustedDevices->isNotEmpty())
+                <form action="{{ route('account.trusted-devices.revoke-all') }}" method="POST" class="m-0"
+                      onsubmit="return confirm('Remove all trusted devices? You will need to enter a 2FA code on your next login from every device.');">
+                    @csrf
+                    <button type="submit" class="btn btn-sm btn-outline-danger">
+                        <i class="bi bi-trash me-1"></i>Revoke all
+                    </button>
+                </form>
+                @endif
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">
+                    Devices you've chosen to trust skip the 2FA code at login. You'll still be asked for a code
+                    when signing in from a new device or a different country. Don't see one you recognise? Revoke it.
+                </p>
+                @if(isset($trustedDevices) && $trustedDevices->isNotEmpty())
+                    <ul class="list-group list-group-flush">
+                        @foreach($trustedDevices as $device)
+                        <li class="list-group-item px-0 d-flex justify-content-between align-items-start">
+                            <div class="me-2">
+                                <div class="fw-semibold">
+                                    {{ $device->device_label ?: 'Unknown device' }}
+                                    @if(isset($currentSelector) && $device->selector === $currentSelector)
+                                        <span class="badge bg-success ms-1">This device</span>
+                                    @endif
+                                </div>
+                                <div class="small text-muted">
+                                    @if($device->last_ip)IP {{ $device->last_ip }}@endif
+                                    @if($device->last_country) &middot; {{ $device->last_country }}@endif
+                                    @if($device->last_used_at) &middot; last used {{ $device->last_used_at->diffForHumans() }}@endif
+                                </div>
+                                <div class="small text-muted">Expires {{ $device->expires_at->format('d M Y') }}</div>
+                            </div>
+                            <form action="{{ route('account.trusted-devices.revoke', $device) }}" method="POST" class="m-0">
+                                @csrf
+                                <button type="submit" class="btn btn-sm btn-outline-secondary">
+                                    <i class="bi bi-x-circle me-1"></i>Revoke
+                                </button>
+                            </form>
+                        </li>
+                        @endforeach
+                    </ul>
+                @else
+                    <div class="alert alert-light border small mb-0">
+                        <i class="bi bi-info-circle me-1"></i>No trusted devices yet. Tick
+                        &ldquo;Trust this device&rdquo; on the 2FA screen at your next login to add one.
+                    </div>
+                @endif
+            </div>
+        </div>
+        @endif
+
         {{-- Language --}}
         <div class="card">
             <div class="card-header bg-white py-3">

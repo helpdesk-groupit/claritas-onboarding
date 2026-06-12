@@ -118,8 +118,11 @@ class AuthController extends Controller
 
         // Successful login — reset failed attempt counter (final reset after 2FA if enabled)
 
-        // If user has 2FA enabled, redirect to challenge page before completing login
-        if ($user->hasTwoFactorEnabled()) {
+        // If user has 2FA enabled, redirect to challenge page before completing login —
+        // UNLESS this is a trusted device (remembered, same device family, same country).
+        // Trusted-device skip is additive: any failure falls through to the challenge.
+        if ($user->hasTwoFactorEnabled()
+            && !\App\Services\TrustedDeviceService::trusts($request, $user)) {
             $request->session()->put('2fa_user_id', $user->id);
             $request->session()->put('2fa_remember', $request->boolean('remember'));
             if ($request->input('redirect') === 'profile-consent' || $request->session()->get('redirect_after_login') === 'profile-consent') {
@@ -376,6 +379,9 @@ class AuthController extends Controller
             ],
             function (User $user, string $password) {
                 $user->forceFill(['password' => Hash::make($password)])->save();
+                // A password reset may follow a compromise — kill all remembered
+                // devices so an attacker's trusted cookie can no longer skip 2FA.
+                \App\Services\TrustedDeviceService::revokeAll($user);
                 event(new \Illuminate\Auth\Events\PasswordReset($user));
             }
         );

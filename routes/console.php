@@ -44,3 +44,11 @@ Schedule::command('system:check-updates')->dailyAt('06:00');
 
 // Tickets: hourly scan for tickets idle 24h+; throttled to 1 reminder per ticket per 24h
 Schedule::command('tickets:remind-stale')->hourly();
+
+// GeoIP: refresh the GeoLite2-Country DB monthly for trusted-device location checks.
+// MaxMind publishes weekly and the licence requires staying within 30 days of a
+// release; monthly keeps us compliant. Fails safe (keeps the old file on error).
+Schedule::command('geoip:update')
+    ->monthlyOn(1, '04:00')
+    ->withoutOverlapping()
+    ->appendOutputTo(storage_path('logs/geoip.log'));

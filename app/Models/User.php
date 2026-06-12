@@ -172,6 +172,8 @@ class User extends Authenticatable
 
     public function permissions() { return $this->hasMany(UserPermission::class); }
 
+    public function trustedDevices() { return $this->hasMany(TrustedDevice::class); }
+
     /**
      * Return the custom access level for a resource, or null if none is set.
      * Access levels: 'full', 'view', 'edit', 'none'

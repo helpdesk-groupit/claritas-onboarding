@@ -49,6 +49,14 @@
                     </div>
                 </div>
 
+                <div class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" name="remember_device" value="1" id="rememberDevice">
+                    <label class="form-check-label small text-muted" for="rememberDevice">
+                        Trust this device for 30 days &mdash; you won't be asked for a code again on this
+                        device unless you sign in from a new device or country.
+                    </label>
+                </div>
+
                 <button type="submit" class="btn btn-login w-100 mb-3">
                     <i class="bi bi-box-arrow-in-right me-2"></i>Verify
                 </button>

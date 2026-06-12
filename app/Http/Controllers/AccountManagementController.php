@@ -81,6 +81,10 @@ class AccountManagementController extends Controller
             'two_factor_confirmed_at'   => null,
         ]);
 
+        // Reset implies the user may be locked out / compromised — drop any
+        // remembered devices so a stale trusted cookie can't skip the new 2FA.
+        \App\Services\TrustedDeviceService::revokeAll($user);
+
         return back()->with('success', 'Two-factor authentication has been reset for ' . $user->name . ' (' . $user->work_email . '). They will be prompted to set up 2FA again on next login.');
     }
 }
