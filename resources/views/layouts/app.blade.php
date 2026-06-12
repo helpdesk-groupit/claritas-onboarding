@@ -363,12 +363,14 @@
                 <i class="bi bi-ticket-detailed"></i> Tickets
             </a>
         </div>
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.leave.index') }}"
                class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
                 <i class="bi bi-calendar-plus"></i> My Leave
             </a>
         </div>
+        @endif
         @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
@@ -381,24 +383,30 @@
             </a>
         </div>
         @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.index') }}"
                class="nav-link {{ request()->routeIs('user.payroll.index') || request()->routeIs('user.payroll.payslip') ? 'active' : '' }}">
                 <i class="bi bi-receipt"></i> My Payslips
             </a>
         </div>
+        @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.ea-form') }}"
                class="nav-link {{ request()->routeIs('user.payroll.ea-form') ? 'active' : '' }}">
                 <i class="bi bi-file-earmark-text"></i> My EA Form
             </a>
         </div>
+        @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.attendance.index') }}"
                class="nav-link {{ request()->routeIs('user.attendance.*') ? 'active' : '' }}">
                 <i class="bi bi-stopwatch"></i> My Attendance
             </a>
         </div>
+        @endif
         <div class="nav-item">
             <a href="{{ route('user.claims.index') }}"
                class="nav-link {{ request()->routeIs('user.claims.index') ? 'active' : '' }}">
@@ -582,12 +590,14 @@
                 <i class="bi bi-ticket-detailed"></i> Tickets
             </a>
         </div>
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.leave.index') }}"
                class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
                 <i class="bi bi-calendar-plus"></i> My Leave
             </a>
         </div>
+        @endif
         @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
@@ -600,24 +610,30 @@
             </a>
         </div>
         @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.index') }}"
                class="nav-link {{ request()->routeIs('user.payroll.index') || request()->routeIs('user.payroll.payslip') ? 'active' : '' }}">
                 <i class="bi bi-receipt"></i> My Payslips
             </a>
         </div>
+        @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.ea-form') }}"
                class="nav-link {{ request()->routeIs('user.payroll.ea-form') ? 'active' : '' }}">
                 <i class="bi bi-file-earmark-text"></i> My EA Form
             </a>
         </div>
+        @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.attendance.index') }}"
                class="nav-link {{ request()->routeIs('user.attendance.*') ? 'active' : '' }}">
                 <i class="bi bi-stopwatch"></i> My Attendance
             </a>
         </div>
+        @endif
         <div class="nav-item">
             <a href="{{ route('user.claims.index') }}"
                class="nav-link {{ request()->routeIs('user.claims.index') ? 'active' : '' }}">
@@ -731,12 +747,14 @@
                 <i class="bi bi-ticket-detailed"></i> Tickets
             </a>
         </div>
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.leave.index') }}"
                class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
                 <i class="bi bi-calendar-plus"></i> My Leave
             </a>
         </div>
+        @endif
         @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
@@ -749,24 +767,30 @@
             </a>
         </div>
         @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.index') }}"
                class="nav-link {{ request()->routeIs('user.payroll.index') || request()->routeIs('user.payroll.payslip') ? 'active' : '' }}">
                 <i class="bi bi-receipt"></i> My Payslips
             </a>
         </div>
+        @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.ea-form') }}"
                class="nav-link {{ request()->routeIs('user.payroll.ea-form') ? 'active' : '' }}">
                 <i class="bi bi-file-earmark-text"></i> My EA Form
             </a>
         </div>
+        @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.attendance.index') }}"
                class="nav-link {{ request()->routeIs('user.attendance.*') ? 'active' : '' }}">
                 <i class="bi bi-stopwatch"></i> My Attendance
             </a>
         </div>
+        @endif
         <div class="nav-item">
             <a href="{{ route('user.claims.index') }}"
                class="nav-link {{ request()->routeIs('user.claims.index') ? 'active' : '' }}">
@@ -841,12 +865,14 @@
                 <i class="bi bi-ticket-detailed"></i> Tickets
             </a>
         </div>
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.leave.index') }}"
                class="nav-link {{ request()->routeIs('user.leave.index') ? 'active' : '' }}">
                 <i class="bi bi-calendar-plus"></i> My Leave
             </a>
         </div>
+        @endif
         @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
@@ -859,24 +885,30 @@
             </a>
         </div>
         @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.index') }}"
                class="nav-link {{ request()->routeIs('user.payroll.index') || request()->routeIs('user.payroll.payslip') ? 'active' : '' }}">
                 <i class="bi bi-receipt"></i> My Payslips
             </a>
         </div>
+        @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.ea-form') }}"
                class="nav-link {{ request()->routeIs('user.payroll.ea-form') ? 'active' : '' }}">
                 <i class="bi bi-file-earmark-text"></i> My EA Form
             </a>
         </div>
+        @endif
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.attendance.index') }}"
                class="nav-link {{ request()->routeIs('user.attendance.*') ? 'active' : '' }}">
                 <i class="bi bi-stopwatch"></i> My Attendance
             </a>
         </div>
+        @endif
         <div class="nav-item">
             <a href="{{ route('user.claims.index') }}"
                class="nav-link {{ request()->routeIs('user.claims.index') ? 'active' : '' }}">
