@@ -1144,7 +1144,7 @@ function setTheme(theme) {
 </script>
 @auth
 {{-- ── Idle Session Timeout ───────────────────────────────────────────────
-     Logs the user out after 60 seconds of inactivity.
+     Logs the user out after 30 minutes of inactivity.
      "Activity" = any mouse move, keypress, click, scroll, or touch.
      A 30-second warning modal appears before the logout fires, giving
      the user a chance to click "Stay Logged In" and reset the timer.
@@ -1178,7 +1178,7 @@ function setTheme(theme) {
 <script nonce="{{ $cspNonce ?? '' }}">
 (function () {
     // ── Configuration ─────────────────────────────────────────────────────
-    var IDLE_TIMEOUT_MS  = 15 * 60 * 1000;  // 15 min of inactivity → trigger warning
+    var IDLE_TIMEOUT_MS  = 30 * 60 * 1000;  // 30 min of inactivity → trigger warning
     var WARNING_DURATION = 30;          // seconds of countdown shown in modal
     // ─────────────────────────────────────────────────────────────────────
 
@@ -1232,7 +1232,7 @@ function setTheme(theme) {
     stayBtn.addEventListener('click', function () {
         clearInterval(countdownTimer);
         getModal().hide();
-        resetTimer(); // restart the 60-second idle clock
+        resetTimer(); // restart the 30-minute idle clock
     });
 
     // ── Activity events that reset the idle timer ────────────────────────
