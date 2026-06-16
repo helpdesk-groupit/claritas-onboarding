@@ -401,7 +401,7 @@ class ExpenseClaimController extends Controller
     /**
      * Manager approves a submitted claim.
      */
-    public function managerApprove(ExpenseClaim $claim)
+    public function managerApprove(Request $request, ExpenseClaim $claim)
     {
         $employee = Auth::user()->employee;
 
@@ -420,6 +420,11 @@ class ExpenseClaimController extends Controller
             abort(403, 'You are no longer the manager of this employee.');
         }
 
+        // Per-item review: any flagged line items are rejected (excluded from payout).
+        if ($error = $this->applyItemReviews($claim, $request)) {
+            return back()->with('error', $error);
+        }
+
         $claim->update([
             'status' => 'manager_approved',
             'manager_approved_by' => $employee->id,
@@ -429,7 +434,8 @@ class ExpenseClaimController extends Controller
         Log::info('Claim manager-approved', [
             'claim_id' => $claim->id,
             'claim_number' => $claim->claim_number,
-            'amount' => $claim->total_with_gst,
+            'payable' => $claim->approvedTotal(),
+            'rejected_items' => $claim->rejectedItemCount(),
             'actor_id' => Auth::id(),
             'actor_role' => Auth::user()->role,
         ]);
@@ -445,7 +451,50 @@ class ExpenseClaimController extends Controller
         // Notify HR
         $this->notifyHr($claim, 'pending_hr_approval');
 
-        return back()->with('success', 'Claim approved.');
+        return back()->with('success', $this->approvalMessage($claim));
+    }
+
+    /**
+     * Apply per-item approve/reject decisions from the review form. Items whose id
+     * is in `rejected_items[]` are marked rejected (reason from `item_remarks[id]`,
+     * reusing the item's `remarks` column); all others are approved. Returns an
+     * error string if EVERY item would be rejected (use the whole-claim Reject
+     * instead), otherwise null.
+     */
+    private function applyItemReviews(ExpenseClaim $claim, Request $request): ?string
+    {
+        $rejectedIds = collect($request->input('rejected_items', []))->map(fn ($id) => (int) $id)->all();
+        $remarks = $request->input('item_remarks', []);
+
+        if ($claim->items->isNotEmpty()
+            && $claim->items->reject(fn ($it) => in_array($it->id, $rejectedIds, true))->isEmpty()) {
+            return 'Every item was rejected — use the Reject button to reject the whole claim instead.';
+        }
+
+        foreach ($claim->items as $item) {
+            if (in_array($item->id, $rejectedIds, true)) {
+                $item->update([
+                    'review_status' => 'rejected',
+                    'remarks' => isset($remarks[$item->id]) ? mb_substr(strip_tags((string) $remarks[$item->id]), 0, 500) : $item->remarks,
+                ]);
+            } else {
+                $item->update(['review_status' => 'approved']);
+            }
+        }
+        $claim->load('items');
+
+        return null;
+    }
+
+    /** Success message that notes a partial approval when some items were rejected. */
+    private function approvalMessage(ExpenseClaim $claim): string
+    {
+        if ($claim->hasRejectedItems()) {
+            return $claim->rejectedItemCount().' item(s) rejected — claim approved for the rest (payable RM '
+                .number_format($claim->approvedTotal(), 2).').';
+        }
+
+        return 'Claim approved.';
     }
 
     /**
@@ -554,12 +603,17 @@ class ExpenseClaimController extends Controller
     /**
      * HR: Approve a manager-approved claim.
      */
-    public function hrApprove(ExpenseClaim $claim)
+    public function hrApprove(Request $request, ExpenseClaim $claim)
     {
         $this->authorizeManageClaims();
 
         if ($claim->status !== 'manager_approved') {
             return back()->with('error', 'This claim is not pending HR approval.');
+        }
+
+        // HR is the final gate — it can reject further line items before approving.
+        if ($error = $this->applyItemReviews($claim, $request)) {
+            return back()->with('error', $error);
         }
 
         $claim->update([
@@ -571,7 +625,8 @@ class ExpenseClaimController extends Controller
         Log::info('Claim hr-approved', [
             'claim_id' => $claim->id,
             'claim_number' => $claim->claim_number,
-            'amount' => $claim->total_with_gst,
+            'payable' => $claim->approvedTotal(),
+            'rejected_items' => $claim->rejectedItemCount(),
             'actor_id' => Auth::id(),
             'actor_role' => Auth::user()->role,
         ]);
@@ -584,7 +639,7 @@ class ExpenseClaimController extends Controller
             );
         }
 
-        return back()->with('success', 'Claim approved by HR.');
+        return back()->with('success', 'HR approved. '.$this->approvalMessage($claim));
     }
 
     /**

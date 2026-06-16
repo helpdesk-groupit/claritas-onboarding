@@ -49,8 +49,8 @@
                         <span class="badge bg-{{ in_array($claim->status, ['manager_approved','hr_approved','hr_rejected','paid']) ? 'success' : 'danger' }}">
                             {{ in_array($claim->status, ['manager_approved','hr_approved','hr_rejected','paid']) ? 'Approved' : 'Rejected' }}
                         </span>
-                        by {{ $claim->managerApprover->name ?? '—' }}
-                        on {{ $claim->manager_approved_at->format('d/m/Y') }}
+                        by {{ $claim->managerApprover->full_name ?? '—' }}
+                        on {{ $claim->manager_approved_at->format('d/m/Y H:i') }}
                     </div>
                     @if($claim->manager_remarks)
                     <small class="text-muted">{{ $claim->manager_remarks }}</small>
@@ -77,11 +77,24 @@
         </div>
     </div>
 
-    {{-- Items Table --}}
+    {{-- Items Table (with per-item review when HR can act) --}}
+    @php
+        $canReview = $claim->status === 'manager_approved' && Auth::user()->canManageClaims();
+        $showReviewCol = $canReview || $claim->hasRejectedItems();
+    @endphp
     <div class="card shadow-sm border-0 mb-4">
-        <div class="card-header bg-white">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center">
             <h6 class="mb-0"><i class="bi bi-list-ul me-2"></i>Claim Items ({{ $claim->item_count }})</h6>
+            @if($canReview)<small class="text-muted">Tick <span class="text-danger">Reject?</span> to exclude an item from the payout</small>@endif
         </div>
+
+        @if($canReview)
+        <form action="{{ route('hr.claims.approve', $claim) }}" method="POST" class="js-confirm item-review-form"
+              data-confirm="HR approve this claim? Any item marked “Reject” is excluded from the payout; the rest are approved."
+              data-confirm-title="HR approve" data-confirm-ok="HR Approve" data-confirm-variant="success">
+            @csrf
+        @endif
+
         <div class="card-body p-0">
             <div class="table-responsive">
                 <table class="table table-hover align-middle mb-0">
@@ -96,24 +109,41 @@
                             <th class="text-end">GST</th>
                             <th class="text-end">Total</th>
                             <th>Receipt</th>
+                            @if($showReviewCol)<th class="text-center {{ $canReview ? 'text-danger' : '' }}">{{ $canReview ? 'Reject?' : 'Review' }}</th>@endif
                         </tr>
                     </thead>
                     <tbody>
                         @foreach($claim->items as $i => $item)
-                        <tr>
+                        @php $rejected = $item->isRejected(); @endphp
+                        <tr class="review-row {{ $rejected && ! $canReview ? 'table-danger' : '' }}">
                             <td>{{ $i + 1 }}</td>
                             <td>{{ $item->expense_date->format('d/m/Y') }}</td>
                             <td>{{ $item->description }}</td>
                             <td>{{ $item->project_client ?? '—' }}</td>
-                            <td><span class="badge bg-secondary">{{ $item->category->name ?? '—' }}</span></td>
+                            <td><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis">{{ $item->category->name ?? '—' }}</span></td>
                             <td class="text-end">{{ number_format($item->amount, 2) }}</td>
                             <td class="text-end">{{ number_format($item->gst_amount, 2) }}</td>
-                            <td class="text-end fw-bold">{{ number_format($item->total_with_gst, 2) }}</td>
+                            <td class="text-end fw-bold item-total {{ $rejected && ! $canReview ? 'text-decoration-line-through text-muted' : '' }}" data-total="{{ $item->total_with_gst }}">{{ number_format($item->total_with_gst, 2) }}</td>
                             <td>
                                 @if($item->receipt_path)
                                 <a href="{{ route('secure.file', $item->receipt_path) }}" target="_blank" class="text-primary"><i class="bi bi-paperclip"></i> View</a>
-                                @else — @endif
+                                @else <span class="text-muted">—</span> @endif
                             </td>
+                            @if($canReview)
+                            <td class="text-center" style="min-width:170px;">
+                                <input type="checkbox" class="form-check-input reject-toggle" name="rejected_items[]" value="{{ $item->id }}" {{ $rejected ? 'checked' : '' }} title="Reject this item">
+                                <input type="text" name="item_remarks[{{ $item->id }}]" class="form-control form-control-sm mt-1 reject-reason {{ $rejected ? '' : 'd-none' }}" value="{{ $rejected ? $item->remarks : '' }}" placeholder="Reason (shown to employee)" maxlength="500">
+                            </td>
+                            @elseif($showReviewCol)
+                            <td>
+                                @if($rejected)
+                                <span class="badge bg-danger">Rejected</span>
+                                @if($item->remarks)<div class="small text-muted">{{ $item->remarks }}</div>@endif
+                                @else
+                                <span class="badge bg-success-subtle text-success-emphasis">Approved</span>
+                                @endif
+                            </td>
+                            @endif
                         </tr>
                         @endforeach
                     </tbody>
@@ -123,37 +153,40 @@
                             <td class="text-end">RM {{ number_format($claim->total_amount, 2) }}</td>
                             <td class="text-end">RM {{ number_format($claim->total_gst, 2) }}</td>
                             <td class="text-end text-primary">RM {{ number_format($claim->total_with_gst, 2) }}</td>
-                            <td></td>
+                            <td @if($showReviewCol) colspan="2" @endif></td>
                         </tr>
+                        @if($showReviewCol)
+                        <tr class="payable-row {{ $canReview ? 'd-none' : '' }}">
+                            <td colspan="7" class="text-end text-success">PAYABLE (after rejections)</td>
+                            <td class="text-end text-success fw-bold payable-amount" data-grand="{{ $claim->total_with_gst }}">@if(! $canReview)RM {{ number_format($claim->approvedTotal(), 2) }}@endif</td>
+                            <td colspan="2"></td>
+                        </tr>
+                        @endif
                     </tfoot>
                 </table>
             </div>
         </div>
-    </div>
 
-    {{-- Action buttons --}}
-    @if($claim->status === 'manager_approved' && Auth::user()->canManageClaims())
-    <div class="card shadow-sm border-0">
-        <div class="card-body d-flex gap-2">
-            <form action="{{ route('hr.claims.approve', $claim) }}" method="POST" onsubmit="return confirm('Approve this claim?')">
-                @csrf
-                <button class="btn btn-success"><i class="bi bi-check-lg me-1"></i>HR Approve</button>
-            </form>
-            <button class="btn btn-outline-danger" data-bs-toggle="collapse" data-bs-target="#hrRejectForm">
-                <i class="bi bi-x-lg me-1"></i>HR Reject
-            </button>
-        </div>
+        @if($canReview)
+            <div class="card-footer bg-white d-flex gap-2 justify-content-end">
+                <button class="btn btn-outline-danger btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#hrRejectForm">
+                    <i class="bi bi-x-octagon me-1"></i>Reject Whole Claim
+                </button>
+                <button type="submit" class="btn btn-success btn-sm"><i class="bi bi-check-lg me-1"></i>HR Approve</button>
+            </div>
+        </form>
         <div class="collapse px-3 pb-3" id="hrRejectForm">
             <form action="{{ route('hr.claims.reject', $claim) }}" method="POST">
                 @csrf
-                <div class="d-flex gap-2">
-                    <input type="text" name="remarks" class="form-control" placeholder="Reason for rejection (required)" required maxlength="1000">
+                <label class="form-label small text-danger mb-1">Reject the <strong>entire</strong> claim — reason (the employee will see this)</label>
+                <div class="input-group">
+                    <input type="text" name="remarks" class="form-control" placeholder="Reason for rejecting the whole claim" required maxlength="1000">
                     <button class="btn btn-danger text-nowrap">Confirm Reject</button>
                 </div>
             </form>
         </div>
+        @endif
     </div>
-    @endif
 
     {{-- Payroll Linkage --}}
     @if($claim->status === 'paid' && ($claim->payslip_id || $claim->pay_run_id))
@@ -202,4 +235,7 @@
     </div>
     @endif
 </div>
+
+@include('partials.confirm-modal')
+@include('partials.item-review-js')
 @endsection

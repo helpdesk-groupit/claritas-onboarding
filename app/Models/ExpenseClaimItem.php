@@ -11,7 +11,14 @@ class ExpenseClaimItem extends Model
         'expense_claim_id', 'expense_category_id', 'expense_date',
         'description', 'project_client', 'amount', 'quantity', 'unit', 'rate_applied',
         'gst_amount', 'total_with_gst', 'receipt_path', 'receipt_hash', 'is_locked', 'remarks',
+        'review_status',
     ];
+
+    /** True when an approver has rejected this individual line item. */
+    public function isRejected(): bool
+    {
+        return $this->review_status === 'rejected';
+    }
 
     protected $casts = [
         'expense_date' => 'date',

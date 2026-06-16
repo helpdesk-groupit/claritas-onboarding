@@ -404,15 +404,21 @@
                     </thead>
                     <tbody>
                         @foreach($currentClaim->items as $i => $item)
-                        <tr>
+                        <tr class="{{ $item->isRejected() ? 'table-danger' : '' }}">
                             <td>{{ $i + 1 }}</td>
                             <td>{{ $item->expense_date->format('d/m/Y') }}</td>
-                            <td>{{ $item->description }}</td>
+                            <td>
+                                {{ $item->description }}
+                                @if($item->isRejected())
+                                <span class="badge bg-danger ms-1">Rejected</span>
+                                @if($item->remarks)<div class="small text-danger"><i class="bi bi-info-circle me-1"></i>{{ $item->remarks }}</div>@endif
+                                @endif
+                            </td>
                             <td>{{ $item->project_client ?? '-' }}</td>
                             <td><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis">{{ $item->category->name ?? '-' }}</span></td>
                             <td class="text-end">{{ number_format($item->amount, 2) }}</td>
                             <td class="text-end">{{ number_format($item->gst_amount, 2) }}</td>
-                            <td class="text-end fw-bold">{{ number_format($item->total_with_gst, 2) }}</td>
+                            <td class="text-end fw-bold {{ $item->isRejected() ? 'text-decoration-line-through text-muted' : '' }}">{{ number_format($item->total_with_gst, 2) }}</td>
                             <td>
                                 @if($item->receipt_path)
                                 <a href="{{ route('secure.file', $item->receipt_path) }}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-paperclip"></i></a>
@@ -442,6 +448,14 @@
                             <td></td>
                             @if($canEdit)<td></td>@endif
                         </tr>
+                        @if($currentClaim && $currentClaim->hasRejectedItems())
+                        <tr class="fw-bold">
+                            <td colspan="7" class="text-end text-success">PAYABLE (after rejections)</td>
+                            <td class="text-end text-success">RM {{ number_format($currentClaim->approvedTotal(), 2) }}</td>
+                            <td></td>
+                            @if($canEdit)<td></td>@endif
+                        </tr>
+                        @endif
                     </tfoot>
                 </table>
             </div>

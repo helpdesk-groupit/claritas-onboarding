@@ -21,7 +21,7 @@ class ExpenseClaim extends Model
         'total_amount' => 'decimal:2',
         'total_gst' => 'decimal:2',
         'total_with_gst' => 'decimal:2',
-        'submitted_at' => 'date',
+        'submitted_at' => 'datetime',
         'submission_deadline' => 'date',
         'manager_approved_at' => 'datetime',
         'hr_approved_at' => 'datetime',
@@ -83,6 +83,24 @@ class ExpenseClaim extends Model
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
+    /** Payable total — sum of items NOT rejected at the line level. */
+    public function approvedTotal(): float
+    {
+        return (float) $this->items->where('review_status', '!=', 'rejected')->sum('total_with_gst');
+    }
+
+    /** Number of individually-rejected line items on this claim. */
+    public function rejectedItemCount(): int
+    {
+        return $this->items->where('review_status', 'rejected')->count();
+    }
+
+    /** True when some (but not all) items were rejected — a partial approval. */
+    public function hasRejectedItems(): bool
+    {
+        return $this->rejectedItemCount() > 0;
+    }
+
     public function recalculateTotals(): void
     {
         $items = $this->items()->get();
@@ -131,6 +149,7 @@ class ExpenseClaim extends Model
             'cancelled' => 'Cancelled',
             default => ucfirst($this->status),
         };
+
         return ['class' => $class, 'label' => $label];
     }
 
@@ -139,13 +158,13 @@ class ExpenseClaim extends Model
      */
     public static function generateClaimNumber(int $year, int $month): string
     {
-        $prefix = 'EC-' . $year . '-' . str_pad($month, 2, '0', STR_PAD_LEFT);
-        $last = static::where('claim_number', 'like', $prefix . '-%')
+        $prefix = 'EC-'.$year.'-'.str_pad($month, 2, '0', STR_PAD_LEFT);
+        $last = static::where('claim_number', 'like', $prefix.'-%')
             ->orderByDesc('claim_number')
             ->value('claim_number');
 
         $seq = $last ? ((int) substr($last, -4)) + 1 : 1;
 
-        return $prefix . '-' . str_pad($seq, 4, '0', STR_PAD_LEFT);
+        return $prefix.'-'.str_pad($seq, 4, '0', STR_PAD_LEFT);
     }
 }

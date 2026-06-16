@@ -117,71 +117,82 @@
                     </div>
                 </div>
 
-                {{-- Items detail --}}
-                <div class="table-responsive">
-                    <table class="table table-sm table-hover align-middle bg-white rounded overflow-hidden mb-3" style="font-size:.85rem;">
-                        <thead class="table-light">
-                            <tr>
-                                <th>Date</th>
-                                <th>Description</th>
-                                <th>Project/Client</th>
-                                <th>Category</th>
-                                <th class="text-end">RM (w/o GST)</th>
-                                <th class="text-end">GST</th>
-                                <th class="text-end">Total</th>
-                                <th class="text-center">Receipt</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @foreach($claim->items as $item)
-                            <tr>
-                                <td class="text-nowrap">{{ $item->expense_date->format('d/m/Y') }}</td>
-                                <td>{{ $item->description }}</td>
-                                <td>{{ $item->project_client ?: '—' }}</td>
-                                <td><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis">{{ $item->category->name ?? '—' }}</span></td>
-                                <td class="text-end">{{ number_format($item->amount, 2) }}</td>
-                                <td class="text-end">{{ number_format($item->gst_amount, 2) }}</td>
-                                <td class="text-end fw-semibold">{{ number_format($item->total_with_gst, 2) }}</td>
-                                <td class="text-center">
-                                    @if($item->receipt_path)
-                                    <a href="{{ route('secure.file', $item->receipt_path) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-1" title="View receipt"><i class="bi bi-paperclip"></i></a>
-                                    @else
-                                    <span class="text-muted">—</span>
-                                    @endif
-                                </td>
-                            </tr>
-                            @endforeach
-                        </tbody>
-                        <tfoot class="table-light">
-                            <tr class="fw-bold">
-                                <td colspan="4" class="text-end">TOTAL</td>
-                                <td class="text-end">{{ number_format($claim->total_amount, 2) }}</td>
-                                <td class="text-end">{{ number_format($claim->total_gst, 2) }}</td>
-                                <td class="text-end text-primary">{{ number_format($claim->total_with_gst, 2) }}</td>
-                                <td></td>
-                            </tr>
-                        </tfoot>
-                    </table>
-                </div>
+                {{-- Items detail (inside the approve form so per-item reject decisions submit together) --}}
+                <form action="{{ route('user.claims.team.approve', $claim) }}" method="POST" class="js-confirm item-review-form"
+                      data-confirm="Approve this claim? Any item you marked “Reject” is excluded (the employee keeps it for a later claim); the rest are approved and sent to HR."
+                      data-confirm-title="Approve claim" data-confirm-ok="Approve" data-confirm-variant="success">
+                    @csrf
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover align-middle bg-white rounded overflow-hidden mb-3" style="font-size:.85rem;">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Description</th>
+                                    <th>Project/Client</th>
+                                    <th>Category</th>
+                                    <th class="text-end">RM (w/o GST)</th>
+                                    <th class="text-end">GST</th>
+                                    <th class="text-end">Total</th>
+                                    <th class="text-center">Receipt</th>
+                                    <th class="text-center text-danger">Reject?</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach($claim->items as $item)
+                                <tr class="review-row">
+                                    <td class="text-nowrap">{{ $item->expense_date->format('d/m/Y') }}</td>
+                                    <td>{{ $item->description }}</td>
+                                    <td>{{ $item->project_client ?: '—' }}</td>
+                                    <td><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis">{{ $item->category->name ?? '—' }}</span></td>
+                                    <td class="text-end">{{ number_format($item->amount, 2) }}</td>
+                                    <td class="text-end">{{ number_format($item->gst_amount, 2) }}</td>
+                                    <td class="text-end fw-semibold item-total" data-total="{{ $item->total_with_gst }}">{{ number_format($item->total_with_gst, 2) }}</td>
+                                    <td class="text-center">
+                                        @if($item->receipt_path)
+                                        <a href="{{ route('secure.file', $item->receipt_path) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-1" title="View receipt"><i class="bi bi-paperclip"></i></a>
+                                        @else
+                                        <span class="text-muted">—</span>
+                                        @endif
+                                    </td>
+                                    <td class="text-center" style="min-width:150px;">
+                                        <input type="checkbox" class="form-check-input reject-toggle" name="rejected_items[]" value="{{ $item->id }}" title="Reject this item">
+                                        <input type="text" name="item_remarks[{{ $item->id }}]" class="form-control form-control-sm mt-1 reject-reason d-none" placeholder="Reason (shown to employee)" maxlength="500">
+                                    </td>
+                                </tr>
+                                @endforeach
+                            </tbody>
+                            <tfoot class="table-light">
+                                <tr class="fw-bold">
+                                    <td colspan="4" class="text-end">TOTAL</td>
+                                    <td class="text-end">{{ number_format($claim->total_amount, 2) }}</td>
+                                    <td class="text-end">{{ number_format($claim->total_gst, 2) }}</td>
+                                    <td class="text-end text-primary">{{ number_format($claim->total_with_gst, 2) }}</td>
+                                    <td colspan="2"></td>
+                                </tr>
+                                <tr class="payable-row d-none">
+                                    <td colspan="6" class="text-end text-success">PAYABLE (after rejections)</td>
+                                    <td class="text-end text-success fw-bold payable-amount" data-grand="{{ $claim->total_with_gst }}"></td>
+                                    <td colspan="2"></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
 
-                {{-- Action buttons --}}
-                <div class="d-flex gap-2 justify-content-end">
-                    <button class="btn btn-outline-danger btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#reject-{{ $claim->id }}">
-                        <i class="bi bi-x-lg me-1"></i>Reject
-                    </button>
-                    <form action="{{ route('user.claims.team.approve', $claim) }}" method="POST" class="js-confirm d-inline"
-                          data-confirm="Approve {{ $claim->employee->full_name ?? 'this employee' }}'s {{ \Carbon\Carbon::create($claim->year, $claim->month)->format('F Y') }} claim of RM {{ number_format($claim->total_with_gst, 2) }}? It will be forwarded to HR for final approval."
-                          data-confirm-title="Approve claim" data-confirm-ok="Approve" data-confirm-variant="success">
-                        @csrf
-                        <button class="btn btn-success btn-sm"><i class="bi bi-check-lg me-1"></i>Approve</button>
-                    </form>
-                </div>
+                    <div class="d-flex gap-2 justify-content-end">
+                        <button class="btn btn-outline-danger btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#reject-{{ $claim->id }}">
+                            <i class="bi bi-x-octagon me-1"></i>Reject Whole Claim
+                        </button>
+                        <button type="submit" class="btn btn-success btn-sm"><i class="bi bi-check-lg me-1"></i>Approve</button>
+                    </div>
+                </form>
+
+                {{-- Reject the entire claim (separate form) --}}
                 <div class="collapse mt-2" id="reject-{{ $claim->id }}">
                     <form action="{{ route('user.claims.team.reject', $claim) }}" method="POST">
                         @csrf
-                        <label class="form-label small text-danger mb-1"><i class="bi bi-exclamation-circle me-1"></i>Reason for rejection (the employee will see this)</label>
+                        <label class="form-label small text-danger mb-1"><i class="bi bi-exclamation-circle me-1"></i>Reject the <strong>entire</strong> claim — reason (the employee will see this)</label>
                         <div class="input-group input-group-sm">
-                            <input type="text" name="remarks" class="form-control" placeholder="e.g., Missing receipt for the RM128 item — please re-attach." required maxlength="1000">
+                            <input type="text" name="remarks" class="form-control" placeholder="e.g., Wrong month — please redo the whole claim." required maxlength="1000">
                             <button class="btn btn-danger text-nowrap"><i class="bi bi-x-circle me-1"></i>Confirm Reject</button>
                         </div>
                     </form>
@@ -230,4 +241,5 @@
 </div>
 
 @include('partials.confirm-modal')
+@include('partials.item-review-js')
 @endsection
