@@ -181,6 +181,37 @@ Both views display Sections F–I via `partials.employee-extra-sections-view`. T
 - `AttachmentProcessor` — centralised secure-storage + image-compression pipeline for ticket uploads (resizes images to 1920px max width via GD, re-encodes to strip EXIF, moves PDFs/other files as-is). Used by both `TicketAttachment` (creation) and `TicketMessageAttachment` (chat).
 - `SecurityScoreService` — computes a cached (1-hour TTL) security-posture score/breakdown from `SecurityAuditLog` + config/schema checks; surfaced on the admin security dashboard
 - `UpdateCheckerService` — checks for dependency/system updates via HTTP; results cached 24 hours, refreshed by `system:check-updates`
+- `ClaimRulesService` — pure (HTTP-free, unit-tested) rules engine for the eClaim module: category eligibility, computed amounts (per-km/per-day/per-hour), period-aware + role-based spending caps, and working-day-aware submission deadlines. See the Expense Claims section.
+- `ClaimReceiptOcrService` — AI-vision receipt reader returning `{amount, date, vendor}` to pre-fill the claim form. Reuses the accounting module's AI provider (`AccountingSetting::resolveForAi`) with `config/claims.php` overrides. Config-gated and **fails OPEN** — any disabled flag, missing key, or parse error returns `null` and the user types details manually; OCR never blocks a claim.
+
+### Expense Claims (eClaim) Module
+Monthly per-employee expense claims with a two-stage approval chain. Self-service at `/my/claims`; manager approval at `/my/team-claims`; HR/admin management at `/hr/claims`. Business logic lives in `ClaimRulesService` (stateless, unit-tested) — keep new rules there, not in the controller, so they stay testable (`tests/Unit/ClaimRulesServiceTest.php`). Module config is in `config/claims.php`.
+
+**Models & one-claim-per-month invariant:**
+- `ExpenseClaim` (header) — one row per `(employee_id, year, month)`; `getOrCreateDraft()` uses `firstOrCreate` on that key, so adding an item to any month lazily creates its draft (no empty drafts are ever created just by viewing). Claim number `EC-YYYY-MM-NNNN` via `generateClaimNumber()`. `recalculateTotals()` re-derives `total_amount`/`total_gst`/`total_with_gst`/`item_count` from items — call it after any item add/remove.
+- `ExpenseClaimItem` (line) — one expense. `amount` is pre-GST; `total_with_gst = amount + gst_amount` (server re-checks this integrity). `quantity`/`unit`/`rate_applied` record how a computed amount was derived (audit trail). `receipt_hash` (SHA-256) and `is_locked` support dedup + submission locking.
+- `ExpenseCategory` — `ExpenseCategory::forCompany`-style scoping: a row with `company = null` applies to all entities; a non-null `company` is that entity only. `rate_type` ∈ `receipt|per_km|per_day|per_hour` (`isComputed()` = the last three). `gl_code` mirrors Finance's SQL Account chart-of-accounts code (multiple categories may share one). `keywords` (JSON) powers `detectFromDescription()` auto-categorisation.
+- `ExpenseClaimPolicy` — per-company (or `company = null` default) settings: `submission_deadline_day`, manager/HR approval toggles, GST enable+rate, reminder window. `forCompany()` falls back to a hardcoded default object if no row exists.
+
+**Status lifecycle** (`ExpenseClaim.status`):
+```
+draft → submitted → manager_approved → hr_approved (→ paid)
+              ↘ manager_rejected          ↘ hr_rejected
+```
+Rejection unlocks items (`is_locked = false`) so the employee can edit and resubmit; `isEditable()`/`isSubmittable()` gate this. `cancel()` recalls a `submitted` claim back to `draft`. On submit, items are locked and `manager_id` snapshotted from `employee->manager_id`.
+
+**Approval authorization (most important correctness rule):** manager approve/reject re-checks `$claim->employee->refresh()->manager_id === $approver->id` at action time (not just the snapshotted `manager_id`) — so a reporting-line change mid-flight can't let a stale manager approve. Superadmin bypasses. HR-stage actions are gated by `User::canManageClaims()` (`hr_manager`/`superadmin`/`system_admin`); `User::canViewAllClaims()` (adds `hr_executive`) gates read-only HR listing/export. All approve/reject transitions are `Log::info`'d with claim id, amount, and actor.
+
+**Computed (non-receipt) categories** derive `amount` server-side from a quantity — the server is authoritative and overrides any client-sent amount:
+- `per_km` — mileage: `km × vehicle rate` (`car`/`motorcycle` rates in `config/claims.php`). The **Petrol** GL category (`claims.mileage.gl_code`) is dual-mode: claim by receipt OR by mileage (`claim_mode=mileage`), where the distance is the evidence instead of a receipt. `mileageDistance()` does optional Google Distance Matrix auto-calc from a fixed origin (Jaya One); with no API key it returns `enabled:false` and the form falls back to manual km entry.
+- `per_day` — event/programme day rate: `days × rate_amount`.
+- `per_hour` — overtime: highest OT band whose hour threshold is met (`config('claims.ot_bands')`).
+
+**Caps & deadlines (`ClaimRulesService`):** `effectiveLimit()` returns a category's monthly/annual cap, with a special rule — interns/probationers get the `intern_medical_cap` on Medical regardless of the category's own limit (`isInternOrProbationer()` detects via employment type, status, or a future `confirmation_date`). `capError()` sums the employee's used amount in the cap period (excluding rejected/cancelled claims) and rejects an over-cap add. `submissionDeadline()` rolls the policy deadline day back to the **preceding working day** when it lands on a weekend or a `config('claims.public_holidays')` date — **maintain that holiday list yearly** (only fixed-date national holidays are listed; lunar/state dates must be added manually).
+
+**Anti-abuse:** duplicate-item detection (same date + description + amount across the employee's claims) and receipt SHA-256 dedup both block adds with a pointer to the existing claim. CSV export uses `sanitizeForCsv()` (formula-injection guard). Receipt uploads route through the standard `valid_file_content` rule and `throttle:uploads`; receipts are stored on the private `local` disk under `claim_receipts/{employee}/{Y-m}/`.
+
+**Scheduled:** `claims:remind` (`ClaimDeadlineReminder`) emails employees holding a non-empty draft, but only inside the `[deadline − reminder_days, deadline]` window using the same working-day-aware deadline as the form.
 
 ### Ticketing Module
 Internal helpdesk-style tickets with company-scoped routing across 17 departments. Self-service at `/tickets` (raise + view own); management at `/tickets/manage` (PIC inbox).

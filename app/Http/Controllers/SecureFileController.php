@@ -17,15 +17,15 @@ class SecureFileController extends Controller
      * 'self' means the employee themselves can also access the file.
      */
     private const DIRECTORY_PERMISSIONS = [
-        'nric_documents'        => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
-        'employee_contracts'    => ['hr_manager', 'superadmin', 'system_admin', 'self'],
-        'employee_documents'    => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
-        'education_certificates'=> ['hr_manager', 'hr_executive', 'hr_intern', 'superadmin', 'system_admin', 'self'],
-        'leave-attachments'     => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
-        'aarfs'                 => ['hr_manager', 'hr_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin', 'self'],
-        'invoices'              => ['hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
-        'rental_contracts'      => ['hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
-        'claim_receipts'        => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
+        'nric_documents' => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
+        'employee_contracts' => ['hr_manager', 'superadmin', 'system_admin', 'self'],
+        'employee_documents' => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
+        'education_certificates' => ['hr_manager', 'hr_executive', 'hr_intern', 'superadmin', 'system_admin', 'self'],
+        'leave-attachments' => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
+        'aarfs' => ['hr_manager', 'hr_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin', 'self'],
+        'invoices' => ['hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
+        'rental_contracts' => ['hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
+        'claim_receipts' => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
         // ticket_attachments is intentionally not listed here — it follows
         // ticket-level access (creator / assignee / dept manager / sysadmin),
         // not directory roles, since work-role-gated dept managers (Tech,
@@ -42,7 +42,7 @@ class SecureFileController extends Controller
     {
         $user = $request->user();
 
-        if (!$user) {
+        if (! $user) {
             abort(403, 'Authentication required.');
         }
 
@@ -51,7 +51,7 @@ class SecureFileController extends Controller
 
         // Check private storage first, fall back to public for backward compatibility
         $disk = 'local';
-        if (!Storage::disk('local')->exists($path)) {
+        if (! Storage::disk('local')->exists($path)) {
             if (Storage::disk('public')->exists($path)) {
                 $disk = 'public';
             } else {
@@ -63,7 +63,7 @@ class SecureFileController extends Controller
         $directory = explode('/', $path)[0] ?? '';
 
         // Check directory-level permission
-        if (!$this->hasAccess($user, $directory, $path)) {
+        if (! $this->hasAccess($user, $directory, $path)) {
             abort(403);
         }
 
@@ -72,7 +72,7 @@ class SecureFileController extends Controller
 
         return Storage::disk($disk)->download($path, $fileName, [
             'Content-Type' => $mimeType,
-            'Content-Disposition' => 'inline; filename="' . $fileName . '"',
+            'Content-Disposition' => 'inline; filename="'.$fileName.'"',
             'Cache-Control' => 'no-store, no-cache, must-revalidate, private',
         ]);
     }
@@ -128,23 +128,23 @@ class SecureFileController extends Controller
 
         $ticketId = \App\Models\TicketAttachment::where('file_path', $path)->value('ticket_id');
 
-        if (!$ticketId) {
+        if (! $ticketId) {
             $ticketId = \App\Models\TicketMessage::where('attachment_path', $path)->value('ticket_id');
         }
 
-        if (!$ticketId) {
+        if (! $ticketId) {
             $messageId = \App\Models\TicketMessageAttachment::where('file_path', $path)->value('message_id');
             if ($messageId) {
                 $ticketId = \App\Models\TicketMessage::where('id', $messageId)->value('ticket_id');
             }
         }
 
-        if (!$ticketId) {
+        if (! $ticketId) {
             return false;
         }
 
         $ticket = \App\Models\Ticket::find($ticketId);
-        if (!$ticket) {
+        if (! $ticket) {
             return false;
         }
 
@@ -161,7 +161,7 @@ class SecureFileController extends Controller
     private function isOwnFile($user, string $path): bool
     {
         $employee = $user->employee;
-        if (!$employee) {
+        if (! $employee) {
             return false;
         }
 
@@ -191,6 +191,14 @@ class SecureFileController extends Controller
             if ($leave->attachment_path === $path) {
                 return true;
             }
+        }
+
+        // Check expense-claim receipt files (claim_receipts/{employee}/{Y-m}/…).
+        // Owned when the receipt belongs to an item on one of the employee's own claims.
+        if (\App\Models\ExpenseClaimItem::where('receipt_path', $path)
+            ->whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id))
+            ->exists()) {
+            return true;
         }
 
         // Note: ticket_attachments/* are NOT handled here — hasAccess() routes

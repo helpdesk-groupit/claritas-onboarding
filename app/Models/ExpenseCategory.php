@@ -7,17 +7,25 @@ use Illuminate\Database\Eloquent\Model;
 class ExpenseCategory extends Model
 {
     protected $fillable = [
-        'company', 'name', 'code', 'description',
-        'monthly_limit', 'requires_receipt', 'is_active',
+        'company', 'name', 'code', 'gl_code', 'description',
+        'monthly_limit', 'rate_type', 'rate_amount', 'limit_period', 'applies_to_role',
+        'requires_receipt', 'is_active',
         'sort_order', 'keywords',
     ];
 
     protected $casts = [
         'monthly_limit' => 'decimal:2',
+        'rate_amount' => 'decimal:2',
         'requires_receipt' => 'boolean',
         'is_active' => 'boolean',
         'keywords' => 'array',
     ];
+
+    /** True when the line amount is computed from a quantity rather than a receipt. */
+    public function isComputed(): bool
+    {
+        return in_array($this->rate_type, ['per_km', 'per_day', 'per_hour'], true);
+    }
 
     public function scopeActive($query)
     {

@@ -9,13 +9,15 @@ class ExpenseClaimItem extends Model
 {
     protected $fillable = [
         'expense_claim_id', 'expense_category_id', 'expense_date',
-        'description', 'project_client', 'amount', 'gst_amount',
-        'total_with_gst', 'receipt_path', 'receipt_hash', 'is_locked', 'remarks',
+        'description', 'project_client', 'amount', 'quantity', 'unit', 'rate_applied',
+        'gst_amount', 'total_with_gst', 'receipt_path', 'receipt_hash', 'is_locked', 'remarks',
     ];
 
     protected $casts = [
         'expense_date' => 'date',
         'amount' => 'decimal:2',
+        'quantity' => 'decimal:2',
+        'rate_applied' => 'decimal:2',
         'gst_amount' => 'decimal:2',
         'total_with_gst' => 'decimal:2',
         'is_locked' => 'boolean',

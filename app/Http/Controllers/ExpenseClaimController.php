@@ -2,18 +2,20 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\ClaimApprovedMail;
+use App\Mail\ClaimRejectedMail;
+use App\Mail\ClaimSubmittedMail;
 use App\Models\Employee;
 use App\Models\ExpenseCategory;
 use App\Models\ExpenseClaim;
 use App\Models\ExpenseClaimItem;
 use App\Models\ExpenseClaimPolicy;
-use App\Mail\ClaimSubmittedMail;
-use App\Mail\ClaimApprovedMail;
-use App\Mail\ClaimRejectedMail;
+use App\Services\ClaimReceiptOcrService;
+use App\Services\ClaimRulesService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
@@ -31,7 +33,7 @@ class ExpenseClaimController extends Controller
     public function myClaims(Request $request)
     {
         $employee = Auth::user()->employee;
-        if (!$employee) {
+        if (! $employee) {
             return back()->with('error', 'No employee profile found.');
         }
 
@@ -68,11 +70,27 @@ class ExpenseClaimController extends Controller
     public function addItem(Request $request)
     {
         $employee = Auth::user()->employee;
-        if (!$employee) {
+        if (! $employee) {
             return back()->with('error', 'No employee profile found.');
         }
 
-        $startOfYear = Carbon::now()->startOfYear()->toDateString();
+        // The claim period is the month the user is currently viewing (hidden claim_year/
+        // claim_month), so every item added there accumulates in that one month's claim —
+        // instead of being scattered (and the page navigating away) by each item's own date.
+        // The expense date must fall within that month and not be in the future.
+        $now = Carbon::now();
+        $claimYear = (int) $request->input('claim_year', $now->year);
+        $claimMonth = (int) $request->input('claim_month', $now->month);
+        if ($claimYear !== $now->year || $claimMonth < 1 || $claimMonth > 12
+            || ($claimYear === $now->year && $claimMonth > $now->month)) {
+            return back()->with('error', 'Invalid claim month selected.')->withInput();
+        }
+        $monthStart = Carbon::create($claimYear, $claimMonth, 1)->startOfDay(); // label for this claim
+
+        // Expenses may be back-dated to any earlier date this year — only FUTURE dates are
+        // blocked (e.g. in June you can't claim a July expense). The item still accumulates
+        // in the claim month being viewed (claim_year/claim_month above), not its own date.
+        $startOfYear = Carbon::create($now->year, 1, 1)->toDateString();
 
         $validated = $request->validate([
             'expense_date' => "required|date|after_or_equal:{$startOfYear}|before_or_equal:today",
@@ -82,14 +100,86 @@ class ExpenseClaimController extends Controller
             'amount' => 'required|numeric|min:0.01|max:99999.99',
             'gst_amount' => 'nullable|numeric|min:0|max:99999.99',
             'total_with_gst' => 'required|numeric|min:0.01|max:999999.99',
+            'quantity' => 'nullable|numeric|min:0.01|max:99999.99',
+            'vehicle' => 'nullable|in:car,motorcycle',
+            'claim_mode' => 'nullable|in:receipt,mileage',
             'receipt' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+        ], [
+            'expense_date.after_or_equal' => 'The expense date must be within '.$now->year.'.',
+            'expense_date.before_or_equal' => 'The expense date cannot be in the future — you can claim past dates, just not future ones.',
         ]);
 
         $expenseDate = Carbon::parse($validated['expense_date']);
-        $claim = $this->getOrCreateDraft($employee, $expenseDate->year, $expenseDate->month);
+        $claim = $this->getOrCreateDraft($employee, $claimYear, $claimMonth);
 
-        if (!$claim->isEditable()) {
+        if (! $claim->isEditable()) {
             return back()->with('error', 'This claim has already been submitted and cannot be edited.');
+        }
+
+        // ── Rules engine: eligibility, computed amounts, receipt requirement ──
+        $category = ExpenseCategory::find($validated['expense_category_id']);
+        if (! $category || ! $category->is_active) {
+            return back()->withErrors(['expense_category_id' => 'Invalid expense category.'])->withInput();
+        }
+
+        // Entity scoping: a company-specific category is only for that company.
+        if ($category->company && $employee->company && $category->company !== $employee->company) {
+            return back()->withErrors(['expense_category_id' => 'This category is not available for your company.'])->withInput();
+        }
+
+        // Role eligibility (e.g. intern-only categories).
+        if (! ClaimRulesService::roleAllows($employee, $category->applies_to_role)) {
+            return back()->withErrors(['expense_category_id' => 'You are not eligible to claim under this category.'])->withInput();
+        }
+
+        // Mileage-on-Petrol: the Petrol account can be claimed by receipt OR as a
+        // per-km mileage claim (car/motorcycle rate, measured from Jaya One).
+        $mileageGl = config('claims.mileage.gl_code');
+        $isPetrolMileage = $request->input('claim_mode') === 'mileage'
+            && $mileageGl && $category->gl_code === $mileageGl;
+
+        // Strict "no receipt, no claim" for receipt-required categories — except a
+        // mileage claim, where the distance (not a receipt) is the evidence.
+        if ($category->requires_receipt && ! $isPetrolMileage && ! $request->hasFile('receipt')) {
+            return back()->withErrors(['receipt' => 'A receipt is required for '.$category->name.' (no receipt, no claim).'])->withInput();
+        }
+
+        // Computed amounts: per-day/per-hour categories, or a mileage-mode Petrol
+        // claim — all derive the amount server-side from a quantity (the server is
+        // authoritative and overrides any client-sent amount).
+        $quantity = null;
+        $unit = null;
+        $rateApplied = null;
+        if ($category->isComputed() || $isPetrolMileage) {
+            if ($isPetrolMileage) {
+                $km = isset($validated['quantity']) && $validated['quantity'] !== '' ? (float) $validated['quantity'] : null;
+                if ($km === null) {
+                    return back()->withErrors(['quantity' => 'Enter the distance in km for the mileage claim.'])->withInput();
+                }
+                $rateApplied = ClaimRulesService::mileageRate($request->input('vehicle', 'car'));
+                $computed = round($km * $rateApplied, 2);
+                $quantity = $km;
+                $unit = 'km';
+            } else {
+                $computed = ClaimRulesService::computeAmount($category, [
+                    'quantity' => $validated['quantity'] ?? null,
+                    'vehicle' => $request->input('vehicle', 'car'),
+                ]);
+                if ($computed === null) {
+                    $unitLabel = ClaimRulesService::unitFor($category) ?? 'quantity';
+
+                    return back()->withErrors(['quantity' => 'Please enter the '.$unitLabel.' for '.$category->name.'.'])->withInput();
+                }
+                $quantity = (float) $validated['quantity'];
+                $unit = ClaimRulesService::unitFor($category);
+                $rateApplied = $category->rate_type === 'per_km'
+                    ? ClaimRulesService::mileageRate($request->input('vehicle', 'car'))
+                    : ($category->rate_amount !== null ? (float) $category->rate_amount : null);
+            }
+
+            $validated['amount'] = number_format($computed, 2, '.', '');
+            $validated['gst_amount'] = 0;
+            $validated['total_with_gst'] = $validated['amount'];
         }
 
         // ── Duplicate item detection (same date + description + amount across active claims) ──
@@ -104,7 +194,7 @@ class ExpenseClaimController extends Controller
 
         if ($duplicateItem) {
             return back()->withErrors([
-                'description' => 'A similar expense already exists (same date, description & amount) in claim ' . $duplicateItem->claim->claim_number . '.',
+                'description' => 'A similar expense already exists (same date, description & amount) in claim '.$duplicateItem->claim->claim_number.'.',
             ])->withInput();
         }
 
@@ -123,12 +213,12 @@ class ExpenseClaimController extends Controller
 
             if ($existingReceipt) {
                 return back()->withErrors([
-                    'receipt' => 'This receipt has already been uploaded in claim ' . $existingReceipt->claim->claim_number . '.',
+                    'receipt' => 'This receipt has already been uploaded in claim '.$existingReceipt->claim->claim_number.'.',
                 ])->withInput();
             }
 
             $receiptPath = $request->file('receipt')->store(
-                'claim_receipts/' . $employee->id . '/' . $expenseDate->format('Y-m'),
+                'claim_receipts/'.$employee->id.'/'.$expenseDate->format('Y-m'),
                 'local'
             );
         }
@@ -139,21 +229,18 @@ class ExpenseClaimController extends Controller
             if ($receiptPath) {
                 Storage::disk('local')->delete($receiptPath);
             }
+
             return back()->withErrors(['total_with_gst' => 'Total does not match amount + GST.'])->withInput();
         }
 
-        // Enforce category monthly limit
-        $category = ExpenseCategory::find($validated['expense_category_id']);
-        if ($category && $category->monthly_limit) {
-            $existingCategoryTotal = $claim->items()
-                ->where('expense_category_id', $category->id)
-                ->sum('amount');
-            if (($existingCategoryTotal + (float) $validated['amount']) > $category->monthly_limit) {
-                if ($receiptPath) {
-                    Storage::disk('local')->delete($receiptPath);
-                }
-                return back()->withErrors(['amount' => 'Exceeds monthly category limit of RM ' . number_format($category->monthly_limit, 2) . ' for ' . $category->name . '.'])->withInput();
+        // Period-aware (monthly/annual) + role-based cap enforcement
+        $capError = ClaimRulesService::capError($employee, $category, (float) $validated['amount'], $expenseDate);
+        if ($capError) {
+            if ($receiptPath) {
+                Storage::disk('local')->delete($receiptPath);
             }
+
+            return back()->withErrors(['amount' => $capError])->withInput();
         }
 
         $claim->items()->create([
@@ -162,6 +249,9 @@ class ExpenseClaimController extends Controller
             'description' => $cleanDescription,
             'project_client' => $validated['project_client'] ? strip_tags($validated['project_client']) : null,
             'amount' => $validated['amount'],
+            'quantity' => $quantity,
+            'unit' => $unit,
+            'rate_applied' => $rateApplied,
             'gst_amount' => $validated['gst_amount'] ?? 0,
             'total_with_gst' => $expectedTotal,
             'receipt_path' => $receiptPath,
@@ -170,8 +260,8 @@ class ExpenseClaimController extends Controller
 
         $claim->recalculateTotals();
 
-        return redirect()->route('user.claims.index', ['month' => $expenseDate->month, 'year' => $expenseDate->year])
-            ->with('success', 'Expense item added to ' . $expenseDate->format('F Y') . ' claim.');
+        return redirect()->route('user.claims.index', ['month' => $claimMonth, 'year' => $claimYear])
+            ->with('success', 'Expense item added to '.$monthStart->format('F Y').' claim.');
     }
 
     /**
@@ -182,11 +272,11 @@ class ExpenseClaimController extends Controller
         $employee = Auth::user()->employee;
         $claim = $item->claim;
 
-        if (!$claim || $claim->employee_id !== $employee->id) {
+        if (! $claim || $claim->employee_id !== $employee->id) {
             abort(403);
         }
 
-        if (!$claim->isEditable() || $item->is_locked) {
+        if (! $claim->isEditable() || $item->is_locked) {
             return back()->with('error', 'This item cannot be removed.');
         }
 
@@ -212,7 +302,7 @@ class ExpenseClaimController extends Controller
             abort(403);
         }
 
-        if (!$claim->isSubmittable()) {
+        if (! $claim->isSubmittable()) {
             return back()->with('error', 'This claim cannot be submitted. Ensure it has at least one item.');
         }
 
@@ -250,7 +340,7 @@ class ExpenseClaimController extends Controller
             abort(403);
         }
 
-        if (!in_array($claim->status, ['submitted'])) {
+        if (! in_array($claim->status, ['submitted'])) {
             return back()->with('error', 'Only submitted claims can be cancelled.');
         }
 
@@ -286,7 +376,7 @@ class ExpenseClaimController extends Controller
     public function teamClaims()
     {
         $employee = Auth::user()->employee;
-        if (!$employee) {
+        if (! $employee) {
             return back()->with('error', 'No employee profile found.');
         }
 
@@ -320,13 +410,13 @@ class ExpenseClaimController extends Controller
         }
 
         // Verify the approver is the assigned manager or a superadmin
-        if ($claim->manager_id !== $employee->id && !Auth::user()->isSuperadmin()) {
+        if ($claim->manager_id !== $employee->id && ! Auth::user()->isSuperadmin()) {
             abort(403);
         }
 
         // Verify the approver is the CURRENT manager (relationship may have changed)
         $claim->employee->refresh();
-        if ($claim->employee->manager_id !== $employee->id && !Auth::user()->isSuperadmin()) {
+        if ($claim->employee->manager_id !== $employee->id && ! Auth::user()->isSuperadmin()) {
             abort(403, 'You are no longer the manager of this employee.');
         }
 
@@ -373,7 +463,7 @@ class ExpenseClaimController extends Controller
 
         // Verify the approver is the CURRENT manager
         $claim->employee->refresh();
-        if ($claim->employee->manager_id !== $employee->id && !Auth::user()->isSuperadmin()) {
+        if ($claim->employee->manager_id !== $employee->id && ! Auth::user()->isSuperadmin()) {
             abort(403, 'You are no longer the manager of this employee.');
         }
 
@@ -438,7 +528,7 @@ class ExpenseClaimController extends Controller
             $query->where('employee_id', $employeeId);
         }
         if ($company = $request->input('company')) {
-            $query->whereHas('employee', fn($q) => $q->where('company', $company));
+            $query->whereHas('employee', fn ($q) => $q->where('company', $company));
         }
 
         $claims = $query->orderByDesc('year')->orderByDesc('month')->orderByDesc('submitted_at')->paginate(25);
@@ -609,7 +699,7 @@ class ExpenseClaimController extends Controller
 
         $claims = $query->orderBy('employee_id')->orderBy('year')->orderBy('month')->get();
 
-        $filename = 'expense_claims_' . now()->format('Y-m-d_His') . '.csv';
+        $filename = 'expense_claims_'.now()->format('Y-m-d_His').'.csv';
 
         $headers = [
             'Content-Type' => 'text/csv',
@@ -631,7 +721,7 @@ class ExpenseClaimController extends Controller
                         $claim->claim_number,
                         $this->sanitizeForCsv($claim->employee->full_name ?? '-'),
                         $this->sanitizeForCsv($claim->employee->department ?? '-'),
-                        $claim->year . '-' . str_pad($claim->month, 2, '0', STR_PAD_LEFT),
+                        $claim->year.'-'.str_pad($claim->month, 2, '0', STR_PAD_LEFT),
                         $claim->status,
                         $item->expense_date->format('Y-m-d'),
                         $this->sanitizeForCsv($item->description),
@@ -706,7 +796,7 @@ class ExpenseClaimController extends Controller
 
         $validated = $request->validate([
             'name' => 'required|string|max:100',
-            'code' => 'required|string|max:30|unique:expense_categories,code,' . $category->id,
+            'code' => 'required|string|max:30|unique:expense_categories,code,'.$category->id,
             'description' => 'nullable|string|max:500',
             'monthly_limit' => 'nullable|numeric|min:0',
             'requires_receipt' => 'boolean',
@@ -773,15 +863,196 @@ class ExpenseClaimController extends Controller
     // Private Helpers
     // ══════════════════════════════════════════════════════════════════════
 
+    /**
+     * Look up driving distance from the configured origin (Jaya One) to a typed
+     * destination, for the Petrol "claim by mileage" mode. Provider is selected by
+     * config('claims.distance.provider'): 'ors' (OpenRouteService — free, no card)
+     * or 'google' (Distance Matrix). Config-gated end-to-end: with no key, returns
+     * enabled=false so the form falls back to manual km entry. Never blocks a claim.
+     */
+    public function mileageDistance(Request $request)
+    {
+        $request->validate(['destination' => 'required|string|max:255']);
+
+        $origin = config('claims.mileage.origin');
+
+        if (config('claims.distance.provider', 'google') === 'ors') {
+            return $this->mileageDistanceOrs($request->destination, $origin);
+        }
+
+        $key = config('claims.google_maps.key');
+        if (! $key) {
+            return response()->json(['enabled' => false]);
+        }
+
+        try {
+            $resp = \Illuminate\Support\Facades\Http::timeout(10)->get(
+                'https://maps.googleapis.com/maps/api/distancematrix/json',
+                [
+                    'origins' => $origin,
+                    'destinations' => $request->destination,
+                    'units' => 'metric',
+                    'key' => $key,
+                ]
+            );
+            $data = $resp->json();
+            $element = $data['rows'][0]['elements'][0] ?? null;
+
+            if (($data['status'] ?? '') !== 'OK' || ! $element || ($element['status'] ?? '') !== 'OK') {
+                return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Could not find that destination.']);
+            }
+
+            $km = round(($element['distance']['value'] ?? 0) / 1000, 1);
+
+            return response()->json([
+                'enabled' => true,
+                'ok' => true,
+                'km' => $km,
+                'text' => $element['distance']['text'] ?? ($km.' km'),
+                'origin' => $origin,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Distance lookup failed — please enter km manually.']);
+        }
+    }
+
+    /**
+     * OpenRouteService driving distance (free, no credit card): geocode the origin
+     * + destination to coordinates, then ask the directions API for the driving
+     * distance. Fails open — any missing key/error returns ok=false and the user
+     * types km manually. Origin coords can be pinned via config to skip a geocode.
+     */
+    private function mileageDistanceOrs(string $destination, ?string $origin)
+    {
+        $key = config('claims.distance.ors_key');
+        if (! $key) {
+            return response()->json(['enabled' => false]);
+        }
+
+        try {
+            // Origin: use pinned "lat,lon" from config if present, else geocode the string.
+            $originCoords = $this->orsParseCoords(config('claims.mileage.origin_coords'))
+                ?? $this->orsGeocode($key, (string) $origin);
+            if (! $originCoords) {
+                return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Could not locate the origin — enter km manually.']);
+            }
+
+            $destCoords = $this->orsGeocode($key, $destination);
+            if (! $destCoords) {
+                return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Could not find that destination — check the spelling or enter km manually.']);
+            }
+
+            $resp = Http::timeout(12)
+                ->withHeaders(['Authorization' => $key, 'Content-Type' => 'application/json'])
+                ->post('https://api.openrouteservice.org/v2/directions/driving-car', [
+                    'coordinates' => [$originCoords, $destCoords],
+                ]);
+
+            $meters = $resp->json('routes.0.summary.distance');
+            if (! $resp->successful() || $meters === null) {
+                return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Distance lookup failed — please enter km manually.']);
+            }
+
+            $km = round($meters / 1000, 1);
+
+            return response()->json([
+                'enabled' => true,
+                'ok' => true,
+                'km' => $km,
+                'text' => $km.' km',
+                'origin' => $origin,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('ORS mileage distance failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Distance lookup failed — please enter km manually.']);
+        }
+    }
+
+    /** Geocode free text to ORS [lon, lat], restricted to Malaysia; null if not found. */
+    private function orsGeocode(string $key, string $text): ?array
+    {
+        if (trim($text) === '') {
+            return null;
+        }
+        $resp = Http::timeout(10)->get('https://api.openrouteservice.org/geocode/search', [
+            'api_key' => $key,
+            'text' => $text,
+            'boundary.country' => 'MY',
+            'size' => 1,
+        ]);
+        $coords = $resp->json('features.0.geometry.coordinates'); // [lon, lat]
+
+        return (is_array($coords) && count($coords) === 2)
+            ? [(float) $coords[0], (float) $coords[1]]
+            : null;
+    }
+
+    /** Parse a config "lat,lon" string into ORS [lon, lat] order; null if invalid. */
+    private function orsParseCoords(?string $latLon): ?array
+    {
+        if (! $latLon) {
+            return null;
+        }
+        $parts = array_map('trim', explode(',', $latLon));
+        if (count($parts) !== 2 || ! is_numeric($parts[0]) || ! is_numeric($parts[1])) {
+            return null;
+        }
+
+        return [(float) $parts[1], (float) $parts[0]]; // config is lat,lon → ORS wants lon,lat
+    }
+
+    /**
+     * OCR a just-uploaded receipt to pre-fill amount/date/vendor. Config-gated:
+     * with OCR disabled or no AI key, returns enabled=false and the form leaves
+     * fields for manual entry. Never stores the file — reads the temp upload only.
+     */
+    public function scanReceipt(Request $request)
+    {
+        $company = Auth::user()->employee?->company;
+
+        if (! ClaimReceiptOcrService::enabled($company)) {
+            return response()->json(['enabled' => false]);
+        }
+
+        $request->validate([
+            'receipt' => 'required|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+        ]);
+
+        // Offer the employee's eligible categories so the AI can also classify the receipt.
+        $employee = Auth::user()->employee;
+        $categories = $employee ? ClaimRulesService::categoriesFor($employee) : collect();
+        $catList = $categories->map(fn ($c) => ['code' => $c->code, 'name' => $c->name])->all();
+
+        $file = $request->file('receipt');
+        $data = ClaimReceiptOcrService::extract($file->getRealPath(), $file->getMimeType(), $company, $catList);
+
+        if ($data === null) {
+            return response()->json(['enabled' => true, 'ok' => false]);
+        }
+
+        // Map the validated category code back to the dropdown's id so the form can pre-select it.
+        if (! empty($data['category'])) {
+            $match = $categories->firstWhere('code', $data['category']);
+            $data['category_id'] = $match?->id;
+            $data['category_name'] = $match?->name;
+        }
+
+        return response()->json(array_merge(['enabled' => true, 'ok' => true], $data));
+    }
+
     private function getOrCreateDraft(Employee $employee, int $year, int $month): ExpenseClaim
     {
         return ExpenseClaim::firstOrCreate(
             ['employee_id' => $employee->id, 'year' => $year, 'month' => $month],
             [
                 'claim_number' => ExpenseClaim::generateClaimNumber($year, $month),
-                'title' => Carbon::create($year, $month)->format('F Y') . ' — ' . $employee->full_name,
+                'title' => Carbon::create($year, $month)->format('F Y').' — '.$employee->full_name,
                 'status' => 'draft',
-                'submission_deadline' => Carbon::create($year, $month, ExpenseClaimPolicy::forCompany($employee->company)->submission_deadline_day),
+                'submission_deadline' => ClaimRulesService::submissionDeadline(
+                    ExpenseClaimPolicy::forCompany($employee->company)->submission_deadline_day,
+                    Carbon::create($year, $month, 1)
+                ),
                 'manager_id' => $employee->manager_id,
             ]
         );
@@ -814,14 +1085,14 @@ class ExpenseClaimController extends Controller
 
     private function authorizeViewClaims(): void
     {
-        if (!Auth::user()->canViewAllClaims()) {
+        if (! Auth::user()->canViewAllClaims()) {
             abort(403, 'You do not have permission to view all claims.');
         }
     }
 
     private function authorizeManageClaims(): void
     {
-        if (!Auth::user()->canManageClaims()) {
+        if (! Auth::user()->canManageClaims()) {
             abort(403, 'You do not have permission to manage claims.');
         }
     }
@@ -837,8 +1108,9 @@ class ExpenseClaimController extends Controller
         }
         $first = substr($value, 0, 1);
         if (in_array($first, ['=', '+', '@', '-', "\t", "\r"], true)) {
-            return "'" . $value;
+            return "'".$value;
         }
+
         return $value;
     }
 }
