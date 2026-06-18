@@ -173,7 +173,7 @@
                                         <input type="checkbox" class="form-check-input reject-toggle border-danger" name="rejected_items[]" value="{{ $item->id }}" style="width:1.7em;height:1.7em;cursor:pointer;accent-color:#dc3545;" title="Reject this item">
                                         <input type="text" name="item_remarks[{{ $item->id }}]" class="form-control form-control-sm mt-1 reject-reason d-none" placeholder="Reason (shown to employee)" maxlength="500">
                                         @else
-                                        <span class="text-muted small">@if(!$mine)not yours@else done@endif</span>
+                                        <span class="text-muted small">{{ $mine ? 'done' : 'not yours' }}</span>
                                         @endif
                                     </td>
                                 </tr>
