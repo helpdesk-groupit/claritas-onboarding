@@ -154,13 +154,14 @@
                                     <td class="text-end fw-semibold item-total" data-total="{{ $item->total_with_gst }}">{{ number_format($item->total_with_gst, 2) }}</td>
                                     <td class="text-center">
                                         @if($item->receipt_path)
-                                        <a href="{{ route('secure.file', $item->receipt_path) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-1" title="View receipt"><i class="bi bi-paperclip"></i></a>
+                                        <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-1" title="View receipt"><i class="bi bi-paperclip"></i></a>
                                         @else
                                         <span class="text-muted">—</span>
                                         @endif
                                     </td>
                                     <td class="text-center" style="min-width:150px;">
-                                        <input type="checkbox" class="form-check-input reject-toggle" name="rejected_items[]" value="{{ $item->id }}" title="Reject this item">
+                                        <input type="checkbox" class="btn-check reject-toggle" name="rejected_items[]" value="{{ $item->id }}" id="rej-{{ $item->id }}" autocomplete="off">
+                                        <label class="btn btn-sm btn-outline-danger" for="rej-{{ $item->id }}"><i class="bi bi-x-lg me-1"></i>Reject</label>
                                         <input type="text" name="item_remarks[{{ $item->id }}]" class="form-control form-control-sm mt-1 reject-reason d-none" placeholder="Reason (shown to employee)" maxlength="500">
                                     </td>
                                 </tr>

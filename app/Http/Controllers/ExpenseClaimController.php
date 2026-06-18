@@ -1203,6 +1203,39 @@ class ExpenseClaimController extends Controller
         return response()->json($result);
     }
 
+    /**
+     * Stream a claim item's receipt with a human-readable filename
+     * (e.g. "EC-2026-06-0002-caltex.jpg") so reviewers can tell receipts apart,
+     * instead of the random storage hash. Access: the owner, or a reviewer.
+     */
+    public function viewReceipt(ExpenseClaimItem $item)
+    {
+        $claim = $item->claim;
+        if (! $claim || ! $item->receipt_path) {
+            abort(404);
+        }
+
+        $user = Auth::user();
+        $isOwner = $user->employee && $claim->employee_id === $user->employee->id;
+        if (! $isOwner) {
+            $this->authorizeReview($claim); // HR/admin or the claim's manager (aborts 403 otherwise)
+        }
+
+        if (! Storage::disk('local')->exists($item->receipt_path)) {
+            abort(404);
+        }
+
+        $ext = pathinfo($item->receipt_path, PATHINFO_EXTENSION) ?: 'jpg';
+        $slug = \Illuminate\Support\Str::slug(\Illuminate\Support\Str::limit($item->description, 30, '')) ?: 'receipt';
+        $name = $claim->claim_number.'-'.$slug.'.'.$ext;
+
+        return Storage::disk('local')->download($item->receipt_path, $name, [
+            'Content-Type' => Storage::disk('local')->mimeType($item->receipt_path),
+            'Content-Disposition' => 'inline; filename="'.$name.'"',
+            'Cache-Control' => 'no-store, no-cache, must-revalidate, private',
+        ]);
+    }
+
     /** Allow HR/admins and the employee's current manager to run verification. */
     private function authorizeReview(ExpenseClaim $claim): void
     {

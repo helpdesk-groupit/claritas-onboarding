@@ -421,7 +421,7 @@
                             <td class="text-end fw-bold {{ $item->isRejected() ? 'text-decoration-line-through text-muted' : '' }}">{{ number_format($item->total_with_gst, 2) }}</td>
                             <td>
                                 @if($item->receipt_path)
-                                <a href="{{ route('secure.file', $item->receipt_path) }}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-paperclip"></i></a>
+                                <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-paperclip"></i></a>
                                 @else
                                 <span class="text-muted">—</span>
                                 @endif
@@ -471,7 +471,7 @@
                         </div>
                         <div class="d-flex align-items-center gap-1">
                             @if($item->receipt_path)
-                            <a href="{{ route('secure.file', $item->receipt_path) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0"><i class="bi bi-paperclip"></i></a>
+                            <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0"><i class="bi bi-paperclip"></i></a>
                             @endif
                             @if($canEdit && !$item->is_locked)
                             <form action="{{ route('user.claims.remove-item', $item) }}" method="POST" class="js-confirm" data-confirm="Remove this item from the claim?" data-confirm-title="Remove item" data-confirm-ok="Remove" data-confirm-variant="danger">

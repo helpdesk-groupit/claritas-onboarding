@@ -120,7 +120,7 @@ class ExpenseClaim extends Model
                 $flags[] = $label.': over the '.$cap['period'].' cap (RM '.number_format($cap['used'], 2).' / RM '.number_format($cap['cap'], 2).')';
             }
             if ($dup = $item->duplicateFlag()) {
-                $flags[] = $label.': '.$dup;
+                $flags[] = $label.': '.$dup['message'];
             }
         }
 

@@ -97,7 +97,8 @@ class ExpenseClaimItem extends Model
      * catches two people claiming one receipt), or an identical date+amount+
      * description line on another of this employee's claims. Returns a message or null.
      */
-    public function duplicateFlag(): ?string
+    /** @return array{message:string, item_id:int}|null */
+    public function duplicateFlag(): ?array
     {
         if ($this->receipt_hash) {
             $dupReceipt = static::where('receipt_hash', $this->receipt_hash)
@@ -105,7 +106,7 @@ class ExpenseClaimItem extends Model
                 ->with('claim')
                 ->first();
             if ($dupReceipt) {
-                return 'Same receipt as '.($dupReceipt->claim->claim_number ?? 'another claim');
+                return ['message' => 'Same receipt as '.($dupReceipt->claim->claim_number ?? 'another claim'), 'item_id' => $dupReceipt->id];
             }
         }
 
@@ -119,7 +120,7 @@ class ExpenseClaimItem extends Model
                 ->with('claim')
                 ->first();
             if ($dupLine) {
-                return 'Possible duplicate of '.($dupLine->claim->claim_number ?? 'another claim');
+                return ['message' => 'Possible duplicate of '.($dupLine->claim->claim_number ?? 'another claim'), 'item_id' => $dupLine->id];
             }
         }
 

@@ -22,9 +22,10 @@
 
     @php $dup = $item->duplicateFlag(); @endphp
     @if($dup)
-    <span class="badge rounded-pill bg-danger me-1 mb-1" title="{{ $dup }}">
-        <i class="bi bi-files me-1"></i>{{ $dup }}
-    </span>
+    <a href="{{ route('user.claims.items.receipt', $dup['item_id']) }}" target="_blank"
+       class="badge rounded-pill bg-danger text-white text-decoration-none me-1 mb-1" title="Open the matching receipt to compare">
+        <i class="bi bi-files me-1"></i>{{ $dup['message'] }} <i class="bi bi-box-arrow-up-right ms-1"></i>
+    </a>
     @endif
 
     @if($item->receipt_path || $item->isMileage())
