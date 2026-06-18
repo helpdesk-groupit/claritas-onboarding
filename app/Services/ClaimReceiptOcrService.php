@@ -104,10 +104,14 @@ class ClaimReceiptOcrService
             .'"vendor" (merchant/shop name, or null), '
             .'"distance_km" (if this is a map/route screenshot, the DRIVING distance in kilometres '
             .'as a number — read it from a label like "18.0 km" or "18 km"; otherwise null), '
-            .'"route_from" (the ORIGIN place name — on a Google Maps directions screenshot this is the '
-            .'TOP/FIRST address field, marked with a circle "○" icon, i.e. where the trip STARTS; or null), '
-            .'"route_to" (the DESTINATION place name — the BOTTOM/SECOND address field, marked with a '
-            .'map-pin "📍" icon, i.e. where the trip ENDS; or null). '
+            .'"route_from" (the ORIGIN — on a Google Maps directions screenshot this is the TOP/FIRST '
+            .'address field, marked with a circle "○" icon, where the trip STARTS; or null), '
+            .'"route_to" (the DESTINATION — the BOTTOM/SECOND address field, marked with a map-pin "📍" '
+            .'icon, where the trip ENDS; or null). '
+            .'For route_from and route_to return the SHORT, recognisable landmark name only — the '
+            .'building, mall, or area name that a map search would find (e.g. "Suria KLCC", '
+            .'"Mid Valley Megamall", "Sunway Pyramid") — NOT the full printed street address with '
+            .'lot / level / unit / floor numbers. '
             .'Do NOT swap origin and destination — the circle is always the start and the pin is always the end'
             .$categoryClause
             .'. No commentary, JSON only.';
