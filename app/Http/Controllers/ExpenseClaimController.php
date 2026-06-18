@@ -106,6 +106,7 @@ class ExpenseClaimController extends Controller
             'vehicle' => 'nullable|in:car,motorcycle',
             'claim_mode' => 'nullable|in:receipt,mileage',
             'mileage_destination' => 'nullable|string|max:255',
+            'mileage_origin' => 'nullable|string|max:255',
             'receipt' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
         ], [
             'expense_date.after_or_equal' => 'The expense date must be within '.$now->year.'.',
@@ -135,11 +136,11 @@ class ExpenseClaimController extends Controller
             return back()->withErrors(['expense_category_id' => 'You are not eligible to claim under this category.'])->withInput();
         }
 
-        // Mileage-on-Petrol: the Petrol account can be claimed by receipt OR as a
-        // per-km mileage claim (car/motorcycle rate, measured from Jaya One).
+        // Petrol is always a per-km mileage claim (car/motorcycle rate). The origin
+        // and destination are chosen by the employee; distance is the evidence, not a
+        // receipt. (The legacy "by receipt" Petrol mode has been removed.)
         $mileageGl = config('claims.mileage.gl_code');
-        $isPetrolMileage = $request->input('claim_mode') === 'mileage'
-            && $mileageGl && $category->gl_code === $mileageGl;
+        $isPetrolMileage = $mileageGl && $category->gl_code === $mileageGl;
 
         // Strict "no receipt, no claim" for receipt-required categories — except a
         // mileage claim, where the distance (not a receipt) is the evidence.
@@ -256,6 +257,7 @@ class ExpenseClaimController extends Controller
             'unit' => $unit,
             'rate_applied' => $rateApplied,
             'mileage_destination' => $isPetrolMileage ? mb_substr(strip_tags((string) $request->input('mileage_destination')), 0, 255) : null,
+            'mileage_origin' => $isPetrolMileage ? (mb_substr(strip_tags((string) $request->input('mileage_origin')), 0, 255) ?: null) : null,
             'gst_amount' => $validated['gst_amount'] ?? 0,
             'total_with_gst' => $expectedTotal,
             'receipt_path' => $receiptPath,
@@ -1088,9 +1090,13 @@ class ExpenseClaimController extends Controller
      */
     public function mileageDistance(Request $request)
     {
-        $request->validate(['destination' => 'required|string|max:255']);
+        $request->validate([
+            'destination' => 'required|string|max:255',
+            'origin' => 'required|string|max:255',
+        ]);
 
-        $origin = config('claims.mileage.origin');
+        // The employee now chooses the starting point (no fixed origin).
+        $origin = trim(strip_tags((string) $request->input('origin')));
 
         if (config('claims.distance.provider', 'google') === 'ors') {
             return $this->mileageDistanceOrs($request->destination, $origin);
@@ -1146,11 +1152,10 @@ class ExpenseClaimController extends Controller
         }
 
         try {
-            // Origin: use pinned "lat,lon" from config if present, else geocode the string.
-            $originCoords = $this->orsParseCoords(config('claims.mileage.origin_coords'))
-                ?? $this->orsGeocode($key, (string) $origin);
+            // The origin is the employee-entered "From"; geocode it directly.
+            $originCoords = $this->orsGeocode($key, (string) $origin);
             if (! $originCoords) {
-                return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Could not locate the origin — enter km manually.']);
+                return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Could not locate the starting point — check the spelling or enter km manually.']);
             }
 
             // Bias the destination geocode toward the origin so ambiguous short names
@@ -1232,8 +1237,7 @@ class ExpenseClaimController extends Controller
             return null;
         }
         try {
-            $originCoords = $this->orsParseCoords(config('claims.mileage.origin_coords'))
-                ?? $this->orsGeocode($key, (string) $origin);
+            $originCoords = $this->orsGeocode($key, (string) $origin);
             $destCoords = $this->orsGeocode($key, $destination, $originCoords);
             if (! $originCoords || ! $destCoords) {
                 return null;
@@ -1253,18 +1257,42 @@ class ExpenseClaimController extends Controller
         }
     }
 
-    /** Parse a config "lat,lon" string into ORS [lon, lat] order; null if invalid. */
-    private function orsParseCoords(?string $latLon): ?array
+    /**
+     * Suggest place names for the From/To mileage fields (ORS autocomplete, MY only,
+     * biased to the Klang Valley so local results rank first). Returns a flat list of
+     * labels; config-gated on the ORS key — no key returns an empty list.
+     */
+    public function placeSuggest(Request $request)
     {
-        if (! $latLon) {
-            return null;
-        }
-        $parts = array_map('trim', explode(',', $latLon));
-        if (count($parts) !== 2 || ! is_numeric($parts[0]) || ! is_numeric($parts[1])) {
-            return null;
+        $request->validate(['text' => 'required|string|max:255']);
+        $text = trim($request->input('text'));
+        $key = config('claims.distance.ors_key');
+        if (! $key || mb_strlen($text) < 2) {
+            return response()->json(['suggestions' => []]);
         }
 
-        return [(float) $parts[1], (float) $parts[0]]; // config is lat,lon → ORS wants lon,lat
+        try {
+            $resp = Http::timeout(8)->get('https://api.openrouteservice.org/geocode/autocomplete', [
+                'api_key' => $key,
+                'text' => $text,
+                'boundary.country' => 'MY',
+                'focus.point.lon' => 101.6869, // Klang Valley centre — ranks nearby places first
+                'focus.point.lat' => 3.1390,
+                'size' => 6,
+            ]);
+            $features = $resp->successful() ? ($resp->json('features') ?? []) : [];
+            $labels = [];
+            foreach ($features as $f) {
+                $label = $f['properties']['label'] ?? null;
+                if ($label && ! in_array($label, $labels, true)) {
+                    $labels[] = $label;
+                }
+            }
+
+            return response()->json(['suggestions' => $labels]);
+        } catch (\Throwable $e) {
+            return response()->json(['suggestions' => []]);
+        }
     }
 
     /**
@@ -1350,7 +1378,7 @@ class ExpenseClaimController extends Controller
 
         // #2 — Claimed km vs the system-calculated driving distance (ORS).
         if ($item->isMileage() && $item->mileage_destination) {
-            $km = $this->orsDistanceKm($item->mileage_destination, config('claims.mileage.origin'));
+            $km = $this->orsDistanceKm($item->mileage_destination, $item->mileage_origin ?: config('claims.mileage.origin'));
             if ($km !== null) {
                 $claimedKm = (float) $item->quantity;
                 $result['mileage'] = [

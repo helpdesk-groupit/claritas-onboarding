@@ -409,6 +409,7 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     Route::post('/my/claims/{claim}/cancel',            [ExpenseClaimController::class, 'cancel'])->name('user.claims.cancel');
     Route::post('/my/claims/detect-category',           [ExpenseClaimController::class, 'detectCategory'])->name('user.claims.detect-category');
     Route::post('/my/claims/mileage-distance',          [ExpenseClaimController::class, 'mileageDistance'])->name('user.claims.mileage-distance');
+    Route::post('/my/claims/place-suggest',             [ExpenseClaimController::class, 'placeSuggest'])->name('user.claims.place-suggest')->middleware('throttle:60,1');
     Route::post('/my/claims/scan-receipt',              [ExpenseClaimController::class, 'scanReceipt'])->name('user.claims.scan-receipt')->middleware('throttle:uploads');
 
     // Manager: Team Claims Approval

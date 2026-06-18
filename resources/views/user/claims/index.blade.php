@@ -342,34 +342,33 @@
                             <input type="number" name="quantity" class="form-control" id="quantityInput" step="0.01" min="0.01" max="99999.99" placeholder="0" value="{{ old('quantity') }}">
                             <small class="text-muted" id="quantityHint"></small>
                         </div>
-                        {{-- Petrol: claim by receipt or by mileage (from Jaya One) --}}
+                        {{-- Petrol: always claimed by mileage — employee chooses From + To --}}
                         <div class="col-12" id="mileagePanel" style="display:none;">
                             <div class="border rounded p-2 bg-light">
-                                <div class="d-flex align-items-center gap-3 flex-wrap">
-                                    <span class="fw-semibold small"><i class="bi bi-fuel-pump me-1"></i>Petrol claim type:</span>
-                                    <div class="form-check form-check-inline m-0">
-                                        <input class="form-check-input" type="radio" name="claim_mode" id="modeReceipt" value="receipt" {{ old('claim_mode', 'receipt') === 'mileage' ? '' : 'checked' }}>
-                                        <label class="form-check-label small" for="modeReceipt">By receipt</label>
-                                    </div>
-                                    <div class="form-check form-check-inline m-0">
-                                        <input class="form-check-input" type="radio" name="claim_mode" id="modeMileage" value="mileage" {{ old('claim_mode') === 'mileage' ? 'checked' : '' }}>
-                                        <label class="form-check-label small" for="modeMileage">By mileage (from {{ config('claims.mileage.origin') }})</label>
-                                    </div>
+                                <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+                                    <span class="fw-semibold small"><i class="bi bi-fuel-pump me-1"></i>Petrol — by mileage</span>
+                                    <span class="text-muted small">Enter the route; we work out the distance and the amount.</span>
                                 </div>
-                                <div class="row g-2 mt-1" id="mileageInputs" style="display:none;">
-                                    <div class="col-6 col-md-3">
+                                <div class="row g-2" id="mileageInputs">
+                                    <div class="col-12 col-md-2">
                                         <label class="form-label small mb-1">Vehicle</label>
                                         <select class="form-select form-select-sm" name="vehicle" id="mileageVehicle">
                                             <option value="car" {{ old('vehicle', 'car') === 'car' ? 'selected' : '' }}>Car (RM0.70/km)</option>
                                             <option value="motorcycle" {{ old('vehicle') === 'motorcycle' ? 'selected' : '' }}>Motorcycle (RM0.35/km)</option>
                                         </select>
                                     </div>
-                                    <div class="col-12 col-md-6" id="mileageDestWrap" style="display:none;">
-                                        <label class="form-label small mb-1">Destination</label>
+                                    <div class="col-12 col-md-5">
+                                        <label class="form-label small mb-1">From</label>
+                                        <input type="text" class="form-control form-control-sm" id="mileageOrigin" name="mileage_origin" placeholder="Start location, e.g. Jaya One" maxlength="255" autocomplete="off" list="mileageOriginList" value="{{ old('mileage_origin') }}">
+                                        <datalist id="mileageOriginList"></datalist>
+                                    </div>
+                                    <div class="col-12 col-md-5" id="mileageDestWrap">
+                                        <label class="form-label small mb-1">To</label>
                                         <div class="input-group input-group-sm">
-                                            <input type="text" class="form-control" id="mileageDest" name="mileage_destination" placeholder="e.g., KLCC, Kuala Lumpur" maxlength="255">
+                                            <input type="text" class="form-control" id="mileageDest" name="mileage_destination" placeholder="Destination, e.g. Suria KLCC" maxlength="255" autocomplete="off" list="mileageDestList" value="{{ old('mileage_destination') }}">
                                             <button type="button" class="btn btn-outline-primary" id="mileageCalcBtn">Calculate</button>
                                         </div>
+                                        <datalist id="mileageDestList"></datalist>
                                         <small class="text-muted" id="mileageCalcHint"></small>
                                     </div>
                                 </div>
@@ -633,8 +632,9 @@ document.addEventListener('DOMContentLoaded', function() {
             // Category receipt requirement check
             if (categorySelect && categorySelect.value) {
                 const opt = categorySelect.selectedOptions[0];
+                const mileageHere = isMileageCat(opt); // Petrol = always mileage, distance is the evidence
                 const receiptInput = document.getElementById('receiptFile');
-                if (opt && opt.dataset.requiresReceipt === '1' && receiptInput && !receiptInput.files.length) {
+                if (!mileageHere && opt && opt.dataset.requiresReceipt === '1' && receiptInput && !receiptInput.files.length) {
                     receiptInput.classList.add('is-invalid');
                     const fb = receiptInput.nextElementSibling;
                     if (fb && fb.classList.contains('invalid-feedback')) {
@@ -644,9 +644,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 // Computed categories (Event Day / Extra Hours) and Petrol mileage need a quantity
                 const rt = opt ? opt.dataset.rateType : 'receipt';
-                const mPanel = document.getElementById('mileagePanel');
-                const mEl = document.getElementById('modeMileage');
-                const mileageHere = mEl && mEl.checked && mPanel && mPanel.style.display !== 'none';
                 if (((rt === 'per_day' || rt === 'per_hour') || mileageHere) && quantityInput && (!quantityInput.value || parseFloat(quantityInput.value) <= 0)) {
                     quantityInput.classList.add('is-invalid');
                     valid = false;
@@ -716,16 +713,18 @@ document.addEventListener('DOMContentLoaded', function() {
     const mileagePanel    = document.getElementById('mileagePanel');
     const mileageInputs   = document.getElementById('mileageInputs');
     const mileageVehicle  = document.getElementById('mileageVehicle');
+    const mileageOrigin   = document.getElementById('mileageOrigin');
     const mileageDest     = document.getElementById('mileageDest');
     const mileageDestWrap = document.getElementById('mileageDestWrap');
     const mileageCalcBtn  = document.getElementById('mileageCalcBtn');
     const mileageCalcHint = document.getElementById('mileageCalcHint');
-    const modeMileageEl   = document.getElementById('modeMileage');
 
     function otBand(h) { if (h >= 8) return 100; if (h >= 4) return 50; return 0; }
     function selOpt() { return categorySelect ? categorySelect.selectedOptions[0] : null; }
     function isMileageCat(opt) { return !!(opt && MILEAGE_GL && opt.dataset.glCode === MILEAGE_GL); }
-    function mileageOn() { return !!(modeMileageEl && modeMileageEl.checked); }
+    // Petrol is always a mileage claim now (the by-receipt toggle was removed), so
+    // "mileage mode" is simply: is the Petrol category selected.
+    function mileageOn() { return isMileageCat(selOpt()); }
 
     function computeFromQuantity() {
         const opt = selOpt();
@@ -762,21 +761,17 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function applyPetrolMode() {
-        const mileage = mileageOn();
-        if (mileageInputs) mileageInputs.style.display = mileage ? '' : 'none';
-        if (mileageDestWrap) mileageDestWrap.style.display = (mileage && MAPS_ENABLED) ? '' : 'none';
-        if (quantityGroup) quantityGroup.style.display = mileage ? '' : 'none';
-        if (amountInput) amountInput.readOnly = mileage;
-        if (mileage) {
-            if (gstInput) { gstInput.value = '0'; gstInput.readOnly = true; }
-            quantityLabel.textContent = 'Distance (km)';
-            const veh = (mileageVehicle && mileageVehicle.value) || 'car';
-            quantityHint.textContent = 'RM ' + (MILEAGE_RATES[veh] || 0).toFixed(2) + '/km';
-            computeFromQuantity();
-        } else {
-            if (gstInput) gstInput.readOnly = false;
-            if (quantityInput) quantityInput.value = '';
-        }
+        // Petrol is always by mileage: distance drives the amount.
+        if (mileageInputs) mileageInputs.style.display = '';
+        // The Calculate button only works with a distance provider configured.
+        if (mileageCalcBtn) mileageCalcBtn.style.display = MAPS_ENABLED ? '' : 'none';
+        if (quantityGroup) quantityGroup.style.display = '';
+        if (amountInput) amountInput.readOnly = true;
+        if (gstInput) { gstInput.value = '0'; gstInput.readOnly = true; }
+        quantityLabel.textContent = 'Distance (km)';
+        const veh = (mileageVehicle && mileageVehicle.value) || 'car';
+        quantityHint.textContent = 'RM ' + (MILEAGE_RATES[veh] || 0).toFixed(2) + '/km';
+        computeFromQuantity();
         updateReceiptRequiredMark();
         updateScanButtonLabel();
     }
@@ -824,18 +819,17 @@ document.addEventListener('DOMContentLoaded', function() {
     if (categorySelect) categorySelect.addEventListener('change', applyCategoryMode);
     if (quantityInput) quantityInput.addEventListener('input', computeFromQuantity);
     if (mileageVehicle) mileageVehicle.addEventListener('change', applyPetrolMode);
-    document.querySelectorAll('input[name="claim_mode"]').forEach(function (r) {
-        r.addEventListener('change', applyPetrolMode);
-    });
     if (mileageCalcBtn) mileageCalcBtn.addEventListener('click', function () {
+        const origin = (mileageOrigin && mileageOrigin.value || '').trim();
         const dest = (mileageDest.value || '').trim();
-        if (dest.length < 3) { mileageCalcHint.textContent = 'Enter a destination.'; return; }
+        if (origin.length < 3) { mileageCalcHint.textContent = 'Enter the starting point (From).'; return; }
+        if (dest.length < 3) { mileageCalcHint.textContent = 'Enter the destination (To).'; return; }
         mileageCalcBtn.disabled = true;
         mileageCalcHint.textContent = 'Calculating…';
         fetch('{{ route("user.claims.mileage-distance") }}', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}', 'Accept': 'application/json' },
-            body: JSON.stringify({ destination: dest })
+            body: JSON.stringify({ origin: origin, destination: dest })
         })
         .then(r => r.json())
         .then(data => {
@@ -843,11 +837,41 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!data.enabled) { mileageCalcHint.textContent = 'Auto-distance is off — enter km manually.'; return; }
             if (!data.ok) { mileageCalcHint.textContent = data.message || 'Could not calculate.'; return; }
             quantityInput.value = data.km;
-            mileageCalcHint.textContent = data.text + ' from ' + (data.origin || 'Jaya One');
+            mileageCalcHint.textContent = data.text + ' from ' + (data.origin || origin);
             computeFromQuantity();
         })
         .catch(() => { mileageCalcBtn.disabled = false; mileageCalcHint.textContent = 'Lookup failed — enter km manually.'; });
     });
+
+    // ── Place autocomplete for the From / To fields (ORS, debounced) ──
+    function wirePlaceSuggest(input, listEl) {
+        if (!input || !listEl) return;
+        let timer = null;
+        input.addEventListener('input', function () {
+            const text = input.value.trim();
+            if (timer) clearTimeout(timer);
+            if (text.length < 3) { listEl.innerHTML = ''; return; }
+            timer = setTimeout(function () {
+                fetch('{{ route("user.claims.place-suggest") }}', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}', 'Accept': 'application/json' },
+                    body: JSON.stringify({ text: text })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    listEl.innerHTML = '';
+                    (data.suggestions || []).forEach(function (label) {
+                        const opt = document.createElement('option');
+                        opt.value = label;
+                        listEl.appendChild(opt);
+                    });
+                })
+                .catch(() => {});
+            }, 300);
+        });
+    }
+    wirePlaceSuggest(mileageOrigin, document.getElementById('mileageOriginList'));
+    wirePlaceSuggest(mileageDest, document.getElementById('mileageDestList'));
 
     // ── Receipt OCR — manual scan (user clicks "Scan receipt"; config-gated, fails open) ──
     const OCR_ENABLED = @json(\App\Services\ClaimReceiptOcrService::enabled(Auth::user()->employee?->company));
@@ -858,21 +882,19 @@ document.addEventListener('DOMContentLoaded', function() {
     // A Maps screenshot was scanned — switch to Petrol "by mileage", fill the km,
     // the route, and the computed amount (vehicle defaults to car; user can change).
     function applyMapDistance(km, from, to) {
-        // 1. Select the Petrol (mileage GL) category
+        // 1. Select the Petrol (mileage GL) category — this auto-applies mileage mode
         if (categorySelect && MILEAGE_GL) {
             const petrolOpt = Array.from(categorySelect.options).find(o => o.dataset.glCode === MILEAGE_GL);
             if (petrolOpt) { categorySelect.value = petrolOpt.value; categorySelect.dispatchEvent(new Event('change')); }
         }
-        // 2. Switch to "By mileage"
-        const mm = document.getElementById('modeMileage');
-        if (mm) { mm.checked = true; mm.dispatchEvent(new Event('change')); }
-        // 3. Fill distance + compute the amount
+        // 2. Fill distance + compute the amount
         if (quantityInput) { quantityInput.value = Number(km).toFixed(1); computeFromQuantity(); }
-        // 4. Fill description + destination box (if empty)
+        // 3. Fill description + the From / To boxes (if empty)
         const descEl = document.getElementById('expenseDescription');
         if (descEl && !descEl.value && (from || to)) {
             descEl.value = 'Mileage' + (from ? ' from ' + from : '') + (to ? ' to ' + to : '');
         }
+        if (mileageOrigin && from && !mileageOrigin.value) mileageOrigin.value = from;
         if (mileageDest && to && !mileageDest.value) mileageDest.value = to;
         // 5. Feedback
         if (ocrHint) {
@@ -983,7 +1005,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (byId('totalWithGst')) byId('totalWithGst').value = '';
             if (byId('quantityInput')) byId('quantityInput').value = '';
             if (byId('mileageVehicle')) byId('mileageVehicle').value = 'car';
-            if (byId('modeReceipt')) byId('modeReceipt').checked = true;
+            if (byId('mileageOrigin')) byId('mileageOrigin').value = '';
             if (byId('mileageDest')) byId('mileageDest').value = '';
             if (receiptFileEl) receiptFileEl.value = '';
             if (receiptClearBtn) receiptClearBtn.classList.add('d-none');

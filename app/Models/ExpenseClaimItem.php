@@ -12,7 +12,7 @@ class ExpenseClaimItem extends Model
         'expense_claim_id', 'expense_category_id', 'expense_date',
         'description', 'project_client', 'amount', 'quantity', 'unit', 'rate_applied',
         'gst_amount', 'total_with_gst', 'receipt_path', 'receipt_hash', 'is_locked', 'remarks',
-        'review_status', 'mileage_destination', 'approver_id', 'manager_status', 'manager_remarks',
+        'review_status', 'mileage_destination', 'mileage_origin', 'approver_id', 'manager_status', 'manager_remarks',
     ];
 
     /** The manager assigned to approve this specific item (per-item routing). */
