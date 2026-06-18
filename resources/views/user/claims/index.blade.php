@@ -293,7 +293,7 @@
                             <button type="button" class="btn btn-sm btn-primary d-none" id="scanReceiptBtn"><i class="bi bi-magic me-1"></i>Scan attachment</button>
                             <button type="button" class="btn btn-sm btn-link text-danger p-0 d-none" id="receiptClearBtn"><i class="bi bi-x-circle me-1"></i>Remove attachment</button>
                         </div>
-                        <small class="text-info d-block mt-1" id="ocrHint" style="display:none;"></small>
+                        <small class="text-info mt-1" id="ocrHint" style="display:none;"></small>
                         @error('receipt')<div class="invalid-feedback d-block">{{ $message }}</div>@enderror
                         <small class="text-muted d-block">JPG, PNG, PDF (max 5MB)</small>
                     </div>
@@ -984,7 +984,7 @@ document.addEventListener('DOMContentLoaded', function() {
             receiptFileEl.value = '';
             receiptClearBtn.classList.add('d-none');
             if (scanReceiptBtn) scanReceiptBtn.classList.add('d-none');
-            if (ocrHint) ocrHint.style.display = 'none';
+            if (ocrHint) { ocrHint.textContent = ''; ocrHint.style.display = 'none'; }
         });
     }
 
@@ -1010,7 +1010,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (receiptFileEl) receiptFileEl.value = '';
             if (receiptClearBtn) receiptClearBtn.classList.add('d-none');
             if (scanReceiptBtn) scanReceiptBtn.classList.add('d-none');
-            if (ocrHint) ocrHint.style.display = 'none';
+            if (ocrHint) { ocrHint.textContent = ''; ocrHint.style.display = 'none'; }
             if (byId('categoryHint')) byId('categoryHint').style.display = 'none';
             if (byId('mileageCalcHint')) byId('mileageCalcHint').textContent = '';
             form.querySelectorAll('.is-invalid').forEach(el => el.classList.remove('is-invalid'));
