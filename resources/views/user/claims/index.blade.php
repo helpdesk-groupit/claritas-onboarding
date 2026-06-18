@@ -855,6 +855,34 @@ document.addEventListener('DOMContentLoaded', function() {
     const receiptFileEl = document.getElementById('receiptFile');
     const scanReceiptBtn = document.getElementById('scanReceiptBtn');
 
+    // A Maps screenshot was scanned — switch to Petrol "by mileage", fill the km,
+    // the route, and the computed amount (vehicle defaults to car; user can change).
+    function applyMapDistance(km, from, to) {
+        // 1. Select the Petrol (mileage GL) category
+        if (categorySelect && MILEAGE_GL) {
+            const petrolOpt = Array.from(categorySelect.options).find(o => o.dataset.glCode === MILEAGE_GL);
+            if (petrolOpt) { categorySelect.value = petrolOpt.value; categorySelect.dispatchEvent(new Event('change')); }
+        }
+        // 2. Switch to "By mileage"
+        const mm = document.getElementById('modeMileage');
+        if (mm) { mm.checked = true; mm.dispatchEvent(new Event('change')); }
+        // 3. Fill distance + compute the amount
+        if (quantityInput) { quantityInput.value = Number(km).toFixed(1); computeFromQuantity(); }
+        // 4. Fill description + destination box (if empty)
+        const descEl = document.getElementById('expenseDescription');
+        if (descEl && !descEl.value && (from || to)) {
+            descEl.value = 'Mileage' + (from ? ' from ' + from : '') + (to ? ' to ' + to : '');
+        }
+        if (mileageDest && to && !mileageDest.value) mileageDest.value = to;
+        // 5. Feedback
+        if (ocrHint) {
+            ocrHint.style.display = 'block';
+            ocrHint.textContent = 'Map read: ' + Number(km).toFixed(1) + ' km'
+                + ((from && to) ? ' (' + from + ' → ' + to + ')' : '')
+                + ' → Petrol mileage = RM ' + (amountInput ? amountInput.value : '?') + '. Check the vehicle (car/motorcycle).';
+        }
+    }
+
     function runReceiptScan() {
         if (!OCR_ENABLED || !receiptFileEl || !receiptFileEl.files.length) return;
         const opt = selOpt();
@@ -883,16 +911,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = 'Couldn’t read the image (provider busy?) — please enter the details manually.'; }
                     return;
                 }
-                // Mileage: fill the distance (km) from the map screenshot.
-                if (mileageScan) {
-                    if (data.distance_km && quantityInput) {
-                        quantityInput.value = Number(data.distance_km).toFixed(1);
-                        computeFromQuantity();
-                        if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = 'Distance read from map: ' + Number(data.distance_km).toFixed(1) + ' km — please verify.'; }
-                    } else if (ocrHint) {
-                        ocrHint.style.display = 'block';
-                        ocrHint.textContent = 'Couldn’t read a distance from this image — enter the km manually.';
-                    }
+                // A Google Maps screenshot → set up a Petrol mileage claim automatically,
+                // whatever mode the form was in.
+                if (data.distance_km) {
+                    applyMapDistance(Number(data.distance_km), data.route_from, data.route_to);
+                    return;
+                }
+                if (mileageScan) {       // was in mileage mode but no distance found
+                    if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = 'Couldn’t read a distance from this image — enter the km manually.'; }
                     return;
                 }
                 const filled = [];

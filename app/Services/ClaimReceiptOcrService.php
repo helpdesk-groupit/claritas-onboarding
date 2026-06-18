@@ -97,12 +97,15 @@ class ClaimReceiptOcrService
             }
         }
 
-        $prompt = 'Read this expense document and return ONLY strict JSON with keys: '
-            .'"amount" (the total paid as a number, no currency symbol, or null), '
-            .'"date" (the receipt date as YYYY-MM-DD, or null), '
-            .'"vendor" (the merchant/shop name, or null), '
-            .'"distance_km" (ONLY if this image is a Google Maps / route screenshot showing a '
-            .'travelling distance — the distance in kilometres as a number, e.g. 13.5; otherwise null)'
+        $prompt = 'You are reading an expense document that is EITHER a receipt OR a Google Maps / '
+            .'navigation route screenshot. Return ONLY strict JSON with keys: '
+            .'"amount" (receipt total paid as a number, no currency symbol, or null), '
+            .'"date" (receipt date as YYYY-MM-DD, or null), '
+            .'"vendor" (merchant/shop name, or null), '
+            .'"distance_km" (if this is a map/route screenshot, the DRIVING distance in kilometres '
+            .'as a number — read it from a label like "18.0 km" or "18 km"; otherwise null), '
+            .'"route_from" (the start/origin place name shown on the map, or null), '
+            .'"route_to" (the destination place name shown on the map, or null)'
             .$categoryClause
             .'. No commentary, JSON only.';
 
@@ -182,6 +185,8 @@ class ClaimReceiptOcrService
                 'vendor' => isset($json['vendor']) && is_string($json['vendor']) ? mb_substr(trim($json['vendor']), 0, 120) : null,
                 'category' => $category,
                 'distance_km' => isset($json['distance_km']) && is_numeric($json['distance_km']) ? round((float) $json['distance_km'], 1) : null,
+                'route_from' => isset($json['route_from']) && is_string($json['route_from']) ? mb_substr(trim($json['route_from']), 0, 120) : null,
+                'route_to' => isset($json['route_to']) && is_string($json['route_to']) ? mb_substr(trim($json['route_to']), 0, 120) : null,
             ];
         } catch (\Throwable $e) {
             Log::warning('Claim receipt OCR failed', ['error' => $e->getMessage()]);
