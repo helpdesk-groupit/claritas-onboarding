@@ -97,10 +97,12 @@ class ClaimReceiptOcrService
             }
         }
 
-        $prompt = 'Read this expense receipt and return ONLY strict JSON with keys: '
+        $prompt = 'Read this expense document and return ONLY strict JSON with keys: '
             .'"amount" (the total paid as a number, no currency symbol, or null), '
             .'"date" (the receipt date as YYYY-MM-DD, or null), '
-            .'"vendor" (the merchant/shop name, or null)'
+            .'"vendor" (the merchant/shop name, or null), '
+            .'"distance_km" (ONLY if this image is a Google Maps / route screenshot showing a '
+            .'travelling distance — the distance in kilometres as a number, e.g. 13.5; otherwise null)'
             .$categoryClause
             .'. No commentary, JSON only.';
 
@@ -179,6 +181,7 @@ class ClaimReceiptOcrService
                 'date' => (isset($json['date']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $json['date'])) ? $json['date'] : null,
                 'vendor' => isset($json['vendor']) && is_string($json['vendor']) ? mb_substr(trim($json['vendor']), 0, 120) : null,
                 'category' => $category,
+                'distance_km' => isset($json['distance_km']) && is_numeric($json['distance_km']) ? round((float) $json['distance_km'], 1) : null,
             ];
         } catch (\Throwable $e) {
             Log::warning('Claim receipt OCR failed', ['error' => $e->getMessage()]);

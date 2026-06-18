@@ -756,6 +756,17 @@ document.addEventListener('DOMContentLoaded', function() {
             if (quantityInput) quantityInput.value = '';
         }
         updateReceiptRequiredMark();
+        updateScanButtonLabel();
+    }
+
+    // Mileage mode reads a Google Maps screenshot for the distance; receipt mode reads a receipt.
+    function updateScanButtonLabel() {
+        const sb = document.getElementById('scanReceiptBtn');
+        if (!sb) return;
+        const opt = selOpt();
+        sb.innerHTML = (isMileageCat(opt) && mileageOn())
+            ? '<i class="bi bi-map me-1"></i>Scan map for distance'
+            : '<i class="bi bi-magic me-1"></i>Scan receipt';
     }
 
     function applyCategoryMode() {
@@ -785,6 +796,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (quantityInput) quantityInput.value = '';
         }
         updateReceiptRequiredMark();
+        updateScanButtonLabel();
     }
 
     if (categorySelect) categorySelect.addEventListener('change', applyCategoryMode);
@@ -829,14 +841,12 @@ document.addEventListener('DOMContentLoaded', function() {
             if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = 'This category’s amount is calculated — nothing to read from the receipt.'; }
             return;
         }
-        if (isMileageCat(opt) && mileageOn()) {               // mileage: amount is derived
-            if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = 'Mileage amount is calculated from distance — nothing to read here.'; }
-            return;
-        }
+        // In mileage mode we read the DISTANCE off a Google Maps screenshot, not a receipt.
+        const mileageScan = isMileageCat(opt) && mileageOn();
         const fd = new FormData();
         fd.append('receipt', receiptFileEl.files[0]);
         fd.append('_token', '{{ csrf_token() }}');
-        if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = 'Reading receipt…'; }
+        if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = mileageScan ? 'Reading distance from the map…' : 'Reading receipt…'; }
         if (scanReceiptBtn) scanReceiptBtn.disabled = true;
         // Hard client-side timeout so the hint can never hang (e.g. busy provider).
         const ocrAbort = new AbortController();
@@ -846,9 +856,21 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(data => {
                 clearTimeout(ocrTimer);
                 if (scanReceiptBtn) scanReceiptBtn.disabled = false;
-                if (!data.enabled) { if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = 'Receipt scanning is off — please enter the details manually.'; } return; }
+                if (!data.enabled) { if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = 'Scanning is off — please enter the details manually.'; } return; }
                 if (!data.ok) {
-                    if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = 'Couldn’t read the receipt (provider busy?) — please enter the details manually.'; }
+                    if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = 'Couldn’t read the image (provider busy?) — please enter the details manually.'; }
+                    return;
+                }
+                // Mileage: fill the distance (km) from the map screenshot.
+                if (mileageScan) {
+                    if (data.distance_km && quantityInput) {
+                        quantityInput.value = Number(data.distance_km).toFixed(1);
+                        computeFromQuantity();
+                        if (ocrHint) { ocrHint.style.display = 'block'; ocrHint.textContent = 'Distance read from map: ' + Number(data.distance_km).toFixed(1) + ' km — please verify.'; }
+                    } else if (ocrHint) {
+                        ocrHint.style.display = 'block';
+                        ocrHint.textContent = 'Couldn’t read a distance from this image — enter the km manually.';
+                    }
                     return;
                 }
                 const filled = [];
