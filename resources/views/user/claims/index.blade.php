@@ -134,7 +134,7 @@
     @php
         $monthLabel = \Carbon\Carbon::create($selectedYear, $selectedMonth)->format('F Y');
         if ($currentClaim) {
-            $currentClaim->loadMissing('items.category');
+            $currentClaim->loadMissing('items.category', 'items.approver');
             $canEdit = $currentClaim->isEditable();
         } else {
             $canEdit = true; // No claim yet = user can add items (draft will be created on first add)
@@ -153,10 +153,7 @@
             </div>
             <div class="d-flex gap-2 flex-shrink-0">
                 @if($currentClaim && $currentClaim->isSubmittable())
-                <form action="{{ route('user.claims.submit', $currentClaim) }}" method="POST" class="d-inline js-confirm" data-confirm="Submit this claim for manager approval? Items will be locked after submission." data-confirm-title="Submit claim" data-confirm-ok="Submit" data-confirm-variant="primary">
-                    @csrf
-                    <button class="btn btn-primary btn-sm"><i class="bi bi-send me-1"></i>Submit for Approval</button>
-                </form>
+                <a href="{{ route('user.claims.submit-form', $currentClaim) }}" class="btn btn-primary btn-sm"><i class="bi bi-send me-1"></i>Submit for Approval</a>
                 @endif
                 @if($currentClaim && $currentClaim->status === 'submitted')
                 <form action="{{ route('user.claims.cancel', $currentClaim) }}" method="POST" class="d-inline js-confirm" data-confirm="Recall this claim to draft? You'll be able to edit and resubmit it." data-confirm-title="Recall claim" data-confirm-ok="Recall" data-confirm-variant="warning">
@@ -411,7 +408,15 @@
                                 {{ $item->description }}
                                 @if($item->isRejected())
                                 <span class="badge bg-danger ms-1">Rejected</span>
-                                @if($item->remarks)<div class="small text-danger"><i class="bi bi-info-circle me-1"></i>{{ $item->remarks }}</div>@endif
+                                @if($item->rejectionReason())<div class="small text-danger"><i class="bi bi-info-circle me-1"></i>{{ $item->rejectionReason() }}</div>@endif
+                                @endif
+                                @if($currentClaim && $currentClaim->status !== 'draft' && $item->approver)
+                                <div class="small text-muted">
+                                    <i class="bi bi-arrow-right-short"></i>{{ $item->approver->full_name }}:
+                                    @if($item->manager_status === 'approved')<span class="text-success">approved</span>
+                                    @elseif($item->manager_status === 'rejected')<span class="text-danger">rejected</span>
+                                    @else<span>awaiting</span>@endif
+                                </div>
                                 @endif
                             </td>
                             <td>{{ $item->project_client ?? '-' }}</td>

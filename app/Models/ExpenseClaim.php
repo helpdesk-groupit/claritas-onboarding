@@ -83,22 +83,53 @@ class ExpenseClaim extends Model
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    /** Payable total — sum of items NOT rejected at the line level. */
+    /** Payable total — items not rejected by either the manager or HR. */
     public function approvedTotal(): float
     {
-        return (float) $this->items->where('review_status', '!=', 'rejected')->sum('total_with_gst');
+        return (float) $this->items
+            ->where('manager_status', '!=', 'rejected')
+            ->where('review_status', '!=', 'rejected')
+            ->sum('total_with_gst');
     }
 
-    /** Number of individually-rejected line items on this claim. */
+    /** Number of line items rejected at either stage (manager or HR). */
     public function rejectedItemCount(): int
     {
-        return $this->items->where('review_status', 'rejected')->count();
+        return $this->items->filter(fn ($i) => $i->isRejected())->count();
     }
 
-    /** True when some (but not all) items were rejected — a partial approval. */
+    /** True when one or more items were rejected — a partial approval. */
     public function hasRejectedItems(): bool
     {
         return $this->rejectedItemCount() > 0;
+    }
+
+    // ── Per-item approver roll-up ─────────────────────────────────────────
+
+    /** Items still awaiting their assigned manager's decision. */
+    public function managerPendingCount(): int
+    {
+        return $this->items->where('manager_status', 'pending')->count();
+    }
+
+    /** True when every item has had a manager decision (approved or rejected). */
+    public function allItemsManagerDecided(): bool
+    {
+        return $this->items->isNotEmpty() && $this->managerPendingCount() === 0;
+    }
+
+    /** "3 / 5" style progress of manager decisions, for the status display. */
+    public function managerProgress(): string
+    {
+        $total = $this->items->count();
+
+        return ($total - $this->managerPendingCount()).' / '.$total;
+    }
+
+    /** Distinct approver (Employee) ids assigned across this claim's items. */
+    public function approverIds(): array
+    {
+        return $this->items->pluck('approver_id')->filter()->unique()->values()->all();
     }
 
     /**

@@ -296,7 +296,30 @@ class ExpenseClaimController extends Controller
     /**
      * Submit a draft claim for manager approval.
      */
-    public function submit(ExpenseClaim $claim)
+    /**
+     * Submit step — pick the approving manager for each item before sending.
+     * Defaults to the employee's reporting manager; event/programme items can be
+     * routed to a different manager.
+     */
+    public function submitForm(ExpenseClaim $claim)
+    {
+        $employee = Auth::user()->employee;
+        if ($claim->employee_id !== $employee->id) {
+            abort(403);
+        }
+        if (! $claim->isSubmittable()) {
+            return redirect()->route('user.claims.index', ['month' => $claim->month, 'year' => $claim->year])
+                ->with('error', 'This claim cannot be submitted. Ensure it has at least one item.');
+        }
+
+        $claim->load('items.category');
+        $approvers = ClaimRulesService::eligibleApprovers();
+        $defaultApproverId = ClaimRulesService::defaultApproverId($employee);
+
+        return view('user.claims.submit', compact('claim', 'approvers', 'defaultApproverId', 'employee'));
+    }
+
+    public function submit(Request $request, ExpenseClaim $claim)
     {
         $employee = Auth::user()->employee;
 
@@ -308,27 +331,49 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'This claim cannot be submitted. Ensure it has at least one item.');
         }
 
-        // Verify totals
-        $claim->recalculateTotals();
-
-        $claim->update([
-            'status' => 'submitted',
-            'submitted_at' => now(),
-            'manager_id' => $employee->manager_id,
-        ]);
-
-        // Lock all items
-        $claim->items()->update(['is_locked' => true]);
-
-        // Notify manager
-        $manager = $employee->manager;
-        if ($manager && $manager->user) {
-            Mail::to($manager->user->work_email)->send(
-                new ClaimSubmittedMail($claim, $employee, 'manager')
-            );
+        // Every item must be routed to an eligible (loggable) approving manager.
+        $eligibleIds = ClaimRulesService::eligibleApprovers()->pluck('id')->all();
+        $chosen = $request->input('approvers', []); // [item_id => approver employee id]
+        $claim->load('items');
+        foreach ($claim->items as $item) {
+            if (! in_array((int) ($chosen[$item->id] ?? 0), $eligibleIds, true)) {
+                return redirect()->route('user.claims.submit-form', $claim)
+                    ->with('error', 'Please choose an approving manager for every item.');
+            }
         }
 
-        return back()->with('success', 'Claim submitted for approval.');
+        $claim->recalculateTotals();
+
+        DB::transaction(function () use ($claim, $chosen) {
+            foreach ($claim->items as $item) {
+                $item->update([
+                    'approver_id' => (int) $chosen[$item->id],
+                    'manager_status' => 'pending',
+                    'manager_remarks' => null,
+                    'review_status' => 'approved', // reset HR stage in case of a resubmit
+                    'is_locked' => true,
+                ]);
+            }
+            $claim->update([
+                'status' => 'submitted',
+                'submitted_at' => now(),
+                'manager_id' => $claim->employee->manager_id, // legacy/reporting reference only
+            ]);
+        });
+
+        // Notify each DISTINCT approving manager that they have items to review.
+        $claim->load('items');
+        foreach ($claim->approverIds() as $approverId) {
+            $manager = Employee::find($approverId);
+            if ($manager && $manager->user) {
+                Mail::to($manager->user->work_email)->send(
+                    new ClaimSubmittedMail($claim, $employee, 'manager')
+                );
+            }
+        }
+
+        return redirect()->route('user.claims.index', ['month' => $claim->month, 'year' => $claim->year])
+            ->with('success', 'Claim submitted — each item routed to its approving manager.');
     }
 
     /**
@@ -382,16 +427,18 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'No employee profile found.');
         }
 
-        $directReportIds = Employee::where('manager_id', $employee->id)->pluck('id');
+        $myId = $employee->id;
 
-        $pendingClaims = ExpenseClaim::whereIn('employee_id', $directReportIds)
-            ->where('status', 'submitted')
-            ->with(['employee', 'items.category'])
+        // Claims with at least one item routed to me that still awaits my decision.
+        $pendingClaims = ExpenseClaim::where('status', 'submitted')
+            ->whereHas('items', fn ($q) => $q->where('approver_id', $myId)->where('manager_status', 'pending'))
+            ->with(['employee', 'items.category', 'items.approver'])
             ->orderBy('submitted_at')
             ->get();
 
-        $historyClaims = ExpenseClaim::whereIn('employee_id', $directReportIds)
-            ->whereNotIn('status', ['draft', 'submitted'])
+        // History: claims I approved items on that have moved past the manager stage.
+        $historyClaims = ExpenseClaim::whereNotIn('status', ['draft', 'submitted'])
+            ->whereHas('items', fn ($q) => $q->where('approver_id', $myId))
             ->with(['employee', 'items.category'])
             ->orderByDesc('updated_at')
             ->limit(50)
@@ -411,49 +458,83 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'This claim is not pending approval.');
         }
 
-        // Verify the approver is the assigned manager or a superadmin
-        if ($claim->manager_id !== $employee->id && ! Auth::user()->isSuperadmin()) {
-            abort(403);
+        // A manager only decides the items routed to THEM (per-item approver).
+        $claim->load('items');
+        $myItems = $claim->items->where('approver_id', $employee->id)->where('manager_status', 'pending');
+        if ($myItems->isEmpty() && ! Auth::user()->isSuperadmin()) {
+            abort(403, 'You have no items to review on this claim.');
         }
 
-        // Verify the approver is the CURRENT manager (relationship may have changed)
-        $claim->employee->refresh();
-        if ($claim->employee->manager_id !== $employee->id && ! Auth::user()->isSuperadmin()) {
-            abort(403, 'You are no longer the manager of this employee.');
-        }
+        $rejectedIds = collect($request->input('rejected_items', []))->map(fn ($id) => (int) $id)->all();
+        $remarks = $request->input('item_remarks', []);
 
-        // Per-item review: any flagged line items are rejected (excluded from payout).
-        if ($error = $this->applyItemReviews($claim, $request)) {
-            return back()->with('error', $error);
-        }
+        DB::transaction(function () use ($myItems, $rejectedIds, $remarks) {
+            foreach ($myItems as $item) {
+                if (in_array($item->id, $rejectedIds, true)) {
+                    $item->update([
+                        'manager_status' => 'rejected',
+                        'manager_remarks' => isset($remarks[$item->id]) ? mb_substr(strip_tags((string) $remarks[$item->id]), 0, 500) : null,
+                    ]);
+                } else {
+                    $item->update(['manager_status' => 'approved']);
+                }
+            }
+        });
 
-        $claim->update([
-            'status' => 'manager_approved',
-            'manager_approved_by' => $employee->id,
-            'manager_approved_at' => now(),
-        ]);
-
-        Log::info('Claim manager-approved', [
+        Log::info('Claim manager-reviewed (per-item)', [
             'claim_id' => $claim->id,
             'claim_number' => $claim->claim_number,
-            'payable' => $claim->approvedTotal(),
-            'rejected_items' => $claim->rejectedItemCount(),
+            'my_items' => $myItems->count(),
             'actor_id' => Auth::id(),
             'actor_role' => Auth::user()->role,
         ]);
 
-        // Notify employee
-        $claimEmployee = $claim->employee;
-        if ($claimEmployee->user) {
-            Mail::to($claimEmployee->user->work_email)->send(
-                new ClaimApprovedMail($claim, $claimEmployee, 'manager')
-            );
+        return back()->with('success', $this->finalizeManagerStage($claim, $employee));
+    }
+
+    /**
+     * Roll the claim up after a manager decides their items: if every item now has
+     * a manager decision, advance to manager_approved (→ HR) or manager_rejected
+     * (all items rejected). Otherwise it stays submitted, waiting on other managers.
+     */
+    private function finalizeManagerStage(ExpenseClaim $claim, Employee $employee): string
+    {
+        $claim->load('items');
+
+        if (! $claim->allItemsManagerDecided()) {
+            return 'Your decision was saved — waiting on '.$claim->managerPendingCount().' more item(s) from other managers.';
         }
 
-        // Notify HR
-        $this->notifyHr($claim, 'pending_hr_approval');
+        $anyApproved = $claim->items->where('manager_status', 'approved')->isNotEmpty();
 
-        return back()->with('success', $this->approvalMessage($claim));
+        if ($anyApproved) {
+            $claim->update([
+                'status' => 'manager_approved',
+                'manager_approved_by' => $employee->id,
+                'manager_approved_at' => now(),
+            ]);
+            if ($claim->employee->user) {
+                Mail::to($claim->employee->user->work_email)->send(new ClaimApprovedMail($claim, $claim->employee, 'manager'));
+            }
+            $this->notifyHr($claim, 'pending_hr_approval');
+
+            return $claim->hasRejectedItems()
+                ? 'All items reviewed — '.$claim->rejectedItemCount().' rejected, the rest approved and sent to HR (payable RM '.number_format($claim->approvedTotal(), 2).').'
+                : 'All items approved — claim sent to HR.';
+        }
+
+        // Every item was rejected across all managers — return to the employee.
+        $claim->update([
+            'status' => 'manager_rejected',
+            'manager_approved_by' => $employee->id,
+            'manager_approved_at' => now(),
+        ]);
+        $claim->items()->update(['is_locked' => false]);
+        if ($claim->employee->user) {
+            Mail::to($claim->employee->user->work_email)->send(new ClaimRejectedMail($claim, $claim->employee, 'manager'));
+        }
+
+        return 'All items were rejected — the claim was returned to the employee.';
     }
 
     /**
@@ -512,42 +593,29 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'This claim is not pending approval.');
         }
 
-        // Verify the approver is the CURRENT manager
-        $claim->employee->refresh();
-        if ($claim->employee->manager_id !== $employee->id && ! Auth::user()->isSuperadmin()) {
-            abort(403, 'You are no longer the manager of this employee.');
+        // Reject all of MY pending items on this claim with one reason, then roll up.
+        $claim->load('items');
+        $myItems = $claim->items->where('approver_id', $employee->id)->where('manager_status', 'pending');
+        if ($myItems->isEmpty() && ! Auth::user()->isSuperadmin()) {
+            abort(403, 'You have no items to reject on this claim.');
         }
 
-        $remarks = strip_tags($request->input('remarks'));
+        $reason = mb_substr(strip_tags($request->input('remarks')), 0, 500);
 
-        $claim->update([
-            'status' => 'manager_rejected',
-            'manager_approved_by' => $employee->id,
-            'manager_approved_at' => now(),
-            'manager_remarks' => $remarks,
-        ]);
+        DB::transaction(function () use ($myItems, $reason) {
+            foreach ($myItems as $item) {
+                $item->update(['manager_status' => 'rejected', 'manager_remarks' => $reason]);
+            }
+        });
 
-        Log::info('Claim manager-rejected', [
+        Log::info('Claim items manager-rejected (per-item)', [
             'claim_id' => $claim->id,
             'claim_number' => $claim->claim_number,
-            'amount' => $claim->total_with_gst,
+            'my_items' => $myItems->count(),
             'actor_id' => Auth::id(),
-            'actor_role' => Auth::user()->role,
-            'remarks' => $remarks,
         ]);
 
-        // Unlock items so employee can edit and resubmit
-        $claim->items()->update(['is_locked' => false]);
-
-        // Notify employee
-        $claimEmployee = $claim->employee;
-        if ($claimEmployee->user) {
-            Mail::to($claimEmployee->user->work_email)->send(
-                new ClaimRejectedMail($claim, $claimEmployee, 'manager')
-            );
-        }
-
-        return back()->with('success', 'Claim rejected with remarks.');
+        return back()->with('success', $this->finalizeManagerStage($claim, $employee));
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -597,7 +665,7 @@ class ExpenseClaimController extends Controller
     {
         $this->authorizeViewClaims();
 
-        $claim->load(['employee', 'items.category', 'manager', 'managerApprover', 'hrApprover']);
+        $claim->load(['employee', 'items.category', 'items.approver', 'manager', 'managerApprover', 'hrApprover']);
 
         // Employee spend context (#7) — this employee's claim history for the claim's year.
         $yearClaims = ExpenseClaim::where('employee_id', $claim->employee_id)

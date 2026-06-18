@@ -139,6 +139,14 @@
                             <td>{{ $item->expense_date->format('d/m/Y') }}</td>
                             <td>
                                 {{ $item->description }}
+                                @if($item->approver)
+                                <div class="small mt-1">
+                                    <i class="bi bi-person-check me-1 text-muted"></i><span class="text-muted">{{ $item->approver->full_name }}:</span>
+                                    @if($item->manager_status === 'approved')<span class="text-success fw-semibold">approved</span>
+                                    @elseif($item->manager_status === 'rejected')<span class="text-danger fw-semibold">rejected</span>@if($item->manager_remarks)<span class="text-muted"> — {{ $item->manager_remarks }}</span>@endif
+                                    @else<span class="text-secondary">pending</span>@endif
+                                </div>
+                                @endif
                                 @include('partials.claim-item-checks', ['item' => $item])
                             </td>
                             <td>{{ $item->project_client ?? '—' }}</td>

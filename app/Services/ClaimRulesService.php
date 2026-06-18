@@ -36,6 +36,37 @@ class ClaimRulesService
             ->values();
     }
 
+    /**
+     * Managers an item can be routed to for approval — active employees who have
+     * an active login account AND are a manager (work_role = 'manager' or a
+     * manager/admin user role), so the chosen approver can actually log in to act.
+     */
+    public static function eligibleApprovers(): Collection
+    {
+        $managerRoles = ['hr_manager', 'it_manager', 'finance_manager', 'superadmin', 'system_admin'];
+
+        return Employee::query()
+            ->whereNull('active_until')
+            ->whereHas('user', fn ($q) => $q->where('is_active', true))
+            ->where(function ($q) use ($managerRoles) {
+                $q->where('work_role', 'manager')
+                    ->orWhereHas('user', fn ($u) => $u->whereIn('role', $managerRoles));
+            })
+            ->orderBy('full_name')
+            ->get(['id', 'full_name', 'department']);
+    }
+
+    /** The employee's reporting manager id, but only if they can actually approve. */
+    public static function defaultApproverId(Employee $employee): ?int
+    {
+        $manager = $employee->manager_id ? $employee->manager : null;
+        if ($manager && $manager->user && $manager->user->is_active) {
+            return $manager->id;
+        }
+
+        return null;
+    }
+
     /** Is the employee an intern or still on probation? */
     public static function isInternOrProbationer(Employee $employee): bool
     {

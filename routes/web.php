@@ -401,6 +401,7 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     Route::get('/my/claims',                            [ExpenseClaimController::class, 'myClaims'])->name('user.claims.index');
     Route::post('/my/claims/add-item',                  [ExpenseClaimController::class, 'addItem'])->name('user.claims.add-item')->middleware('throttle:uploads');
     Route::delete('/my/claims/{item}/remove-item',      [ExpenseClaimController::class, 'removeItem'])->name('user.claims.remove-item');
+    Route::get('/my/claims/{claim}/submit',             [ExpenseClaimController::class, 'submitForm'])->name('user.claims.submit-form');
     Route::post('/my/claims/{claim}/submit',            [ExpenseClaimController::class, 'submit'])->name('user.claims.submit');
     Route::post('/my/claims/{claim}/cancel',            [ExpenseClaimController::class, 'cancel'])->name('user.claims.cancel');
     Route::post('/my/claims/detect-category',           [ExpenseClaimController::class, 'detectCategory'])->name('user.claims.detect-category');

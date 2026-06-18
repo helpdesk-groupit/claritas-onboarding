@@ -12,13 +12,50 @@ class ExpenseClaimItem extends Model
         'expense_claim_id', 'expense_category_id', 'expense_date',
         'description', 'project_client', 'amount', 'quantity', 'unit', 'rate_applied',
         'gst_amount', 'total_with_gst', 'receipt_path', 'receipt_hash', 'is_locked', 'remarks',
-        'review_status', 'mileage_destination',
+        'review_status', 'mileage_destination', 'approver_id', 'manager_status', 'manager_remarks',
     ];
 
-    /** True when an approver has rejected this individual line item. */
+    /** The manager assigned to approve this specific item (per-item routing). */
+    public function approver(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'approver_id');
+    }
+
+    /** Rejected at EITHER stage (manager or HR) — used for struck-through display. */
     public function isRejected(): bool
     {
-        return $this->review_status === 'rejected';
+        return $this->manager_status === 'rejected' || $this->review_status === 'rejected';
+    }
+
+    /** Rejected by the item's assigned manager (stage 1). */
+    public function isManagerRejected(): bool
+    {
+        return $this->manager_status === 'rejected';
+    }
+
+    /** Still awaiting the assigned manager's decision. */
+    public function isManagerPending(): bool
+    {
+        return $this->manager_status === 'pending';
+    }
+
+    /** This item gets paid only if its manager approved it and HR didn't reject it. */
+    public function isPayable(): bool
+    {
+        return $this->manager_status !== 'rejected' && $this->review_status !== 'rejected';
+    }
+
+    /** The reason shown to the employee for a rejection, whichever stage rejected it. */
+    public function rejectionReason(): ?string
+    {
+        if ($this->manager_status === 'rejected') {
+            return $this->manager_remarks;
+        }
+        if ($this->review_status === 'rejected') {
+            return $this->remarks;
+        }
+
+        return null;
     }
 
     /** True when this line was claimed by mileage (distance) rather than a receipt. */
