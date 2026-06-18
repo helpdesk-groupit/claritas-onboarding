@@ -11,6 +11,28 @@
                 {{ $employee->full_name }} &mdash; {{ $employee->department ?? 'N/A' }}
             </p>
         </div>
+        <a href="{{ route('user.claims.reports') }}" class="btn btn-outline-primary btn-sm"><i class="bi bi-file-earmark-text me-1"></i>Claim Reports</a>
+    </div>
+
+    {{-- Company letterhead (Expenses Claims Form) --}}
+    <div class="card shadow-sm border-0 mb-4">
+        <div class="card-body">
+            @include('partials.claim-letterhead', ['company' => $company, 'employee' => $employee, 'event' => $currentClaim->event ?? null, 'showRules' => false, 'claimDate' => \Carbon\Carbon::create($year, $month, 1)])
+            @if(!$currentClaim || $currentClaim->isEditable())
+            <form action="{{ route('user.claims.save-details') }}" method="POST" class="row g-2 align-items-end mt-1">
+                @csrf
+                <input type="hidden" name="year" value="{{ $year }}">
+                <input type="hidden" name="month" value="{{ $month }}">
+                <div class="col-sm-8 col-md-6">
+                    <label class="form-label small mb-0">Event / purpose for this month's claim</label>
+                    <input type="text" name="event" class="form-control form-control-sm" value="{{ $currentClaim->event ?? '' }}" placeholder="e.g., Office Equipment Claim" maxlength="255">
+                </div>
+                <div class="col-auto">
+                    <button class="btn btn-sm btn-outline-secondary"><i class="bi bi-save me-1"></i>Save event</button>
+                </div>
+            </form>
+            @endif
+        </div>
     </div>
 
     {{-- success/error flash is rendered globally by layouts/app.blade.php; only validation errors need handling here --}}

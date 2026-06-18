@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class ExpenseClaim extends Model
 {
     protected $fillable = [
-        'employee_id', 'claim_number', 'title', 'year', 'month',
+        'employee_id', 'claim_number', 'title', 'event', 'year', 'month',
         'total_amount', 'total_gst', 'total_with_gst', 'item_count',
         'status', 'submitted_at', 'submission_deadline',
         'manager_id', 'manager_approved_by', 'manager_approved_at', 'manager_remarks',
@@ -52,6 +52,11 @@ class ExpenseClaim extends Model
     public function items(): HasMany
     {
         return $this->hasMany(ExpenseClaimItem::class)->orderBy('expense_date');
+    }
+
+    public function logs(): HasMany
+    {
+        return $this->hasMany(ExpenseClaimLog::class)->orderBy('created_at');
     }
 
     public function payslip(): BelongsTo

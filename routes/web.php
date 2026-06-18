@@ -399,6 +399,9 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
 
     // Self-Service: My Claims
     Route::get('/my/claims',                            [ExpenseClaimController::class, 'myClaims'])->name('user.claims.index');
+    Route::get('/my/claim-reports',                     [ExpenseClaimController::class, 'reports'])->name('user.claims.reports');
+    Route::get('/my/claim-reports/{claim}/print',       [ExpenseClaimController::class, 'printReport'])->name('user.claims.report-print');
+    Route::post('/my/claims/save-details',              [ExpenseClaimController::class, 'saveDetails'])->name('user.claims.save-details');
     Route::post('/my/claims/add-item',                  [ExpenseClaimController::class, 'addItem'])->name('user.claims.add-item')->middleware('throttle:uploads');
     Route::delete('/my/claims/{item}/remove-item',      [ExpenseClaimController::class, 'removeItem'])->name('user.claims.remove-item');
     Route::get('/my/claims/{claim}/submit',             [ExpenseClaimController::class, 'submitForm'])->name('user.claims.submit-form');

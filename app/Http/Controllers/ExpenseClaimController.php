@@ -61,7 +61,9 @@ class ExpenseClaimController extends Controller
                 $q->where('company', $employee->company)->orWhereNull('company');
             })->get();
 
-        return view('user.claims.index', compact('employee', 'claims', 'currentClaim', 'categories', 'policy', 'year', 'month'));
+        $company = \App\Models\Company::forName($employee->company);
+
+        return view('user.claims.index', compact('employee', 'claims', 'currentClaim', 'categories', 'policy', 'year', 'month', 'company'));
     }
 
     /**
@@ -297,6 +299,77 @@ class ExpenseClaimController extends Controller
      * Submit a draft claim for manager approval.
      */
     /**
+     * Claim Reports — view-only tracking page. The employee's submitted claims,
+     * each grouped by approving manager, with live status and the full audit log.
+     */
+    public function reports(Request $request)
+    {
+        $employee = Auth::user()->employee;
+        if (! $employee) {
+            return back()->with('error', 'No employee profile found.');
+        }
+
+        $claims = ExpenseClaim::where('employee_id', $employee->id)
+            ->where('status', '!=', 'draft')
+            ->with(['items.category', 'items.approver', 'logs'])
+            ->orderByDesc('year')->orderByDesc('month')
+            ->get();
+
+        $company = \App\Models\Company::forName($employee->company);
+
+        return view('user.claims.reports', compact('employee', 'claims', 'company'));
+    }
+
+    /**
+     * Printable EXPENSES CLAIMS FORM for a claim (optionally a single approver's
+     * group via ?approver=). Access: the owner, a reviewer, or HR.
+     */
+    public function printReport(Request $request, ExpenseClaim $claim)
+    {
+        $user = Auth::user();
+        $isOwner = $user->employee && $claim->employee_id === $user->employee->id;
+        if (! $isOwner && ! $user->canViewAllClaims()) {
+            $this->authorizeReview($claim); // claim's manager, else 403
+        }
+
+        $claim->load(['items.category', 'items.approver', 'employee']);
+        $company = \App\Models\Company::forName($claim->employee->company);
+
+        $approverId = $request->query('approver');
+        $items = $approverId ? $claim->items->where('approver_id', (int) $approverId)->values() : $claim->items;
+        $approver = $approverId ? Employee::find((int) $approverId) : null;
+
+        return view('user.claims.report-print', compact('claim', 'company', 'items', 'approver'));
+    }
+
+    /** Save the claim's Event/purpose (header field). Creates the month's draft if needed. */
+    public function saveDetails(Request $request)
+    {
+        $employee = Auth::user()->employee;
+        if (! $employee) {
+            return back()->with('error', 'No employee profile found.');
+        }
+        $data = $request->validate([
+            'year' => 'required|integer',
+            'month' => 'required|integer|min:1|max:12',
+            'event' => 'nullable|string|max:255',
+        ]);
+        $now = Carbon::now();
+        if ((int) $data['year'] !== $now->year || (int) $data['month'] > $now->month) {
+            return back()->with('error', 'Invalid claim month.');
+        }
+
+        $claim = $this->getOrCreateDraft($employee, (int) $data['year'], (int) $data['month']);
+        if (! $claim->isEditable()) {
+            return back()->with('error', 'This claim can no longer be edited.');
+        }
+        $claim->update(['event' => $data['event'] ? mb_substr(strip_tags($data['event']), 0, 255) : null]);
+
+        return redirect()->route('user.claims.index', ['month' => $data['month'], 'year' => $data['year']])
+            ->with('success', 'Event saved.');
+    }
+
+    /**
      * Submit step — pick the approving manager for each item before sending.
      * Defaults to the employee's reporting manager; event/programme items can be
      * routed to a different manager.
@@ -360,6 +433,8 @@ class ExpenseClaimController extends Controller
                 'manager_id' => $claim->employee->manager_id, // legacy/reporting reference only
             ]);
         });
+
+        $this->logClaim($claim, 'submitted', 'Submitted to '.count($claim->approverIds()).' approving manager(s).');
 
         // Notify each DISTINCT approving manager that they have items to review.
         $claim->load('items');
@@ -481,12 +556,14 @@ class ExpenseClaimController extends Controller
             }
         });
 
+        $myRejected = $myItems->filter(fn ($it) => in_array($it->id, $rejectedIds, true))->count();
+        $myApproved = $myItems->count() - $myRejected;
+        $this->logClaim($claim, $myApproved > 0 ? 'manager_approved' : 'manager_rejected',
+            $employee->full_name.' reviewed their items: '.$myApproved.' approved, '.$myRejected.' rejected.');
+
         Log::info('Claim manager-reviewed (per-item)', [
-            'claim_id' => $claim->id,
-            'claim_number' => $claim->claim_number,
-            'my_items' => $myItems->count(),
-            'actor_id' => Auth::id(),
-            'actor_role' => Auth::user()->role,
+            'claim_id' => $claim->id, 'claim_number' => $claim->claim_number,
+            'my_items' => $myItems->count(), 'actor_id' => Auth::id(),
         ]);
 
         return back()->with('success', $this->finalizeManagerStage($claim, $employee));
@@ -517,6 +594,7 @@ class ExpenseClaimController extends Controller
                 Mail::to($claim->employee->user->work_email)->send(new ClaimApprovedMail($claim, $claim->employee, 'manager'));
             }
             $this->notifyHr($claim, 'pending_hr_approval');
+            $this->logClaim($claim, 'manager_stage_done', 'All managers reviewed — sent to HR (payable RM '.number_format($claim->approvedTotal(), 2).').');
 
             return $claim->hasRejectedItems()
                 ? 'All items reviewed — '.$claim->rejectedItemCount().' rejected, the rest approved and sent to HR (payable RM '.number_format($claim->approvedTotal(), 2).').'
@@ -533,6 +611,7 @@ class ExpenseClaimController extends Controller
         if ($claim->employee->user) {
             Mail::to($claim->employee->user->work_email)->send(new ClaimRejectedMail($claim, $claim->employee, 'manager'));
         }
+        $this->logClaim($claim, 'manager_rejected', 'Every item was rejected — claim returned to the employee.');
 
         return 'All items were rejected — the claim was returned to the employee.';
     }
@@ -608,12 +687,7 @@ class ExpenseClaimController extends Controller
             }
         });
 
-        Log::info('Claim items manager-rejected (per-item)', [
-            'claim_id' => $claim->id,
-            'claim_number' => $claim->claim_number,
-            'my_items' => $myItems->count(),
-            'actor_id' => Auth::id(),
-        ]);
+        $this->logClaim($claim, 'manager_rejected', $employee->full_name.' rejected their '.$myItems->count().' item(s): '.$reason);
 
         return back()->with('success', $this->finalizeManagerStage($claim, $employee));
     }
@@ -722,6 +796,8 @@ class ExpenseClaimController extends Controller
             );
         }
 
+        $this->logClaim($claim, 'hr_approved', 'HR approved — payable RM '.number_format($claim->approvedTotal(), 2).'.');
+
         return back()->with('success', 'HR approved. '.$this->approvalMessage($claim));
     }
 
@@ -766,6 +842,8 @@ class ExpenseClaimController extends Controller
                 new ClaimRejectedMail($claim, $employee, 'hr')
             );
         }
+
+        $this->logClaim($claim, 'hr_rejected', 'HR rejected: '.$remarks);
 
         return back()->with('success', 'Claim rejected by HR.');
     }
@@ -1301,6 +1379,18 @@ class ExpenseClaimController extends Controller
             'Content-Type' => Storage::disk('local')->mimeType($item->receipt_path),
             'Content-Disposition' => 'inline; filename="'.$name.'"',
             'Cache-Control' => 'no-store, no-cache, must-revalidate, private',
+        ]);
+    }
+
+    /** Append an audit-log entry for the claim lifecycle (shown on Claim Reports). */
+    private function logClaim(ExpenseClaim $claim, string $action, ?string $detail = null): void
+    {
+        \App\Models\ExpenseClaimLog::create([
+            'expense_claim_id' => $claim->id,
+            'action' => $action,
+            'actor_id' => Auth::id(),
+            'actor_name' => Auth::user()->employee->full_name ?? Auth::user()->name ?? 'System',
+            'detail' => $detail,
         ]);
     }
 
