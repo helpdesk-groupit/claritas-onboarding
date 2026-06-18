@@ -11,37 +11,7 @@
                 {{ $employee->full_name }} &mdash; {{ $employee->department ?? 'N/A' }}
             </p>
         </div>
-        <a href="{{ route('user.claims.reports') }}" class="btn btn-outline-primary btn-sm"><i class="bi bi-file-earmark-text me-1"></i>Claim Reports</a>
     </div>
-
-    {{-- Company letterhead (Expenses Claims Form) --}}
-    <div class="card shadow-sm border-0 mb-4">
-        <div class="card-body">
-            @include('partials.claim-letterhead', ['company' => $company, 'employee' => $employee, 'event' => $currentClaim->event ?? null, 'showRules' => false, 'claimDate' => \Carbon\Carbon::create($year, $month, 1)])
-            @if(!$currentClaim || $currentClaim->isEditable())
-            <form action="{{ route('user.claims.save-details') }}" method="POST" class="row g-2 align-items-end mt-1">
-                @csrf
-                <input type="hidden" name="year" value="{{ $year }}">
-                <input type="hidden" name="month" value="{{ $month }}">
-                <div class="col-sm-8 col-md-6">
-                    <label class="form-label small mb-0">Event / purpose for this month's claim</label>
-                    <input type="text" name="event" class="form-control form-control-sm" value="{{ $currentClaim->event ?? '' }}" placeholder="e.g., Office Equipment Claim" maxlength="255">
-                </div>
-                <div class="col-auto">
-                    <button class="btn btn-sm btn-outline-secondary"><i class="bi bi-save me-1"></i>Save event</button>
-                </div>
-            </form>
-            @endif
-        </div>
-    </div>
-
-    {{-- success/error flash is rendered globally by layouts/app.blade.php; only validation errors need handling here --}}
-    @if($errors->any())
-    <div class="alert alert-danger alert-dismissible fade show">
-        <ul class="mb-0">@foreach($errors->all() as $e)<li>{{ $e }}</li>@endforeach</ul>
-        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    </div>
-    @endif
 
     {{-- ── Company Rules ── --}}
     <div class="card shadow-sm mb-4 border-0">
@@ -151,6 +121,35 @@
             </div>
         </div>
     </div>
+
+    {{-- Company letterhead (Expenses Claims Form) — sits directly above the month's form --}}
+    <div class="card shadow-sm border-0 mb-4">
+        <div class="card-body">
+            @include('partials.claim-letterhead', ['company' => $company, 'employee' => $employee, 'event' => $currentClaim->event ?? null, 'showRules' => false, 'claimDate' => \Carbon\Carbon::create($year, $month, 1)])
+            @if(!$currentClaim || $currentClaim->isEditable())
+            <form action="{{ route('user.claims.save-details') }}" method="POST" class="row g-2 align-items-end mt-1">
+                @csrf
+                <input type="hidden" name="year" value="{{ $year }}">
+                <input type="hidden" name="month" value="{{ $month }}">
+                <div class="col-sm-8 col-md-6">
+                    <label class="form-label small mb-0">Event / purpose for this month's claim</label>
+                    <input type="text" name="event" class="form-control form-control-sm" value="{{ $currentClaim->event ?? '' }}" placeholder="e.g., Office Equipment Claim" maxlength="255">
+                </div>
+                <div class="col-auto">
+                    <button class="btn btn-sm btn-outline-secondary"><i class="bi bi-save me-1"></i>Save event</button>
+                </div>
+            </form>
+            @endif
+        </div>
+    </div>
+
+    {{-- success/error flash is rendered globally by layouts/app.blade.php; only validation errors need handling here --}}
+    @if($errors->any())
+    <div class="alert alert-danger alert-dismissible fade show">
+        <ul class="mb-0">@foreach($errors->all() as $e)<li>{{ $e }}</li>@endforeach</ul>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    @endif
 
     {{-- ── Selected Month Claim ── --}}
     @php
@@ -527,46 +526,7 @@
         </div>
     </div>
 
-    {{-- ── Claim History — categorized by status (drafts + the current month are excluded) ── --}}
-    @php
-        $historyClaims = $claims
-            ->where('status', '!=', 'draft')
-            ->when($currentClaim, fn($c) => $c->where('id', '!=', $currentClaim->id))
-            ->sortByDesc(fn($c) => $c->year * 100 + $c->month)
-            ->values();
-        $pendingC  = $historyClaims->whereIn('status', ['submitted', 'manager_approved']);
-        $approvedC = $historyClaims->whereIn('status', ['hr_approved', 'paid']);
-        $rejectedC = $historyClaims->whereIn('status', ['manager_rejected', 'hr_rejected']);
-    @endphp
-    @if($historyClaims->count() > 0)
-    <div class="card shadow-sm border-0">
-        <div class="card-header bg-white border-0">
-            <h5 class="mb-0"><i class="bi bi-clock-history me-2 text-muted"></i>Claim History</h5>
-        </div>
-        <div class="card-body">
-            <ul class="nav nav-pills flex-wrap gap-1 mb-3" role="tablist">
-                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#mc-all" type="button" role="tab">All <span class="badge bg-secondary ms-1">{{ $historyClaims->count() }}</span></button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#mc-pending" type="button" role="tab">Pending <span class="badge bg-info ms-1">{{ $pendingC->count() }}</span></button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#mc-approved" type="button" role="tab">Approved <span class="badge bg-success ms-1">{{ $approvedC->count() }}</span></button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#mc-rejected" type="button" role="tab">Rejected <span class="badge bg-danger ms-1">{{ $rejectedC->count() }}</span></button></li>
-            </ul>
-            <div class="tab-content">
-                <div class="tab-pane fade show active" id="mc-all" role="tabpanel">
-                    @include('partials.claims-status-table', ['rows' => $historyClaims, 'showView' => true, 'emptyText' => 'No claims yet.'])
-                </div>
-                <div class="tab-pane fade" id="mc-pending" role="tabpanel">
-                    @include('partials.claims-status-table', ['rows' => $pendingC, 'showView' => true, 'emptyText' => 'No claims awaiting approval.'])
-                </div>
-                <div class="tab-pane fade" id="mc-approved" role="tabpanel">
-                    @include('partials.claims-status-table', ['rows' => $approvedC, 'showView' => true, 'emptyText' => 'No approved claims yet.'])
-                </div>
-                <div class="tab-pane fade" id="mc-rejected" role="tabpanel">
-                    @include('partials.claims-status-table', ['rows' => $rejectedC, 'showView' => true, 'emptyText' => 'No rejected claims — nice!'])
-                </div>
-            </div>
-        </div>
-    </div>
-    @endif
+    {{-- Claim History card removed — full status history now lives on the Claim Reports page (status log per claim). --}}
 </div>
 
 @include('partials.confirm-modal')
