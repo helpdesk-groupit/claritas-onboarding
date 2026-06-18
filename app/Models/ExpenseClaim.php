@@ -101,6 +101,32 @@ class ExpenseClaim extends Model
         return $this->rejectedItemCount() > 0;
     }
 
+    /**
+     * Aggregated automatic-check findings for the reviewer summary banner (#10):
+     * failed intrinsic checks, over-cap items, and duplicates. OCR/ORS verification
+     * is excluded (it runs on demand). Returns a list of human-readable strings.
+     */
+    public function reviewFlags(): array
+    {
+        $flags = [];
+        foreach ($this->items as $item) {
+            $label = '“'.\Illuminate\Support\Str::limit($item->description, 28).'”';
+            foreach ($item->checks() as $c) {
+                if (! $c['ok']) {
+                    $flags[] = $label.': '.$c['label'].' — check failed';
+                }
+            }
+            if (($cap = $item->capFlag()) && $cap['state'] === 'over') {
+                $flags[] = $label.': over the '.$cap['period'].' cap (RM '.number_format($cap['used'], 2).' / RM '.number_format($cap['cap'], 2).')';
+            }
+            if ($dup = $item->duplicateFlag()) {
+                $flags[] = $label.': '.$dup;
+            }
+        }
+
+        return $flags;
+    }
+
     public function recalculateTotals(): void
     {
         $items = $this->items()->get();

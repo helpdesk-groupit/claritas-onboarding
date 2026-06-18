@@ -117,6 +117,8 @@
                     </div>
                 </div>
 
+                @include('partials.claim-review-summary', ['claim' => $claim])
+
                 {{-- Items detail (inside the approve form so per-item reject decisions submit together) --}}
                 <form action="{{ route('user.claims.team.approve', $claim) }}" method="POST" class="js-confirm item-review-form"
                       data-confirm="Approve this claim? Any item you marked “Reject” is excluded (the employee keeps it for a later claim); the rest are approved and sent to HR."

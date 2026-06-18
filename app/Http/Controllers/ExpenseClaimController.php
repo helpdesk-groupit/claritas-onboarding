@@ -599,7 +599,20 @@ class ExpenseClaimController extends Controller
 
         $claim->load(['employee', 'items.category', 'manager', 'managerApprover', 'hrApprover']);
 
-        return view('hr.claims.show', compact('claim'));
+        // Employee spend context (#7) — this employee's claim history for the claim's year.
+        $yearClaims = ExpenseClaim::where('employee_id', $claim->employee_id)
+            ->where('year', $claim->year)
+            ->get(['id', 'status', 'total_with_gst']);
+        $approved = $yearClaims->whereIn('status', ['hr_approved', 'paid']);
+        $spendStats = [
+            'year' => $claim->year,
+            'approved_total' => (float) $approved->sum('total_with_gst'),
+            'pending_total' => (float) $yearClaims->whereIn('status', ['submitted', 'manager_approved'])->sum('total_with_gst'),
+            'claim_count' => $yearClaims->whereNotIn('status', ['draft', 'cancelled'])->count(),
+            'avg_claim' => $approved->count() ? (float) $approved->sum('total_with_gst') / $approved->count() : 0.0,
+        ];
+
+        return view('hr.claims.show', compact('claim', 'spendStats'));
     }
 
     /**

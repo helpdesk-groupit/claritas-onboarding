@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\ClaimRulesService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -56,6 +57,73 @@ class ExpenseClaimItem extends Model
         }
 
         return $out;
+    }
+
+    /**
+     * Spending-cap status for this item's category & period (#3): 'over' / 'near'
+     * (>=90%) / null when uncapped or comfortably within. Reuses the rules engine.
+     *
+     * @return array{state:string, used:float, cap:float, period:string}|null
+     */
+    public function capFlag(): ?array
+    {
+        $employee = $this->claim?->employee;
+        $category = $this->category;
+        if (! $employee || ! $category) {
+            return null;
+        }
+
+        $limit = ClaimRulesService::effectiveLimit($category, $employee);
+        if (! $limit) {
+            return null; // uncapped category
+        }
+
+        $used = ClaimRulesService::usedInPeriod($employee, $category, $this->expense_date, $limit['period']);
+        $cap = (float) $limit['amount'];
+
+        if ($used > $cap + 0.001) {
+            $state = 'over';
+        } elseif ($used >= $cap * 0.9) {
+            $state = 'near';
+        } else {
+            return null; // within limits — no flag
+        }
+
+        return ['state' => $state, 'used' => $used, 'cap' => $cap, 'period' => $limit['period']];
+    }
+
+    /**
+     * Duplicate flag (#4): the same receipt used elsewhere (across ALL employees —
+     * catches two people claiming one receipt), or an identical date+amount+
+     * description line on another of this employee's claims. Returns a message or null.
+     */
+    public function duplicateFlag(): ?string
+    {
+        if ($this->receipt_hash) {
+            $dupReceipt = static::where('receipt_hash', $this->receipt_hash)
+                ->where('id', '!=', $this->id)
+                ->with('claim')
+                ->first();
+            if ($dupReceipt) {
+                return 'Same receipt as '.($dupReceipt->claim->claim_number ?? 'another claim');
+            }
+        }
+
+        $employeeId = $this->claim?->employee_id;
+        if ($employeeId) {
+            $dupLine = static::where('id', '!=', $this->id)
+                ->where('expense_date', $this->expense_date)
+                ->where('amount', $this->amount)
+                ->where('description', $this->description)
+                ->whereHas('claim', fn ($q) => $q->where('employee_id', $employeeId))
+                ->with('claim')
+                ->first();
+            if ($dupLine) {
+                return 'Possible duplicate of '.($dupLine->claim->claim_number ?? 'another claim');
+            }
+        }
+
+        return null;
     }
 
     protected $casts = [

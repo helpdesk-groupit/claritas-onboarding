@@ -12,6 +12,21 @@
     </span>
     @endforeach
 
+    @php $cap = $item->capFlag(); @endphp
+    @if($cap)
+    <span class="badge rounded-pill {{ $cap['state'] === 'over' ? 'bg-danger' : 'bg-warning text-dark' }} me-1 mb-1"
+          title="RM {{ number_format($cap['used'], 2) }} used of RM {{ number_format($cap['cap'], 2) }} {{ $cap['period'] }} cap">
+        <i class="bi bi-graph-up-arrow me-1"></i>{{ $cap['state'] === 'over' ? 'Over' : 'Near' }} {{ $cap['period'] }} cap
+    </span>
+    @endif
+
+    @php $dup = $item->duplicateFlag(); @endphp
+    @if($dup)
+    <span class="badge rounded-pill bg-danger me-1 mb-1" title="{{ $dup }}">
+        <i class="bi bi-files me-1"></i>{{ $dup }}
+    </span>
+    @endif
+
     @if($item->receipt_path || $item->isMileage())
     <span class="d-inline-block">
         <button type="button" class="btn btn-outline-info btn-sm py-0 px-2 mb-1 verify-item-btn" data-verify-url="{{ route('user.claims.items.verify', $item) }}">

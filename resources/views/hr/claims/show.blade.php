@@ -77,6 +77,25 @@
         </div>
     </div>
 
+    {{-- Employee spend context (#7) --}}
+    @isset($spendStats)
+    <div class="card shadow-sm border-0 mb-4">
+        <div class="card-header bg-white py-2">
+            <h6 class="mb-0"><i class="bi bi-person-lines-fill me-2"></i>{{ $claim->employee->full_name ?? 'Employee' }} — {{ $spendStats['year'] }} claim history</h6>
+        </div>
+        <div class="card-body py-3">
+            <div class="row text-center g-2">
+                <div class="col-6 col-md-3"><div class="fw-bold text-success fs-5">RM {{ number_format($spendStats['approved_total'], 2) }}</div><div class="small text-muted">Approved this year</div></div>
+                <div class="col-6 col-md-3"><div class="fw-bold text-warning fs-5">RM {{ number_format($spendStats['pending_total'], 2) }}</div><div class="small text-muted">Pending</div></div>
+                <div class="col-6 col-md-3"><div class="fw-bold fs-5">{{ $spendStats['claim_count'] }}</div><div class="small text-muted">Claims submitted</div></div>
+                <div class="col-6 col-md-3"><div class="fw-bold fs-5">RM {{ number_format($spendStats['avg_claim'], 2) }}</div><div class="small text-muted">Avg approved claim</div></div>
+            </div>
+        </div>
+    </div>
+    @endisset
+
+    @include('partials.claim-review-summary', ['claim' => $claim])
+
     {{-- Items Table (with per-item review when HR can act) --}}
     @php
         $canReview = $claim->status === 'manager_approved' && Auth::user()->canManageClaims();
