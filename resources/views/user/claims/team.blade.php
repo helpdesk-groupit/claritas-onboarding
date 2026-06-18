@@ -160,8 +160,7 @@
                                         @endif
                                     </td>
                                     <td class="text-center" style="min-width:150px;">
-                                        <input type="checkbox" class="btn-check reject-toggle" name="rejected_items[]" value="{{ $item->id }}" id="rej-{{ $item->id }}" autocomplete="off">
-                                        <label class="btn btn-sm btn-outline-danger" for="rej-{{ $item->id }}"><i class="bi bi-x-lg me-1"></i>Reject</label>
+                                        <input type="checkbox" class="form-check-input reject-toggle border-danger" name="rejected_items[]" value="{{ $item->id }}" style="width:1.7em;height:1.7em;cursor:pointer;accent-color:#dc3545;" title="Reject this item">
                                         <input type="text" name="item_remarks[{{ $item->id }}]" class="form-control form-control-sm mt-1 reject-reason d-none" placeholder="Reason (shown to employee)" maxlength="500">
                                     </td>
                                 </tr>
