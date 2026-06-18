@@ -412,6 +412,9 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     Route::post('/my/team-claims/{claim}/approve',      [ExpenseClaimController::class, 'managerApprove'])->name('user.claims.team.approve');
     Route::post('/my/team-claims/{claim}/reject',       [ExpenseClaimController::class, 'managerReject'])->name('user.claims.team.reject');
 
+    // Reviewer verification (OCR receipt amount + ORS mileage distance) — HR & managers
+    Route::post('/claims/items/{item}/verify',          [ExpenseClaimController::class, 'verifyItem'])->name('user.claims.items.verify')->middleware('throttle:30,1');
+
     // ══════════════════════════════════════════════════════════════════════
     // ACCOUNTING MODULE
     // ══════════════════════════════════════════════════════════════════════

@@ -141,7 +141,10 @@
                                 @foreach($claim->items as $item)
                                 <tr class="review-row">
                                     <td class="text-nowrap">{{ $item->expense_date->format('d/m/Y') }}</td>
-                                    <td>{{ $item->description }}</td>
+                                    <td>
+                                        {{ $item->description }}
+                                        @include('partials.claim-item-checks', ['item' => $item])
+                                    </td>
                                     <td>{{ $item->project_client ?: '—' }}</td>
                                     <td><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis">{{ $item->category->name ?? '—' }}</span></td>
                                     <td class="text-end">{{ number_format($item->amount, 2) }}</td>
@@ -242,4 +245,5 @@
 
 @include('partials.confirm-modal')
 @include('partials.item-review-js')
+@include('partials.item-verify-js')
 @endsection

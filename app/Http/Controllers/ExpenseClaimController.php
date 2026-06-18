@@ -103,6 +103,7 @@ class ExpenseClaimController extends Controller
             'quantity' => 'nullable|numeric|min:0.01|max:99999.99',
             'vehicle' => 'nullable|in:car,motorcycle',
             'claim_mode' => 'nullable|in:receipt,mileage',
+            'mileage_destination' => 'nullable|string|max:255',
             'receipt' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
         ], [
             'expense_date.after_or_equal' => 'The expense date must be within '.$now->year.'.',
@@ -252,6 +253,7 @@ class ExpenseClaimController extends Controller
             'quantity' => $quantity,
             'unit' => $unit,
             'rate_applied' => $rateApplied,
+            'mileage_destination' => $isPetrolMileage ? mb_substr(strip_tags((string) $request->input('mileage_destination')), 0, 255) : null,
             'gst_amount' => $validated['gst_amount'] ?? 0,
             'total_with_gst' => $expectedTotal,
             'receipt_path' => $receiptPath,
@@ -1043,6 +1045,35 @@ class ExpenseClaimController extends Controller
             : null;
     }
 
+    /** Driving distance (km) from origin to destination via ORS; null on any failure. */
+    private function orsDistanceKm(string $destination, ?string $origin): ?float
+    {
+        $key = config('claims.distance.ors_key');
+        if (! $key || trim($destination) === '') {
+            return null;
+        }
+        try {
+            $originCoords = $this->orsParseCoords(config('claims.mileage.origin_coords'))
+                ?? $this->orsGeocode($key, (string) $origin);
+            $destCoords = $this->orsGeocode($key, $destination);
+            if (! $originCoords || ! $destCoords) {
+                return null;
+            }
+            $resp = Http::timeout(12)
+                ->withHeaders(['Authorization' => $key, 'Content-Type' => 'application/json'])
+                ->post('https://api.openrouteservice.org/v2/directions/driving-car', [
+                    'coordinates' => [$originCoords, $destCoords],
+                ]);
+            $meters = $resp->json('routes.0.summary.distance');
+
+            return ($resp->successful() && $meters !== null) ? round($meters / 1000, 1) : null;
+        } catch (\Throwable $e) {
+            Log::warning('ORS verify distance failed', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+    }
+
     /** Parse a config "lat,lon" string into ORS [lon, lat] order; null if invalid. */
     private function orsParseCoords(?string $latLon): ?array
     {
@@ -1094,6 +1125,83 @@ class ExpenseClaimController extends Controller
         }
 
         return response()->json(array_merge(['enabled' => true, 'ok' => true], $data));
+    }
+
+    /**
+     * Reviewer verification for a single item: cross-check the receipt amount via
+     * OCR (#1) and re-calculate the mileage distance via ORS (#2). Returns flags
+     * the review UI renders; assistive only — never changes the claim. Restricted
+     * to HR/admins and the claim's manager.
+     */
+    public function verifyItem(ExpenseClaimItem $item)
+    {
+        $claim = $item->claim;
+        if (! $claim) {
+            abort(404);
+        }
+        $this->authorizeReview($claim);
+
+        $result = ['receipt' => null, 'mileage' => null];
+
+        // #1 — Receipt total vs claimed total (OCR).
+        if ($item->receipt_path && Storage::disk('local')->exists($item->receipt_path)) {
+            $company = $claim->employee->company ?? null;
+            if (ClaimReceiptOcrService::enabled($company)) {
+                $abs = Storage::disk('local')->path($item->receipt_path);
+                $mime = Storage::disk('local')->mimeType($item->receipt_path);
+                $data = ClaimReceiptOcrService::extract($abs, $mime, $company);
+                if ($data && $data['amount'] !== null) {
+                    $receiptAmt = (float) $data['amount'];
+                    $claimed = (float) $item->total_with_gst;
+                    $result['receipt'] = [
+                        'ok' => true,
+                        'receipt_amount' => $receiptAmt,
+                        'claimed' => $claimed,
+                        // tolerance: 50 sen or 2% of the claimed amount, whichever is larger
+                        'match' => abs($receiptAmt - $claimed) <= max(0.50, $claimed * 0.02),
+                        'vendor' => $data['vendor'] ?? null,
+                    ];
+                } else {
+                    $result['receipt'] = ['ok' => false]; // couldn't read the receipt
+                }
+            } else {
+                $result['receipt'] = ['ok' => false, 'disabled' => true];
+            }
+        }
+
+        // #2 — Claimed km vs the system-calculated driving distance (ORS).
+        if ($item->isMileage() && $item->mileage_destination) {
+            $km = $this->orsDistanceKm($item->mileage_destination, config('claims.mileage.origin'));
+            if ($km !== null) {
+                $claimedKm = (float) $item->quantity;
+                $result['mileage'] = [
+                    'ok' => true,
+                    'calc_km' => $km,
+                    'claimed_km' => $claimedKm,
+                    'destination' => $item->mileage_destination,
+                    // flag if claimed is more than 15% (or 1 km) above the calculated distance
+                    'match' => $claimedKm <= $km + max(1.0, $km * 0.15),
+                ];
+            } else {
+                $result['mileage'] = ['ok' => false];
+            }
+        }
+
+        return response()->json($result);
+    }
+
+    /** Allow HR/admins and the employee's current manager to run verification. */
+    private function authorizeReview(ExpenseClaim $claim): void
+    {
+        $user = Auth::user();
+        if ($user->canViewAllClaims()) {
+            return;
+        }
+        $emp = $user->employee;
+        if ($emp && $claim->employee && $claim->employee->manager_id === $emp->id) {
+            return;
+        }
+        abort(403, 'You are not allowed to verify this claim.');
     }
 
     private function getOrCreateDraft(Employee $employee, int $year, int $month): ExpenseClaim

@@ -348,7 +348,7 @@
                                     <div class="col-12 col-md-6" id="mileageDestWrap" style="display:none;">
                                         <label class="form-label small mb-1">Destination</label>
                                         <div class="input-group input-group-sm">
-                                            <input type="text" class="form-control" id="mileageDest" placeholder="e.g., KLCC, Kuala Lumpur" maxlength="255">
+                                            <input type="text" class="form-control" id="mileageDest" name="mileage_destination" placeholder="e.g., KLCC, Kuala Lumpur" maxlength="255">
                                             <button type="button" class="btn btn-outline-primary" id="mileageCalcBtn">Calculate</button>
                                         </div>
                                         <small class="text-muted" id="mileageCalcHint"></small>
