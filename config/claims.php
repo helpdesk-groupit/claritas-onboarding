@@ -86,6 +86,11 @@ return [
     'distance' => [
         'provider' => env('CLAIMS_DISTANCE_PROVIDER', 'google'),
         'ors_key' => env('CLAIMS_DISTANCE_ORS_KEY'),
+        // Max km from the origin a destination geocode may resolve to. Caps the ORS
+        // geocoder to a circle around Jaya One so an ambiguous short name (e.g.
+        // "Suria KLCC") can't match a same-named place in another state. Raise it for
+        // a company that legitimately claims long-distance trips.
+        'max_radius_km' => env('CLAIMS_DISTANCE_MAX_RADIUS_KM', 150),
     ],
 
     /*

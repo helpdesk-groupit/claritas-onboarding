@@ -1153,7 +1153,9 @@ class ExpenseClaimController extends Controller
                 return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Could not locate the origin — enter km manually.']);
             }
 
-            $destCoords = $this->orsGeocode($key, $destination);
+            // Bias the destination geocode toward the origin so ambiguous short names
+            // resolve to the nearest match, not a same-named place far away.
+            $destCoords = $this->orsGeocode($key, $destination, $originCoords);
             if (! $destCoords) {
                 return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Could not find that destination — check the spelling or enter km manually.']);
             }
@@ -1185,18 +1187,36 @@ class ExpenseClaimController extends Controller
         }
     }
 
-    /** Geocode free text to ORS [lon, lat], restricted to Malaysia; null if not found. */
-    private function orsGeocode(string $key, string $text): ?array
+    /**
+     * Geocode free text to ORS [lon, lat], restricted to Malaysia; null if not found.
+     * $focus ([lon, lat]) biases results toward that point so an ambiguous short name
+     * (e.g. "Suria KLCC") resolves to the nearest match instead of a same-named place
+     * hundreds of km away. Pass the origin coords when geocoding a destination.
+     */
+    private function orsGeocode(string $key, string $text, ?array $focus = null): ?array
     {
         if (trim($text) === '') {
             return null;
         }
-        $resp = Http::timeout(10)->get('https://api.openrouteservice.org/geocode/search', [
+        $params = [
             'api_key' => $key,
             'text' => $text,
             'boundary.country' => 'MY',
             'size' => 1,
-        ]);
+        ];
+        if ($focus && count($focus) === 2) {
+            $params['focus.point.lon'] = $focus[0];
+            $params['focus.point.lat'] = $focus[1];
+            // Hard-restrict to a circle around the origin. focus.point alone is too
+            // weak — it still scored "Suria Hotel" (Kelantan, 400+ km) over the real
+            // "Suria KLCC". The circle excludes same-named places in other states so a
+            // short landmark resolves to the nearby one. Trips beyond the radius simply
+            // return no match and fall back to manual km / the screenshot's own value.
+            $params['boundary.circle.lon'] = $focus[0];
+            $params['boundary.circle.lat'] = $focus[1];
+            $params['boundary.circle.radius'] = (float) config('claims.distance.max_radius_km', 150);
+        }
+        $resp = Http::timeout(10)->get('https://api.openrouteservice.org/geocode/search', $params);
         $coords = $resp->json('features.0.geometry.coordinates'); // [lon, lat]
 
         return (is_array($coords) && count($coords) === 2)
@@ -1214,7 +1234,7 @@ class ExpenseClaimController extends Controller
         try {
             $originCoords = $this->orsParseCoords(config('claims.mileage.origin_coords'))
                 ?? $this->orsGeocode($key, (string) $origin);
-            $destCoords = $this->orsGeocode($key, $destination);
+            $destCoords = $this->orsGeocode($key, $destination, $originCoords);
             if (! $originCoords || ! $destCoords) {
                 return null;
             }

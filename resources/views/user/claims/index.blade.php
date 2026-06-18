@@ -287,11 +287,11 @@
 
                     {{-- Receipt first — upload a document, then click Scan to auto-fill the fields below (blanks only) --}}
                     <div class="border rounded p-2 mb-3 bg-white">
-                        <label class="form-label fw-semibold mb-1"><i class="bi bi-camera me-1"></i>Receipt <span class="text-danger" id="receiptRequiredMark" style="display:none;">*</span> <span class="fw-normal text-muted small">— upload, then Scan to auto-fill the details below (only empty fields)</span></label>
+                        <label class="form-label fw-semibold mb-1"><i class="bi bi-paperclip me-1"></i>Attachment <span class="text-danger" id="receiptRequiredMark" style="display:none;">*</span> <span class="fw-normal text-muted small">— receipt or Google Maps screenshot; upload, then Scan to auto-fill the details below (only empty fields)</span></label>
                         <div class="d-flex align-items-center gap-2 flex-wrap">
                             <input type="file" name="receipt" class="form-control @error('receipt') is-invalid @enderror" accept=".jpg,.jpeg,.png,.pdf" id="receiptFile" style="max-width:380px;">
-                            <button type="button" class="btn btn-sm btn-primary d-none" id="scanReceiptBtn"><i class="bi bi-magic me-1"></i>Scan receipt</button>
-                            <button type="button" class="btn btn-sm btn-link text-danger p-0 d-none" id="receiptClearBtn"><i class="bi bi-x-circle me-1"></i>Remove receipt</button>
+                            <button type="button" class="btn btn-sm btn-primary d-none" id="scanReceiptBtn"><i class="bi bi-magic me-1"></i>Scan attachment</button>
+                            <button type="button" class="btn btn-sm btn-link text-danger p-0 d-none" id="receiptClearBtn"><i class="bi bi-x-circle me-1"></i>Remove attachment</button>
                         </div>
                         <small class="text-info d-block mt-1" id="ocrHint" style="display:none;"></small>
                         @error('receipt')<div class="invalid-feedback d-block">{{ $message }}</div>@enderror
@@ -788,7 +788,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const opt = selOpt();
         sb.innerHTML = (isMileageCat(opt) && mileageOn())
             ? '<i class="bi bi-map me-1"></i>Scan map for distance'
-            : '<i class="bi bi-magic me-1"></i>Scan receipt';
+            : '<i class="bi bi-magic me-1"></i>Scan attachment';
     }
 
     function applyCategoryMode() {
