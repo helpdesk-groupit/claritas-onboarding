@@ -295,4 +295,24 @@ class ClaimRulesService
 
         return self::precedingWorkingDay($monthRef->copy()->setDay($day));
     }
+
+    /**
+     * Employee submission deadline = the HR cutoff (deadlineDay, working-day-aware) minus
+     * $bufferDays WORKING days, so managers have time to approve before the cutoff.
+     */
+    public static function employeeSubmissionDeadline(int $deadlineDay, ?Carbon $monthRef = null, ?int $bufferDays = null): Carbon
+    {
+        $bufferDays ??= (int) config('claims.manager_buffer_days', 3);
+        $holidays = config('claims.public_holidays', []);
+        $d = self::submissionDeadline($deadlineDay, $monthRef); // HR cutoff (a working day)
+
+        for ($i = 0; $i < max(0, $bufferDays); $i++) {
+            $d->subDay();
+            while ($d->isWeekend() || in_array($d->toDateString(), $holidays, true)) {
+                $d->subDay();
+            }
+        }
+
+        return $d;
+    }
 }

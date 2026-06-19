@@ -114,6 +114,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Manager-approval buffer (working days)
+    |--------------------------------------------------------------------------
+    | The policy deadline day (e.g. 20th) is the HR cutoff — a claim must be
+    | MANAGER-APPROVED by then to be processed this cycle. Employees must therefore
+    | submit earlier so managers have time to approve. The employee submission
+    | deadline = HR cutoff minus this many working days.
+    */
+    'manager_buffer_days' => (int) env('CLAIMS_MANAGER_BUFFER_DAYS', 3),
+
+    /*
+    |--------------------------------------------------------------------------
     | Public holidays (deadline roll-back)
     |--------------------------------------------------------------------------
     | The 20th submission deadline rolls back to the preceding working day when

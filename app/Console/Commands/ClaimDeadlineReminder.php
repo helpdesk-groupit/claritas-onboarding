@@ -22,8 +22,9 @@ class ClaimDeadlineReminder extends Command
         $deadlineDay = $policy->submission_deadline_day ?? 20;
 
         $now = now();
-        // Working-day-aware deadline (rolls back off weekends / public holidays).
-        $deadlineDate = ClaimRulesService::submissionDeadline($deadlineDay, $now);
+        // EMPLOYEE deadline = HR cutoff minus the manager-approval buffer (working days),
+        // so managers have time to approve before the HR cutoff.
+        $deadlineDate = ClaimRulesService::employeeSubmissionDeadline($deadlineDay, $now);
 
         $isDeadlineDay = $now->isSameDay($deadlineDate);
         $isDayBefore = $now->isSameDay($deadlineDate->copy()->subDay());

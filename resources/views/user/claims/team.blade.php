@@ -80,6 +80,16 @@
         </div>
     </div>
 
+    @php
+        $hrCutoff = \App\Services\ClaimRulesService::submissionDeadline(\App\Models\ExpenseClaimPolicy::forCompany($employee->company)->submission_deadline_day ?? 20);
+    @endphp
+    @if($pendingCount > 0)
+    <div class="alert {{ now()->gte($hrCutoff->copy()->subDays(2)) ? 'alert-warning' : 'alert-info' }} d-flex align-items-center mb-3">
+        <i class="bi bi-clock-history me-2 fs-5"></i>
+        <div><strong>HR cutoff: {{ $hrCutoff->format('d M Y') }}.</strong> Approve your {{ $pendingCount }} pending claim(s) by then so they reach HR this cycle — anything approved later rolls into next month.</div>
+    </div>
+    @endif
+
     {{-- ── Pending Claims ── --}}
     <div class="card shadow-sm mb-4 border-0">
         <div class="card-header bg-white border-0 d-flex align-items-center">

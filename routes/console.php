@@ -7,6 +7,7 @@ Schedule::command('offboarding:notify')->everyMinute();
 Schedule::command('security:audit-report')->hourly();
 Schedule::command('leave:remind-managers')->dailyAt('09:00');
 Schedule::command('claims:remind')->dailyAt('09:00');
+Schedule::command('claims:remind-approvers')->dailyAt('09:00');
 // Birthdays: check every minute so candidates activated mid-day (e.g. a
 // rehire, or an employee whose start_date lands on their birthday) get the
 // e-card almost immediately. Idempotent via employees.birthday_email_sent_year

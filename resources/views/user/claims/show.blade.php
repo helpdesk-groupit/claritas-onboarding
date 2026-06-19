@@ -40,7 +40,7 @@
             <div class="card-body small text-muted" style="line-height:1.8;">
                 <ol class="mb-0">
                     <li>All claims are for <strong>business purposes only</strong>.</li>
-                    <li>Submit your monthly claims with reporting manager acknowledgement by the <strong>{{ ordinal($policy->submission_deadline_day ?? 20) }}</strong> of each month.</li>
+                    <li>Submit to your reporting manager by <strong>{{ \App\Services\ClaimRulesService::employeeSubmissionDeadline($policy->submission_deadline_day ?? 20)->format('d M') }}</strong> so they can approve before the <strong>{{ ordinal($policy->submission_deadline_day ?? 20) }}</strong> HR cutoff.</li>
                     <li>Claims submitted after the deadline will be processed in the next month's cycle.</li>
                     <li>For Extra Hours claim, please state the number of extra hours clearly (e.g., Parentcraft Event, 8am–6pm).</li>
                     <li>Separate expense claim forms for different events and personal general claims.</li>
