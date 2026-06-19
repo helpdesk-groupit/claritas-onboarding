@@ -25,12 +25,18 @@ class ClaimDeadlineReminder extends Command
         // Working-day-aware deadline (rolls back off weekends / public holidays).
         $deadlineDate = ClaimRulesService::submissionDeadline($deadlineDay, $now);
 
-        // Fire only on the calendar day BEFORE the effective deadline.
-        if (! $this->option('force') && ! $now->isSameDay($deadlineDate->copy()->subDay())) {
-            $this->info('Not the day before the deadline ('.$deadlineDate->toDateString().'). Skipping.');
+        $isDeadlineDay = $now->isSameDay($deadlineDate);
+        $isDayBefore = $now->isSameDay($deadlineDate->copy()->subDay());
+
+        if (! $this->option('force') && ! $isDeadlineDay && ! $isDayBefore) {
+            $this->info('Not the day-before or deadline day ('.$deadlineDate->toDateString().'). Skipping.');
 
             return self::SUCCESS;
         }
+
+        // Deadline day = urgent "last call" to draft-holders only. Day-before (or a
+        // forced run on any other day) = the full reminder to everyone.
+        $lastCall = $isDeadlineDay && ! $isDayBefore;
 
         $year = $now->year;
         $month = $now->month;
@@ -54,13 +60,19 @@ class ClaimDeadlineReminder extends Command
                 ->get();
 
             if ($drafts->isNotEmpty()) {
-                Mail::to($email)->queue(new ClaimReminderMail($employee, $year, $month, $deadlineStr, 'draft', $drafts));
+                $type = $lastCall ? 'lastcall' : 'draft';
+                Mail::to($email)->queue(new ClaimReminderMail($employee, $year, $month, $deadlineStr, $type, $drafts));
                 $sentDraft++;
 
                 continue;
             }
 
-            // No actionable drafts — have they submitted anything this month at all?
+            // The "no claim this month?" nudge is only for the day-before run — on the
+            // deadline day itself, only people with drafts get the last call.
+            if ($lastCall) {
+                continue;
+            }
+
             $hasThisMonth = ExpenseClaim::where('employee_id', $employee->id)
                 ->where('year', $year)->where('month', $month)
                 ->where('status', '!=', 'draft')
@@ -70,10 +82,10 @@ class ClaimDeadlineReminder extends Command
                 Mail::to($email)->queue(new ClaimReminderMail($employee, $year, $month, $deadlineStr, 'none'));
                 $sentNone++;
             }
-            // Otherwise they've submitted and have no pending drafts — no email needed.
         }
 
-        $this->info("Day-before reminders queued — drafts: {$sentDraft}, no-claim nudges: {$sentNone}.");
+        $phase = $lastCall ? 'Deadline-day LAST CALL' : 'Day-before';
+        $this->info("{$phase} reminders queued — drafts: {$sentDraft}, no-claim nudges: {$sentNone}.");
 
         return self::SUCCESS;
     }

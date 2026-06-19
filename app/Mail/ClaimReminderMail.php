@@ -30,9 +30,11 @@ class ClaimReminderMail extends Mailable
     public function envelope(): Envelope
     {
         $period = \Carbon\Carbon::create($this->year, $this->month)->format('F Y');
-        $subject = $this->type === 'none'
-            ? "No expense claim for {$period}? Submission closes {$this->deadline}"
-            : "Reminder: submit your {$period} expense claim(s) by {$this->deadline}";
+        $subject = match ($this->type) {
+            'none' => "No expense claim for {$period}? Submission closes {$this->deadline}",
+            'lastcall' => "Last call: submit your {$period} expense claim(s) TODAY ({$this->deadline})",
+            default => "Reminder: submit your {$period} expense claim(s) by {$this->deadline}",
+        };
 
         return new Envelope(subject: $subject);
     }

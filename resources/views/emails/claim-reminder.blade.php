@@ -45,10 +45,18 @@
         Claims submitted after the deadline are processed in the next month's cycle.
       </div>
     @else
+      @if($type === 'lastcall')
+      <p style="color:#475569;font-size:15px;line-height:1.6;">
+        <strong style="color:#b91c1c;">Today is the submission deadline.</strong>
+        You still have <strong>{{ $drafts->count() }}</strong> unsubmitted draft claim{{ $drafts->count() == 1 ? '' : 's' }}.
+        Please submit {{ $drafts->count() == 1 ? 'it' : 'them' }} <strong>before the end of today</strong> for your manager's approval.
+      </p>
+      @else
       <p style="color:#475569;font-size:15px;line-height:1.6;">
         You have <strong>{{ $drafts->count() }}</strong> unsubmitted draft claim{{ $drafts->count() == 1 ? '' : 's' }}.
         Please review and submit {{ $drafts->count() == 1 ? 'it' : 'them' }} for your reporting manager's approval before the deadline.
       </p>
+      @endif
 
       <table class="draft-table">
         <thead><tr><th>Event / claim</th><th>Items</th><th style="text-align:right;">Total</th></tr></thead>
@@ -63,11 +71,19 @@
         </tbody>
       </table>
 
+      @if($type === 'lastcall')
+      <div class="info-box" style="background:#fef2f2;border-left-color:#dc2626;color:#991b1b;">
+        <strong>Deadline: TODAY ({{ $deadline }}).</strong><br><br>
+        Drafts not submitted today roll into next month's cycle &mdash; they are
+        <strong>not</strong> auto-submitted, so please submit them before end of day.
+      </div>
+      @else
       <div class="info-box">
         <strong>Submission deadline:</strong> {{ $deadline }} (tomorrow)<br><br>
         Drafts not submitted by the deadline stay as drafts and roll into next month's cycle &mdash;
         they are <strong>not</strong> auto-submitted, so please submit them yourself.
       </div>
+      @endif
     @endif
 
     <p style="text-align:center;">
