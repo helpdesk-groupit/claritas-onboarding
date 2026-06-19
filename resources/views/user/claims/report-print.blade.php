@@ -30,7 +30,8 @@
 <body>
     <div class="claim-toolbar d-print-none">
         <a href="{{ route('user.claims.reports') }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back to reports</a>
-        <button class="btn btn-sm btn-primary" id="printBtn"><i class="bi bi-printer me-1"></i>Print / Save as PDF</button>
+        <button class="btn btn-sm btn-primary" id="printBtn"><i class="bi bi-printer me-1"></i>Print</button>
+        <a class="btn btn-sm btn-outline-danger" href="{{ route('user.claims.pdf', $claim) }}"><i class="bi bi-file-earmark-pdf me-1"></i>Download PDF</a>
         @if($claim->statusBadge())<span class="badge bg-{{ $claim->statusBadge()['class'] }} align-self-center">{{ $claim->statusBadge()['label'] }}</span>@endif
     </div>
 

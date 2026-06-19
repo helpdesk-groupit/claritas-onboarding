@@ -4,9 +4,14 @@
 
 @section('content')
 <div class="container-fluid">
-    <a href="{{ route('hr.claims.index') }}" class="btn btn-sm btn-outline-secondary mb-3">
-        <i class="bi bi-arrow-left me-1"></i>Back to Claims
-    </a>
+    <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+        <a href="{{ route('hr.claims.index') }}" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i>Back to Claims
+        </a>
+        <a href="{{ route('user.claims.pdf', $claim) }}" class="btn btn-sm btn-outline-danger">
+            <i class="bi bi-file-earmark-pdf me-1"></i>Download PDF
+        </a>
+    </div>
 
     {{-- Claim Header --}}
     <div class="card shadow-sm border-0 mb-4">

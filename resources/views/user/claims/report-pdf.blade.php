@@ -1,0 +1,146 @@
+@php
+    use Illuminate\Support\Facades\Storage;
+    $imgData = function ($disk, $path) {
+        try {
+            if (! $path || ! Storage::disk($disk)->exists($path)) return null;
+            $mime = Storage::disk($disk)->mimeType($path);
+            if (! str_starts_with((string) $mime, 'image/')) return null;
+            return 'data:'.$mime.';base64,'.base64_encode(Storage::disk($disk)->get($path));
+        } catch (\Throwable $e) { return null; }
+    };
+    $logo = $company && $company->logo_path ? $imgData('public', $company->logo_path) : null;
+    $deadlineDay = \App\Models\ExpenseClaimPolicy::forCompany($claim->employee->company)->submission_deadline_day ?? 20;
+    $appr = ($approver ?? null) ?? $claim->managerApprover ?? $claim->manager ?? null;
+    $mgrDone = $claim->manager_approved_at && in_array($claim->status, ['manager_approved','hr_approved','paid']);
+    $hrDone = $claim->hr_approved_at && in_array($claim->status, ['hr_approved','paid']);
+    $imageExt = ['jpg','jpeg','png','gif','webp'];
+@endphp
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    * { font-family: DejaVu Sans, sans-serif; }
+    body { font-size: 10px; color: #1e293b; margin: 0; }
+    .hdr { width: 100%; }
+    .hdr td { vertical-align: top; }
+    .co-name { font-weight: bold; font-size: 11px; }
+    .co-addr { color: #555; font-size: 9px; }
+    .title { text-align: center; font-size: 15px; font-weight: bold; letter-spacing: 1px; margin: 10px 0 6px; }
+    .rules { color: #555; font-style: italic; font-size: 8.5px; line-height: 1.5; margin: 0 0 8px; }
+    .meta td { padding: 2px 0; font-size: 10px; }
+    .meta .lbl { font-weight: bold; width: 90px; }
+    .meta .val { border-bottom: 1px solid #cbd5e1; }
+    table.items { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 9px; }
+    table.items th, table.items td { border: 1px solid #94a3b8; padding: 4px 5px; }
+    table.items th { background: #f1f5f9; text-align: center; font-size: 8.5px; }
+    .r { text-align: right; } .c { text-align: center; }
+    .tot td { font-weight: bold; }
+    .sign { width: 100%; margin-top: 22px; font-size: 9.5px; }
+    .sign td { vertical-align: top; width: 50%; padding-right: 10px; }
+    .ok { color: #15803d; } .muted { color: #94a3b8; font-style: italic; } .bad { color: #b91c1c; }
+    .note { font-size: 8px; color: #94a3b8; font-style: italic; margin-top: 10px; }
+    .att-title { font-size: 11px; font-weight: bold; margin: 0 0 6px; }
+    .att { border: 1px solid #e2e8f0; padding: 6px; margin-bottom: 8px; page-break-inside: avoid; }
+    .att .cap { font-size: 9px; font-weight: bold; margin-bottom: 4px; }
+    .att img { max-width: 100%; max-height: 560px; }
+</style>
+</head>
+<body>
+    <table class="hdr">
+        <tr>
+            <td>
+                <div class="co-name">{{ $company->name ?? ($claim->employee->company ?? 'Company') }}</div>
+                @if($company && $company->address)<div class="co-addr">{{ $company->address }}</div>@endif
+            </td>
+            <td style="text-align:right; width:160px;">
+                @if($logo)<img src="{{ $logo }}" style="max-height:46px; max-width:150px;">@endif
+            </td>
+        </tr>
+    </table>
+
+    <div class="title">EXPENSES CLAIMS FORM</div>
+    <div class="rules">
+        - All supporting documents should be submitted with form for approval.<br>
+        - Your supporting documents should be arrange and attached accordingly on an A4 paper.<br>
+        - All claims submission should be signed (incl. yourself) and approved by your Reporting Manager prior to submitting to HR.<br>
+        - Submission of claims to be submitted to HR/Finance by the {{ $deadlineDay }}th of the month for processing. Any late submission will be process next month.
+    </div>
+
+    <table class="meta">
+        <tr><td class="lbl">Name :</td><td class="val">{{ $claim->employee->full_name }}</td><td style="width:60px;"></td><td class="lbl" style="width:50px;">Date :</td><td class="val">{{ ($claim->submitted_at ?? \Carbon\Carbon::create($claim->year, $claim->month, 1))->format('jS F Y') }}</td></tr>
+        <tr><td class="lbl">Department :</td><td class="val">{{ $claim->employee->department ?? '—' }}</td><td></td><td></td><td></td></tr>
+        <tr><td class="lbl">Event :</td><td class="val">{{ $claim->event ?: '—' }}</td><td></td><td></td><td></td></tr>
+    </table>
+
+    <table class="items">
+        <thead>
+            <tr>
+                <th>Date</th><th>Expense Description</th><th>Project/Client</th><th>Expense Type</th>
+                <th>RM<br>(w/o SST)</th><th>RM<br>(SST)</th><th>Total<br>(w/ SST)</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach($items as $item)
+            <tr>
+                <td class="c">{{ $item->expense_date->format('d/m/Y') }}</td>
+                <td>{{ $item->description }}</td>
+                <td>{{ $item->project_client ?: 'N/A' }}</td>
+                <td>{{ $item->category->gl_code ? $item->category->gl_code.': ' : '' }}{{ strtoupper($item->category->name ?? '') }}</td>
+                <td class="r">RM{{ number_format($item->amount, 2) }}</td>
+                <td class="r">{{ $item->gst_amount > 0 ? 'RM'.number_format($item->gst_amount, 2) : '-' }}</td>
+                <td class="r">RM{{ number_format($item->total_with_gst, 2) }}</td>
+            </tr>
+            @endforeach
+            @for($r = $items->count(); $r < 6; $r++)
+            <tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td class="r">-</td></tr>
+            @endfor
+        </tbody>
+        <tfoot>
+            <tr class="tot"><td colspan="4" class="r">TOTAL</td>
+                <td class="r">{{ number_format($items->sum('amount'), 2) }}</td>
+                <td class="r">{{ number_format($items->sum('gst_amount'), 2) }}</td>
+                <td class="r">{{ number_format($items->sum('total_with_gst'), 2) }}</td>
+            </tr>
+        </tfoot>
+    </table>
+
+    {{-- Digital sign-offs --}}
+    <table class="sign">
+        <tr>
+            <td>
+                <div><strong>Staff :-</strong> {{ $claim->employee->full_name }}</div>
+                <div>@if($claim->submitted_at)<span class="ok">Submitted electronically — {{ $claim->submitted_at->format('d/m/Y, g:ia') }}</span>@else<span class="muted">Not yet submitted</span>@endif</div>
+                <div style="margin-top:10px;"><strong>Approving Manager :-</strong> {{ $appr->full_name ?? '—' }}</div>
+                <div>@if($mgrDone)<span class="ok">Approved electronically — {{ $claim->manager_approved_at->format('d/m/Y, g:ia') }}</span>@elseif($claim->status==='manager_rejected')<span class="bad">Returned to staff</span>@else<span class="muted">Awaiting approval</span>@endif</div>
+            </td>
+            <td>
+                <div><strong>Checked by :-</strong> {{ optional($claim->hrApprover)->name ?? '(HR / Finance)' }}</div>
+                <div>@if($hrDone)<span class="ok">Approved electronically — {{ $claim->hr_approved_at->format('d/m/Y') }}</span>@elseif($claim->status==='hr_rejected')<span class="bad">Rejected</span>@else<span class="muted">Pending HR / Finance</span>@endif</div>
+                <div style="margin-top:10px;"><strong>Payment processed :-</strong></div>
+                <div>@if($claim->status==='paid')<span class="ok">Paid</span>@else<span class="muted">Pending payment</span>@endif</div>
+            </td>
+        </tr>
+    </table>
+    <div class="note">Digitally approved — each sign-off is the recorded system action (name + timestamp), held in the claim's audit trail. No physical signature required.</div>
+
+    {{-- Supporting documents (image receipts embedded; PDF receipts noted) --}}
+    @php $withAtt = $items->filter(fn ($it) => $it->receipt_path); @endphp
+    @if($withAtt->count() > 0)
+    <div style="page-break-before: always;"></div>
+    <div class="att-title">Supporting Documents</div>
+    @foreach($items as $item)
+        @if($item->receipt_path)
+        @php
+            $ext = strtolower(pathinfo($item->receipt_path, PATHINFO_EXTENSION));
+            $data = in_array($ext, $imageExt) ? $imgData('local', $item->receipt_path) : null;
+        @endphp
+        <div class="att">
+            <div class="cap">{{ $loop->iteration }}. {{ $item->expense_date->format('jS M Y') }} — {{ $item->description }} (RM{{ number_format($item->total_with_gst, 2) }})</div>
+            @if($data)<img src="{{ $data }}">@else<div class="muted">Attachment: {{ strtoupper($ext) }} file — included with the claim, not embeddable in this PDF.</div>@endif
+        </div>
+        @endif
+    @endforeach
+    @endif
+</body>
+</html>

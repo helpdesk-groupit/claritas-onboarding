@@ -76,6 +76,9 @@
                 <a href="{{ route('hr.claims.export', request()->query()) }}" class="btn btn-sm btn-outline-success">
                     <i class="bi bi-download me-1"></i>Export CSV
                 </a>
+                <a href="{{ route('hr.claims.download-zip', request()->query()) }}" class="btn btn-sm btn-outline-danger">
+                    <i class="bi bi-file-earmark-zip me-1"></i>Approved PDFs (ZIP)
+                </a>
                 <a href="{{ route('hr.claims.categories') }}" class="btn btn-sm btn-outline-primary">
                     <i class="bi bi-tags me-1"></i>Categories
                 </a>

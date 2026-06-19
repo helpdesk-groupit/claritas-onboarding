@@ -13,6 +13,7 @@ use App\Models\ExpenseClaimItem;
 use App\Models\ExpenseClaimPolicy;
 use App\Services\ClaimReceiptOcrService;
 use App\Services\ClaimRulesService;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -608,6 +609,75 @@ class ExpenseClaimController extends Controller
         $approver = $approverId ? Employee::find((int) $approverId) : null;
 
         return view('user.claims.report-print', compact('claim', 'company', 'items', 'approver'));
+    }
+
+    /** Render one claim to a dompdf PDF instance (form + embedded receipt images). */
+    private function buildClaimPdf(ExpenseClaim $claim)
+    {
+        $claim->loadMissing('items.category', 'employee', 'managerApprover', 'manager', 'hrApprover');
+        $company = \App\Models\Company::forName($claim->employee->company);
+        $items = $claim->items;
+
+        return Pdf::loadView('user.claims.report-pdf', compact('claim', 'company', 'items'))->setPaper('a4');
+    }
+
+    /** Download one claim as a PDF, named like the original forms. Owner or reviewer. */
+    public function downloadClaimPdf(ExpenseClaim $claim)
+    {
+        $user = Auth::user();
+        $isOwner = $user->employee && $claim->employee_id === $user->employee->id;
+        if (! $isOwner && ! $user->canViewAllClaims()) {
+            $this->authorizeReview($claim);
+        }
+
+        return $this->buildClaimPdf($claim)->download($claim->pdfFilename());
+    }
+
+    /**
+     * HR: download all approved claims (optionally filtered) as a single ZIP of PDFs,
+     * each named like the original form — ready to bulk-upload elsewhere.
+     */
+    public function downloadApprovedZip(Request $request)
+    {
+        $this->authorizeViewClaims();
+
+        $q = ExpenseClaim::whereIn('status', ['hr_approved', 'paid'])->with(['employee', 'items.category']);
+        if ($y = $request->input('year')) {
+            $q->where('year', $y);
+        }
+        if ($m = $request->input('month')) {
+            $q->where('month', $m);
+        }
+        if ($e = $request->input('employee_id')) {
+            $q->where('employee_id', $e);
+        }
+        if ($c = $request->input('company')) {
+            $q->whereHas('employee', fn ($x) => $x->where('company', $c));
+        }
+        $claims = $q->orderByDesc('hr_approved_at')->limit(200)->get();
+
+        if ($claims->isEmpty()) {
+            return back()->with('error', 'No approved claims match the current filter.');
+        }
+
+        $tmp = tempnam(sys_get_temp_dir(), 'claims').'.zip';
+        $zip = new \ZipArchive;
+        $zip->open($tmp, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+        $used = [];
+        foreach ($claims as $claim) {
+            $name = $claim->pdfFilename();
+            $unique = $name;
+            $i = 2;
+            while (isset($used[$unique])) {
+                $unique = preg_replace('/\.pdf$/', '', $name)." ({$i}).pdf";
+                $i++;
+            }
+            $used[$unique] = true;
+            $zip->addFromString($unique, $this->buildClaimPdf($claim)->output());
+        }
+        $zip->close();
+
+        return response()->download($tmp, 'approved-claims-'.now()->format('Y-m-d').'.zip')->deleteFileAfterSend(true);
     }
 
     /** Save the Event/purpose on a specific claim. */

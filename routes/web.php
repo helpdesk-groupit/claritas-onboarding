@@ -387,6 +387,7 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     // HR: Claims Management
     Route::get('/hr/claims',                            [ExpenseClaimController::class, 'index'])->name('hr.claims.index');
     Route::get('/hr/claims/export',                     [ExpenseClaimController::class, 'export'])->name('hr.claims.export');
+    Route::get('/hr/claims/download-zip',               [ExpenseClaimController::class, 'downloadApprovedZip'])->name('hr.claims.download-zip');
     Route::get('/hr/claims/categories',                 [ExpenseClaimController::class, 'categories'])->name('hr.claims.categories');
     Route::post('/hr/claims/categories',                [ExpenseClaimController::class, 'storeCategory'])->name('hr.claims.categories.store');
     Route::put('/hr/claims/categories/{category}',      [ExpenseClaimController::class, 'updateCategory'])->name('hr.claims.categories.update');
@@ -426,6 +427,8 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     Route::post('/claims/items/{item}/verify',          [ExpenseClaimController::class, 'verifyItem'])->name('user.claims.items.verify')->middleware('throttle:30,1');
     // View a claim item's receipt with a readable filename (owner or reviewer)
     Route::get('/claims/items/{item}/receipt',          [ExpenseClaimController::class, 'viewReceipt'])->name('user.claims.items.receipt');
+    // Download a single claim as a PDF (owner or reviewer)
+    Route::get('/claims/{claim}/pdf',                   [ExpenseClaimController::class, 'downloadClaimPdf'])->name('user.claims.pdf');
 
     // ══════════════════════════════════════════════════════════════════════
     // ACCOUNTING MODULE

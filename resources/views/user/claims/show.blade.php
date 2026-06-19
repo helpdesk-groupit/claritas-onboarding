@@ -15,6 +15,9 @@
             </div>
         </div>
         <div class="d-flex gap-2 flex-shrink-0">
+            @if(in_array($claim->status, ['submitted','manager_approved','hr_approved','paid']))
+            <a href="{{ route('user.claims.pdf', $claim) }}" class="btn btn-outline-danger btn-sm"><i class="bi bi-file-earmark-pdf me-1"></i>PDF</a>
+            @endif
             @if($claim->isSubmittable())
             <a href="{{ route('user.claims.submit-form', $claim) }}" class="btn btn-primary btn-sm"><i class="bi bi-send me-1"></i>Submit for Approval</a>
             @endif

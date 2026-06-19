@@ -125,6 +125,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Approved-claim PDF filename prefix (per company)
+    |--------------------------------------------------------------------------
+    | Generated PDFs are named like the originals, e.g.
+    |   ENSB-SE-20260430-<Name>_<Event>_Claim_<Mon>_<YY>.pdf
+    | Keyed by a case-insensitive substring of the employee's company; if none
+    | matches, the prefix is derived from the company's initials + "-SE".
+    */
+    'file_prefixes' => [
+        'Enlinea' => 'ENSB-SE',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Public holidays (deadline roll-back)
     |--------------------------------------------------------------------------
     | The 20th submission deadline rolls back to the preceding working day when

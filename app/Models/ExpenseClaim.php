@@ -214,6 +214,40 @@ class ExpenseClaim extends Model
     }
 
     /**
+     * Filesystem-safe PDF filename matching the original forms, e.g.
+     * "ENSB-SE-20260430-Eisya Ereena_AMD Editorial_Claim_Apr_26.pdf".
+     */
+    public function pdfFilename(): string
+    {
+        $company = $this->employee->company ?? '';
+        $prefix = null;
+        foreach ((array) config('claims.file_prefixes', []) as $name => $px) {
+            if ($name !== '' && stripos($company, $name) !== false) {
+                $prefix = $px;
+                break;
+            }
+        }
+        if (! $prefix) {
+            $initials = collect(preg_split('/\s+/', $company))
+                ->map(fn ($w) => strtoupper(mb_substr(preg_replace('/[^A-Za-z]/', '', $w), 0, 1)))
+                ->filter()->implode('');
+            $prefix = ($initials ?: 'CLAIM').'-SE';
+        }
+
+        $batch = ($this->hr_approved_at ?? now())->copy()->endOfMonth()->format('Ymd');
+        $name = $this->employee->full_name ?? 'Employee';
+        $period = \Carbon\Carbon::create($this->year, $this->month)->format('M_y'); // Apr_26
+        $event = trim((string) $this->event);
+        $mid = ($event === '' || preg_match('/^general claim/i', $event)) ? 'Claim' : $event.'_Claim';
+
+        $raw = "{$prefix}-{$batch}-{$name}_{$mid}_{$period}";
+        $raw = preg_replace('/[\/\\\\:*?"<>|\r\n]+/', ' ', $raw);
+        $raw = preg_replace('/\s+/', ' ', $raw);
+
+        return trim($raw).'.pdf';
+    }
+
+    /**
      * @return array{class: string, label: string}
      */
     public function statusBadge(): array
