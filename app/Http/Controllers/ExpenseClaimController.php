@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Mail\ClaimApprovedMail;
 use App\Mail\ClaimRejectedMail;
+use App\Mail\ClaimReleaseRequestMail;
 use App\Mail\ClaimSubmittedMail;
 use App\Models\Employee;
 use App\Models\ExpenseCategory;
@@ -778,6 +779,17 @@ class ExpenseClaimController extends Controller
             ->orderBy('submitted_at')
             ->get();
 
+        // HR-rejected claims I approved that are waiting for me to release to the employee.
+        $toRelease = ExpenseClaim::where('status', 'hr_rejected')
+            ->whereNull('released_at')
+            ->where(function ($q) use ($myId) {
+                $q->where('manager_approved_by', $myId)->orWhere('manager_id', $myId)
+                    ->orWhereHas('items', fn ($i) => $i->where('approver_id', $myId));
+            })
+            ->with(['employee', 'items.category'])
+            ->orderByDesc('hr_approved_at')
+            ->get();
+
         // History: claims I approved items on that have moved past the manager stage.
         $historyClaims = ExpenseClaim::whereNotIn('status', ['draft', 'submitted'])
             ->whereHas('items', fn ($q) => $q->where('approver_id', $myId))
@@ -786,7 +798,7 @@ class ExpenseClaimController extends Controller
             ->limit(50)
             ->get();
 
-        return view('user.claims.team', compact('pendingClaims', 'historyClaims', 'employee'));
+        return view('user.claims.team', compact('pendingClaims', 'toRelease', 'historyClaims', 'employee'));
     }
 
     /**
@@ -874,16 +886,14 @@ class ExpenseClaimController extends Controller
 
         $reason = mb_substr(strip_tags($request->input('remarks')), 0, 1000);
 
-        DB::transaction(function () use ($claim, $employee, $reason) {
-            // Unlock so the employee can edit + resubmit the whole claim.
-            $claim->items()->update(['is_locked' => false]);
-            $claim->update([
-                'status' => 'manager_rejected',
-                'manager_remarks' => $reason,
-                'manager_approved_by' => $employee->id,
-                'manager_approved_at' => now(),
-            ]);
-        });
+        // Manager rejection is terminal for this report; the employee can immediately file
+        // a correction (a brand-new report). The rejected report is kept as history.
+        $claim->update([
+            'status' => 'manager_rejected',
+            'manager_remarks' => $reason,
+            'manager_approved_by' => $employee->id,
+            'manager_approved_at' => now(),
+        ]);
 
         if ($claim->employee->user) {
             Mail::to($claim->employee->user->work_email)->send(new ClaimRejectedMail($claim, $claim->employee, 'manager'));
@@ -894,7 +904,99 @@ class ExpenseClaimController extends Controller
             'claim_id' => $claim->id, 'claim_number' => $claim->claim_number, 'actor_id' => Auth::id(),
         ]);
 
-        return back()->with('success', 'Claim rejected and returned to '.$claim->employee->full_name.'.');
+        return back()->with('success', 'Claim rejected — '.$claim->employee->full_name.' can now file a correction.');
+    }
+
+    /**
+     * The approving manager releases an HR-rejected claim back to the employee, optionally
+     * with a comment, so the employee can file a correction. Until released, the employee
+     * waits (HR rejections don't go straight back to staff).
+     */
+    public function releaseRejection(Request $request, ExpenseClaim $claim)
+    {
+        $employee = Auth::user()->employee;
+
+        if ($claim->status !== 'hr_rejected' || $claim->released_at !== null) {
+            return back()->with('error', 'This claim is not awaiting release.');
+        }
+
+        // Only the approving manager (or superadmin) may release it.
+        $isApprover = $employee && (
+            $claim->manager_approved_by === $employee->id
+            || $claim->manager_id === $employee->id
+            || $claim->items->where('approver_id', $employee->id)->isNotEmpty()
+        );
+        if (! $isApprover && ! Auth::user()->isSuperadmin()) {
+            abort(403, 'You are not the approving manager for this claim.');
+        }
+
+        $note = $request->filled('release_remarks')
+            ? mb_substr(strip_tags($request->input('release_remarks')), 0, 1000) : null;
+
+        $claim->update([
+            'released_at' => now(),
+            'released_by' => $employee?->id,
+            'release_remarks' => $note,
+        ]);
+
+        if ($claim->employee->user) {
+            Mail::to($claim->employee->user->work_email)->send(new ClaimRejectedMail($claim, $claim->employee, 'released'));
+        }
+
+        $this->logClaim($claim, 'released', ($employee->full_name ?? 'Manager').' released the HR-rejected claim to the employee'.($note ? ' with a note: '.$note : '.'));
+
+        return back()->with('success', 'Released to '.$claim->employee->full_name.' — they can now make a correction.');
+    }
+
+    /**
+     * Employee files a correction of a rejected claim: a NEW draft claim is created with a
+     * copy of the rejected one's items (and event), linked back to the original. The
+     * original stays as a frozen rejected record.
+     */
+    public function makeCorrection(ExpenseClaim $claim)
+    {
+        $employee = Auth::user()->employee;
+        if (! $employee || $claim->employee_id !== $employee->id) {
+            abort(403);
+        }
+        if (! $claim->canCorrect()) {
+            return back()->with('error', 'This claim is not ready for correction yet.');
+        }
+        $claim->load('items');
+
+        $new = DB::transaction(function () use ($claim, $employee) {
+            $new = ExpenseClaim::create([
+                'employee_id' => $employee->id,
+                'year' => $claim->year, 'month' => $claim->month,
+                'event' => $claim->event, 'title' => $claim->title,
+                'claim_number' => ExpenseClaim::generateClaimNumber($claim->year, $claim->month),
+                'status' => 'draft', 'correction_of_id' => $claim->id,
+                'submission_deadline' => $claim->submission_deadline,
+                'manager_id' => $employee->manager_id,
+                'total_amount' => 0, 'total_gst' => 0, 'total_with_gst' => 0, 'item_count' => 0,
+            ]);
+            foreach ($claim->items as $it) {
+                $new->items()->create([
+                    'expense_category_id' => $it->expense_category_id, 'expense_date' => $it->expense_date,
+                    'description' => $it->description, 'project_client' => $it->project_client,
+                    'amount' => $it->amount, 'quantity' => $it->quantity, 'unit' => $it->unit,
+                    'rate_applied' => $it->rate_applied, 'gst_amount' => $it->gst_amount,
+                    'total_with_gst' => $it->total_with_gst, 'mileage_origin' => $it->mileage_origin,
+                    'mileage_destination' => $it->mileage_destination, 'receipt_path' => $it->receipt_path,
+                    'receipt_hash' => $it->receipt_hash, 'is_locked' => false,
+                    'manager_status' => 'pending', 'review_status' => 'approved',
+                ]);
+            }
+            $new->recalculateTotals();
+
+            return $new;
+        });
+
+        $this->logClaim($claim, 'correction_created', 'Employee started a correction — new report '.$new->claim_number.'.');
+        $this->logClaim($new, 'created_as_correction', 'Created as a correction of '.$claim->claim_number.'.');
+
+        return redirect()->route('user.claims.show', $new)
+            ->with('success', 'Correction started from '.$claim->claim_number.' — edit the item(s) and resubmit.');
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -1013,38 +1115,39 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'This claim is not pending HR approval.');
         }
 
-        $remarks = strip_tags($request->input('remarks'));
+        $remarks = mb_substr(strip_tags($request->input('remarks')), 0, 1000);
 
+        // HR rejection does NOT go straight to the employee: it's held for the approving
+        // manager to review and release. The report is frozen as hr_rejected.
         $claim->update([
             'status' => 'hr_rejected',
             'hr_approved_by' => Auth::id(),
             'hr_approved_at' => now(),
             'hr_remarks' => $remarks,
+            'released_at' => null,
         ]);
 
         Log::info('Claim hr-rejected', [
-            'claim_id' => $claim->id,
-            'claim_number' => $claim->claim_number,
-            'amount' => $claim->total_with_gst,
-            'actor_id' => Auth::id(),
-            'actor_role' => Auth::user()->role,
-            'remarks' => $remarks,
+            'claim_id' => $claim->id, 'claim_number' => $claim->claim_number,
+            'actor_id' => Auth::id(), 'actor_role' => Auth::user()->role, 'remarks' => $remarks,
         ]);
 
-        // Unlock items so employee can edit and resubmit
-        $claim->items()->update(['is_locked' => false]);
-
-        // Notify employee
         $employee = $claim->employee;
-        if ($employee->user) {
-            Mail::to($employee->user->work_email)->send(
-                new ClaimRejectedMail($claim, $employee, 'hr')
-            );
+
+        // Notify the approving manager to review + release.
+        $manager = $claim->managerApprover ?? $claim->manager;
+        if ($manager && $manager->user) {
+            Mail::to($manager->user->work_email)->send(new ClaimReleaseRequestMail($claim, $manager));
         }
 
-        $this->logClaim($claim, 'hr_rejected', 'HR rejected: '.$remarks);
+        // Inform the employee (they must wait for the manager to release it).
+        if ($employee->user) {
+            Mail::to($employee->user->work_email)->send(new ClaimRejectedMail($claim, $employee, 'hr'));
+        }
 
-        return back()->with('success', 'Claim rejected by HR.');
+        $this->logClaim($claim, 'hr_rejected', 'HR rejected: '.$remarks.' (sent to the approving manager to release).');
+
+        return back()->with('success', 'Claim rejected by HR — sent to the approving manager to release to the employee.');
     }
 
     /**

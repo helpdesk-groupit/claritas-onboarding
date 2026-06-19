@@ -210,6 +210,39 @@
         </div>
     </div>
 
+    {{-- ── HR-rejected — awaiting your release to the employee ── --}}
+    @if(($toRelease ?? collect())->isNotEmpty())
+    <div class="card shadow-sm mb-4 border-0">
+        <div class="card-header bg-white border-0 d-flex align-items-center">
+            <h5 class="mb-0"><i class="bi bi-unlock me-2 text-danger"></i>Rejected by HR — release to employee</h5>
+            <span class="badge rounded-pill bg-danger ms-2">{{ $toRelease->count() }}</span>
+        </div>
+        <div class="card-body pt-0">
+            <p class="small text-muted">HR rejected these claims you approved. Review the reason, add a comment if you like, then release them so the employee can make a correction.</p>
+            @foreach($toRelease as $claim)
+            <div class="border rounded-3 p-3 mb-2 bg-light">
+                <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
+                    <div>
+                        <div class="fw-semibold">{{ $claim->employee->full_name }} &middot; {{ $claim->event ?: 'Untitled' }}
+                            <span class="text-muted small">({{ $claim->claim_number }}, RM {{ number_format($claim->total_with_gst, 2) }})</span>
+                        </div>
+                        <div class="small mt-1"><span class="text-danger fw-semibold">HR reason:</span> {{ $claim->hr_remarks }}</div>
+                    </div>
+                    <a href="{{ route('user.claims.report-print', $claim) }}" target="_blank" class="btn btn-sm btn-outline-secondary"><i class="bi bi-printer me-1"></i>View report</a>
+                </div>
+                <form action="{{ route('user.claims.team.release', $claim) }}" method="POST" class="mt-2">
+                    @csrf
+                    <div class="input-group input-group-sm">
+                        <input type="text" name="release_remarks" class="form-control" placeholder="Optional comment to the employee (e.g., HR needs the toll receipt)" maxlength="1000">
+                        <button class="btn btn-success text-nowrap"><i class="bi bi-send me-1"></i>Release to employee</button>
+                    </div>
+                </form>
+            </div>
+            @endforeach
+        </div>
+    </div>
+    @endif
+
     {{-- ── Approval History — categorized by status ── --}}
     @if($reviewedCount > 0)
     @php

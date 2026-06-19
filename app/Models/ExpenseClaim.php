@@ -14,6 +14,7 @@ class ExpenseClaim extends Model
         'status', 'submitted_at', 'submission_deadline',
         'manager_id', 'manager_approved_by', 'manager_approved_at', 'manager_remarks',
         'hr_approved_by', 'hr_approved_at', 'hr_remarks',
+        'released_at', 'released_by', 'release_remarks', 'correction_of_id',
         'payslip_id', 'pay_run_id', 'notes',
     ];
 
@@ -25,6 +26,7 @@ class ExpenseClaim extends Model
         'submission_deadline' => 'date',
         'manager_approved_at' => 'datetime',
         'hr_approved_at' => 'datetime',
+        'released_at' => 'datetime',
     ];
 
     // ── Relationships ────────────────────────────────────────────────────
@@ -47,6 +49,17 @@ class ExpenseClaim extends Model
     public function hrApprover(): BelongsTo
     {
         return $this->belongsTo(User::class, 'hr_approved_by');
+    }
+
+    public function releasedBy(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'released_by');
+    }
+
+    /** The original (rejected) claim this one is a correction of. */
+    public function correctionOf(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'correction_of_id');
     }
 
     public function items(): HasMany
@@ -175,13 +188,29 @@ class ExpenseClaim extends Model
 
     public function isEditable(): bool
     {
-        return in_array($this->status, ['draft', 'manager_rejected', 'hr_rejected']);
+        // Rejected claims are now terminal (frozen as history); corrections are filed as
+        // a NEW claim, so only a draft is directly editable.
+        return $this->status === 'draft';
     }
 
     public function isSubmittable(): bool
     {
-        return in_array($this->status, ['draft', 'manager_rejected', 'hr_rejected'])
-            && $this->item_count > 0;
+        return $this->status === 'draft' && $this->item_count > 0;
+    }
+
+    /** True when the employee may file a correction of this rejected claim. */
+    public function canCorrect(): bool
+    {
+        // Manager rejection → correct immediately. HR rejection → only after the manager
+        // has released it back to the employee.
+        return $this->status === 'manager_rejected'
+            || ($this->status === 'hr_rejected' && $this->released_at !== null);
+    }
+
+    /** HR-rejected and still waiting for the approving manager to release it. */
+    public function awaitingRelease(): bool
+    {
+        return $this->status === 'hr_rejected' && $this->released_at === null;
     }
 
     /**

@@ -24,37 +24,63 @@
 @php
     $period = \Carbon\Carbon::create($claim->year, $claim->month)->format('F Y');
     $company = $employee->company ?? config('app.name');
-    $by = $rejectorType === 'manager' ? 'Reporting Manager' : 'HR';
+    // released = the manager released an earlier HR rejection back to the employee.
     $remarks = $rejectorType === 'manager' ? $claim->manager_remarks : $claim->hr_remarks;
+    $headline = match ($rejectorType) {
+        'manager' => 'Rejected by your manager',
+        'released' => 'Released for correction',
+        default => 'Rejected by HR',
+    };
 @endphp
 <div class="email-wrap">
 
   <div class="header">
-    <h1>Expense Claim Rejected</h1>
-    <p>{{ $period }} &mdash; Rejected by {{ $by }}</p>
+    <h1>Expense Claim {{ $rejectorType === 'released' ? 'Update' : 'Rejected' }}</h1>
+    <p>{{ $claim->event ?: $period }} &mdash; {{ $headline }}</p>
   </div>
 
   <div class="body">
     <div class="greeting">Dear {{ $employee->preferred_name ?? $employee->full_name }},</div>
+
+    @if($rejectorType === 'manager')
     <p style="color:#475569;font-size:15px;line-height:1.6;">
-      Your expense claim for <strong>{{ $period }}</strong> has been rejected by your {{ strtolower($by) }}.
-      Please review the remarks below, make the necessary corrections, and resubmit.
+      Your claim <strong>{{ $claim->claim_number }}</strong> ({{ $claim->event ?: $period }}) was rejected by your
+      reporting manager. You can <strong>make a correction now</strong> &mdash; a new report opens pre-filled so
+      you can fix the issue and resubmit.
     </p>
+    @elseif($rejectorType === 'released')
+    <p style="color:#475569;font-size:15px;line-height:1.6;">
+      Your manager has reviewed the HR rejection of <strong>{{ $claim->claim_number }}</strong>
+      ({{ $claim->event ?: $period }}) and <strong>released it back to you</strong>. You can now make a correction.
+    </p>
+    @else
+    <p style="color:#475569;font-size:15px;line-height:1.6;">
+      Your claim <strong>{{ $claim->claim_number }}</strong> ({{ $claim->event ?: $period }}) was rejected by HR.
+      It has been sent to your approving manager for review &mdash; <strong>please wait</strong>; you'll be notified
+      when they release it and you can make a correction.
+    </p>
+    @endif
 
     <div class="info-box">
       <div class="detail-row"><span class="detail-label">Claim No.</span> <span class="detail-value">{{ $claim->claim_number }}</span></div>
-      <div class="detail-row"><span class="detail-label">Total (w/ GST)</span> <span class="detail-value">RM {{ number_format($claim->total_with_gst, 2) }}</span></div>
+      <div class="detail-row"><span class="detail-label">Total (w/ SST)</span> <span class="detail-value">RM {{ number_format($claim->total_with_gst, 2) }}</span></div>
     </div>
 
     @if($remarks)
     <div class="remarks">
-      <strong>Remarks from {{ $by }}:</strong><br>
+      <strong>{{ $rejectorType === 'manager' ? 'Manager' : 'HR' }} remarks:</strong><br>
       {{ $remarks }}
+    </div>
+    @endif
+    @if($rejectorType === 'released' && $claim->release_remarks)
+    <div class="remarks">
+      <strong>Your manager's note:</strong><br>
+      {{ $claim->release_remarks }}
     </div>
     @endif
 
     <p style="text-align:center;">
-      <a href="{{ route('login') }}" class="btn">Edit & Resubmit →</a>
+      <a href="{{ route('login') }}" class="btn">{{ $rejectorType === 'hr' ? 'View claim →' : 'Make correction →' }}</a>
     </p>
   </div>
 

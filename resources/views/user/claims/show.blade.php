@@ -83,15 +83,34 @@
     @php $canEdit = $claim->isEditable(); @endphp
 
     <div class="card shadow-sm mb-4 border-0">
-        {{-- Rejection remarks --}}
-        @if($claim && $claim->status === 'manager_rejected' && $claim->manager_remarks)
-        <div class="alert alert-warning mx-3 mt-2 mb-0">
-            <strong><i class="bi bi-exclamation-triangle me-1"></i>Manager Remarks:</strong> {{ $claim->manager_remarks }}
+        {{-- ── Rejection banner + correction flow ── --}}
+        @if($claim->status === 'manager_rejected')
+        <div class="alert alert-danger mx-3 mt-3 mb-0">
+            <div class="fw-semibold"><i class="bi bi-x-octagon me-1"></i>Rejected by your manager{{ $claim->managerApprover ? ' ('.$claim->managerApprover->full_name.')' : '' }}</div>
+            @if($claim->manager_remarks)<div class="mt-1"><strong>Reason:</strong> {{ $claim->manager_remarks }}</div>@endif
+            <form action="{{ route('user.claims.correct', $claim) }}" method="POST" class="js-confirm mt-2" data-confirm="Start a correction? A new report opens pre-filled with these items so you can fix and resubmit. This rejected report is kept as history." data-confirm-title="Make correction" data-confirm-ok="Make correction" data-confirm-variant="primary">
+                @csrf
+                <button class="btn btn-primary btn-sm"><i class="bi bi-pencil-square me-1"></i>Make correction</button>
+            </form>
         </div>
-        @endif
-        @if($claim && $claim->status === 'hr_rejected' && $claim->hr_remarks)
-        <div class="alert alert-warning mx-3 mt-2 mb-0">
-            <strong><i class="bi bi-exclamation-triangle me-1"></i>HR Remarks:</strong> {{ $claim->hr_remarks }}
+        @elseif($claim->status === 'hr_rejected')
+        <div class="alert {{ $claim->canCorrect() ? 'alert-danger' : 'alert-warning' }} mx-3 mt-3 mb-0">
+            <div class="fw-semibold"><i class="bi bi-x-octagon me-1"></i>Rejected by HR</div>
+            @if($claim->hr_remarks)<div class="mt-1"><strong>HR reason:</strong> {{ $claim->hr_remarks }}</div>@endif
+            @if($claim->awaitingRelease())
+            <div class="mt-2 small"><i class="bi bi-hourglass-split me-1"></i>Your approving manager is reviewing this. You'll be able to make a correction once they release it to you.</div>
+            @else
+            @if($claim->release_remarks)<div class="mt-1"><strong>Manager's note:</strong> {{ $claim->release_remarks }}</div>@endif
+            <div class="mt-1 small text-success"><i class="bi bi-unlock me-1"></i>Released by {{ optional($claim->releasedBy)->full_name ?? 'your manager' }} on {{ $claim->released_at?->format('d/m/Y') }}.</div>
+            <form action="{{ route('user.claims.correct', $claim) }}" method="POST" class="js-confirm mt-2" data-confirm="Start a correction? A new report opens pre-filled with these items so you can fix and resubmit. This rejected report is kept as history." data-confirm-title="Make correction" data-confirm-ok="Make correction" data-confirm-variant="primary">
+                @csrf
+                <button class="btn btn-primary btn-sm"><i class="bi bi-pencil-square me-1"></i>Make correction</button>
+            </form>
+            @endif
+        </div>
+        @elseif($claim->correction_of_id)
+        <div class="alert alert-info mx-3 mt-3 mb-0 small">
+            <i class="bi bi-arrow-repeat me-1"></i>This is a correction of {{ optional($claim->correctionOf)->claim_number }}.
         </div>
         @endif
 

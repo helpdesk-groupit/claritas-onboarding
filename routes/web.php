@@ -409,6 +409,7 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     Route::get('/my/claims/{claim}/submit',             [ExpenseClaimController::class, 'submitForm'])->name('user.claims.submit-form');
     Route::post('/my/claims/{claim}/submit',            [ExpenseClaimController::class, 'submit'])->name('user.claims.submit');
     Route::post('/my/claims/{claim}/cancel',            [ExpenseClaimController::class, 'cancel'])->name('user.claims.cancel');
+    Route::post('/my/claims/{claim}/correct',           [ExpenseClaimController::class, 'makeCorrection'])->name('user.claims.correct');
     Route::post('/my/claims/detect-category',           [ExpenseClaimController::class, 'detectCategory'])->name('user.claims.detect-category');
     Route::post('/my/claims/mileage-distance',          [ExpenseClaimController::class, 'mileageDistance'])->name('user.claims.mileage-distance');
     Route::post('/my/claims/place-suggest',             [ExpenseClaimController::class, 'placeSuggest'])->name('user.claims.place-suggest')->middleware('throttle:60,1');
@@ -419,6 +420,7 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     Route::get('/my/team-claims',                       [ExpenseClaimController::class, 'teamClaims'])->name('user.claims.team');
     Route::post('/my/team-claims/{claim}/approve',      [ExpenseClaimController::class, 'managerApprove'])->name('user.claims.team.approve');
     Route::post('/my/team-claims/{claim}/reject',       [ExpenseClaimController::class, 'managerReject'])->name('user.claims.team.reject');
+    Route::post('/my/team-claims/{claim}/release',      [ExpenseClaimController::class, 'releaseRejection'])->name('user.claims.team.release');
 
     // Reviewer verification (OCR receipt amount + ORS mileage distance) — HR & managers
     Route::post('/claims/items/{item}/verify',          [ExpenseClaimController::class, 'verifyItem'])->name('user.claims.items.verify')->middleware('throttle:30,1');
