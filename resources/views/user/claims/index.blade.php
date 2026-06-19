@@ -991,6 +991,46 @@ document.addEventListener('DOMContentLoaded', function() {
     const ADD_ACTION = form ? form.getAttribute('data-add-action') : '';
     const byId = id => document.getElementById(id);
 
+    // Remember the form card's original spot (the "Add" position above the table) so
+    // it can be moved under a row while editing, then put back afterwards.
+    const formHome = itemFormCard ? itemFormCard.parentNode : null;
+    const formAnchorNext = itemFormCard ? itemFormCard.nextElementSibling : null;
+    let editHost = null; // the temporary <tr>/<div> hosting the form inline while editing
+
+    // Move the form card directly beneath the clicked item's row (desktop) or card (mobile).
+    function relocateFormUnder(btn) {
+        restoreFormHome();
+        const row = btn.closest('tr');
+        if (row && row.parentNode) {
+            const host = document.createElement('tr');
+            host.className = 'item-edit-host';
+            const td = document.createElement('td');
+            td.colSpan = row.children.length || 10;
+            td.className = 'p-0 border-0';
+            td.appendChild(itemFormCard);
+            host.appendChild(td);
+            row.parentNode.insertBefore(host, row.nextSibling);
+            editHost = host;
+            return;
+        }
+        const card = btn.closest('.border.rounded');
+        if (card && card.parentNode) {
+            const host = document.createElement('div');
+            host.className = 'item-edit-host';
+            host.appendChild(itemFormCard);
+            card.parentNode.insertBefore(host, card.nextSibling);
+            editHost = host;
+        }
+    }
+
+    // Put the form card back in its original "Add" position above the table.
+    function restoreFormHome() {
+        if (!editHost) return;
+        if (formHome) formHome.insertBefore(itemFormCard, formAnchorNext);
+        editHost.remove();
+        editHost = null;
+    }
+
     // Reset all fields to a fresh, empty state.
     function resetItemFields() {
         const dateEl = form.querySelector('[name="expense_date"]');
@@ -1017,9 +1057,10 @@ document.addEventListener('DOMContentLoaded', function() {
         applyCategoryMode(); // re-sync UI (hides mileage panel, quantity, etc.)
     }
 
-    // Switch the form back to "add" mode.
+    // Switch the form back to "add" mode and return it to its home position.
     function exitEditMode() {
         editingItemId = null;
+        restoreFormHome();
         if (form) {
             form.setAttribute('action', ADD_ACTION);
             const m = form.querySelector('input[name="_method"]');
@@ -1031,10 +1072,11 @@ document.addEventListener('DOMContentLoaded', function() {
         if (attachmentKeepNote) attachmentKeepNote.classList.add('d-none');
     }
 
-    // Load an existing line item back into the form for editing.
-    function enterEditMode(ds) {
+    // Load an existing line item back into the form for editing, shown inline under the row.
+    function enterEditMode(ds, btn) {
         resetItemFields();
         editingItemId = ds.updateUrl;
+        if (btn) relocateFormUnder(btn);
         // Point the form at the item's PUT update endpoint (method spoof).
         form.setAttribute('action', ds.updateUrl);
         let m = form.querySelector('input[name="_method"]');
@@ -1075,11 +1117,11 @@ document.addEventListener('DOMContentLoaded', function() {
         if (submitItemBtn) submitItemBtn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Update Item';
         if (cancelEditBtn) cancelEditBtn.classList.remove('d-none');
         if (attachmentKeepNote) attachmentKeepNote.classList.remove('d-none');
-        if (itemFormCard) itemFormCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (itemFormCard) itemFormCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
     document.querySelectorAll('.edit-item-btn').forEach(function (btn) {
-        btn.addEventListener('click', function () { enterEditMode(btn.dataset); });
+        btn.addEventListener('click', function () { enterEditMode(btn.dataset, btn); });
     });
     if (cancelEditBtn) cancelEditBtn.addEventListener('click', function () { resetItemFields(); exitEditMode(); });
     if (clearFormBtn) clearFormBtn.addEventListener('click', function () { resetItemFields(); exitEditMode(); });
