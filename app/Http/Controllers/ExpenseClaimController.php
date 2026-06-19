@@ -272,6 +272,178 @@ class ExpenseClaimController extends Controller
     }
 
     /**
+     * Update a single line item on an editable (draft/rejected) claim. Mirrors
+     * addItem's rules — computed amounts, duplicate + cap checks (excluding this
+     * item itself) — and keeps the existing receipt unless a new file is uploaded.
+     */
+    public function updateItem(Request $request, ExpenseClaimItem $item)
+    {
+        $employee = Auth::user()->employee;
+        $claim = $item->claim;
+
+        if (! $employee || ! $claim || $claim->employee_id !== $employee->id) {
+            abort(403);
+        }
+        if (! $claim->isEditable() || $item->is_locked) {
+            return back()->with('error', 'This item can no longer be edited.');
+        }
+
+        $now = Carbon::now();
+        $startOfYear = Carbon::create($now->year, 1, 1)->toDateString();
+
+        $validated = $request->validate([
+            'expense_date' => "required|date|after_or_equal:{$startOfYear}|before_or_equal:today",
+            'description' => 'required|string|max:500',
+            'project_client' => 'nullable|string|max:255',
+            'expense_category_id' => 'required|exists:expense_categories,id',
+            'amount' => 'required|numeric|min:0.01|max:99999.99',
+            'gst_amount' => 'nullable|numeric|min:0|max:99999.99',
+            'total_with_gst' => 'required|numeric|min:0.01|max:999999.99',
+            'quantity' => 'nullable|numeric|min:0.01|max:99999.99',
+            'vehicle' => 'nullable|in:car,motorcycle',
+            'mileage_destination' => 'nullable|string|max:255',
+            'mileage_origin' => 'nullable|string|max:255',
+            'receipt' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+        ], [
+            'expense_date.after_or_equal' => 'The expense date must be within '.$now->year.'.',
+            'expense_date.before_or_equal' => 'The expense date cannot be in the future — you can claim past dates, just not future ones.',
+        ]);
+
+        $expenseDate = Carbon::parse($validated['expense_date']);
+
+        $category = ExpenseCategory::find($validated['expense_category_id']);
+        if (! $category || ! $category->is_active) {
+            return back()->withErrors(['expense_category_id' => 'Invalid expense category.'])->withInput();
+        }
+        if ($category->company && $employee->company && $category->company !== $employee->company) {
+            return back()->withErrors(['expense_category_id' => 'This category is not available for your company.'])->withInput();
+        }
+        if (! ClaimRulesService::roleAllows($employee, $category->applies_to_role)) {
+            return back()->withErrors(['expense_category_id' => 'You are not eligible to claim under this category.'])->withInput();
+        }
+
+        $mileageGl = config('claims.mileage.gl_code');
+        $isPetrolMileage = $mileageGl && $category->gl_code === $mileageGl;
+
+        // Receipt requirement: only when the category needs one, it isn't a mileage
+        // claim, the item has no receipt already, and none is being uploaded now.
+        if ($category->requires_receipt && ! $isPetrolMileage && ! $item->receipt_path && ! $request->hasFile('receipt')) {
+            return back()->withErrors(['receipt' => 'A receipt is required for '.$category->name.' (no receipt, no claim).'])->withInput();
+        }
+
+        // Computed amounts (server authoritative).
+        $quantity = null;
+        $unit = null;
+        $rateApplied = null;
+        if ($category->isComputed() || $isPetrolMileage) {
+            if ($isPetrolMileage) {
+                $km = isset($validated['quantity']) && $validated['quantity'] !== '' ? (float) $validated['quantity'] : null;
+                if ($km === null) {
+                    return back()->withErrors(['quantity' => 'Enter the distance in km for the mileage claim.'])->withInput();
+                }
+                $rateApplied = ClaimRulesService::mileageRate($request->input('vehicle', 'car'));
+                $computed = round($km * $rateApplied, 2);
+                $quantity = $km;
+                $unit = 'km';
+            } else {
+                $computed = ClaimRulesService::computeAmount($category, [
+                    'quantity' => $validated['quantity'] ?? null,
+                    'vehicle' => $request->input('vehicle', 'car'),
+                ]);
+                if ($computed === null) {
+                    $unitLabel = ClaimRulesService::unitFor($category) ?? 'quantity';
+
+                    return back()->withErrors(['quantity' => 'Please enter the '.$unitLabel.' for '.$category->name.'.'])->withInput();
+                }
+                $quantity = (float) $validated['quantity'];
+                $unit = ClaimRulesService::unitFor($category);
+                $rateApplied = $category->rate_type === 'per_km'
+                    ? ClaimRulesService::mileageRate($request->input('vehicle', 'car'))
+                    : ($category->rate_amount !== null ? (float) $category->rate_amount : null);
+            }
+            $validated['amount'] = number_format($computed, 2, '.', '');
+            $validated['gst_amount'] = 0;
+            $validated['total_with_gst'] = $validated['amount'];
+        }
+
+        // Duplicate detection — same date+description+amount on another item.
+        $cleanDescription = strip_tags($validated['description']);
+        $duplicateItem = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id))
+            ->where('id', '!=', $item->id)
+            ->where('expense_date', $validated['expense_date'])
+            ->where('description', $cleanDescription)
+            ->where('amount', $validated['amount'])
+            ->first();
+        if ($duplicateItem) {
+            return back()->withErrors(['description' => 'A similar expense already exists (same date, description & amount) in claim '.$duplicateItem->claim->claim_number.'.'])->withInput();
+        }
+
+        // Receipt: replace only when a new file is uploaded; otherwise keep the old one.
+        $receiptPath = $item->receipt_path;
+        $receiptHash = $item->receipt_hash;
+        $oldReceiptToDelete = null;
+        if ($request->hasFile('receipt')) {
+            $newHash = hash_file('sha256', $request->file('receipt')->getRealPath());
+            $existingReceipt = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id))
+                ->where('id', '!=', $item->id)
+                ->where('receipt_hash', $newHash)
+                ->first();
+            if ($existingReceipt) {
+                return back()->withErrors(['receipt' => 'This receipt has already been uploaded in claim '.$existingReceipt->claim->claim_number.'.'])->withInput();
+            }
+            $receiptPath = $request->file('receipt')->store('claim_receipts/'.$employee->id.'/'.$expenseDate->format('Y-m'), 'local');
+            $receiptHash = $newHash;
+            $oldReceiptToDelete = $item->receipt_path;
+        }
+
+        // Total integrity.
+        $expectedTotal = round((float) $validated['amount'] + (float) ($validated['gst_amount'] ?? 0), 2);
+        if (abs($expectedTotal - (float) $validated['total_with_gst']) > 0.01) {
+            if ($oldReceiptToDelete !== null && $receiptPath) {
+                Storage::disk('local')->delete($receiptPath); // roll back the just-stored new file
+            }
+
+            return back()->withErrors(['total_with_gst' => 'Total does not match amount + GST.'])->withInput();
+        }
+
+        // Cap — exclude this item's own current amount from the period total.
+        $capError = ClaimRulesService::capError($employee, $category, (float) $validated['amount'], $expenseDate, $item->id);
+        if ($capError) {
+            if ($oldReceiptToDelete !== null && $receiptPath) {
+                Storage::disk('local')->delete($receiptPath);
+            }
+
+            return back()->withErrors(['amount' => $capError])->withInput();
+        }
+
+        $item->update([
+            'expense_category_id' => $validated['expense_category_id'],
+            'expense_date' => $validated['expense_date'],
+            'description' => $cleanDescription,
+            'project_client' => $validated['project_client'] ? strip_tags($validated['project_client']) : null,
+            'amount' => $validated['amount'],
+            'quantity' => $quantity,
+            'unit' => $unit,
+            'rate_applied' => $rateApplied,
+            'mileage_destination' => $isPetrolMileage ? mb_substr(strip_tags((string) $request->input('mileage_destination')), 0, 255) : null,
+            'mileage_origin' => $isPetrolMileage ? (mb_substr(strip_tags((string) $request->input('mileage_origin')), 0, 255) ?: null) : null,
+            'gst_amount' => $validated['gst_amount'] ?? 0,
+            'total_with_gst' => $expectedTotal,
+            'receipt_path' => $receiptPath,
+            'receipt_hash' => $receiptHash,
+        ]);
+
+        if ($oldReceiptToDelete) {
+            Storage::disk('local')->delete($oldReceiptToDelete);
+        }
+
+        $claim->recalculateTotals();
+
+        return redirect()->route('user.claims.index', ['month' => $claim->month, 'year' => $claim->year])
+            ->with('success', 'Expense item updated.');
+    }
+
+    /**
      * Remove an item from a draft claim.
      */
     public function removeItem(ExpenseClaimItem $item)

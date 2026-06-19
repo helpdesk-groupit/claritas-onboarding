@@ -177,15 +177,20 @@ class ClaimRulesService
         return null;
     }
 
-    /** Amount already used by this employee for the category in the cap's period. */
-    public static function usedInPeriod(Employee $employee, ExpenseCategory $category, Carbon $date, string $period): float
+    /**
+     * Amount already used by this employee for the category in the cap's period.
+     * $excludeItemId omits one item from the sum — used when editing that item so
+     * its own current amount isn't double-counted against the cap.
+     */
+    public static function usedInPeriod(Employee $employee, ExpenseCategory $category, Carbon $date, string $period, ?int $excludeItemId = null): float
     {
         $query = ExpenseClaimItem::where('expense_category_id', $category->id)
             ->whereHas('claim', function ($c) use ($employee) {
                 $c->where('employee_id', $employee->id)
                     ->whereNotIn('status', ['manager_rejected', 'hr_rejected', 'cancelled']);
             })
-            ->whereYear('expense_date', $date->year);
+            ->whereYear('expense_date', $date->year)
+            ->when($excludeItemId, fn ($q) => $q->where('id', '!=', $excludeItemId));
 
         if ($period !== 'annual') {
             $query->whereMonth('expense_date', $date->month);
@@ -197,15 +202,16 @@ class ClaimRulesService
     /**
      * Check whether adding $amount keeps the employee within the category cap.
      * Returns null when OK, or a human-readable error string when it would exceed.
+     * $excludeItemId skips one item (the one being edited) from the used total.
      */
-    public static function capError(Employee $employee, ExpenseCategory $category, float $amount, Carbon $date): ?string
+    public static function capError(Employee $employee, ExpenseCategory $category, float $amount, Carbon $date, ?int $excludeItemId = null): ?string
     {
         $limit = self::effectiveLimit($category, $employee);
         if ($limit === null) {
             return null;
         }
 
-        $used = self::usedInPeriod($employee, $category, $date, $limit['period']);
+        $used = self::usedInPeriod($employee, $category, $date, $limit['period'], $excludeItemId);
         if (($used + $amount) > $limit['amount'] + 0.001) {
             $periodLabel = $limit['period'] === 'annual' ? 'annual' : 'monthly';
             $remaining = max(0, $limit['amount'] - $used);

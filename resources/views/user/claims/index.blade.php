@@ -276,9 +276,12 @@
         <div class="card-body">
             {{-- Add New Item Form --}}
             @if($canEdit)
-            <div class="border rounded p-3 mb-4 bg-light">
-                <h6 class="mb-3"><i class="bi bi-plus-circle me-1"></i>Add Expense Item</h6>
-                <form action="{{ route('user.claims.add-item') }}" method="POST" enctype="multipart/form-data" id="addItemForm" novalidate>
+            <div class="border rounded p-3 mb-4 bg-light" id="itemFormCard">
+                <h6 class="mb-3 d-flex align-items-center">
+                    <span id="addItemHeading"><i class="bi bi-plus-circle me-1"></i>Add Expense Item</span>
+                    <button type="button" id="cancelEditBtn" class="btn btn-sm btn-outline-secondary ms-auto d-none"><i class="bi bi-x-lg me-1"></i>Cancel edit</button>
+                </h6>
+                <form action="{{ route('user.claims.add-item') }}" method="POST" enctype="multipart/form-data" id="addItemForm" data-add-action="{{ route('user.claims.add-item') }}" novalidate>
                     @csrf
                     {{-- Items accumulate in the claim month being viewed, regardless of each item's own (past) date --}}
                     <input type="hidden" name="claim_year" value="{{ $year }}">
@@ -295,6 +298,7 @@
                         <small class="text-info mt-1" id="ocrHint" style="display:none;"></small>
                         @error('receipt')<div class="invalid-feedback d-block">{{ $message }}</div>@enderror
                         <small class="text-muted d-block">JPG, PNG, PDF (max 5MB)</small>
+                        <small class="text-warning d-none" id="attachmentKeepNote"><i class="bi bi-info-circle me-1"></i>Editing — leave this empty to keep the current attachment, or choose a file to replace it.</small>
                     </div>
 
                     <div class="row g-3">
@@ -395,7 +399,7 @@
                     </div>
                     <div class="mt-3 text-end">
                         <button type="button" class="btn btn-outline-secondary me-2" id="clearFormBtn"><i class="bi bi-eraser me-1"></i>Clear</button>
-                        <button type="submit" class="btn btn-success"><i class="bi bi-plus-lg me-1"></i>Add to List</button>
+                        <button type="submit" class="btn btn-success" id="submitItemBtn"><i class="bi bi-plus-lg me-1"></i>Add to List</button>
                     </div>
                 </form>
             </div>
@@ -454,10 +458,25 @@
                             @if($canEdit)
                             <td>
                                 @if(!$item->is_locked)
-                                <form action="{{ route('user.claims.remove-item', $item) }}" method="POST" class="js-confirm" data-confirm="Remove this item from the claim?" data-confirm-title="Remove item" data-confirm-ok="Remove" data-confirm-variant="danger">
-                                    @csrf @method('DELETE')
-                                    <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
-                                </form>
+                                <div class="d-flex gap-1">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary edit-item-btn"
+                                            data-update-url="{{ route('user.claims.update-item', $item) }}"
+                                            data-date="{{ $item->expense_date->format('Y-m-d') }}"
+                                            data-description="{{ $item->description }}"
+                                            data-project="{{ $item->project_client }}"
+                                            data-category="{{ $item->expense_category_id }}"
+                                            data-amount="{{ $item->amount }}"
+                                            data-gst="{{ $item->gst_amount }}"
+                                            data-quantity="{{ $item->quantity }}"
+                                            data-vehicle="{{ ($item->rate_applied !== null && (float) $item->rate_applied == (float) config('claims.mileage.rates.motorcycle')) ? 'motorcycle' : 'car' }}"
+                                            data-origin="{{ $item->mileage_origin }}"
+                                            data-dest="{{ $item->mileage_destination }}"
+                                            title="Edit item"><i class="bi bi-pencil"></i></button>
+                                    <form action="{{ route('user.claims.remove-item', $item) }}" method="POST" class="js-confirm" data-confirm="Remove this item from the claim?" data-confirm-title="Remove item" data-confirm-ok="Remove" data-confirm-variant="danger">
+                                        @csrf @method('DELETE')
+                                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                                    </form>
+                                </div>
                                 @endif
                             </td>
                             @endif
@@ -499,6 +518,19 @@
                             <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0"><i class="bi bi-paperclip"></i></a>
                             @endif
                             @if($canEdit && !$item->is_locked)
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 edit-item-btn"
+                                    data-update-url="{{ route('user.claims.update-item', $item) }}"
+                                    data-date="{{ $item->expense_date->format('Y-m-d') }}"
+                                    data-description="{{ $item->description }}"
+                                    data-project="{{ $item->project_client }}"
+                                    data-category="{{ $item->expense_category_id }}"
+                                    data-amount="{{ $item->amount }}"
+                                    data-gst="{{ $item->gst_amount }}"
+                                    data-quantity="{{ $item->quantity }}"
+                                    data-vehicle="{{ ($item->rate_applied !== null && (float) $item->rate_applied == (float) config('claims.mileage.rates.motorcycle')) ? 'motorcycle' : 'car' }}"
+                                    data-origin="{{ $item->mileage_origin }}"
+                                    data-dest="{{ $item->mileage_destination }}"
+                                    title="Edit item"><i class="bi bi-pencil"></i></button>
                             <form action="{{ route('user.claims.remove-item', $item) }}" method="POST" class="js-confirm" data-confirm="Remove this item from the claim?" data-confirm-title="Remove item" data-confirm-ok="Remove" data-confirm-variant="danger">
                                 @csrf @method('DELETE')
                                 <button class="btn btn-sm btn-outline-danger py-0"><i class="bi bi-trash"></i></button>
@@ -542,6 +574,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const gstInput = document.getElementById('gstAmount');
     const totalInput = document.getElementById('totalWithGst');
     const form = document.getElementById('addItemForm');
+    let editingItemId = null; // set while editing an existing line item
     const quantityGroup = document.getElementById('quantityGroup');
     const quantityInput = document.getElementById('quantityInput');
     const quantityLabel = document.getElementById('quantityLabel');
@@ -594,7 +627,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const opt = categorySelect.selectedOptions[0];
                 const mileageHere = isMileageCat(opt); // Petrol = always mileage, distance is the evidence
                 const receiptInput = document.getElementById('receiptFile');
-                if (!mileageHere && opt && opt.dataset.requiresReceipt === '1' && receiptInput && !receiptInput.files.length) {
+                if (!editingItemId && !mileageHere && opt && opt.dataset.requiresReceipt === '1' && receiptInput && !receiptInput.files.length) {
                     receiptInput.classList.add('is-invalid');
                     const fb = receiptInput.nextElementSibling;
                     if (fb && fb.classList.contains('invalid-feedback')) {
@@ -948,35 +981,108 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Clear — reset the Add Expense Item form to a fresh, empty state
-    const clearFormBtn = document.getElementById('clearFormBtn');
-    if (clearFormBtn) {
-        clearFormBtn.addEventListener('click', function () {
-            const byId = id => document.getElementById(id);
-            const dateEl = form.querySelector('[name="expense_date"]');
-            if (dateEl) dateEl.value = @json(date('Y-m-d'));
-            dateUserSet = false; // allow OCR to fill the date again after a clear
-            const projEl = form.querySelector('[name="project_client"]');
-            if (projEl) projEl.value = '';
-            if (byId('expenseDescription')) byId('expenseDescription').value = '';
-            if (byId('expenseCategory')) byId('expenseCategory').value = '';
-            if (byId('amountNoGst')) byId('amountNoGst').value = '';
-            if (byId('gstAmount')) byId('gstAmount').value = '0';
-            if (byId('totalWithGst')) byId('totalWithGst').value = '';
-            if (byId('quantityInput')) byId('quantityInput').value = '';
-            if (byId('mileageVehicle')) byId('mileageVehicle').value = 'car';
-            if (byId('mileageOrigin')) byId('mileageOrigin').value = '';
-            if (byId('mileageDest')) byId('mileageDest').value = '';
-            if (receiptFileEl) receiptFileEl.value = '';
-            if (receiptClearBtn) receiptClearBtn.classList.add('d-none');
-            if (scanReceiptBtn) scanReceiptBtn.classList.add('d-none');
-            if (ocrHint) { ocrHint.textContent = ''; ocrHint.style.display = 'none'; }
-            if (byId('categoryHint')) byId('categoryHint').style.display = 'none';
-            if (byId('mileageCalcHint')) byId('mileageCalcHint').textContent = '';
-            form.querySelectorAll('.is-invalid').forEach(el => el.classList.remove('is-invalid'));
-            applyCategoryMode(); // re-sync UI (hides mileage panel, quantity, etc.)
-        });
+    // ── Item form: shared reset + add/edit mode handling ──
+    const clearFormBtn   = document.getElementById('clearFormBtn');
+    const itemFormCard   = document.getElementById('itemFormCard');
+    const addItemHeading = document.getElementById('addItemHeading');
+    const submitItemBtn  = document.getElementById('submitItemBtn');
+    const cancelEditBtn  = document.getElementById('cancelEditBtn');
+    const attachmentKeepNote = document.getElementById('attachmentKeepNote');
+    const ADD_ACTION = form ? form.getAttribute('data-add-action') : '';
+    const byId = id => document.getElementById(id);
+
+    // Reset all fields to a fresh, empty state.
+    function resetItemFields() {
+        const dateEl = form.querySelector('[name="expense_date"]');
+        if (dateEl) dateEl.value = @json(date('Y-m-d'));
+        dateUserSet = false; // allow OCR to fill the date again after a clear
+        const projEl = form.querySelector('[name="project_client"]');
+        if (projEl) projEl.value = '';
+        if (byId('expenseDescription')) byId('expenseDescription').value = '';
+        if (byId('expenseCategory')) byId('expenseCategory').value = '';
+        if (byId('amountNoGst')) byId('amountNoGst').value = '';
+        if (byId('gstAmount')) byId('gstAmount').value = '0';
+        if (byId('totalWithGst')) byId('totalWithGst').value = '';
+        if (byId('quantityInput')) byId('quantityInput').value = '';
+        if (byId('mileageVehicle')) byId('mileageVehicle').value = 'car';
+        if (byId('mileageOrigin')) byId('mileageOrigin').value = '';
+        if (byId('mileageDest')) byId('mileageDest').value = '';
+        if (receiptFileEl) receiptFileEl.value = '';
+        if (receiptClearBtn) receiptClearBtn.classList.add('d-none');
+        if (scanReceiptBtn) scanReceiptBtn.classList.add('d-none');
+        if (ocrHint) { ocrHint.textContent = ''; ocrHint.style.display = 'none'; }
+        if (byId('categoryHint')) byId('categoryHint').style.display = 'none';
+        if (byId('mileageCalcHint')) byId('mileageCalcHint').textContent = '';
+        form.querySelectorAll('.is-invalid').forEach(el => el.classList.remove('is-invalid'));
+        applyCategoryMode(); // re-sync UI (hides mileage panel, quantity, etc.)
     }
+
+    // Switch the form back to "add" mode.
+    function exitEditMode() {
+        editingItemId = null;
+        if (form) {
+            form.setAttribute('action', ADD_ACTION);
+            const m = form.querySelector('input[name="_method"]');
+            if (m) m.remove();
+        }
+        if (addItemHeading) addItemHeading.innerHTML = '<i class="bi bi-plus-circle me-1"></i>Add Expense Item';
+        if (submitItemBtn) submitItemBtn.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add to List';
+        if (cancelEditBtn) cancelEditBtn.classList.add('d-none');
+        if (attachmentKeepNote) attachmentKeepNote.classList.add('d-none');
+    }
+
+    // Load an existing line item back into the form for editing.
+    function enterEditMode(ds) {
+        resetItemFields();
+        editingItemId = ds.updateUrl;
+        // Point the form at the item's PUT update endpoint (method spoof).
+        form.setAttribute('action', ds.updateUrl);
+        let m = form.querySelector('input[name="_method"]');
+        if (!m) { m = document.createElement('input'); m.type = 'hidden'; m.name = '_method'; form.appendChild(m); }
+        m.value = 'PUT';
+
+        const dateEl = form.querySelector('[name="expense_date"]');
+        if (dateEl && ds.date) { dateEl.value = ds.date; dateUserSet = true; }
+        if (byId('expenseDescription')) byId('expenseDescription').value = ds.description || '';
+        const projEl = form.querySelector('[name="project_client"]');
+        if (projEl) projEl.value = ds.project || '';
+
+        // Category drives the input mode; set it, then fill the mode-specific fields.
+        if (categorySelect && ds.category) {
+            categorySelect.value = ds.category;
+            categorySelect.dispatchEvent(new Event('change'));
+        }
+        const opt = selOpt();
+        if (isMileageCat(opt)) {
+            if (mileageVehicle && ds.vehicle) mileageVehicle.value = ds.vehicle;
+            if (mileageOrigin) mileageOrigin.value = ds.origin || '';
+            if (mileageDest) mileageDest.value = ds.dest || '';
+            if (quantityInput) quantityInput.value = ds.quantity || '';
+            applyPetrolMode();
+        } else {
+            const rt = opt ? (opt.dataset.rateType || 'receipt') : 'receipt';
+            if (rt === 'per_day' || rt === 'per_hour') {
+                if (quantityInput) quantityInput.value = ds.quantity || '';
+                computeFromQuantity();
+            } else {
+                if (amountInput) amountInput.value = ds.amount || '';
+                if (gstInput) gstInput.value = ds.gst || '0';
+                recalcTotal();
+            }
+        }
+
+        if (addItemHeading) addItemHeading.innerHTML = '<i class="bi bi-pencil-square me-1"></i>Edit Expense Item';
+        if (submitItemBtn) submitItemBtn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Update Item';
+        if (cancelEditBtn) cancelEditBtn.classList.remove('d-none');
+        if (attachmentKeepNote) attachmentKeepNote.classList.remove('d-none');
+        if (itemFormCard) itemFormCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    document.querySelectorAll('.edit-item-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () { enterEditMode(btn.dataset); });
+    });
+    if (cancelEditBtn) cancelEditBtn.addEventListener('click', function () { resetItemFields(); exitEditMode(); });
+    if (clearFormBtn) clearFormBtn.addEventListener('click', function () { resetItemFields(); exitEditMode(); });
 
     applyCategoryMode();
 });
