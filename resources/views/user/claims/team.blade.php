@@ -102,17 +102,9 @@
                 $myTotal  = $myItems->sum('total_with_gst');
                 $otherCount = $claim->items->count() - $myItems->count();
             @endphp
-            <div class="border rounded-3 p-3 p-md-4 mb-4 bg-white shadow-sm">
-                {{-- Official Expenses Claims Form letterhead --}}
-                @include('partials.claim-letterhead', [
-                    'company' => $company,
-                    'employee' => $claim->employee,
-                    'event' => $claim->event,
-                    'showRules' => false,
-                    'claimDate' => $claim->submitted_at ?? \Carbon\Carbon::create($claim->year, $claim->month, 1),
-                ])
-
-                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+            <div class="border rounded-3 p-2 p-md-3 mb-4 bg-light shadow-sm">
+                {{-- Toolbar: meta + open the printable report for this manager's portion --}}
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2 px-1">
                     <div class="small text-muted">
                         <span class="fw-semibold">{{ $claim->claim_number }}</span> &middot;
                         <i class="bi bi-send-check me-1"></i>Submitted {{ $claim->submitted_at?->format('d M Y') }}
@@ -120,40 +112,46 @@
                         &middot; <span class="badge bg-info-subtle text-info-emphasis">Showing the {{ $myItems->count() }} item(s) routed to you ({{ $otherCount }} more go to other managers)</span>
                         @endif
                     </div>
-                    <div class="text-end">
-                        <div class="fs-5 fw-bold text-primary">RM {{ number_format($myTotal, 2) }}</div>
-                        <small class="text-muted">your portion &middot; {{ $myItems->count() }} item{{ $myItems->count() == 1 ? '' : 's' }}</small>
-                    </div>
+                    <a href="{{ route('user.claims.report-print', $claim) }}?approver={{ $employee->id }}" target="_blank" class="btn btn-sm btn-outline-secondary"><i class="bi bi-printer me-1"></i>Open / Print report</a>
                 </div>
 
-                @include('partials.claim-review-summary', ['claim' => $claim])
+                {{-- The Expenses Claims Form (same layout the employee's Claim Reports prints) --}}
+                <div class="bg-white p-3 p-md-4 rounded" style="max-width:1000px;margin:0 auto;">
+                    @include('partials.claim-letterhead', [
+                        'company' => $company,
+                        'employee' => $claim->employee,
+                        'event' => $claim->event,
+                        'showRules' => true,
+                        'claimDate' => $claim->submitted_at ?? \Carbon\Carbon::create($claim->year, $claim->month, 1),
+                    ])
 
-                <div class="table-responsive">
-                    <table class="table table-bordered table-sm align-middle bg-white mb-3" style="font-size:.82rem;">
-                        <thead class="table-light text-center">
+                    @include('partials.claim-review-summary', ['claim' => $claim])
+
+                    <table class="table table-bordered align-middle" style="font-size:.78rem;">
+                        <thead class="text-center">
                             <tr>
                                 <th>Date</th>
                                 <th>Expense Description</th>
-                                <th>Project/Client</th>
+                                <th>Project/Client Name</th>
                                 <th>Expense Type</th>
-                                <th class="text-end">RM (w/o GST)</th>
-                                <th class="text-end">GST</th>
-                                <th class="text-end">Total</th>
-                                <th class="text-center">Receipt</th>
+                                <th>RM<br>(w/o GST)</th>
+                                <th>RM<br>(GST)</th>
+                                <th>Total<br>(w/ GST)</th>
+                                <th>Receipt</th>
                             </tr>
                         </thead>
                         <tbody>
                             @foreach($myItems as $item)
                             <tr>
-                                <td class="text-nowrap">{{ $item->expense_date->format('d/m/Y') }}</td>
+                                <td class="text-nowrap">{{ $item->expense_date->format('jS M Y') }}</td>
                                 <td>{{ $item->description }}
                                     @include('partials.claim-item-checks', ['item' => $item])
                                 </td>
-                                <td>{{ $item->project_client ?: '—' }}</td>
-                                <td>{{ $item->category->gl_code ? $item->category->gl_code.': ' : '' }}{{ $item->category->name ?? '—' }}</td>
-                                <td class="text-end">{{ number_format($item->amount, 2) }}</td>
-                                <td class="text-end">{{ number_format($item->gst_amount, 2) }}</td>
-                                <td class="text-end fw-semibold">{{ number_format($item->total_with_gst, 2) }}</td>
+                                <td>{{ $item->project_client ?: 'N/A' }}</td>
+                                <td>{{ $item->category->gl_code ? $item->category->gl_code.': ' : '' }}{{ strtoupper($item->category->name ?? '') }}</td>
+                                <td class="text-end">RM{{ number_format($item->amount, 2) }}</td>
+                                <td class="text-end">{{ $item->gst_amount > 0 ? 'RM'.number_format($item->gst_amount, 2) : '-' }}</td>
+                                <td class="text-end">RM{{ number_format($item->total_with_gst, 2) }}</td>
                                 <td class="text-center">
                                     @if($item->receipt_path)
                                     <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-1" title="View receipt"><i class="bi bi-paperclip"></i></a>
@@ -163,24 +161,41 @@
                                 </td>
                             </tr>
                             @endforeach
+                            @for($r = $myItems->count(); $r < 8; $r++)
+                            <tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td class="text-end">-</td><td></td></tr>
+                            @endfor
                         </tbody>
-                        <tfoot class="table-light">
-                            <tr class="fw-bold">
-                                <td colspan="4" class="text-end">YOUR PORTION TOTAL</td>
-                                <td class="text-end">{{ number_format($myAmount, 2) }}</td>
-                                <td class="text-end">{{ number_format($myGst, 2) }}</td>
-                                <td class="text-end text-primary">{{ number_format($myTotal, 2) }}</td>
+                        <tfoot>
+                            <tr class="fw-bold text-end">
+                                <td colspan="4"></td>
+                                <td>{{ number_format($myAmount, 2) }}</td>
+                                <td>{{ number_format($myGst, 2) }}</td>
+                                <td>{{ number_format($myTotal, 2) }}</td>
                                 <td></td>
                             </tr>
                         </tfoot>
                     </table>
+
+                    <div class="row mt-4">
+                        <div class="col-6">
+                            <div>Staff :- {{ $claim->employee->full_name }}</div>
+                            <div class="mt-4 pt-3 border-top" style="width:75%;">Signature / Date :</div>
+                            <div class="mt-4">Approving Manager :- {{ $employee->full_name }}</div>
+                            <div class="mt-4 pt-3 border-top" style="width:75%;">Signature / Date :</div>
+                        </div>
+                        <div class="col-6">
+                            <div>Checked by / Date :-</div>
+                            <div class="text-muted small">(HR/Finance)</div>
+                            <div class="mt-5 pt-3 border-top" style="width:75%;">Date :</div>
+                        </div>
+                    </div>
                 </div>
 
                 @if($otherCount > 0)
-                <div class="small text-muted mb-2"><i class="bi bi-people me-1"></i>This claim is also routed to other managers — overall progress: {{ $claim->managerProgress() }} items approved. It goes to HR once every manager has approved.</div>
+                <div class="small text-muted mt-2 px-1"><i class="bi bi-people me-1"></i>This claim is also routed to other managers — overall progress: {{ $claim->managerProgress() }} items approved. It goes to HR once every manager has approved.</div>
                 @endif
 
-                <div class="d-flex gap-2 justify-content-end flex-wrap">
+                <div class="d-flex gap-2 justify-content-end flex-wrap mt-3 px-1">
                     <button class="btn btn-outline-danger btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#reject-{{ $claim->id }}">
                         <i class="bi bi-x-octagon me-1"></i>Reject Claim
                     </button>
@@ -193,7 +208,7 @@
                 </div>
 
                 {{-- Reject the WHOLE claim — one wrong item sends the entire claim back to the employee --}}
-                <div class="collapse mt-2" id="reject-{{ $claim->id }}">
+                <div class="collapse mt-2 px-1" id="reject-{{ $claim->id }}">
                     <form action="{{ route('user.claims.team.reject', $claim) }}" method="POST">
                         @csrf
                         <label class="form-label small text-danger mb-1"><i class="bi bi-exclamation-circle me-1"></i>Rejecting returns the <strong>whole claim</strong> to {{ $empName }} to fix and resubmit — reason (the employee will see this)</label>
