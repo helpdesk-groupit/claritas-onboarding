@@ -1547,8 +1547,10 @@ class ExpenseClaimController extends Controller
 
         $result = ['receipt' => null, 'mileage' => null];
 
-        // #1 — Receipt total vs claimed total (OCR).
-        if ($item->receipt_path && Storage::disk('local')->exists($item->receipt_path)) {
+        // #1 — Receipt total vs claimed total (OCR). Skipped for mileage items: their
+        // evidence is the route/distance (often a Google Maps screenshot, which has no
+        // receipt amount to read), so a "receipt amount" check would be meaningless.
+        if (! $item->isMileage() && $item->receipt_path && Storage::disk('local')->exists($item->receipt_path)) {
             $company = $claim->employee->company ?? null;
             if (ClaimReceiptOcrService::enabled($company)) {
                 $abs = Storage::disk('local')->path($item->receipt_path);
