@@ -116,8 +116,9 @@ class ExpenseClaimController extends Controller
             ->where(function ($q) use ($employee) {
                 $q->where('company', $employee->company)->orWhereNull('company');
             })->get();
+        $projectRequired = ! self::isSalesTeam($employee);
 
-        return view('user.claims.show', compact('employee', 'claim', 'categories', 'policy', 'company'));
+        return view('user.claims.show', compact('employee', 'claim', 'categories', 'policy', 'company', 'projectRequired'));
     }
 
     /**
@@ -145,10 +146,13 @@ class ExpenseClaimController extends Controller
         $now = Carbon::now();
         $floor = $now->copy()->subMonths(18)->toDateString();
 
+        // Project/client is mandatory for everyone EXCEPT the Sales team (per the form rules).
+        $projectRequired = ! self::isSalesTeam($employee);
+
         $validated = $request->validate([
             'expense_date' => "required|date|after_or_equal:{$floor}|before_or_equal:today",
             'description' => 'required|string|max:500',
-            'project_client' => 'nullable|string|max:255',
+            'project_client' => ($projectRequired ? 'required' : 'nullable').'|string|max:255',
             'expense_category_id' => 'required|exists:expense_categories,id',
             'amount' => 'required|numeric|min:0.01|max:99999.99',
             'gst_amount' => 'nullable|numeric|min:0|max:99999.99',
@@ -162,6 +166,7 @@ class ExpenseClaimController extends Controller
         ], [
             'expense_date.after_or_equal' => 'The expense date is too far in the past (older than 18 months).',
             'expense_date.before_or_equal' => 'The expense date cannot be in the future.',
+            'project_client.required' => 'State the project / client name for this expense.',
         ]);
 
         $expenseDate = Carbon::parse($validated['expense_date']);
@@ -337,11 +342,12 @@ class ExpenseClaimController extends Controller
 
         $now = Carbon::now();
         $floor = $now->copy()->subMonths(18)->toDateString();
+        $projectRequired = ! self::isSalesTeam($employee);
 
         $validated = $request->validate([
             'expense_date' => "required|date|after_or_equal:{$floor}|before_or_equal:today",
             'description' => 'required|string|max:500',
-            'project_client' => 'nullable|string|max:255',
+            'project_client' => ($projectRequired ? 'required' : 'nullable').'|string|max:255',
             'expense_category_id' => 'required|exists:expense_categories,id',
             'amount' => 'required|numeric|min:0.01|max:99999.99',
             'gst_amount' => 'nullable|numeric|min:0|max:99999.99',
@@ -352,8 +358,9 @@ class ExpenseClaimController extends Controller
             'mileage_origin' => 'nullable|string|max:255',
             'receipt' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
         ], [
-            'expense_date.after_or_equal' => 'The expense date must be within '.$now->year.'.',
-            'expense_date.before_or_equal' => 'The expense date cannot be in the future — you can claim past dates, just not future ones.',
+            'expense_date.after_or_equal' => 'The expense date is too far in the past (older than 18 months).',
+            'expense_date.before_or_equal' => 'The expense date cannot be in the future.',
+            'project_client.required' => 'State the project / client name for this expense.',
         ]);
 
         $expenseDate = Carbon::parse($validated['expense_date']);
@@ -1603,6 +1610,12 @@ class ExpenseClaimController extends Controller
             return;
         }
         abort(403, 'You are not allowed to verify this claim.');
+    }
+
+    /** Sales staff are exempt from the mandatory project/client name on each item. */
+    private static function isSalesTeam(?Employee $employee): bool
+    {
+        return $employee && str_contains(strtolower((string) $employee->department), 'sales');
     }
 
     private function notifyHr(ExpenseClaim $claim, string $type): void

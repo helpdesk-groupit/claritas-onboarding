@@ -214,9 +214,10 @@
                             @enderror
                         </div>
                         <div class="col-12 col-md-4">
-                            <label class="form-label fw-semibold">Project / Client Name</label>
-                            <input type="text" name="project_client" class="form-control" value="{{ old('project_client') }}" placeholder="e.g., Project Alpha" maxlength="255">
-                            <small class="text-muted">Optional — link this expense to a project or client.</small>
+                            <label class="form-label fw-semibold">Project / Client Name @if($projectRequired ?? false)<span class="text-danger">*</span>@endif</label>
+                            <input type="text" name="project_client" class="form-control @error('project_client') is-invalid @enderror" value="{{ old('project_client') }}" placeholder="e.g., AMD Sanofi, Parentcraft" maxlength="255" @if($projectRequired ?? false)required @endif>
+                            @error('project_client')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                            <small class="text-muted">@if($projectRequired ?? false)Required — name the project/client this expense is for.@else Optional — link this expense to a project or client.@endif</small>
                         </div>
                         <div class="col-12 col-md-4">
                             <label class="form-label fw-semibold">Expense Category <span class="text-danger">*</span></label>
@@ -367,7 +368,7 @@
                         @if($canEdit && !$item->is_locked)
                         <tr class="collapse" id="edit-row-{{ $item->id }}">
                             <td colspan="10" class="p-0 border-0 bg-light">
-                                @include('partials.claim-item-edit', ['item' => $item])
+                                @include('partials.claim-item-edit', ['item' => $item, 'projectRequired' => $projectRequired ?? false])
                             </td>
                         </tr>
                         @endif
@@ -427,7 +428,7 @@
                     </div>
                     @if($canEdit && !$item->is_locked)
                     <div class="collapse mt-2" id="edit-card-{{ $item->id }}">
-                        @include('partials.claim-item-edit', ['item' => $item])
+                        @include('partials.claim-item-edit', ['item' => $item, 'projectRequired' => $projectRequired ?? false])
                     </div>
                     @endif
                 </div>

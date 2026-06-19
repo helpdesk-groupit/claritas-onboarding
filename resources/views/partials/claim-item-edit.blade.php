@@ -41,8 +41,8 @@
             <input type="text" name="description" class="form-control form-control-sm" value="{{ $item->description }}" maxlength="500" required>
         </div>
         <div class="col-md-4">
-            <label class="form-label small mb-1">Project / Client <span class="text-muted">(optional)</span></label>
-            <input type="text" name="project_client" class="form-control form-control-sm" value="{{ $item->project_client }}" maxlength="255">
+            <label class="form-label small mb-1">Project / Client @if($projectRequired ?? false)<span class="text-danger">*</span>@else<span class="text-muted">(optional)</span>@endif</label>
+            <input type="text" name="project_client" class="form-control form-control-sm" value="{{ $item->project_client }}" maxlength="255" @if($projectRequired ?? false)required @endif>
         </div>
     </div>
 
