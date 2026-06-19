@@ -44,7 +44,7 @@
                     <li>Claims submitted after the deadline will be processed in the next month's cycle.</li>
                     <li>For Extra Hours claim, please state the number of extra hours clearly (e.g., Parentcraft Event, 8am–6pm).</li>
                     <li>Separate expense claim forms for different events and personal general claims.</li>
-                    <li>Do <strong>not</strong> use "Petty Cash" as an expense type &mdash; use the correct category.</li>
+                    <li>Don't pick <strong>"Petty Cash" as an expense category</strong> &mdash; categorise each line properly (Petrol, Meals, etc.). A <em>"Petty Cash &ndash; [project]"</em> <strong>claim</strong> is perfectly fine.</li>
                     <li>Ensure all claims have <strong>supporting receipts/proof</strong> attached.</li>
                     <li>Admin reserves the right to refuse incomplete claims (no signature, no receipt, wrong category, etc.).</li>
                 </ol>

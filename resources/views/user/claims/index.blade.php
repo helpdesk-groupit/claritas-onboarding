@@ -84,6 +84,7 @@
                     <li>Submit with your reporting manager's acknowledgement by the <strong>{{ ordinal($policy->submission_deadline_day ?? 20) }}</strong> of the month.</li>
                     <li>Attach <strong>supporting receipts/proof</strong> (you can save a draft now and attach later).</li>
                     <li>Mileage: state the route (From → To); Toll/Parking are separate lines.</li>
+                    <li>Filing reimbursement for small cash you fronted? A <strong>"Petty Cash – [project]"</strong> claim is fine — just categorise each line properly (don't pick "Petty Cash" as the category).</li>
                 </ol>
             </div>
         </div>
@@ -181,6 +182,11 @@
                     </datalist>
                     @error('event')<div class="invalid-feedback">{{ $message }}</div>@enderror
                     <div class="form-text">One claim per event/project — pick an existing event to keep naming consistent. You'll add the items next.</div>
+                    <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
+                        <span class="small text-muted">Quick start:</span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill event-quickstart" data-prefix="Petty Cash - "><i class="bi bi-cash-coin me-1"></i>Petty Cash</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill event-quickstart" data-prefix="General Claim "><i class="bi bi-receipt me-1"></i>General</button>
+                    </div>
                 </div>
                 <div class="mb-1">
                     <label class="form-label">Claim month <span class="text-muted">(for reporting)</span></label>
@@ -276,6 +282,19 @@
             pills.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             apply(btn.dataset.filter);
+        });
+    });
+})();
+
+// New Claim quick-start chips: prefill the event field and focus it for the rest.
+(function () {
+    const input = document.querySelector('#newClaimModal input[name="event"]');
+    document.querySelectorAll('.event-quickstart').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            if (!input) return;
+            input.value = btn.dataset.prefix || '';
+            input.focus();
+            input.setSelectionRange(input.value.length, input.value.length);
         });
     });
 })();
