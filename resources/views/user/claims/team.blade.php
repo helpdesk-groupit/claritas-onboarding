@@ -137,7 +137,6 @@
                                 <th>RM<br>(w/o GST)</th>
                                 <th>RM<br>(GST)</th>
                                 <th>Total<br>(w/ GST)</th>
-                                <th>Receipt</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -152,17 +151,10 @@
                                 <td class="text-end">RM{{ number_format($item->amount, 2) }}</td>
                                 <td class="text-end">{{ $item->gst_amount > 0 ? 'RM'.number_format($item->gst_amount, 2) : '-' }}</td>
                                 <td class="text-end">RM{{ number_format($item->total_with_gst, 2) }}</td>
-                                <td class="text-center">
-                                    @if($item->receipt_path)
-                                    <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-1" title="View receipt"><i class="bi bi-paperclip"></i></a>
-                                    @else
-                                    <span class="text-muted">—</span>
-                                    @endif
-                                </td>
                             </tr>
                             @endforeach
                             @for($r = $myItems->count(); $r < 8; $r++)
-                            <tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td class="text-end">-</td><td></td></tr>
+                            <tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td class="text-end">-</td></tr>
                             @endfor
                         </tbody>
                         <tfoot>
@@ -171,7 +163,6 @@
                                 <td>{{ number_format($myAmount, 2) }}</td>
                                 <td>{{ number_format($myGst, 2) }}</td>
                                 <td>{{ number_format($myTotal, 2) }}</td>
-                                <td></td>
                             </tr>
                         </tfoot>
                     </table>
@@ -189,6 +180,9 @@
                             <div class="mt-5 pt-3 border-top" style="width:75%;">Date :</div>
                         </div>
                     </div>
+
+                    {{-- Attachments shown inline in the report (same as the employee's Claim Report) --}}
+                    @include('partials.claim-attachments', ['items' => $myItems])
                 </div>
 
                 @if($otherCount > 0)

@@ -96,34 +96,11 @@
         </div>
     </div>
 
-    {{-- ── Supporting documents (one block per item that has an attachment) ── --}}
-    @php
-        $withAttachments = $items->filter(fn ($it) => $it->receipt_path);
-        $imageExt = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-    @endphp
-    @if($withAttachments->count() > 0)
+    {{-- ── Supporting documents (shared partial — same section the manager review shows) ── --}}
+    @php $hasAttachments = $items->filter(fn ($it) => $it->receipt_path)->count() > 0; @endphp
+    @if($hasAttachments)
     <div class="attachments">
-        <h5 class="px-1"><i class="bi bi-paperclip me-1"></i>Supporting Documents</h5>
-        @foreach($items as $idx => $item)
-            @if($item->receipt_path)
-            @php $ext = strtolower(pathinfo($item->receipt_path, PATHINFO_EXTENSION)); @endphp
-            <div class="attachment-card">
-                <div class="fw-semibold">
-                    {{ $loop->iteration }}. {{ $item->expense_date->format('jS M Y') }} — {{ $item->description }}
-                    <span class="text-muted">(RM{{ number_format($item->total_with_gst, 2) }})</span>
-                </div>
-                @if(in_array($ext, $imageExt))
-                    <img src="{{ route('user.claims.items.receipt', $item) }}" alt="Attachment for item {{ $loop->iteration }}">
-                @else
-                    <div class="mt-2">
-                        <i class="bi bi-file-earmark-pdf text-danger me-1"></i>
-                        <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank">Open attachment ({{ strtoupper($ext) }})</a>
-                        <div class="text-muted small d-print-none">PDF attachments print separately — open and print this file with the form.</div>
-                    </div>
-                @endif
-            </div>
-            @endif
-        @endforeach
+        @include('partials.claim-attachments', ['items' => $items])
     </div>
     @endif
 
