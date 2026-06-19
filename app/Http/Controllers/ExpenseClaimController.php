@@ -724,35 +724,22 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'This claim is not pending approval.');
         }
 
-        // A manager only decides the items routed to THEM (per-item approver).
+        // A manager approves only the items routed to THEM (per-item approver).
         $claim->load('items');
         $myItems = $claim->items->where('approver_id', $employee->id)->where('manager_status', 'pending');
         if ($myItems->isEmpty() && ! Auth::user()->isSuperadmin()) {
             abort(403, 'You have no items to review on this claim.');
         }
 
-        $rejectedIds = collect($request->input('rejected_items', []))->map(fn ($id) => (int) $id)->all();
-        $remarks = $request->input('item_remarks', []);
-
-        DB::transaction(function () use ($myItems, $rejectedIds, $remarks) {
+        DB::transaction(function () use ($myItems) {
             foreach ($myItems as $item) {
-                if (in_array($item->id, $rejectedIds, true)) {
-                    $item->update([
-                        'manager_status' => 'rejected',
-                        'manager_remarks' => isset($remarks[$item->id]) ? mb_substr(strip_tags((string) $remarks[$item->id]), 0, 500) : null,
-                    ]);
-                } else {
-                    $item->update(['manager_status' => 'approved']);
-                }
+                $item->update(['manager_status' => 'approved']);
             }
         });
 
-        $myRejected = $myItems->filter(fn ($it) => in_array($it->id, $rejectedIds, true))->count();
-        $myApproved = $myItems->count() - $myRejected;
-        $this->logClaim($claim, $myApproved > 0 ? 'manager_approved' : 'manager_rejected',
-            $employee->full_name.' reviewed their items: '.$myApproved.' approved, '.$myRejected.' rejected.');
+        $this->logClaim($claim, 'manager_approved', $employee->full_name.' approved their '.$myItems->count().' item(s).');
 
-        Log::info('Claim manager-reviewed (per-item)', [
+        Log::info('Claim manager-approved (items)', [
             'claim_id' => $claim->id, 'claim_number' => $claim->claim_number,
             'my_items' => $myItems->count(), 'actor_id' => Auth::id(),
         ]);
@@ -761,97 +748,37 @@ class ExpenseClaimController extends Controller
     }
 
     /**
-     * Roll the claim up after a manager decides their items: if every item now has
-     * a manager decision, advance to manager_approved (→ HR) or manager_rejected
-     * (all items rejected). Otherwise it stays submitted, waiting on other managers.
+     * Roll the claim up after a manager approves their items: once every item has its
+     * manager's approval (all managers done), advance to manager_approved (→ HR).
+     * Otherwise it stays submitted, waiting on the other managers. Rejection is a
+     * separate whole-claim action (managerReject) — items are never rejected here.
      */
     private function finalizeManagerStage(ExpenseClaim $claim, Employee $employee): string
     {
         $claim->load('items');
 
         if (! $claim->allItemsManagerDecided()) {
-            return 'Your decision was saved — waiting on '.$claim->managerPendingCount().' more item(s) from other managers.';
+            return 'Your items were approved — waiting on '.$claim->managerPendingCount().' more item(s) from other managers.';
         }
 
-        $anyApproved = $claim->items->where('manager_status', 'approved')->isNotEmpty();
-
-        if ($anyApproved) {
-            $claim->update([
-                'status' => 'manager_approved',
-                'manager_approved_by' => $employee->id,
-                'manager_approved_at' => now(),
-            ]);
-            if ($claim->employee->user) {
-                Mail::to($claim->employee->user->work_email)->send(new ClaimApprovedMail($claim, $claim->employee, 'manager'));
-            }
-            $this->notifyHr($claim, 'pending_hr_approval');
-            $this->logClaim($claim, 'manager_stage_done', 'All managers reviewed — sent to HR (payable RM '.number_format($claim->approvedTotal(), 2).').');
-
-            return $claim->hasRejectedItems()
-                ? 'All items reviewed — '.$claim->rejectedItemCount().' rejected, the rest approved and sent to HR (payable RM '.number_format($claim->approvedTotal(), 2).').'
-                : 'All items approved — claim sent to HR.';
-        }
-
-        // Every item was rejected across all managers — return to the employee.
         $claim->update([
-            'status' => 'manager_rejected',
+            'status' => 'manager_approved',
             'manager_approved_by' => $employee->id,
             'manager_approved_at' => now(),
         ]);
-        $claim->items()->update(['is_locked' => false]);
         if ($claim->employee->user) {
-            Mail::to($claim->employee->user->work_email)->send(new ClaimRejectedMail($claim, $claim->employee, 'manager'));
+            Mail::to($claim->employee->user->work_email)->send(new ClaimApprovedMail($claim, $claim->employee, 'manager'));
         }
-        $this->logClaim($claim, 'manager_rejected', 'Every item was rejected — claim returned to the employee.');
+        $this->notifyHr($claim, 'pending_hr_approval');
+        $this->logClaim($claim, 'manager_stage_done', 'All managers approved — sent to HR (RM '.number_format($claim->total_with_gst, 2).').');
 
-        return 'All items were rejected — the claim was returned to the employee.';
+        return 'All items approved — claim sent to HR.';
     }
 
     /**
-     * Apply per-item approve/reject decisions from the review form. Items whose id
-     * is in `rejected_items[]` are marked rejected (reason from `item_remarks[id]`,
-     * reusing the item's `remarks` column); all others are approved. Returns an
-     * error string if EVERY item would be rejected (use the whole-claim Reject
-     * instead), otherwise null.
-     */
-    private function applyItemReviews(ExpenseClaim $claim, Request $request): ?string
-    {
-        $rejectedIds = collect($request->input('rejected_items', []))->map(fn ($id) => (int) $id)->all();
-        $remarks = $request->input('item_remarks', []);
-
-        if ($claim->items->isNotEmpty()
-            && $claim->items->reject(fn ($it) => in_array($it->id, $rejectedIds, true))->isEmpty()) {
-            return 'Every item was rejected — use the Reject button to reject the whole claim instead.';
-        }
-
-        foreach ($claim->items as $item) {
-            if (in_array($item->id, $rejectedIds, true)) {
-                $item->update([
-                    'review_status' => 'rejected',
-                    'remarks' => isset($remarks[$item->id]) ? mb_substr(strip_tags((string) $remarks[$item->id]), 0, 500) : $item->remarks,
-                ]);
-            } else {
-                $item->update(['review_status' => 'approved']);
-            }
-        }
-        $claim->load('items');
-
-        return null;
-    }
-
-    /** Success message that notes a partial approval when some items were rejected. */
-    private function approvalMessage(ExpenseClaim $claim): string
-    {
-        if ($claim->hasRejectedItems()) {
-            return $claim->rejectedItemCount().' item(s) rejected — claim approved for the rest (payable RM '
-                .number_format($claim->approvedTotal(), 2).').';
-        }
-
-        return 'Claim approved.';
-    }
-
-    /**
-     * Manager rejects a submitted claim with remarks.
+     * Manager rejects the WHOLE claim with remarks. Even if only one item is wrong,
+     * the entire claim is returned to the employee to fix and resubmit — there is no
+     * per-item rejection. Any approver on the claim (or superadmin) may reject.
      */
     public function managerReject(Request $request, ExpenseClaim $claim)
     {
@@ -863,24 +790,35 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'This claim is not pending approval.');
         }
 
-        // Reject all of MY pending items on this claim with one reason, then roll up.
         $claim->load('items');
-        $myItems = $claim->items->where('approver_id', $employee->id)->where('manager_status', 'pending');
-        if ($myItems->isEmpty() && ! Auth::user()->isSuperadmin()) {
-            abort(403, 'You have no items to reject on this claim.');
+        $isApprover = $claim->items->where('approver_id', $employee->id)->isNotEmpty();
+        if (! $isApprover && ! Auth::user()->isSuperadmin()) {
+            abort(403, 'You are not an approver on this claim.');
         }
 
-        $reason = mb_substr(strip_tags($request->input('remarks')), 0, 500);
+        $reason = mb_substr(strip_tags($request->input('remarks')), 0, 1000);
 
-        DB::transaction(function () use ($myItems, $reason) {
-            foreach ($myItems as $item) {
-                $item->update(['manager_status' => 'rejected', 'manager_remarks' => $reason]);
-            }
+        DB::transaction(function () use ($claim, $employee, $reason) {
+            // Unlock so the employee can edit + resubmit the whole claim.
+            $claim->items()->update(['is_locked' => false]);
+            $claim->update([
+                'status' => 'manager_rejected',
+                'manager_remarks' => $reason,
+                'manager_approved_by' => $employee->id,
+                'manager_approved_at' => now(),
+            ]);
         });
 
-        $this->logClaim($claim, 'manager_rejected', $employee->full_name.' rejected their '.$myItems->count().' item(s): '.$reason);
+        if ($claim->employee->user) {
+            Mail::to($claim->employee->user->work_email)->send(new ClaimRejectedMail($claim, $claim->employee, 'manager'));
+        }
 
-        return back()->with('success', $this->finalizeManagerStage($claim, $employee));
+        $this->logClaim($claim, 'manager_rejected', $employee->full_name.' rejected the claim: '.$reason);
+        Log::info('Claim manager-rejected (whole claim)', [
+            'claim_id' => $claim->id, 'claim_number' => $claim->claim_number, 'actor_id' => Auth::id(),
+        ]);
+
+        return back()->with('success', 'Claim rejected and returned to '.$claim->employee->full_name.'.');
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -959,11 +897,6 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'This claim is not pending HR approval.');
         }
 
-        // HR is the final gate — it can reject further line items before approving.
-        if ($error = $this->applyItemReviews($claim, $request)) {
-            return back()->with('error', $error);
-        }
-
         $claim->update([
             'status' => 'hr_approved',
             'hr_approved_by' => Auth::id(),
@@ -973,8 +906,7 @@ class ExpenseClaimController extends Controller
         Log::info('Claim hr-approved', [
             'claim_id' => $claim->id,
             'claim_number' => $claim->claim_number,
-            'payable' => $claim->approvedTotal(),
-            'rejected_items' => $claim->rejectedItemCount(),
+            'amount' => $claim->total_with_gst,
             'actor_id' => Auth::id(),
             'actor_role' => Auth::user()->role,
         ]);
@@ -987,9 +919,9 @@ class ExpenseClaimController extends Controller
             );
         }
 
-        $this->logClaim($claim, 'hr_approved', 'HR approved — payable RM '.number_format($claim->approvedTotal(), 2).'.');
+        $this->logClaim($claim, 'hr_approved', 'HR approved — RM '.number_format($claim->total_with_gst, 2).'.');
 
-        return back()->with('success', 'HR approved. '.$this->approvalMessage($claim));
+        return back()->with('success', 'HR approved.');
     }
 
     /**

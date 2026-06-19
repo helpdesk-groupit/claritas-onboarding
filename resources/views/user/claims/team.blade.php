@@ -21,7 +21,7 @@
     {{-- ── Summary Stat Cards ── --}}
     @php
         $pendingCount  = $pendingClaims->count();
-        $totalPending  = $pendingClaims->sum('total_with_gst');
+        $totalPending  = $pendingClaims->sum(fn ($c) => $c->items->where('approver_id', $employee->id)->sum('total_with_gst'));
         $staffPending  = $pendingClaims->pluck('employee_id')->unique()->count();
         $reviewedCount = $historyClaims->count();
     @endphp
@@ -94,124 +94,112 @@
                 $empName = $claim->employee->full_name ?? '—';
                 $initials = collect(explode(' ', trim($empName)))->filter()->take(2)->map(fn($w) => mb_strtoupper(mb_substr($w, 0, 1)))->implode('');
             @endphp
-            <div class="border rounded-3 p-3 mb-3 bg-light bg-opacity-50">
-                {{-- Claim header --}}
-                <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
-                    <div class="d-flex align-items-center gap-2">
-                        <div class="rounded-circle bg-primary bg-opacity-10 text-primary d-flex align-items-center justify-content-center fw-bold flex-shrink-0"
-                             style="width:42px;height:42px;font-size:.95rem;">{{ $initials ?: '?' }}</div>
-                        <div>
-                            <div class="fw-semibold">{{ $empName }}
-                                <span class="text-muted fw-normal small ms-1">{{ $claim->employee->department ?? '' }}</span>
-                            </div>
-                            <small class="text-muted">
-                                <span class="fw-semibold">{{ $claim->claim_number }}</span> &middot;
-                                {{ \Carbon\Carbon::create($claim->year, $claim->month)->format('F Y') }} &middot;
-                                <i class="bi bi-send-check me-1"></i>Submitted {{ $claim->submitted_at?->format('d M Y') }}
-                            </small>
-                            @if($claim->managerPendingCount() > 0)
-                            <div class="mt-1"><span class="badge bg-info-subtle text-info-emphasis"><i class="bi bi-people me-1"></i>Manager review: {{ $claim->managerProgress() }} items decided (multiple approvers)</span></div>
-                            @endif
-                        </div>
+            @php
+                $myItems  = $claim->items->where('approver_id', $employee->id)->values();
+                $company  = \App\Models\Company::forName($claim->employee->company);
+                $myAmount = $myItems->sum('amount');
+                $myGst    = $myItems->sum('gst_amount');
+                $myTotal  = $myItems->sum('total_with_gst');
+                $otherCount = $claim->items->count() - $myItems->count();
+            @endphp
+            <div class="border rounded-3 p-3 p-md-4 mb-4 bg-white shadow-sm">
+                {{-- Official Expenses Claims Form letterhead --}}
+                @include('partials.claim-letterhead', [
+                    'company' => $company,
+                    'employee' => $claim->employee,
+                    'event' => $claim->event,
+                    'showRules' => false,
+                    'claimDate' => $claim->submitted_at ?? \Carbon\Carbon::create($claim->year, $claim->month, 1),
+                ])
+
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                    <div class="small text-muted">
+                        <span class="fw-semibold">{{ $claim->claim_number }}</span> &middot;
+                        <i class="bi bi-send-check me-1"></i>Submitted {{ $claim->submitted_at?->format('d M Y') }}
+                        @if($otherCount > 0)
+                        &middot; <span class="badge bg-info-subtle text-info-emphasis">Showing the {{ $myItems->count() }} item(s) routed to you ({{ $otherCount }} more go to other managers)</span>
+                        @endif
                     </div>
                     <div class="text-end">
-                        <div class="fs-5 fw-bold text-primary">RM {{ number_format($claim->total_with_gst, 2) }}</div>
-                        <small class="text-muted">{{ $claim->item_count }} item{{ $claim->item_count == 1 ? '' : 's' }}</small>
+                        <div class="fs-5 fw-bold text-primary">RM {{ number_format($myTotal, 2) }}</div>
+                        <small class="text-muted">your portion &middot; {{ $myItems->count() }} item{{ $myItems->count() == 1 ? '' : 's' }}</small>
                     </div>
                 </div>
 
                 @include('partials.claim-review-summary', ['claim' => $claim])
 
-                {{-- Items detail (inside the approve form so per-item reject decisions submit together) --}}
-                <form action="{{ route('user.claims.team.approve', $claim) }}" method="POST" class="js-confirm item-review-form"
-                      data-confirm="Approve your items on this claim? Any item you ticked “Reject” is excluded. The claim moves to HR once every manager has reviewed their items."
-                      data-confirm-title="Approve your items" data-confirm-ok="Approve" data-confirm-variant="success">
-                    @csrf
-                    <div class="table-responsive">
-                        <table class="table table-sm table-hover align-middle bg-white rounded overflow-hidden mb-3" style="font-size:.85rem;">
-                            <thead class="table-light">
-                                <tr>
-                                    <th>Date</th>
-                                    <th>Description</th>
-                                    <th>Category</th>
-                                    <th class="text-end">RM (w/o GST)</th>
-                                    <th class="text-end">GST</th>
-                                    <th class="text-end">Total</th>
-                                    <th class="text-center">Receipt</th>
-                                    <th>Approver</th>
-                                    <th class="text-center text-danger">Reject?</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @foreach($claim->items as $item)
-                                @php $mine = $item->approver_id === $employee->id; @endphp
-                                <tr class="review-row {{ $mine ? '' : 'opacity-75' }}">
-                                    <td class="text-nowrap">{{ $item->expense_date->format('d/m/Y') }}</td>
-                                    <td>
-                                        {{ $item->description }}
-                                        @include('partials.claim-item-checks', ['item' => $item])
-                                    </td>
-                                    <td><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis">{{ $item->category->name ?? '—' }}</span></td>
-                                    <td class="text-end">{{ number_format($item->amount, 2) }}</td>
-                                    <td class="text-end">{{ number_format($item->gst_amount, 2) }}</td>
-                                    <td class="text-end fw-semibold item-total" data-total="{{ $mine ? $item->total_with_gst : 0 }}">{{ number_format($item->total_with_gst, 2) }}</td>
-                                    <td class="text-center">
-                                        @if($item->receipt_path)
-                                        <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-1" title="View receipt"><i class="bi bi-paperclip"></i></a>
-                                        @else
-                                        <span class="text-muted">—</span>
-                                        @endif
-                                    </td>
-                                    <td class="small text-nowrap">
-                                        {{ $item->approver->full_name ?? '—' }}
-                                        @if($item->manager_status === 'approved')<span class="badge bg-success ms-1">Approved</span>
-                                        @elseif($item->manager_status === 'rejected')<span class="badge bg-danger ms-1">Rejected</span>
-                                        @else<span class="badge bg-secondary ms-1">Pending</span>@endif
-                                    </td>
-                                    <td class="text-center" style="min-width:150px;">
-                                        @if($mine && $item->isManagerPending())
-                                        <input type="checkbox" class="form-check-input reject-toggle border-danger" name="rejected_items[]" value="{{ $item->id }}" style="width:1.7em;height:1.7em;cursor:pointer;accent-color:#dc3545;" title="Reject this item">
-                                        <input type="text" name="item_remarks[{{ $item->id }}]" class="form-control form-control-sm mt-1 reject-reason d-none" placeholder="Reason (shown to employee)" maxlength="500">
-                                        @else
-                                        <span class="text-muted small">{{ $mine ? 'done' : 'not yours' }}</span>
-                                        @endif
-                                    </td>
-                                </tr>
-                                @endforeach
-                            </tbody>
-                            <tfoot class="table-light">
-                                <tr class="fw-bold">
-                                    <td colspan="3" class="text-end">TOTAL</td>
-                                    <td class="text-end">{{ number_format($claim->total_amount, 2) }}</td>
-                                    <td class="text-end">{{ number_format($claim->total_gst, 2) }}</td>
-                                    <td class="text-end text-primary">{{ number_format($claim->total_with_gst, 2) }}</td>
-                                    <td colspan="3"></td>
-                                </tr>
-                                <tr class="payable-row d-none">
-                                    <td colspan="5" class="text-end text-success">YOUR ITEMS' PAYABLE (after your rejections)</td>
-                                    <td class="text-end text-success fw-bold payable-amount" data-grand="{{ $claim->items->where('approver_id', $employee->id)->sum('total_with_gst') }}"></td>
-                                    <td colspan="3"></td>
-                                </tr>
-                            </tfoot>
-                        </table>
-                    </div>
+                <div class="table-responsive">
+                    <table class="table table-bordered table-sm align-middle bg-white mb-3" style="font-size:.82rem;">
+                        <thead class="table-light text-center">
+                            <tr>
+                                <th>Date</th>
+                                <th>Expense Description</th>
+                                <th>Project/Client</th>
+                                <th>Expense Type</th>
+                                <th class="text-end">RM (w/o GST)</th>
+                                <th class="text-end">GST</th>
+                                <th class="text-end">Total</th>
+                                <th class="text-center">Receipt</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach($myItems as $item)
+                            <tr>
+                                <td class="text-nowrap">{{ $item->expense_date->format('d/m/Y') }}</td>
+                                <td>{{ $item->description }}
+                                    @include('partials.claim-item-checks', ['item' => $item])
+                                </td>
+                                <td>{{ $item->project_client ?: '—' }}</td>
+                                <td>{{ $item->category->gl_code ? $item->category->gl_code.': ' : '' }}{{ $item->category->name ?? '—' }}</td>
+                                <td class="text-end">{{ number_format($item->amount, 2) }}</td>
+                                <td class="text-end">{{ number_format($item->gst_amount, 2) }}</td>
+                                <td class="text-end fw-semibold">{{ number_format($item->total_with_gst, 2) }}</td>
+                                <td class="text-center">
+                                    @if($item->receipt_path)
+                                    <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0 px-1" title="View receipt"><i class="bi bi-paperclip"></i></a>
+                                    @else
+                                    <span class="text-muted">—</span>
+                                    @endif
+                                </td>
+                            </tr>
+                            @endforeach
+                        </tbody>
+                        <tfoot class="table-light">
+                            <tr class="fw-bold">
+                                <td colspan="4" class="text-end">YOUR PORTION TOTAL</td>
+                                <td class="text-end">{{ number_format($myAmount, 2) }}</td>
+                                <td class="text-end">{{ number_format($myGst, 2) }}</td>
+                                <td class="text-end text-primary">{{ number_format($myTotal, 2) }}</td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
 
-                    <div class="d-flex gap-2 justify-content-end">
-                        <button class="btn btn-outline-danger btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#reject-{{ $claim->id }}">
-                            <i class="bi bi-x-octagon me-1"></i>Reject All My Items
-                        </button>
+                @if($otherCount > 0)
+                <div class="small text-muted mb-2"><i class="bi bi-people me-1"></i>This claim is also routed to other managers — overall progress: {{ $claim->managerProgress() }} items approved. It goes to HR once every manager has approved.</div>
+                @endif
+
+                <div class="d-flex gap-2 justify-content-end flex-wrap">
+                    <button class="btn btn-outline-danger btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#reject-{{ $claim->id }}">
+                        <i class="bi bi-x-octagon me-1"></i>Reject Claim
+                    </button>
+                    <form action="{{ route('user.claims.team.approve', $claim) }}" method="POST" class="js-confirm d-inline"
+                          data-confirm="Approve your {{ $myItems->count() }} item(s)? Once every manager has approved, the claim goes to HR."
+                          data-confirm-title="Approve your items" data-confirm-ok="Approve" data-confirm-variant="success">
+                        @csrf
                         <button type="submit" class="btn btn-success btn-sm"><i class="bi bi-check-lg me-1"></i>Approve My Items</button>
-                    </div>
-                </form>
+                    </form>
+                </div>
 
-                {{-- Reject all of MY items on this claim (separate form) --}}
+                {{-- Reject the WHOLE claim — one wrong item sends the entire claim back to the employee --}}
                 <div class="collapse mt-2" id="reject-{{ $claim->id }}">
                     <form action="{{ route('user.claims.team.reject', $claim) }}" method="POST">
                         @csrf
-                        <label class="form-label small text-danger mb-1"><i class="bi bi-exclamation-circle me-1"></i>Reject <strong>all your items</strong> on this claim — reason (the employee will see this)</label>
+                        <label class="form-label small text-danger mb-1"><i class="bi bi-exclamation-circle me-1"></i>Rejecting returns the <strong>whole claim</strong> to {{ $empName }} to fix and resubmit — reason (the employee will see this)</label>
                         <div class="input-group input-group-sm">
-                            <input type="text" name="remarks" class="form-control" placeholder="e.g., These aren't valid business expenses." required maxlength="1000">
-                            <button class="btn btn-danger text-nowrap"><i class="bi bi-x-circle me-1"></i>Confirm Reject</button>
+                            <input type="text" name="remarks" class="form-control" placeholder="e.g., The KLCC mileage isn't a business trip — please remove it and resubmit." required maxlength="1000">
+                            <button class="btn btn-danger text-nowrap"><i class="bi bi-x-circle me-1"></i>Confirm Reject (whole claim)</button>
                         </div>
                     </form>
                 </div>
@@ -259,6 +247,5 @@
 </div>
 
 @include('partials.confirm-modal')
-@include('partials.item-review-js')
 @include('partials.item-verify-js')
 @endsection
