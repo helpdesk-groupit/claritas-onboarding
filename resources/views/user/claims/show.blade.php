@@ -233,6 +233,7 @@
                             <div class="invalid-feedback">Choose a category (e.g., "Transport", "Meals & Entertainment").</div>
                             @enderror
                             <small class="text-muted" id="categoryHint" style="display:none;"><i class="bi bi-magic me-1"></i>Auto-suggested</small>
+                            <small class="d-block fw-semibold mt-1" id="capHint" style="display:none;"></small>
                         </div>
                         <div class="col-6 col-md-2" id="quantityGroup" style="display:none;">
                             <label class="form-label fw-semibold" id="quantityLabel">Quantity</label>
@@ -685,6 +686,27 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     if (categorySelect) categorySelect.addEventListener('change', applyCategoryMode);
+
+    // ── Capped-category allowance hint (shows what's left before they enter an amount) ──
+    const CAP_INFO = @json($capInfo ?? []);
+    const capHint = document.getElementById('capHint');
+    function updateCapHint() {
+        if (!capHint) return;
+        const info = categorySelect ? CAP_INFO[categorySelect.value] : null;
+        if (!info) { capHint.style.display = 'none'; return; }
+        const fmt = n => Number(n).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        capHint.style.display = 'block';
+        if (info.remaining <= 0) {
+            capHint.className = 'd-block fw-semibold mt-1 text-danger';
+            capHint.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>RM ' + fmt(info.limit) + ' ' + info.period + ' ' + info.name + ' allowance fully used this period.';
+        } else {
+            capHint.className = 'd-block fw-semibold mt-1 text-success';
+            capHint.innerHTML = '<i class="bi bi-wallet2 me-1"></i>RM ' + fmt(info.remaining) + ' of your RM ' + fmt(info.limit) + ' ' + info.period + ' ' + info.name + ' allowance is left. A bigger receipt is auto-capped to this.';
+        }
+    }
+    if (categorySelect) categorySelect.addEventListener('change', updateCapHint);
+    updateCapHint();
+
     if (quantityInput) quantityInput.addEventListener('input', computeFromQuantity);
     if (mileageVehicle) mileageVehicle.addEventListener('change', applyPetrolMode);
     if (mileageCalcBtn) mileageCalcBtn.addEventListener('click', function () {

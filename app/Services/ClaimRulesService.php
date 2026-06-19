@@ -229,6 +229,47 @@ class ClaimRulesService
         return null;
     }
 
+    /**
+     * Cap a requested amount to whatever remains of the category's period allowance,
+     * instead of rejecting an expensive receipt outright. Returns:
+     *   ['allowed' => float, 'capped' => bool, 'remaining' => float,
+     *    'limit' => ?array, 'message' => ?string]
+     * - No cap on the category → allowed = requested, capped = false.
+     * - Allowance fully used (remaining ≤ 0) → allowed = 0 (caller should block).
+     * - Requested > remaining → allowed = remaining (claim only what's left), capped = true.
+     * $excludeItemId skips one item (the one being edited) from the used total.
+     */
+    public static function capAdjust(Employee $employee, ExpenseCategory $category, float $requested, Carbon $date, ?int $excludeItemId = null): array
+    {
+        $limit = self::effectiveLimit($category, $employee);
+        if ($limit === null) {
+            return ['allowed' => $requested, 'capped' => false, 'remaining' => INF, 'limit' => null, 'message' => null];
+        }
+
+        $used = self::usedInPeriod($employee, $category, $date, $limit['period'], $excludeItemId);
+        $remaining = round(max(0, $limit['amount'] - $used), 2);
+        $periodLabel = $limit['period'] === 'annual' ? 'annual' : 'monthly';
+
+        if ($remaining <= 0.001) {
+            return [
+                'allowed' => 0.0, 'capped' => true, 'remaining' => 0.0, 'limit' => $limit,
+                'message' => sprintf("You've already used your full %s %s allowance of RM %s — nothing left to claim under this category for this period.",
+                    $periodLabel, $category->name, number_format($limit['amount'], 2)),
+            ];
+        }
+
+        if ($requested > $remaining + 0.001) {
+            return [
+                'allowed' => $remaining, 'capped' => true, 'remaining' => $remaining, 'limit' => $limit,
+                'message' => sprintf('Only RM %s of your RM %s %s %s allowance is left — this expense was claimed at RM %s (the receipt was RM %s).',
+                    number_format($remaining, 2), number_format($limit['amount'], 2), $periodLabel, $category->name,
+                    number_format($remaining, 2), number_format($requested, 2)),
+            ];
+        }
+
+        return ['allowed' => $requested, 'capped' => false, 'remaining' => $remaining, 'limit' => $limit, 'message' => null];
+    }
+
     // ── Submission deadline (working-day aware) ──────────────────────────────
 
     /** Roll a date back to the preceding working day (skips weekends + holidays). */

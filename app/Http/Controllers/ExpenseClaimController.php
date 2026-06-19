@@ -127,7 +127,22 @@ class ExpenseClaimController extends Controller
             })->get();
         $projectRequired = ! self::isSalesTeam($employee);
 
-        return view('user.claims.show', compact('employee', 'claim', 'categories', 'policy', 'company', 'projectRequired'));
+        // Remaining allowance per capped category (for the live "RM X left" hint).
+        $capInfo = [];
+        foreach ($categories as $c) {
+            $lim = ClaimRulesService::effectiveLimit($c, $employee);
+            if ($lim) {
+                $used = ClaimRulesService::usedInPeriod($employee, $c, Carbon::now(), $lim['period']);
+                $capInfo[$c->id] = [
+                    'remaining' => round(max(0, $lim['amount'] - $used), 2),
+                    'limit' => (float) $lim['amount'],
+                    'period' => $lim['period'],
+                    'name' => $c->name,
+                ];
+            }
+        }
+
+        return view('user.claims.show', compact('employee', 'claim', 'categories', 'company', 'policy', 'projectRequired', 'capInfo'));
     }
 
     /**
@@ -299,14 +314,23 @@ class ExpenseClaimController extends Controller
             return back()->withErrors(['total_with_gst' => 'Total does not match amount + GST.'])->withInput();
         }
 
-        // Period-aware (monthly/annual) + role-based cap enforcement
-        $capError = ClaimRulesService::capError($employee, $category, (float) $validated['amount'], $expenseDate);
-        if ($capError) {
+        // Period-aware cap: instead of rejecting an over-cap receipt, claim only what's
+        // left of the allowance (e.g. RM250 receipt, RM100 left → claim RM100). Block
+        // only when the allowance is fully used up.
+        $capAdjust = ClaimRulesService::capAdjust($employee, $category, (float) $validated['amount'], $expenseDate);
+        if ($capAdjust['allowed'] <= 0) {
             if ($receiptPath) {
                 Storage::disk('local')->delete($receiptPath);
             }
 
-            return back()->withErrors(['amount' => $capError])->withInput();
+            return back()->withErrors(['amount' => $capAdjust['message']])->withInput();
+        }
+        $capNote = null;
+        if ($capAdjust['capped']) {
+            $validated['amount'] = number_format($capAdjust['allowed'], 2, '.', '');
+            $validated['gst_amount'] = 0;
+            $expectedTotal = (float) $validated['amount'];
+            $capNote = $capAdjust['message'];
         }
 
         $claim->items()->create([
@@ -329,7 +353,7 @@ class ExpenseClaimController extends Controller
         $claim->recalculateTotals();
 
         return redirect()->route('user.claims.show', $claim)
-            ->with('success', 'Expense item added.');
+            ->with($capNote ? 'warning' : 'success', $capNote ?: 'Expense item added.');
     }
 
     /**
@@ -466,14 +490,22 @@ class ExpenseClaimController extends Controller
             return back()->withErrors(['total_with_gst' => 'Total does not match amount + GST.'])->withInput();
         }
 
-        // Cap — exclude this item's own current amount from the period total.
-        $capError = ClaimRulesService::capError($employee, $category, (float) $validated['amount'], $expenseDate, $item->id);
-        if ($capError) {
+        // Cap → claim only what's left (exclude this item's own current amount). Block
+        // only if the allowance is fully used by the employee's OTHER items.
+        $capAdjust = ClaimRulesService::capAdjust($employee, $category, (float) $validated['amount'], $expenseDate, $item->id);
+        if ($capAdjust['allowed'] <= 0) {
             if ($oldReceiptToDelete !== null && $receiptPath) {
                 Storage::disk('local')->delete($receiptPath);
             }
 
-            return back()->withErrors(['amount' => $capError])->withInput();
+            return back()->withErrors(['amount' => $capAdjust['message']])->withInput();
+        }
+        $capNote = null;
+        if ($capAdjust['capped']) {
+            $validated['amount'] = number_format($capAdjust['allowed'], 2, '.', '');
+            $validated['gst_amount'] = 0;
+            $expectedTotal = (float) $validated['amount'];
+            $capNote = $capAdjust['message'];
         }
 
         $item->update([
@@ -500,7 +532,7 @@ class ExpenseClaimController extends Controller
         $claim->recalculateTotals();
 
         return redirect()->route('user.claims.show', $claim)
-            ->with('success', 'Expense item updated.');
+            ->with($capNote ? 'warning' : 'success', $capNote ?: 'Expense item updated.');
     }
 
     /**
