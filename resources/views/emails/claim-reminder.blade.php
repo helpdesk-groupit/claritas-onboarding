@@ -11,6 +11,9 @@
   .body { padding:30px; }
   .greeting { font-size:18px; font-weight:600; color:#1e293b; margin-bottom:12px; }
   .info-box { background:#eff6ff; border-left:4px solid #2563eb; border-radius:0 8px 8px 0; padding:16px 20px; margin:16px 0; font-size:14px; color:#1e40af; }
+  .draft-table { width:100%; border-collapse:collapse; margin:8px 0 4px; font-size:14px; }
+  .draft-table th { text-align:left; color:#64748b; font-size:12px; text-transform:uppercase; letter-spacing:.04em; padding:6px 8px; border-bottom:1px solid #e2e8f0; }
+  .draft-table td { padding:8px; border-bottom:1px solid #f1f5f9; color:#1e293b; }
   .btn { display:inline-block; background:linear-gradient(135deg,#2563eb,#1d4ed8); color:#fff; padding:12px 28px; border-radius:8px; text-decoration:none; font-weight:600; font-size:14px; margin-top:16px; }
   .footer { background:#f8fafc; padding:20px 30px; text-align:center; font-size:12px; color:#94a3b8; border-top:1px solid #e2e8f0; }
 </style>
@@ -24,23 +27,51 @@
 
   <div class="header">
     <h1>Expense Claim Reminder</h1>
-    <p>{{ $period }} &mdash; Submission Deadline Approaching</p>
+    <p>{{ $period }} &mdash; submission closes <strong>{{ $deadline }}</strong></p>
   </div>
 
   <div class="body">
     <div class="greeting">Dear {{ $employee->preferred_name ?? $employee->full_name }},</div>
-    <p style="color:#475569;font-size:15px;line-height:1.6;">
-      This is a friendly reminder to submit your expense claims for <strong>{{ $period }}</strong>.
-    </p>
 
-    <div class="info-box">
-      <strong>Submission Deadline:</strong> {{ $deadline }}<br><br>
-      Claims submitted after this date will be processed in the next month's cycle.
-      Please ensure all claims are properly signed by your reporting manager before submission.
-    </div>
+    @if($type === 'none')
+      <p style="color:#475569;font-size:15px;line-height:1.6;">
+        We don't have any expense claim from you for <strong>{{ $period }}</strong> yet.
+        If you have business expenses to claim (mileage, toll, meals, etc.), please file them
+        before the deadline below.
+      </p>
+      <div class="info-box">
+        <strong>Submission deadline:</strong> {{ $deadline }} (tomorrow)<br><br>
+        Nothing to claim this month? You can simply ignore this email.
+        Claims submitted after the deadline are processed in the next month's cycle.
+      </div>
+    @else
+      <p style="color:#475569;font-size:15px;line-height:1.6;">
+        You have <strong>{{ $drafts->count() }}</strong> unsubmitted draft claim{{ $drafts->count() == 1 ? '' : 's' }}.
+        Please review and submit {{ $drafts->count() == 1 ? 'it' : 'them' }} for your reporting manager's approval before the deadline.
+      </p>
+
+      <table class="draft-table">
+        <thead><tr><th>Event / claim</th><th>Items</th><th style="text-align:right;">Total</th></tr></thead>
+        <tbody>
+          @foreach($drafts as $d)
+          <tr>
+            <td>{{ $d->event ?: 'Untitled claim' }} <span style="color:#94a3b8;">({{ $d->claim_number }})</span></td>
+            <td>{{ $d->item_count }}</td>
+            <td style="text-align:right;">RM {{ number_format($d->total_with_gst, 2) }}</td>
+          </tr>
+          @endforeach
+        </tbody>
+      </table>
+
+      <div class="info-box">
+        <strong>Submission deadline:</strong> {{ $deadline }} (tomorrow)<br><br>
+        Drafts not submitted by the deadline stay as drafts and roll into next month's cycle &mdash;
+        they are <strong>not</strong> auto-submitted, so please submit them yourself.
+      </div>
+    @endif
 
     <p style="text-align:center;">
-      <a href="{{ route('login') }}" class="btn">Submit Claims →</a>
+      <a href="{{ route('login') }}" class="btn">Open My Claims →</a>
     </p>
   </div>
 
