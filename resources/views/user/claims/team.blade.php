@@ -159,7 +159,7 @@
                         </tbody>
                         <tfoot>
                             <tr class="fw-bold text-end">
-                                <td colspan="4"></td>
+                                <td colspan="4">TOTAL</td>
                                 <td>{{ number_format($myAmount, 2) }}</td>
                                 <td>{{ number_format($myGst, 2) }}</td>
                                 <td>{{ number_format($myTotal, 2) }}</td>
@@ -194,10 +194,10 @@
                         <i class="bi bi-x-octagon me-1"></i>Reject Claim
                     </button>
                     <form action="{{ route('user.claims.team.approve', $claim) }}" method="POST" class="js-confirm d-inline"
-                          data-confirm="Approve your {{ $myItems->count() }} item(s)? Once every manager has approved, the claim goes to HR."
-                          data-confirm-title="Approve your items" data-confirm-ok="Approve" data-confirm-variant="success">
+                          data-confirm="Approve this claim ({{ $myItems->count() }} item(s), RM {{ number_format($myTotal, 2) }})? It will go to HR for final approval."
+                          data-confirm-title="Approve claim" data-confirm-ok="Approve" data-confirm-variant="success">
                         @csrf
-                        <button type="submit" class="btn btn-success btn-sm"><i class="bi bi-check-lg me-1"></i>Approve My Items</button>
+                        <button type="submit" class="btn btn-success btn-sm"><i class="bi bi-check-lg me-1"></i>Approve Claim</button>
                     </form>
                 </div>
 

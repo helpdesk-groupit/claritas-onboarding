@@ -633,51 +633,41 @@ class ExpenseClaimController extends Controller
                 ->with('error', 'Attach a receipt before submitting these item(s): '.$names.($missing->count() > 5 ? ', …' : '').'.');
         }
 
-        // Every item must be routed to an eligible (loggable) approving manager.
+        // One approving manager for the whole event-claim (the event owner / reporting manager).
         $eligibleIds = ClaimRulesService::eligibleApprovers()->pluck('id')->all();
-        $chosen = $request->input('approvers', []); // [item_id => approver employee id]
-        $claim->load('items');
-        foreach ($claim->items as $item) {
-            if (! in_array((int) ($chosen[$item->id] ?? 0), $eligibleIds, true)) {
-                return redirect()->route('user.claims.submit-form', $claim)
-                    ->with('error', 'Please choose an approving manager for every item.');
-            }
+        $approverId = (int) $request->input('approver_id');
+        if (! in_array($approverId, $eligibleIds, true)) {
+            return redirect()->route('user.claims.submit-form', $claim)
+                ->with('error', 'Please choose an approving manager for this claim.');
         }
 
         $claim->recalculateTotals();
 
-        DB::transaction(function () use ($claim, $chosen) {
-            foreach ($claim->items as $item) {
-                $item->update([
-                    'approver_id' => (int) $chosen[$item->id],
-                    'manager_status' => 'pending',
-                    'manager_remarks' => null,
-                    'review_status' => 'approved', // reset HR stage in case of a resubmit
-                    'is_locked' => true,
-                ]);
-            }
+        DB::transaction(function () use ($claim, $approverId) {
+            $claim->items()->update([
+                'approver_id' => $approverId,
+                'manager_status' => 'pending',
+                'manager_remarks' => null,
+                'review_status' => 'approved', // reset HR stage in case of a resubmit
+                'is_locked' => true,
+            ]);
             $claim->update([
                 'status' => 'submitted',
                 'submitted_at' => now(),
-                'manager_id' => $claim->employee->manager_id, // legacy/reporting reference only
+                'manager_id' => $approverId,
             ]);
         });
 
-        $this->logClaim($claim, 'submitted', 'Submitted to '.count($claim->approverIds()).' approving manager(s).');
+        $this->logClaim($claim, 'submitted', 'Submitted to the approving manager.');
 
-        // Notify each DISTINCT approving manager that they have items to review.
-        $claim->load('items');
-        foreach ($claim->approverIds() as $approverId) {
-            $manager = Employee::find($approverId);
-            if ($manager && $manager->user) {
-                Mail::to($manager->user->work_email)->send(
-                    new ClaimSubmittedMail($claim, $employee, 'manager')
-                );
-            }
+        // Notify the approving manager.
+        $manager = Employee::find($approverId);
+        if ($manager && $manager->user) {
+            Mail::to($manager->user->work_email)->send(new ClaimSubmittedMail($claim, $employee, 'manager'));
         }
 
         return redirect()->route('user.claims.show', $claim)
-            ->with('success', 'Claim submitted — each item routed to its approving manager.');
+            ->with('success', 'Claim submitted to '.($manager->full_name ?? 'your manager').' for approval.');
     }
 
     /**

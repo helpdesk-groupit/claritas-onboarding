@@ -22,7 +22,7 @@
     <li>- All supporting documents should be submitted with form for approval.</li>
     <li>- Your supporting documents should be arrange and attached accordingly on an A4 paper.</li>
     <li>- All claims submission should be signed (incl. yourself) and approved by your Reporting Manager prior to submitting to HR.</li>
-    <li>- Submission of claims to be submitted to HR/Finance by {{ \App\Models\ExpenseClaimPolicy::forCompany($employee->company)->submission_deadline_day ?? 22 }}nd of the month for processing. Any late submission will be process next month.</li>
+    <li>- Submission of claims to be submitted to HR/Finance by the {{ \App\Models\ExpenseClaimPolicy::forCompany($employee->company)->submission_deadline_day ?? 20 }}th of the month for processing. Any late submission will be process next month.</li>
 </ul>
 @endif
 

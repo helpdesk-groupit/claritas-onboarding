@@ -81,7 +81,7 @@
                 <ol class="mb-0">
                     <li>All claims are for <strong>business purposes only</strong>.</li>
                     <li>File a <strong>separate claim per event / project</strong>; state the project/client name (except Sales).</li>
-                    <li>Submit with your reporting manager's acknowledgement by the <strong>{{ ordinal($policy->submission_deadline_day ?? 22) }}</strong> of the month.</li>
+                    <li>Submit with your reporting manager's acknowledgement by the <strong>{{ ordinal($policy->submission_deadline_day ?? 20) }}</strong> of the month.</li>
                     <li>Attach <strong>supporting receipts/proof</strong> (you can save a draft now and attach later).</li>
                     <li>Mileage: state the route (From → To); Toll/Parking are separate lines.</li>
                 </ol>
