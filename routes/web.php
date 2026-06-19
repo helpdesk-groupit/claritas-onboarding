@@ -397,14 +397,15 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     Route::post('/hr/claims/{claim}/approve',           [ExpenseClaimController::class, 'hrApprove'])->name('hr.claims.approve');
     Route::post('/hr/claims/{claim}/reject',            [ExpenseClaimController::class, 'hrReject'])->name('hr.claims.reject');
 
-    // Self-Service: My Claims
+    // Self-Service: My Claims (one claim per event)
     Route::get('/my/claims',                            [ExpenseClaimController::class, 'myClaims'])->name('user.claims.index');
+    Route::post('/my/claims/new',                       [ExpenseClaimController::class, 'createClaim'])->name('user.claims.create');
     Route::get('/my/claim-reports',                     [ExpenseClaimController::class, 'reports'])->name('user.claims.reports');
     Route::get('/my/claim-reports/{claim}/print',       [ExpenseClaimController::class, 'printReport'])->name('user.claims.report-print');
-    Route::post('/my/claims/save-details',              [ExpenseClaimController::class, 'saveDetails'])->name('user.claims.save-details');
     Route::post('/my/claims/add-item',                  [ExpenseClaimController::class, 'addItem'])->name('user.claims.add-item')->middleware('throttle:uploads');
     Route::put('/my/claims/{item}/update-item',         [ExpenseClaimController::class, 'updateItem'])->name('user.claims.update-item')->middleware('throttle:uploads');
     Route::delete('/my/claims/{item}/remove-item',      [ExpenseClaimController::class, 'removeItem'])->name('user.claims.remove-item');
+    Route::post('/my/claims/{claim}/save-details',      [ExpenseClaimController::class, 'saveDetails'])->name('user.claims.save-details');
     Route::get('/my/claims/{claim}/submit',             [ExpenseClaimController::class, 'submitForm'])->name('user.claims.submit-form');
     Route::post('/my/claims/{claim}/submit',            [ExpenseClaimController::class, 'submit'])->name('user.claims.submit');
     Route::post('/my/claims/{claim}/cancel',            [ExpenseClaimController::class, 'cancel'])->name('user.claims.cancel');
@@ -412,6 +413,7 @@ Route::delete('/hr/employees/{employee}/orientation',[EmployeeController::class,
     Route::post('/my/claims/mileage-distance',          [ExpenseClaimController::class, 'mileageDistance'])->name('user.claims.mileage-distance');
     Route::post('/my/claims/place-suggest',             [ExpenseClaimController::class, 'placeSuggest'])->name('user.claims.place-suggest')->middleware('throttle:60,1');
     Route::post('/my/claims/scan-receipt',              [ExpenseClaimController::class, 'scanReceipt'])->name('user.claims.scan-receipt')->middleware('throttle:uploads');
+    Route::get('/my/claims/{claim}',                    [ExpenseClaimController::class, 'showClaim'])->name('user.claims.show');
 
     // Manager: Team Claims Approval
     Route::get('/my/team-claims',                       [ExpenseClaimController::class, 'teamClaims'])->name('user.claims.team');

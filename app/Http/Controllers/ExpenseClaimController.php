@@ -31,6 +31,10 @@ class ExpenseClaimController extends Controller
      * My Claims — list all claims for the logged-in employee.
      * Supports ?month=N&year=YYYY to view any month within current year.
      */
+    /**
+     * My Claims — a LIST of the employee's claims, one per event. Drafts/rejected are
+     * editable; submitted/done are read-only. Claims are no longer keyed to a month.
+     */
     public function myClaims(Request $request)
     {
         $employee = Auth::user()->employee;
@@ -38,37 +42,87 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'No employee profile found.');
         }
 
-        $now = Carbon::now();
-        $year = (int) $request->input('year', $now->year);
-        $month = (int) $request->input('month', $now->month);
+        $claims = $employee->expenseClaims()->with('items.category')->orderByDesc('created_at')->get();
+        $policy = ExpenseClaimPolicy::forCompany($employee->company);
+        $company = \App\Models\Company::forName($employee->company);
 
-        // Only allow current year, valid month range, no future months
-        if ($year !== $now->year || $month < 1 || $month > 12 || $month > $now->month) {
-            $year = $now->year;
-            $month = $now->month;
+        $drafts = $claims->whereIn('status', ['draft', 'manager_rejected', 'hr_rejected'])->values();
+        $active = $claims->whereIn('status', ['submitted', 'manager_approved'])->values();
+        $done = $claims->whereIn('status', ['hr_approved', 'paid'])->values();
+
+        $year = Carbon::now()->year;
+        $yearClaims = $claims->where('year', $year);
+        $approvedYtd = $yearClaims->whereIn('status', ['hr_approved', 'paid'])->sum('total_with_gst');
+        $pendingYtd = $yearClaims->whereIn('status', ['submitted', 'manager_approved'])->sum('total_with_gst');
+
+        return view('user.claims.index', compact('employee', 'claims', 'drafts', 'active', 'done', 'policy', 'company', 'year', 'approvedYtd', 'pendingYtd'));
+    }
+
+    /**
+     * Create a new (draft) claim for an event, then open it. An employee can have many
+     * open claims at once — one per event/project.
+     */
+    public function createClaim(Request $request)
+    {
+        $employee = Auth::user()->employee;
+        if (! $employee) {
+            return back()->with('error', 'No employee profile found.');
         }
 
-        $claims = $employee->expenseClaims()->with('items.category')->get();
+        $data = $request->validate([
+            'event' => 'required|string|max:255',
+            'period' => 'nullable|date_format:Y-m', // reporting month this claim is filed under
+        ]);
+
+        $now = Carbon::now();
+        $period = ! empty($data['period']) ? Carbon::createFromFormat('Y-m', $data['period'])->startOfMonth() : $now->copy();
+        if ($period->greaterThan($now)) {
+            $period = $now->copy();
+        }
+
+        $claim = ExpenseClaim::create([
+            'employee_id' => $employee->id,
+            'year' => $period->year,
+            'month' => $period->month,
+            'event' => mb_substr(strip_tags($data['event']), 0, 255),
+            'claim_number' => ExpenseClaim::generateClaimNumber($period->year, $period->month),
+            'title' => mb_substr(strip_tags($data['event']), 0, 255).' — '.$employee->full_name,
+            'status' => 'draft',
+            'submission_deadline' => ClaimRulesService::submissionDeadline(
+                ExpenseClaimPolicy::forCompany($employee->company)->submission_deadline_day,
+                $period->copy()
+            ),
+            'manager_id' => $employee->manager_id,
+        ]);
+
+        return redirect()->route('user.claims.show', $claim)->with('success', 'New claim created — add your expense items.');
+    }
+
+    /**
+     * The detail page for one of the employee's own claims: letterhead, add-item form,
+     * items, and submit. Owner-only.
+     */
+    public function showClaim(ExpenseClaim $claim)
+    {
+        $employee = Auth::user()->employee;
+        if (! $employee || $claim->employee_id !== $employee->id) {
+            abort(403);
+        }
+
+        $claim->load('items.category', 'items.approver');
         $policy = ExpenseClaimPolicy::forCompany($employee->company);
-
-        // Find existing claim for selected month (don't auto-create empty drafts)
-        $currentClaim = ExpenseClaim::where('employee_id', $employee->id)
-            ->where('year', $year)
-            ->where('month', $month)
-            ->first();
-
+        $company = \App\Models\Company::forName($employee->company);
         $categories = ExpenseCategory::active()
             ->where(function ($q) use ($employee) {
                 $q->where('company', $employee->company)->orWhereNull('company');
             })->get();
 
-        $company = \App\Models\Company::forName($employee->company);
-
-        return view('user.claims.index', compact('employee', 'claims', 'currentClaim', 'categories', 'policy', 'year', 'month', 'company'));
+        return view('user.claims.show', compact('employee', 'claim', 'categories', 'policy', 'company'));
     }
 
     /**
-     * Add an item to a draft claim (any month within current year).
+     * Add an item to a specific (event) claim. Claims are per-event now, so the target
+     * claim is passed explicitly (claim_id) rather than derived from a viewed month.
      */
     public function addItem(Request $request)
     {
@@ -77,26 +131,22 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'No employee profile found.');
         }
 
-        // The claim period is the month the user is currently viewing (hidden claim_year/
-        // claim_month), so every item added there accumulates in that one month's claim —
-        // instead of being scattered (and the page navigating away) by each item's own date.
-        // The expense date must fall within that month and not be in the future.
-        $now = Carbon::now();
-        $claimYear = (int) $request->input('claim_year', $now->year);
-        $claimMonth = (int) $request->input('claim_month', $now->month);
-        if ($claimYear !== $now->year || $claimMonth < 1 || $claimMonth > 12
-            || ($claimYear === $now->year && $claimMonth > $now->month)) {
-            return back()->with('error', 'Invalid claim month selected.')->withInput();
+        $claim = ExpenseClaim::find($request->input('claim_id'));
+        if (! $claim || $claim->employee_id !== $employee->id) {
+            abort(403);
         }
-        $monthStart = Carbon::create($claimYear, $claimMonth, 1)->startOfDay(); // label for this claim
+        if (! $claim->isEditable()) {
+            return back()->with('error', 'This claim has already been submitted and cannot be edited.');
+        }
 
-        // Expenses may be back-dated to any earlier date this year — only FUTURE dates are
-        // blocked (e.g. in June you can't claim a July expense). The item still accumulates
-        // in the claim month being viewed (claim_year/claim_month above), not its own date.
-        $startOfYear = Carbon::create($now->year, 1, 1)->toDateString();
+        // Claims routinely span months (an event's legs can fall across weeks/months and
+        // are filed later), so back-dating is allowed — bounded to the last 18 months to
+        // catch typos. Only FUTURE dates are blocked.
+        $now = Carbon::now();
+        $floor = $now->copy()->subMonths(18)->toDateString();
 
         $validated = $request->validate([
-            'expense_date' => "required|date|after_or_equal:{$startOfYear}|before_or_equal:today",
+            'expense_date' => "required|date|after_or_equal:{$floor}|before_or_equal:today",
             'description' => 'required|string|max:500',
             'project_client' => 'nullable|string|max:255',
             'expense_category_id' => 'required|exists:expense_categories,id',
@@ -110,12 +160,11 @@ class ExpenseClaimController extends Controller
             'mileage_origin' => 'nullable|string|max:255',
             'receipt' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
         ], [
-            'expense_date.after_or_equal' => 'The expense date must be within '.$now->year.'.',
-            'expense_date.before_or_equal' => 'The expense date cannot be in the future — you can claim past dates, just not future ones.',
+            'expense_date.after_or_equal' => 'The expense date is too far in the past (older than 18 months).',
+            'expense_date.before_or_equal' => 'The expense date cannot be in the future.',
         ]);
 
         $expenseDate = Carbon::parse($validated['expense_date']);
-        $claim = $this->getOrCreateDraft($employee, $claimYear, $claimMonth);
 
         if (! $claim->isEditable()) {
             return back()->with('error', 'This claim has already been submitted and cannot be edited.');
@@ -265,8 +314,8 @@ class ExpenseClaimController extends Controller
 
         $claim->recalculateTotals();
 
-        return redirect()->route('user.claims.index', ['month' => $claimMonth, 'year' => $claimYear])
-            ->with('success', 'Expense item added to '.$monthStart->format('F Y').' claim.');
+        return redirect()->route('user.claims.show', $claim)
+            ->with('success', 'Expense item added.');
     }
 
     /**
@@ -287,10 +336,10 @@ class ExpenseClaimController extends Controller
         }
 
         $now = Carbon::now();
-        $startOfYear = Carbon::create($now->year, 1, 1)->toDateString();
+        $floor = $now->copy()->subMonths(18)->toDateString();
 
         $validated = $request->validate([
-            'expense_date' => "required|date|after_or_equal:{$startOfYear}|before_or_equal:today",
+            'expense_date' => "required|date|after_or_equal:{$floor}|before_or_equal:today",
             'description' => 'required|string|max:500',
             'project_client' => 'nullable|string|max:255',
             'expense_category_id' => 'required|exists:expense_categories,id',
@@ -434,7 +483,7 @@ class ExpenseClaimController extends Controller
 
         $claim->recalculateTotals();
 
-        return redirect()->route('user.claims.index', ['month' => $claim->month, 'year' => $claim->year])
+        return redirect()->route('user.claims.show', $claim)
             ->with('success', 'Expense item updated.');
     }
 
@@ -512,31 +561,20 @@ class ExpenseClaimController extends Controller
         return view('user.claims.report-print', compact('claim', 'company', 'items', 'approver'));
     }
 
-    /** Save the claim's Event/purpose (header field). Creates the month's draft if needed. */
-    public function saveDetails(Request $request)
+    /** Save the Event/purpose on a specific claim. */
+    public function saveDetails(Request $request, ExpenseClaim $claim)
     {
         $employee = Auth::user()->employee;
-        if (! $employee) {
-            return back()->with('error', 'No employee profile found.');
+        if (! $employee || $claim->employee_id !== $employee->id) {
+            abort(403);
         }
-        $data = $request->validate([
-            'year' => 'required|integer',
-            'month' => 'required|integer|min:1|max:12',
-            'event' => 'nullable|string|max:255',
-        ]);
-        $now = Carbon::now();
-        if ((int) $data['year'] !== $now->year || (int) $data['month'] > $now->month) {
-            return back()->with('error', 'Invalid claim month.');
-        }
-
-        $claim = $this->getOrCreateDraft($employee, (int) $data['year'], (int) $data['month']);
         if (! $claim->isEditable()) {
             return back()->with('error', 'This claim can no longer be edited.');
         }
-        $claim->update(['event' => $data['event'] ? mb_substr(strip_tags($data['event']), 0, 255) : null]);
+        $data = $request->validate(['event' => 'required|string|max:255']);
+        $claim->update(['event' => mb_substr(strip_tags($data['event']), 0, 255)]);
 
-        return redirect()->route('user.claims.index', ['month' => $data['month'], 'year' => $data['year']])
-            ->with('success', 'Event saved.');
+        return redirect()->route('user.claims.show', $claim)->with('success', 'Event saved.');
     }
 
     /**
@@ -551,7 +589,7 @@ class ExpenseClaimController extends Controller
             abort(403);
         }
         if (! $claim->isSubmittable()) {
-            return redirect()->route('user.claims.index', ['month' => $claim->month, 'year' => $claim->year])
+            return redirect()->route('user.claims.show', $claim)
                 ->with('error', 'This claim cannot be submitted. Ensure it has at least one item.');
         }
 
@@ -562,7 +600,7 @@ class ExpenseClaimController extends Controller
         if ($missing->isNotEmpty()) {
             $names = $missing->take(5)->pluck('description')->implode(', ');
 
-            return redirect()->route('user.claims.index', ['month' => $claim->month, 'year' => $claim->year])
+            return redirect()->route('user.claims.show', $claim)
                 ->with('error', 'Attach a receipt before submitting these item(s): '.$names.($missing->count() > 5 ? ', …' : '').'.');
         }
 
@@ -591,7 +629,7 @@ class ExpenseClaimController extends Controller
         if ($missing->isNotEmpty()) {
             $names = $missing->take(5)->pluck('description')->implode(', ');
 
-            return redirect()->route('user.claims.index', ['month' => $claim->month, 'year' => $claim->year])
+            return redirect()->route('user.claims.show', $claim)
                 ->with('error', 'Attach a receipt before submitting these item(s): '.$names.($missing->count() > 5 ? ', …' : '').'.');
         }
 
@@ -638,7 +676,7 @@ class ExpenseClaimController extends Controller
             }
         }
 
-        return redirect()->route('user.claims.index', ['month' => $claim->month, 'year' => $claim->year])
+        return redirect()->route('user.claims.show', $claim)
             ->with('success', 'Claim submitted — each item routed to its approving manager.');
     }
 
@@ -1575,23 +1613,6 @@ class ExpenseClaimController extends Controller
             return;
         }
         abort(403, 'You are not allowed to verify this claim.');
-    }
-
-    private function getOrCreateDraft(Employee $employee, int $year, int $month): ExpenseClaim
-    {
-        return ExpenseClaim::firstOrCreate(
-            ['employee_id' => $employee->id, 'year' => $year, 'month' => $month],
-            [
-                'claim_number' => ExpenseClaim::generateClaimNumber($year, $month),
-                'title' => Carbon::create($year, $month)->format('F Y').' — '.$employee->full_name,
-                'status' => 'draft',
-                'submission_deadline' => ClaimRulesService::submissionDeadline(
-                    ExpenseClaimPolicy::forCompany($employee->company)->submission_deadline_day,
-                    Carbon::create($year, $month, 1)
-                ),
-                'manager_id' => $employee->manager_id,
-            ]
-        );
     }
 
     private function notifyHr(ExpenseClaim $claim, string $type): void
