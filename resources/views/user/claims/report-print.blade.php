@@ -81,19 +81,7 @@
             </tfoot>
         </table>
 
-        <div class="row mt-5">
-            <div class="col-6">
-                <div>Staff :- {{ $claim->employee->full_name }}</div>
-                <div class="mt-4 pt-3 border-top" style="width:75%;">Signature / Date :</div>
-                <div class="mt-4">Approving Manager :- {{ $approver->full_name ?? '(see each manager group)' }}</div>
-                <div class="mt-4 pt-3 border-top" style="width:75%;">Signature / Date :</div>
-            </div>
-            <div class="col-6">
-                <div>Checked by / Date :-</div>
-                <div class="text-muted small">(HR/Finance)</div>
-                <div class="mt-5 pt-3 border-top" style="width:75%;">Date :</div>
-            </div>
-        </div>
+        @include('partials.claim-signoffs', ['claim' => $claim, 'approver' => $approver])
     </div>
 
     {{-- ── Supporting documents (shared partial — same section the manager review shows) ── --}}
