@@ -65,6 +65,25 @@ class ExpenseClaimItem extends Model
     }
 
     /**
+     * True when this item's category requires a receipt but none is attached yet.
+     * Mileage lines are exempt (the distance is the evidence). Used to let drafts be
+     * saved without a receipt while still blocking submission until one is added.
+     */
+    public function needsReceipt(): bool
+    {
+        $cat = $this->category;
+        if (! $cat || ! $cat->requires_receipt) {
+            return false;
+        }
+        $mileageGl = config('claims.mileage.gl_code');
+        if ($this->isMileage() || ($mileageGl && $cat->gl_code === $mileageGl)) {
+            return false;
+        }
+
+        return empty($this->receipt_path);
+    }
+
+    /**
      * Intrinsic, no-API sanity checks for the reviewer — each is
      * ['label' => ..., 'ok' => bool, 'detail' => ?string].
      * (Receipt-amount OCR and mileage-distance checks are done on demand via the

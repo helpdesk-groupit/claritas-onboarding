@@ -143,11 +143,9 @@ class ExpenseClaimController extends Controller
         $mileageGl = config('claims.mileage.gl_code');
         $isPetrolMileage = $mileageGl && $category->gl_code === $mileageGl;
 
-        // Strict "no receipt, no claim" for receipt-required categories — except a
-        // mileage claim, where the distance (not a receipt) is the evidence.
-        if ($category->requires_receipt && ! $isPetrolMileage && ! $request->hasFile('receipt')) {
-            return back()->withErrors(['receipt' => 'A receipt is required for '.$category->name.' (no receipt, no claim).'])->withInput();
-        }
+        // A receipt is NOT required to save a draft item — the employee can add the
+        // expense now and attach the receipt later (e.g. a trip planned for tomorrow).
+        // The "no receipt, no claim" rule is enforced at SUBMIT time instead (see submit()).
 
         // Computed amounts: per-day/per-hour categories, or a mileage-mode Petrol
         // claim — all derive the amount server-side from a quantity (the server is
@@ -325,11 +323,8 @@ class ExpenseClaimController extends Controller
         $mileageGl = config('claims.mileage.gl_code');
         $isPetrolMileage = $mileageGl && $category->gl_code === $mileageGl;
 
-        // Receipt requirement: only when the category needs one, it isn't a mileage
-        // claim, the item has no receipt already, and none is being uploaded now.
-        if ($category->requires_receipt && ! $isPetrolMileage && ! $item->receipt_path && ! $request->hasFile('receipt')) {
-            return back()->withErrors(['receipt' => 'A receipt is required for '.$category->name.' (no receipt, no claim).'])->withInput();
-        }
+        // No receipt required to save edits — the attachment can still be added later;
+        // it's enforced at submit time (see submit()).
 
         // Computed amounts (server authoritative).
         $quantity = null;
@@ -561,6 +556,16 @@ class ExpenseClaimController extends Controller
         }
 
         $claim->load('items.category');
+
+        // Block early if any item still needs a receipt — send them back to attach it.
+        $missing = $claim->items->filter(fn ($it) => $it->needsReceipt());
+        if ($missing->isNotEmpty()) {
+            $names = $missing->take(5)->pluck('description')->implode(', ');
+
+            return redirect()->route('user.claims.index', ['month' => $claim->month, 'year' => $claim->year])
+                ->with('error', 'Attach a receipt before submitting these item(s): '.$names.($missing->count() > 5 ? ', …' : '').'.');
+        }
+
         $approvers = ClaimRulesService::eligibleApprovers();
         $defaultApproverId = ClaimRulesService::defaultApproverId($employee);
 
@@ -577,6 +582,17 @@ class ExpenseClaimController extends Controller
 
         if (! $claim->isSubmittable()) {
             return back()->with('error', 'This claim cannot be submitted. Ensure it has at least one item.');
+        }
+
+        // "No receipt, no claim" is enforced here (not at add time) so drafts can be
+        // saved without attachments and completed later.
+        $claim->load('items.category');
+        $missing = $claim->items->filter(fn ($it) => $it->needsReceipt());
+        if ($missing->isNotEmpty()) {
+            $names = $missing->take(5)->pluck('description')->implode(', ');
+
+            return redirect()->route('user.claims.index', ['month' => $claim->month, 'year' => $claim->year])
+                ->with('error', 'Attach a receipt before submitting these item(s): '.$names.($missing->count() > 5 ? ', …' : '').'.');
         }
 
         // Every item must be routed to an eligible (loggable) approving manager.

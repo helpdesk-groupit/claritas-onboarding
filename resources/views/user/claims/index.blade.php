@@ -286,7 +286,7 @@
 
                     {{-- Receipt first — upload a document, then click Scan to auto-fill the fields below (blanks only) --}}
                     <div class="border rounded p-2 mb-3 bg-white">
-                        <label class="form-label fw-semibold mb-1"><i class="bi bi-paperclip me-1"></i>Attachment <span class="text-danger" id="receiptRequiredMark" style="display:none;">*</span> <span class="fw-normal text-muted small">— receipt or Google Maps screenshot; upload, then Scan to auto-fill the details below (only empty fields)</span></label>
+                        <label class="form-label fw-semibold mb-1"><i class="bi bi-paperclip me-1"></i>Attachment <span class="text-danger" id="receiptRequiredMark" style="display:none;">*</span> <span class="fw-normal text-muted small">— receipt or Google Maps screenshot; upload, then Scan to auto-fill the details below. Optional now — you can save the item and add the receipt later, but it's required before submitting.</span></label>
                         <div class="d-flex align-items-center gap-2 flex-wrap">
                             <input type="file" name="receipt" class="form-control @error('receipt') is-invalid @enderror" accept=".jpg,.jpeg,.png,.pdf" id="receiptFile" style="max-width:380px;">
                             <button type="button" class="btn btn-sm btn-primary d-none" id="scanReceiptBtn"><i class="bi bi-magic me-1"></i>Scan attachment</button>
@@ -447,6 +447,8 @@
                             <td>
                                 @if($item->receipt_path)
                                 <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-paperclip"></i></a>
+                                @elseif($item->needsReceipt())
+                                <span class="badge bg-warning text-dark" title="Attach a receipt before submitting"><i class="bi bi-exclamation-triangle me-1"></i>Needed</span>
                                 @else
                                 <span class="text-muted">—</span>
                                 @endif
@@ -518,7 +520,12 @@
                         </div>
                     </div>
                     <div class="d-flex justify-content-between align-items-center">
-                        <span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis">{{ $item->category->name ?? '-' }}</span>
+                        <span>
+                            <span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis">{{ $item->category->name ?? '-' }}</span>
+                            @if(!$item->receipt_path && $item->needsReceipt())
+                            <span class="badge bg-warning text-dark ms-1"><i class="bi bi-exclamation-triangle me-1"></i>Receipt needed</span>
+                            @endif
+                        </span>
                         <span class="fw-bold">RM {{ number_format($item->total_with_gst, 2) }}</span>
                     </div>
                     @if($canEdit && !$item->is_locked)
@@ -605,19 +612,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 valid = false;
             }
 
-            // Category receipt requirement check
+            // The attachment is optional at add time — a draft item can be saved now and
+            // the receipt added before submitting (enforced server-side on submit).
             if (categorySelect && categorySelect.value) {
                 const opt = categorySelect.selectedOptions[0];
                 const mileageHere = isMileageCat(opt); // Petrol = always mileage, distance is the evidence
-                const receiptInput = document.getElementById('receiptFile');
-                if (!mileageHere && opt && opt.dataset.requiresReceipt === '1' && receiptInput && !receiptInput.files.length) {
-                    receiptInput.classList.add('is-invalid');
-                    const fb = receiptInput.nextElementSibling;
-                    if (fb && fb.classList.contains('invalid-feedback')) {
-                        fb.textContent = 'This category requires a receipt. Upload JPG, PNG, or PDF.';
-                    }
-                    valid = false;
-                }
                 // Computed categories (Event Day / Extra Hours) and Petrol mileage need a quantity
                 const rt = opt ? opt.dataset.rateType : 'receipt';
                 if (((rt === 'per_day' || rt === 'per_hour') || mileageHere) && quantityInput && (!quantityInput.value || parseFloat(quantityInput.value) <= 0)) {
@@ -725,15 +724,10 @@ document.addEventListener('DOMContentLoaded', function() {
     // Show the Receipt "*" only when the chosen category actually requires a receipt
     // (hidden for by-mileage and for categories that don't need one).
     function updateReceiptRequiredMark() {
+        // The attachment is optional when adding/saving a draft item (it can be added
+        // before submission), so the "required" asterisk is never shown.
         const mark = document.getElementById('receiptRequiredMark');
-        if (!mark) return;
-        const opt = selOpt();
-        const hasCategory = !!(opt && opt.value);
-        const mileageHere = isMileageCat(opt) && mileageOn();
-        // Show by default (most claims need a receipt); hide only when a chosen category
-        // doesn't require one, or for by-mileage (distance is the evidence).
-        const needed = mileageHere ? false : (hasCategory ? (opt.dataset.requiresReceipt === '1') : true);
-        mark.style.display = needed ? '' : 'none';
+        if (mark) mark.style.display = 'none';
     }
 
     function applyPetrolMode() {
