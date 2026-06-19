@@ -272,21 +272,21 @@
                             </div>
                         </div>
                         <div class="col-4 col-md-2">
-                            <label class="form-label fw-semibold">RM (w/o GST) <span class="text-danger">*</span></label>
+                            <label class="form-label fw-semibold">RM (w/o SST) <span class="text-danger">*</span></label>
                             <input type="number" name="amount" class="form-control @error('amount') is-invalid @enderror" id="amountNoGst" value="{{ old('amount') }}" step="0.01" min="0.01" max="99999.99" placeholder="0.00" required>
                             @error('amount')
                             <div class="invalid-feedback">{{ $message }}</div>
                             @else
-                            <div class="invalid-feedback">Enter the amount before GST (e.g., 25.00).</div>
+                            <div class="invalid-feedback">Enter the amount before SST (e.g., 25.00).</div>
                             @enderror
                         </div>
                         <div class="col-4 col-md-2">
-                            <label class="form-label fw-semibold">GST (RM)</label>
+                            <label class="form-label fw-semibold">SST (RM)</label>
                             <input type="number" name="gst_amount" class="form-control" id="gstAmount" value="{{ old('gst_amount', 0) }}" step="0.01" min="0" max="99999.99" placeholder="0.00">
-                            <small class="text-muted d-none d-md-block">Leave 0 if no GST.</small>
+                            <small class="text-muted d-none d-md-block">Leave 0 if no SST.</small>
                         </div>
                         <div class="col-4 col-md-2">
-                            <label class="form-label fw-semibold">Total (w/ GST)</label>
+                            <label class="form-label fw-semibold">Total (w/ SST)</label>
                             <input type="number" name="total_with_gst" class="form-control fw-bold" id="totalWithGst" step="0.01" min="0.01" value="{{ old('total_with_gst') }}" readonly>
                             <small class="text-muted d-none d-md-block">Auto-calculated.</small>
                         </div>
@@ -310,9 +310,9 @@
                             <th>Description</th>
                             <th>Project/Client</th>
                             <th>Category</th>
-                            <th class="text-end">RM (w/o GST)</th>
-                            <th class="text-end">GST (RM)</th>
-                            <th class="text-end">Total (w/ GST)</th>
+                            <th class="text-end">RM (w/o SST)</th>
+                            <th class="text-end">SST (RM)</th>
+                            <th class="text-end">Total (w/ SST)</th>
                             <th>Receipt</th>
                             @if($canEdit)<th></th>@endif
                         </tr>
@@ -486,7 +486,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 { el: form.querySelector('[name="expense_date"]'), msg: 'Select a date within the current year.' },
                 { el: form.querySelector('[name="description"]'), msg: 'Describe the expense (e.g., "Grab to client meeting").' },
                 { el: form.querySelector('[name="expense_category_id"]'), msg: 'Choose a category (e.g., "Transport").' },
-                { el: form.querySelector('[name="amount"]'), msg: 'Enter the amount before GST (e.g., 25.00).' },
+                { el: form.querySelector('[name="amount"]'), msg: 'Enter the amount before SST (e.g., 25.00).' },
             ];
 
             requiredFields.forEach(f => {

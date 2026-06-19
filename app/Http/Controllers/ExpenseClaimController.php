@@ -47,15 +47,24 @@ class ExpenseClaimController extends Controller
         $company = \App\Models\Company::forName($employee->company);
 
         $drafts = $claims->whereIn('status', ['draft', 'manager_rejected', 'hr_rejected'])->values();
-        $active = $claims->whereIn('status', ['submitted', 'manager_approved'])->values();
-        $done = $claims->whereIn('status', ['hr_approved', 'paid'])->values();
+
+        // Group all claims by period (newest first) for the month/year accordion.
+        $byMonth = $claims
+            ->sortByDesc(fn ($c) => $c->year * 100 + $c->month)
+            ->groupBy(fn ($c) => sprintf('%04d-%02d', $c->year, $c->month));
+
+        // Event-name suggestions (company-wide) to standardise events across staff.
+        $companyEmpIds = Employee::where('company', $employee->company)->pluck('id');
+        $eventSuggestions = ExpenseClaim::whereIn('employee_id', $companyEmpIds)
+            ->whereNotNull('event')->where('event', '!=', '')
+            ->pluck('event')->map(fn ($e) => trim($e))->filter()->unique()->sort()->values();
 
         $year = Carbon::now()->year;
         $yearClaims = $claims->where('year', $year);
         $approvedYtd = $yearClaims->whereIn('status', ['hr_approved', 'paid'])->sum('total_with_gst');
         $pendingYtd = $yearClaims->whereIn('status', ['submitted', 'manager_approved'])->sum('total_with_gst');
 
-        return view('user.claims.index', compact('employee', 'claims', 'drafts', 'active', 'done', 'policy', 'company', 'year', 'approvedYtd', 'pendingYtd'));
+        return view('user.claims.index', compact('employee', 'claims', 'drafts', 'byMonth', 'eventSuggestions', 'policy', 'company', 'year', 'approvedYtd', 'pendingYtd'));
     }
 
     /**

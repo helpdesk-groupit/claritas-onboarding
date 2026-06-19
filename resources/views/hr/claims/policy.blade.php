@@ -36,20 +36,20 @@
                         </div>
                     </div>
 
-                    {{-- GST Settings --}}
+                    {{-- SST Settings --}}
                     <div class="col-md-6">
                         <div class="section-header">
-                            <h6><i class="bi bi-percent me-2"></i>GST / Tax Settings</h6>
+                            <h6><i class="bi bi-percent me-2"></i>SST / Tax Settings</h6>
                         </div>
                         <div class="mb-3">
                             <div class="form-check form-switch">
                                 <input type="checkbox" name="gst_enabled" value="1" class="form-check-input"
                                        {{ old('gst_enabled', $policy->gst_enabled) ? 'checked' : '' }}>
-                                <label class="form-check-label">Enable GST on Claims</label>
+                                <label class="form-check-label">Enable SST on Claims</label>
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">GST Rate (%)</label>
+                            <label class="form-label">SST Rate (%)</label>
                             <input type="number" name="gst_rate" class="form-control" step="0.01" min="0" max="100"
                                    value="{{ old('gst_rate', $policy->gst_rate) }}">
                         </div>

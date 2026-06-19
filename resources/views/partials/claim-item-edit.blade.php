@@ -1,6 +1,6 @@
 {{--
     Inline per-item edit form (My Claims). Rendered inside a collapsible host under
-    each item row/card. Type-aware: receipt categories edit amount/GST directly;
+    each item row/card. Type-aware: receipt categories edit amount/SST directly;
     mileage + computed categories edit the quantity and the amount is derived (the
     server is still authoritative). The category itself is fixed here — to change a
     line's category, remove it and add a new one. Posts PUT to user.claims.update-item.
@@ -86,15 +86,15 @@
     @else
     <div class="row g-2 mt-1">
         <div class="col-4 col-md-2">
-            <label class="form-label small mb-1">RM (w/o GST) <span class="text-danger">*</span></label>
+            <label class="form-label small mb-1">RM (w/o SST) <span class="text-danger">*</span></label>
             <input type="number" step="0.01" min="0.01" max="99999.99" name="amount" class="form-control form-control-sm" value="{{ $item->amount }}" required>
         </div>
         <div class="col-4 col-md-2">
-            <label class="form-label small mb-1">GST (RM)</label>
+            <label class="form-label small mb-1">SST (RM)</label>
             <input type="number" step="0.01" min="0" max="99999.99" name="gst_amount" class="form-control form-control-sm" value="{{ $item->gst_amount }}">
         </div>
         <div class="col-4 col-md-2">
-            <label class="form-label small mb-1">Total (w/ GST)</label>
+            <label class="form-label small mb-1">Total (w/ SST)</label>
             <input type="number" step="0.01" name="total_with_gst" class="form-control form-control-sm fw-bold" value="{{ $item->total_with_gst }}" readonly>
         </div>
     </div>

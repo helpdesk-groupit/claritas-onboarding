@@ -134,9 +134,9 @@
                                 <th>Expense Description</th>
                                 <th>Project/Client Name</th>
                                 <th>Expense Type</th>
-                                <th>RM<br>(w/o GST)</th>
-                                <th>RM<br>(GST)</th>
-                                <th>Total<br>(w/ GST)</th>
+                                <th>RM<br>(w/o SST)</th>
+                                <th>RM<br>(SST)</th>
+                                <th>Total<br>(w/ SST)</th>
                             </tr>
                         </thead>
                         <tbody>

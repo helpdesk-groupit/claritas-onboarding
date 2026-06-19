@@ -115,8 +115,8 @@
                             <th>Description</th>
                             <th>Project/Client</th>
                             <th>Category</th>
-                            <th class="text-end">RM (w/o GST)</th>
-                            <th class="text-end">GST</th>
+                            <th class="text-end">RM (w/o SST)</th>
+                            <th class="text-end">SST</th>
                             <th class="text-end">Total</th>
                             <th>Receipt</th>
                         </tr>

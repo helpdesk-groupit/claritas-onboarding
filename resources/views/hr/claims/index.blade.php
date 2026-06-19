@@ -138,7 +138,7 @@
                                 <th>Department</th>
                                 <th>Period</th>
                                 <th>Items</th>
-                                <th class="text-end">Total (w/ GST)</th>
+                                <th class="text-end">Total (w/ SST)</th>
                                 <th>Status</th>
                                 <th>Submitted</th>
                                 <th>Actions</th>
