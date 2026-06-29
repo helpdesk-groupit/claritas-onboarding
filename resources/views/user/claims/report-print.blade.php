@@ -28,70 +28,26 @@
     </style>
 </head>
 <body>
+    @unless(request()->boolean('embed'))
+    {{-- Standalone toolbar — hidden when the report is embedded in a modal iframe (?embed=1). --}}
     <div class="claim-toolbar d-print-none">
-        <a href="{{ route('user.claims.reports') }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back to reports</a>
+        <a href="{{ route('user.claims.index') }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back to My Claims</a>
         <button class="btn btn-sm btn-primary" id="printBtn"><i class="bi bi-printer me-1"></i>Print</button>
         <a class="btn btn-sm btn-outline-danger" href="{{ route('user.claims.pdf', $claim) }}"><i class="bi bi-file-earmark-pdf me-1"></i>Download PDF</a>
-        @if($claim->statusBadge())<span class="badge bg-{{ $claim->statusBadge()['class'] }} align-self-center">{{ $claim->statusBadge()['label'] }}</span>@endif
+        @foreach($claim->stageBadges() as $sb)<span class="badge bg-{{ $sb['class'] }} {{ $sb['class'] === 'warning' ? 'text-dark' : '' }} align-self-center">{{ $sb['label'] }}</span>@endforeach
     </div>
+    @endunless
 
     <div class="claim-form">
-        @include('partials.claim-letterhead', [
+        @include('partials.claim-report-form', [
+            'claim' => $claim,
             'company' => $company,
-            'employee' => $claim->employee,
-            'event' => $claim->event,
-            'showRules' => true,
-            'claimDate' => $claim->submitted_at ?? \Carbon\Carbon::create($claim->year, $claim->month, 1),
+            'items' => $items,
+            'approver' => $approver,
+            'padRows' => false,
+            'showAttachments' => true,
         ])
-
-        <table class="table table-bordered align-middle" style="font-size:.78rem;">
-            <thead class="text-center">
-                <tr>
-                    <th>Date</th>
-                    <th>Expense Description</th>
-                    <th>Project/Client Name</th>
-                    <th>Expense Type</th>
-                    <th>RM<br>(w/o SST)</th>
-                    <th>RM<br>(SST)</th>
-                    <th>Total<br>(w/ SST)</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach($items as $item)
-                <tr>
-                    <td class="text-nowrap">{{ $item->expense_date->format('jS M Y') }}</td>
-                    <td>{{ $item->description }}@if($item->isRejected()) <span class="badge bg-danger">REJECTED</span>@endif</td>
-                    <td>{{ $item->project_client ?: 'N/A' }}</td>
-                    <td>{{ $item->category->gl_code ? $item->category->gl_code.': ' : '' }}{{ strtoupper($item->category->name ?? '') }}</td>
-                    <td class="text-end">RM{{ number_format($item->amount, 2) }}</td>
-                    <td class="text-end">{{ $item->gst_amount > 0 ? 'RM'.number_format($item->gst_amount, 2) : '-' }}</td>
-                    <td class="text-end">RM{{ number_format($item->total_with_gst, 2) }}</td>
-                </tr>
-                @endforeach
-                @for($i = $items->count(); $i < 14; $i++)
-                <tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td class="text-end">-</td></tr>
-                @endfor
-            </tbody>
-            <tfoot>
-                <tr class="fw-bold text-end">
-                    <td colspan="4"></td>
-                    <td>{{ number_format($items->sum('amount'), 2) }}</td>
-                    <td>{{ number_format($items->sum('gst_amount'), 2) }}</td>
-                    <td>{{ number_format($items->sum('total_with_gst'), 2) }}</td>
-                </tr>
-            </tfoot>
-        </table>
-
-        @include('partials.claim-signoffs', ['claim' => $claim, 'approver' => $approver])
     </div>
-
-    {{-- ── Supporting documents (shared partial — same section the manager review shows) ── --}}
-    @php $hasAttachments = $items->filter(fn ($it) => $it->receipt_path)->count() > 0; @endphp
-    @if($hasAttachments)
-    <div class="attachments">
-        @include('partials.claim-attachments', ['items' => $items])
-    </div>
-    @endif
 
     <script nonce="{{ $cspNonce ?? '' }}">
         document.getElementById('printBtn')?.addEventListener('click', function () { window.print(); });

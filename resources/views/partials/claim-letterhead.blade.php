@@ -30,9 +30,11 @@
     <div class="col-md-8">
         <div class="d-flex"><div class="fw-semibold" style="width:110px;">Name :</div><div class="border-bottom flex-grow-1">{{ $employee->full_name }}</div></div>
         <div class="d-flex mt-2"><div class="fw-semibold" style="width:110px;">Department :</div><div class="border-bottom flex-grow-1">{{ $employee->department ?? '—' }}</div></div>
-        <div class="d-flex mt-2"><div class="fw-semibold" style="width:110px;">Event :</div><div class="border-bottom flex-grow-1">{{ $event ?? '—' }}</div></div>
+        @if($showEvent ?? true)
+        <div class="d-flex mt-2"><div class="fw-semibold" style="width:110px;">Event :</div><div class="border-bottom flex-grow-1" @isset($eventId)id="{{ $eventId }}"@endisset>{{ $event ?: '—' }}</div></div>
+        @endif
     </div>
     <div class="col-md-4">
-        <div class="d-flex"><div class="fw-semibold" style="width:60px;">Date :</div><div class="border-bottom flex-grow-1">{{ ($claimDate ?? now())->format('jS F Y') }}</div></div>
+        <div class="d-flex"><div class="fw-semibold" style="width:60px;">Date :</div><div class="border-bottom flex-grow-1" @isset($dateId)id="{{ $dateId }}"@endisset>{{ ($claimDate ?? now())->format('jS F Y') }}</div></div>
     </div>
 </div>

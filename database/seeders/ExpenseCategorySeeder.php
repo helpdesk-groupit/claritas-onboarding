@@ -53,6 +53,102 @@ class ExpenseCategorySeeder extends Seeder
             ['936-000', 'Seminar & Training'],
         ];
 
+        // Detection keywords for the common GL categories (boosts auto-categorisation).
+        // Only the categories people actually describe in free text need these; the rest
+        // fall back to name-word matching in ExpenseCategory::detectFromDescription().
+        $glKeywords = [
+            // Computer BIG items + software (vs 200-300 furniture, vs 927 small peripherals).
+            '200-200' => ['computer', 'software', 'laptop', 'license', 'licence', 'software license',
+                'software licence', 'subscription software', 'server', 'desktop', 'monitor', 'google play',
+                'play store', 'app store', 'apple', 'capcut', 'canva', 'adobe', 'figma', 'notion', 'microsoft',
+                'office 365', 'chatgpt', 'openai', 'github', 'app', 'plugin'],
+            '200-300' => ['office equipment', 'printer', 'furniture', 'desk', 'chair', 'cabinet', 'table'],
+            '340-000' => ['deposit', 'prepayment', 'rental deposit', 'security deposit'],
+            '901-000' => ['advertisement', 'advertising', 'ads', 'ad spend', 'facebook ad', 'google ad',
+                'promotion', 'promo', 'promotional', 'event hosting', 'emcee', 'emceeing', 'master of ceremony'],
+            '902-000' => ['bank charge', 'bank fee', 'transfer fee', 'service charge', 'cheque book', 'stamp duty'],
+            '903-000' => ['upkeep', 'coway', 'cleaner', 'aircon', 'air cond', 'air conditioning', 'duplicate key',
+                'office maintenance', 'warehouse maintenance'],
+            '905-000' => ['travel', 'travelling', 'flight', 'air ticket', 'taxi', 'grab', 'justgrab', 'grabcar',
+                'grab car', 'e-hailing', 'ehailing', 'ride hailing', 'mycar', 'indrive', 'airasia ride', 'train',
+                'hotel', 'accommodation', 'lodging', 'meal allowance'],
+            '906-000' => ['overseas travel', 'oversea travel', 'international flight', 'airport tax'],
+            '907-000' => ['water bill', 'electricity', 'electric bill', 'utility', 'utilities', 'tnb', 'tenaga',
+                'kcp', 'indah water'],
+            '910-000' => ['phone bill', 'telephone', 'mobile', 'fax', 'internet', 'data plan', 'prepaid', 'postpaid'],
+            '911-000' => ['accounting fee', 'administration fee', 'admin fee', 'accounting', 'administration'],
+            '912-000' => ['secretarial', 'secretarial fee'],
+            '913-000' => ['sales commission', 'commission'],
+            '914(b)-000' => ['transport', 'transportation', 'delivery', 'shipping'],
+            '915-000' => ['office rental', 'warehouse rental', 'rental', 'tenancy'],
+            '916-000' => ['toll', 'parking', 'car park', 'carpark', 'fine', 'smarttag', 'touch n go', 'tng'],
+            '917-000' => ['insurance', 'premium', 'coverage'],
+            '919-000' => ['petrol', 'fuel', 'diesel', 'mileage'],
+            '920-000' => ['printing', 'stationery', 'stationary', 'paper', 'ink', 'toner', 'pen', 'out of pocket', 'carton', 'carton box', 'packaging', 'packing', 'bubble wrap', 'envelope'],
+            '921-000' => ['consultancy', 'consultant', 'outsourced', 'professional fee'],
+            '922-000' => ['food', 'refreshment', 'lunch', 'dinner', 'meal', 'drinks', 'coffee', 'catering',
+                'pantry', 'ro water'],
+            '924-000' => ['recruitment', 'hiring', 'job ad', 'interview', 'jobstreet', 'hiring consultant'],
+            '926-000' => ['penalty', 'penalties', 'late charge', 'late payment'],
+            // Computer SMALL items / peripherals (incl. keyboard & mouse, vs 200-200 big items).
+            '927-000' => ['computer peripheral', 'cable', 'adapter', 'hard disk', 'usb', 'webcam', 'headset',
+                'ram', 'cd', 'keyboard', 'mouse'],
+            '928-000' => ['website', 'hosting', 'domain', 'ssl', 'data hosting'],
+            '929-000' => ['subscription', 'membership', 'saas', 'renewal', 'sugarcrm', 'partnership subscription'],
+            '930-000' => ['staff entertainment', 'team lunch', 'team dinner', 'staff makan', 'team building',
+                'gathering', 'makan session', 'staff birthday'],
+            '931-000' => ['entertainment', 'client lunch', 'client dinner', 'client makan', 'business lunch'],
+            '932-000' => ['medical', 'clinic', 'doctor', 'hospital', 'pharmacy', 'medicine', 'dental', 'optical', 'glasses'],
+            '933-000' => ['newspaper', 'periodical', 'magazine', 'book'],
+            '934-000' => ['postage', 'courier', 'poslaju', 'stamp', 'mailing'],
+            '936-000' => ['seminar', 'training', 'workshop', 'course', 'conference'],
+        ];
+
+        // Per-category descriptions (from the company chart of accounts) — stored on the
+        // category AND fed to the OCR's category prompt so the AI classifies with context.
+        $glDescriptions = [
+            '200-200' => 'Computer big items: server, desktop, monitor, software licenses, etc.',
+            '200-300' => 'Office furniture, etc.',
+            '340-000' => 'Deposit (e.g. rental agreement / contract) and prepayments.',
+            '901-000' => 'Marketing-related advertisement expenses, etc.',
+            '902-000' => 'Misc bank charges such as cheque book, stamp duty, etc.',
+            '903-000' => 'Upkeep of office & warehouse: Coway monthly, cleaner monthly, duplicate key, aircon repair, etc.',
+            '905-000' => 'Local travel: taxi, air ticket, hotel, meal allowances, etc.',
+            '906-000' => 'Oversea travel: taxi, air ticket, airport tax, hotel, meal allowances, etc.',
+            '907-000' => 'Water & electricity: KCP (water), Tenaga, Indah Water, etc.',
+            '910-000' => 'Telephone & fax: prepaid, postpaid subsidy, etc.',
+            '911-000' => 'Office administration and accounting expenses, etc.',
+            '912-000' => 'Office secretarial expenses, etc.',
+            '913-000' => 'Sales commission, etc.',
+            '914(b)-000' => 'Transportation, etc.',
+            '915-000' => 'Office rentals, etc.',
+            '916-000' => 'Toll claims, parking claims, fines, etc.',
+            '917-000' => 'Office insurance claims, etc.',
+            '919-000' => 'Petrol / mileage claims, etc.',
+            '920-000' => 'Printing, stationeries, out-of-pocket expenses, etc.',
+            '921-000' => 'Outsourced work / consultancy fees, etc.',
+            '922-000' => 'Office food & refreshment: pantry items, RO water, etc.',
+            '924-000' => 'Staff recruitment: JobStreet fees, hiring consultant fees, etc.',
+            '926-000' => 'Misc penalties.',
+            '927-000' => 'Computer small items: hard-disk, RAM, CD, cables, etc.',
+            '928-000' => 'Website / data hosting package, etc.',
+            '929-000' => 'Partnership subscriptions such as Microsoft, SugarCRM, etc.',
+            '930-000' => 'Staff-related events: team building / gathering, birthday, makan session, etc.',
+            '931-000' => 'Customer-related events: business lunch, entertainment, etc.',
+            '932-000' => 'Medical claims, etc.',
+            '933-000' => 'Newspaper subscription, book purchase, etc.',
+            '934-000' => 'Courier fees, stamps, postage, etc.',
+            '935-000' => 'Misc taxes, etc.',
+            '936-000' => 'Training and seminar claims, etc.',
+        ];
+
+        // Role-restricted GL categories. Medical Fees is intern/probationer-only: regular
+        // staff claim medical through a separate process, while interns/probationers may
+        // claim it here capped at RM100/month (the cap is applied in ClaimRulesService).
+        $glAppliesToRole = [
+            '932-000' => 'intern',
+        ];
+
         $sort = 1;
         foreach ($glCategories as [$code, $name]) {
             DB::table('expense_categories')->updateOrInsert(
@@ -61,13 +157,13 @@ class ExpenseCategorySeeder extends Seeder
                     'gl_code' => $code,
                     'name' => $name,
                     'company' => null,
-                    'description' => null,
-                    'keywords' => null,
+                    'description' => $glDescriptions[$code] ?? null,
+                    'keywords' => isset($glKeywords[$code]) ? json_encode($glKeywords[$code]) : null,
                     'monthly_limit' => null,
                     'rate_type' => 'receipt',
                     'rate_amount' => null,
                     'limit_period' => 'monthly',
-                    'applies_to_role' => null,
+                    'applies_to_role' => $glAppliesToRole[$code] ?? null,
                     'requires_receipt' => true,
                     'is_active' => true,
                     'sort_order' => $sort++,
@@ -116,6 +212,46 @@ class ExpenseCategorySeeder extends Seeder
                 'requires_receipt' => false,
                 'is_active' => true,
                 'sort_order' => 51,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]
+        );
+
+        // ── Season parking — posts to GL 916-000, FLAT RM80/month subsidy ───────
+        // Enlinea files season parking under the SAME GL line as tolls/casual parking
+        // ("916-000: TOLL, PARKING & FINED"), so this category carries gl_code 916-000
+        // and the canonical name — it appears on the report exactly like the real form.
+        // It stays a SEPARATE category record only to encode the flat-RM80 rule + the
+        // once-a-month cap; the claimable amount is always RM80 regardless of the receipt
+        // total (the season-pass receipt is evidence, not the basis for the amount).
+        DB::table('expense_categories')->updateOrInsert(
+            ['code' => 'PARKING_JAYAONE'],
+            [
+                'gl_code' => '916-000',
+                'name' => 'Toll, Parking & Fined',
+                'company' => null,
+                'description' => 'Season (office) parking subsidy, filed under 916-000 Toll, Parking & Fined and paid as a flat RM80 per month. Attach the season-pass receipt; the claimable amount is fixed at RM80 regardless of the receipt total.',
+                // SEASON-qualified phrases ONLY — they must out-score 916-000 "Toll, Parking
+                // & Fined" so a season pass claims the flat RM80, while a casual per-trip
+                // parking receipt (no "season") still lands on 916-000 at its full value.
+                // Deliberately NO bare "jaya one"/"car park" tokens: casual daily Jaya One
+                // parking (e.g. a card statement of RM5.50/7.70 entries) carries the Jaya One
+                // name too and must stay on 916-000 at actual value — only "season" context
+                // (TETAP TIARA "CAR PARK SEASON …", "Season Holder") marks the RM80 subsidy.
+                'keywords' => json_encode([
+                    'season parking', 'seasonal parking', 'season pass', 'season carpark',
+                    'season car park', 'car park season', 'carpark season', 'season floating',
+                    'season bay', 'season holder', 'office parking', 'monthly parking',
+                    'tetap tiara', 'season',
+                ]),
+                'monthly_limit' => 80.00,
+                'rate_type' => 'fixed',
+                'rate_amount' => 80.00,
+                'limit_period' => 'monthly',
+                'applies_to_role' => null,
+                'requires_receipt' => true,
+                'is_active' => true,
+                'sort_order' => 54,
                 'created_at' => now(),
                 'updated_at' => now(),
             ]

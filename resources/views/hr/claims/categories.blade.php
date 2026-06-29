@@ -69,63 +69,6 @@
                             </td>
                             @endif
                         </tr>
-
-                        {{-- Edit Modal --}}
-                        @if(Auth::user()->canManageClaims())
-                        <div class="modal fade" id="editCategoryModal{{ $cat->id }}" tabindex="-1">
-                            <div class="modal-dialog">
-                                <form action="{{ route('hr.claims.categories.update', $cat) }}" method="POST" class="modal-content">
-                                    @csrf @method('PUT')
-                                    <div class="modal-header">
-                                        <h5 class="modal-title">Edit Category: {{ $cat->name }}</h5>
-                                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                                    </div>
-                                    <div class="modal-body">
-                                        <div class="mb-3">
-                                            <label class="form-label">Name <span class="text-danger">*</span></label>
-                                            <input type="text" name="name" class="form-control" value="{{ $cat->name }}" required>
-                                        </div>
-                                        <div class="mb-3">
-                                            <label class="form-label">Code <span class="text-danger">*</span></label>
-                                            <input type="text" name="code" class="form-control" value="{{ $cat->code }}" required>
-                                        </div>
-                                        <div class="mb-3">
-                                            <label class="form-label">Description</label>
-                                            <input type="text" name="description" class="form-control" value="{{ $cat->description }}">
-                                        </div>
-                                        <div class="mb-3">
-                                            <label class="form-label">Keywords (comma-separated)</label>
-                                            <input type="text" name="keywords" class="form-control" value="{{ implode(', ', $cat->keywords ?? []) }}" placeholder="grab, taxi, fuel, petrol">
-                                            <small class="text-muted">Used for auto-detecting category from description</small>
-                                        </div>
-                                        <div class="row g-3">
-                                            <div class="col-md-6">
-                                                <label class="form-label">Monthly Limit (RM)</label>
-                                                <input type="number" name="monthly_limit" class="form-control" step="0.01" value="{{ $cat->monthly_limit }}">
-                                            </div>
-                                            <div class="col-md-6">
-                                                <label class="form-label">Sort Order</label>
-                                                <input type="number" name="sort_order" class="form-control" value="{{ $cat->sort_order }}">
-                                            </div>
-                                        </div>
-                                        <div class="mt-3">
-                                            <div class="form-check form-check-inline">
-                                                <input type="checkbox" name="requires_receipt" value="1" class="form-check-input" {{ $cat->requires_receipt ? 'checked' : '' }}>
-                                                <label class="form-check-label">Requires Receipt</label>
-                                            </div>
-                                            <div class="form-check form-check-inline">
-                                                <input type="checkbox" name="is_active" value="1" class="form-check-input" {{ $cat->is_active ? 'checked' : '' }}>
-                                                <label class="form-check-label">Active</label>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="modal-footer">
-                                        <button class="btn btn-primary">Save Changes</button>
-                                    </div>
-                                </form>
-                            </div>
-                        </div>
-                        @endif
                         @empty
                         <tr><td colspan="8" class="text-center text-muted py-4">No categories configured.</td></tr>
                         @endforelse
@@ -135,6 +78,65 @@
         </div>
     </div>
 </div>
+
+{{-- Edit Category Modals — rendered OUTSIDE the table (a modal inside <tbody> breaks layout) --}}
+@if(Auth::user()->canManageClaims())
+@foreach($categories as $cat)
+<div class="modal fade" id="editCategoryModal{{ $cat->id }}" tabindex="-1">
+    <div class="modal-dialog">
+        <form action="{{ route('hr.claims.categories.update', $cat) }}" method="POST" class="modal-content">
+            @csrf @method('PUT')
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Category: {{ $cat->name }}</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Name <span class="text-danger">*</span></label>
+                    <input type="text" name="name" class="form-control" value="{{ $cat->name }}" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Code <span class="text-danger">*</span></label>
+                    <input type="text" name="code" class="form-control" value="{{ $cat->code }}" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Description</label>
+                    <input type="text" name="description" class="form-control" value="{{ $cat->description }}">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Keywords (comma-separated)</label>
+                    <input type="text" name="keywords" class="form-control" value="{{ implode(', ', $cat->keywords ?? []) }}" placeholder="grab, taxi, fuel, petrol">
+                    <small class="text-muted">Used for auto-detecting category from description</small>
+                </div>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Monthly Limit (RM)</label>
+                        <input type="number" name="monthly_limit" class="form-control" step="0.01" value="{{ $cat->monthly_limit }}">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Sort Order</label>
+                        <input type="number" name="sort_order" class="form-control" value="{{ $cat->sort_order }}">
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <div class="form-check form-check-inline">
+                        <input type="checkbox" name="requires_receipt" value="1" class="form-check-input" {{ $cat->requires_receipt ? 'checked' : '' }}>
+                        <label class="form-check-label">Requires Receipt</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input type="checkbox" name="is_active" value="1" class="form-check-input" {{ $cat->is_active ? 'checked' : '' }}>
+                        <label class="form-check-label">Active</label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary">Save Changes</button>
+            </div>
+        </form>
+    </div>
+</div>
+@endforeach
+@endif
 
 {{-- Add Category Modal --}}
 @if(Auth::user()->canManageClaims())

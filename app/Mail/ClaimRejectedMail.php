@@ -22,9 +22,10 @@ class ClaimRejectedMail extends Mailable
 
     public function envelope(): Envelope
     {
-        $period = \Carbon\Carbon::create($this->claim->year, $this->claim->month)->format('F Y');
+        $label = $this->claim->subjectLabel();
         $by = $this->rejectorType === 'manager' ? 'Manager' : 'HR';
-        return new Envelope(subject: "Expense Claim Rejected by {$by}: {$period}");
+
+        return new Envelope(subject: "Expense Claim Rejected by {$by}: {$label}");
     }
 
     public function content(): Content

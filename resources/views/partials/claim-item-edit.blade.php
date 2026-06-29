@@ -10,8 +10,10 @@
     $isMileage = $item->category && $item->category->gl_code === $gl;
     $rt = $item->category->rate_type ?? 'receipt';
     $isComputed = in_array($rt, ['per_day', 'per_hour']);
+    $isFixed = $rt === 'fixed';
+    $fixedAmount = $item->category->rate_amount ?? $item->amount;
     $vehicle = ($item->rate_applied !== null && (float) $item->rate_applied == (float) config('claims.mileage.rates.motorcycle')) ? 'motorcycle' : 'car';
-    $mode = $isMileage ? 'mileage' : ($isComputed ? $rt : 'receipt');
+    $mode = $isMileage ? 'mileage' : ($isComputed ? $rt : ($isFixed ? 'fixed' : 'receipt'));
 @endphp
 <form action="{{ route('user.claims.update-item', $item) }}" method="POST" enctype="multipart/form-data"
       class="inline-edit-form border rounded p-3 m-2 bg-white text-start"
@@ -83,6 +85,11 @@
     <input type="hidden" name="gst_amount" value="0">
     <input type="hidden" name="total_with_gst" value="{{ $item->total_with_gst }}">
     <div class="small text-muted mt-1">Amount: <span class="fw-semibold ie-amount-preview">RM {{ number_format($item->amount, 2) }}</span></div>
+    @elseif($isFixed)
+    <input type="hidden" name="amount" value="{{ number_format($fixedAmount, 2, '.', '') }}">
+    <input type="hidden" name="gst_amount" value="0">
+    <input type="hidden" name="total_with_gst" value="{{ number_format($fixedAmount, 2, '.', '') }}">
+    <div class="small text-muted mt-1">Flat subsidy: <span class="fw-semibold">RM {{ number_format($fixedAmount, 2) }}</span> per month (fixed, regardless of the receipt total)</div>
     @else
     <div class="row g-2 mt-1">
         <div class="col-4 col-md-2">
@@ -113,6 +120,33 @@
         </div>
         @endif
     </div>
+    <div class="row g-2 mt-2">
+        <div class="col-md-12">
+            <label class="form-label small mb-1"><i class="bi bi-paperclip me-1"></i>Add extra attachments <span class="text-muted">(optional)</span></label>
+            <input type="file" name="receipt_attachments[]" class="form-control form-control-sm" accept=".jpg,.jpeg,.png,.pdf" multiple>
+            <small class="text-muted">Upload additional supporting documents for this item.</small>
+        </div>
+    </div>
+
+    @php $currentAttachments = $item->attachmentPaths(); @endphp
+    @if(count($currentAttachments) > 0)
+    <div class="row g-2 mt-2">
+        <div class="col-md-12">
+            <label class="form-label small mb-1"><i class="bi bi-files me-1"></i>Current attachments <span class="text-muted">(tick to remove on save)</span></label>
+            <div class="d-flex flex-wrap gap-2">
+                @foreach($currentAttachments as $att)
+                @php $ext = strtoupper(pathinfo($att, PATHINFO_EXTENSION)); @endphp
+                <div class="border rounded px-2 py-1 d-flex align-items-center gap-2 bg-light">
+                    <a href="{{ route('secure.file', $att) }}" target="_blank" class="text-decoration-none small"><i class="bi bi-file-earmark me-1"></i>{{ $ext }} #{{ $loop->iteration }}</a>
+                    <label class="small text-danger mb-0 d-inline-flex align-items-center gap-1">
+                        <input type="checkbox" name="receipt_remove[]" value="{{ $att }}" class="form-check-input mt-0"> remove
+                    </label>
+                </div>
+                @endforeach
+            </div>
+        </div>
+    </div>
+    @endif
 
     <div class="text-end mt-3">
         <button type="button" class="btn btn-outline-secondary btn-sm inline-edit-cancel me-2"><i class="bi bi-x-lg me-1"></i>Cancel</button>

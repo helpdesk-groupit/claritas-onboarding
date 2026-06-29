@@ -3,8 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Mail\ClaimApprovedMail;
+use App\Mail\ClaimHrRejectedNoticeMail;
 use App\Mail\ClaimRejectedMail;
-use App\Mail\ClaimReleaseRequestMail;
 use App\Mail\ClaimSubmittedMail;
 use App\Models\Employee;
 use App\Models\ExpenseCategory;
@@ -44,16 +44,25 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'No employee profile found.');
         }
 
-        $claims = $employee->expenseClaims()->with('items.category')->orderByDesc('created_at')->get();
+        $claims = $employee->expenseClaims()->with(['items.category', 'correctionOf:id,claim_number'])->orderByDesc('created_at')->get();
         $policy = ExpenseClaimPolicy::forCompany($employee->company);
         $company = \App\Models\Company::forName($employee->company);
 
         $drafts = $claims->whereIn('status', ['draft', 'manager_rejected', 'hr_rejected'])->values();
 
-        // Group all claims by period (newest first) for the month/year accordion.
+        // Draft claims (one per event). The inline editor loads a draft ONLY when it is
+        // explicitly opened via ?open (e.g. "Continue editing" from the list, or right after
+        // creating one). On a plain load / refresh the form is empty — drafts are never lost,
+        // they live (auto-saved) in the list below and reopen on demand.
+        $draftClaims = $claims->where('status', 'draft')->sortByDesc('created_at')->values();
+        $openId = $request->query('open');
+        $activeDraft = $openId ? $draftClaims->firstWhere('id', (int) $openId) : null;
+
+        // The year → month accordion holds ALL claims (drafts included, as summary rows).
         $byMonth = $claims
             ->sortByDesc(fn ($c) => $c->year * 100 + $c->month)
             ->groupBy(fn ($c) => sprintf('%04d-%02d', $c->year, $c->month));
+        $currentYear = Carbon::now()->year;
 
         // Event-name suggestions (company-wide) to standardise events across staff.
         $companyEmpIds = Employee::where('company', $employee->company)->pluck('id');
@@ -61,17 +70,52 @@ class ExpenseClaimController extends Controller
             ->whereNotNull('event')->where('event', '!=', '')
             ->pluck('event')->map(fn ($e) => trim($e))->filter()->unique()->sort()->values();
 
-        $year = Carbon::now()->year;
-        $yearClaims = $claims->where('year', $year);
-        $approvedYtd = $yearClaims->whereIn('status', ['hr_approved', 'paid'])->sum('total_with_gst');
-        $pendingYtd = $yearClaims->whereIn('status', ['submitted', 'manager_approved'])->sum('total_with_gst');
+        // After the monthly cutoff (e.g. the 20th), submissions still work but may roll into
+        // next month's processing — the view shows a heads-up banner when this is true.
+        $deadlineDay = $policy->submission_deadline_day ?? 20;
+        $pastCutoff = Carbon::now()->day > $deadlineDay;
 
-        return view('user.claims.index', compact('employee', 'claims', 'drafts', 'byMonth', 'eventSuggestions', 'policy', 'company', 'year', 'approvedYtd', 'pendingYtd'));
+        // Pipeline-stage counts for the top cards (all-time, this employee).
+        $stageCounts = [
+            'draft' => $claims->where('status', 'draft')->count(),
+            'awaiting_manager' => $claims->where('status', 'submitted')->count(),
+            'awaiting_hr' => $claims->where('status', 'manager_approved')->count(),
+            'completed' => $claims->whereIn('status', ['hr_approved', 'paid'])->count(),
+        ];
+
+        // For the inline claim builder: the categories this employee may file under and
+        // who can approve (Category B). The approver list is ALL active employees (not
+        // just managers) — a manager may ask the event lead to sign.
+        $categories = ClaimRulesService::categoriesFor($employee);
+        $approvers = ClaimRulesService::signableApprovers();
+        $defaultApproverId = ClaimRulesService::defaultApproverId($employee);
+        $ocrEnabled = ClaimReceiptOcrService::enabled($employee->company);
+        $projectRequired = ! self::isSalesTeam($employee);
+        $openClaimId = $request->query('open');
+
+        // Remaining allowance per capped category (e.g. intern Medical RM100/mo) so the inline
+        // form can preview the claimable amount and auto-cap before the item is even added.
+        $capInfo = [];
+        foreach ($categories as $c) {
+            $lim = ClaimRulesService::effectiveLimit($c, $employee);
+            if ($lim) {
+                $used = ClaimRulesService::usedInPeriod($employee, $c, Carbon::now(), $lim['period']);
+                $capInfo[$c->id] = [
+                    'remaining' => round(max(0, $lim['amount'] - $used), 2),
+                    'limit' => (float) $lim['amount'],
+                    'period' => $lim['period'],
+                    'name' => $c->name,
+                ];
+            }
+        }
+
+        return view('user.claims.index', compact('employee', 'claims', 'drafts', 'draftClaims', 'activeDraft', 'byMonth', 'currentYear', 'eventSuggestions', 'policy', 'company', 'stageCounts', 'deadlineDay', 'pastCutoff', 'categories', 'approvers', 'defaultApproverId', 'ocrEnabled', 'projectRequired', 'openClaimId', 'capInfo'));
     }
 
     /**
-     * Create a new (draft) claim for an event, then open it. An employee can have many
-     * open claims at once — one per event/project.
+     * Start (or resume) the single in-progress draft claim, then open it inline. Only
+     * one draft exists at a time — if one is already open, we reuse it rather than
+     * stacking a new one (the form is one continuous claim builder).
      */
     public function createClaim(Request $request)
     {
@@ -81,8 +125,11 @@ class ExpenseClaimController extends Controller
         }
 
         $data = $request->validate([
-            'event' => 'required|string|max:255',
+            'event' => 'nullable|string|max:255',
             'period' => 'nullable|date_format:Y-m', // reporting month this claim is filed under
+            'manager_id' => 'nullable|integer',
+            'event_date' => 'nullable|date|before_or_equal:today',
+            'project_client' => 'nullable|string|max:255',
         ]);
 
         $now = Carbon::now();
@@ -91,22 +138,623 @@ class ExpenseClaimController extends Controller
             $period = $now->copy();
         }
 
-        $claim = ExpenseClaim::create([
+        // Reuse an EMPTY draft (0 items) so repeated clicks don't pile up blanks — but ALWAYS
+        // re-stamp it to the CHOSEN reporting month, so the month picked in the picker is what
+        // the claim is filed under (and its number/deadline follow that month).
+        $emptyDraft = $employee->expenseClaims()->where('status', 'draft')->where('item_count', 0)->latest()->first();
+        if ($emptyDraft) {
+            if ((int) $emptyDraft->year !== $period->year || (int) $emptyDraft->month !== $period->month) {
+                // Only relabel a still-default "General Claim …" name; keep a custom event.
+                $reEvent = preg_match('/^general claim/i', (string) $emptyDraft->event)
+                    ? 'General Claim '.$period->format('F')
+                    : $emptyDraft->event;
+                // Re-stamping to a new period needs a NEW number from that period's sequence —
+                // allocate it under a lock+retry so it can't collide with a concurrent creator.
+                $deadline = ClaimRulesService::submissionDeadline(
+                    ExpenseClaimPolicy::forCompany($employee->company)->submission_deadline_day,
+                    $period->copy()
+                );
+                for ($attempt = 0; $attempt < 5; $attempt++) {
+                    try {
+                        DB::transaction(function () use ($emptyDraft, $period, $reEvent, $employee, $deadline) {
+                            $emptyDraft->update([
+                                'year' => $period->year,
+                                'month' => $period->month,
+                                'event' => $reEvent,
+                                'title' => $reEvent.' — '.$employee->full_name,
+                                'claim_number' => ExpenseClaim::nextClaimNumber($period->year, $period->month, true),
+                                'submission_deadline' => $deadline,
+                            ]);
+                        });
+                        break;
+                    } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+                        usleep(random_int(5_000, 25_000));
+                    }
+                }
+            }
+
+            return redirect()->route('user.claims.index', ['open' => $emptyDraft->id]);
+        }
+
+        // A claim starts with sensible defaults; the employee fills in the Category B
+        // details (event, approver, date, project) inside the claim card.
+        $event = ! empty($data['event']) ? mb_substr(strip_tags($data['event']), 0, 255) : 'General Claim '.$period->format('F');
+        $managerId = ! empty($data['manager_id']) && ClaimRulesService::signableApprovers()->pluck('id')->contains((int) $data['manager_id'])
+            ? (int) $data['manager_id']
+            : ($employee->manager_id ?: ClaimRulesService::defaultApproverId($employee));
+
+        $claim = ExpenseClaim::createWithClaimNumber([
             'employee_id' => $employee->id,
             'year' => $period->year,
             'month' => $period->month,
-            'event' => mb_substr(strip_tags($data['event']), 0, 255),
-            'claim_number' => ExpenseClaim::generateClaimNumber($period->year, $period->month),
-            'title' => mb_substr(strip_tags($data['event']), 0, 255).' — '.$employee->full_name,
+            'event' => $event,
+            'event_date' => $data['event_date'] ?? null,
+            'project_client' => ! empty($data['project_client']) ? mb_substr(strip_tags($data['project_client']), 0, 255) : null,
+            'title' => $event.' — '.$employee->full_name,
             'status' => 'draft',
             'submission_deadline' => ClaimRulesService::submissionDeadline(
                 ExpenseClaimPolicy::forCompany($employee->company)->submission_deadline_day,
                 $period->copy()
             ),
-            'manager_id' => $employee->manager_id,
+            'manager_id' => $managerId,
         ]);
 
-        return redirect()->route('user.claims.show', $claim)->with('success', 'New claim created — add your expense items.');
+        return redirect()->route('user.claims.index', ['open' => $claim->id])
+            ->with('success', 'New claim added — fill in the details and add items below.');
+    }
+
+    /**
+     * Inline builder (My Claims): save the claim's Category B header — event name,
+     * approving manager, date of event, project/client. Owner + draft only.
+     */
+    public function inlineSaveDetails(Request $request, ExpenseClaim $claim)
+    {
+        $employee = Auth::user()->employee;
+        if (! $employee || $claim->employee_id !== $employee->id) {
+            abort(403);
+        }
+        if (! $claim->isEditable()) {
+            return back()->with('error', 'This claim can no longer be edited.');
+        }
+
+        $data = $request->validate([
+            'event' => 'required|string|max:255',
+            'manager_id' => 'nullable|integer',
+            'event_date' => 'nullable|date|before_or_equal:today',
+            'project_client' => 'nullable|string|max:255',
+        ]);
+
+        $managerId = ! empty($data['manager_id']) && ClaimRulesService::signableApprovers()->pluck('id')->contains((int) $data['manager_id'])
+            ? (int) $data['manager_id']
+            : $claim->manager_id;
+
+        $claim->update([
+            'event' => mb_substr(strip_tags($data['event']), 0, 255),
+            'event_date' => $data['event_date'] ?? null,
+            'project_client' => ! empty($data['project_client']) ? mb_substr(strip_tags($data['project_client']), 0, 255) : null,
+            'manager_id' => $managerId,
+        ]);
+
+        if ($request->expectsJson()) {
+            return response()->json(['ok' => true, 'event' => $claim->eventName()]);
+        }
+
+        return redirect()->route('user.claims.index', ['open' => $claim->id])->with('success', 'Claim details saved.');
+    }
+
+    /**
+     * Inline builder (My Claims): add one item to a draft claim. Project/client + the
+     * approving manager are inherited from the claim's Category B; the date is per item
+     * (each receipt keeps its own date, defaulting to the claim's event date). JSON.
+     */
+    public function inlineAddItem(Request $request, ExpenseClaim $claim)
+    {
+        $employee = Auth::user()->employee;
+        if (! $employee || $claim->employee_id !== $employee->id) {
+            abort(403);
+        }
+        if (! $claim->isEditable()) {
+            return response()->json(['ok' => false, 'message' => 'This claim can no longer be edited.'], 422);
+        }
+
+        $validated = $request->validate([
+            'expense_category_id' => 'required|exists:expense_categories,id',
+            'description' => 'required|string|max:500',
+            'expense_date' => 'nullable|date|before_or_equal:today|after_or_equal:'.now()->subMonths(18)->toDateString(),
+            'amount' => 'nullable|numeric|min:0|max:99999.99',
+            'gst_amount' => 'nullable|numeric|min:0|max:99999.99',
+            'receipt' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+            'receipt_attachments.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+            'support_files' => 'nullable|array|max:10',
+            'support_files.*' => 'file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+        ]);
+
+        $category = ExpenseCategory::findOrFail($validated['expense_category_id']);
+        if (! ClaimRulesService::roleAllows($employee, $category->applies_to_role)) {
+            return response()->json(['ok' => false, 'errors' => ['expense_category_id' => 'You are not eligible to claim under this category.']], 422);
+        }
+
+        // Date is per item (each receipt keeps its own date); falls back to the claim's
+        // event date, then today. Project/client + approver are inherited from the claim.
+        $expenseDate = ! empty($validated['expense_date'])
+            ? Carbon::parse($validated['expense_date'])
+            : ($claim->event_date ? $claim->event_date->copy() : now());
+        $projectClient = $claim->project_client;
+
+        // Amount: fixed-subsidy = flat rate; mileage = km × vehicle rate (server-authoritative);
+        // everything else uses the entered amount.
+        $mileageGl = config('claims.mileage.gl_code');
+        $isMileageCat = $mileageGl && $category->gl_code === $mileageGl;
+        $gst = (float) ($validated['gst_amount'] ?? 0);
+        $quantity = null;
+        $unit = null;
+        $rateApplied = null;
+        $mileageDest = null;
+        if ($category->isFixed()) {
+            $amount = (float) ($category->rate_amount ?? 0);
+            $gst = 0;
+        } elseif ($isMileageCat) {
+            $quantity = $request->input('c_km') !== null && $request->input('c_km') !== '' ? (float) $request->input('c_km') : null;
+            if ($quantity === null || $quantity <= 0) {
+                return response()->json(['ok' => false, 'errors' => ['amount' => 'Enter the distance (km) for the mileage claim.']], 422);
+            }
+            $rateApplied = ClaimRulesService::mileageRate($request->input('c_vehicle', 'car'));
+            $amount = round($quantity * $rateApplied, 2);
+            $gst = 0;
+            $unit = 'km';
+            $mileageDest = $request->input('c_itemdesc') ? mb_substr(strip_tags((string) $request->input('c_itemdesc')), 0, 255) : null;
+        } else {
+            $amount = isset($validated['amount']) ? (float) $validated['amount'] : null;
+            if ($amount === null || $amount <= 0) {
+                return response()->json(['ok' => false, 'errors' => ['amount' => 'Enter the amount for this item.']], 422);
+            }
+            // Hard block over-claiming on a plain receipt category (mirrors the client check).
+            if ($overClaim = $this->overClaimError($request, $category, $employee, $amount, $gst)) {
+                return response()->json(['ok' => false, 'errors' => ['amount' => $overClaim]], 422);
+            }
+        }
+
+        // Cap-to-remaining on the CLAIMABLE TOTAL (incl. SST); block only when fully used.
+        $capAdjust = ClaimRulesService::capAdjust($employee, $category, round($amount + $gst, 2), $expenseDate);
+        if ($capAdjust['allowed'] <= 0) {
+            return response()->json(['ok' => false, 'errors' => ['amount' => $capAdjust['message']]], 422);
+        }
+        $capNote = null;
+        if ($capAdjust['capped']) {
+            $cappedTotal = $capAdjust['allowed'];
+            // Keep the SST if it still fits under the cap; otherwise drop it.
+            if ($gst > 0 && $gst < $cappedTotal) {
+                $amount = round($cappedTotal - $gst, 2);
+            } else {
+                $gst = 0.0;
+                $amount = $cappedTotal;
+            }
+            $capNote = $capAdjust['message'];
+        }
+        $total = round($amount + $gst, 2);
+
+        // Receipt + extra attachments (SHA-256 dedup like addItem; dead claims excluded).
+        $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
+        $receiptPath = null;
+        $receiptHash = null;
+        $receiptPaths = [];
+        if ($request->hasFile('receipt')) {
+            $receiptHash = hash_file('sha256', $request->file('receipt')->getRealPath());
+            // Batch add (multi-receipt review table): the ONE scanned image legitimately
+            // backs every row it was split into, so skip the single-receipt dedup that
+            // would otherwise reject rows 2..N. Normal (single) adds still dedup.
+            if (! $request->boolean('batch')) {
+                $dup = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses))
+                    ->where('receipt_hash', $receiptHash)->with('claim')->first();
+                if ($dup) {
+                    return response()->json(['ok' => false, 'errors' => ['receipt' => 'This receipt has already been uploaded in '.($dup->claim->claim_number ?? 'another claim').'.']], 422);
+                }
+            }
+            $receiptPath = $request->file('receipt')->store('claim_receipts/'.$employee->id.'/'.$expenseDate->format('Y-m'), 'local');
+        }
+        if ($request->hasFile('receipt_attachments')) {
+            foreach ($request->file('receipt_attachments') as $file) {
+                if (! $file) {
+                    continue;
+                }
+                $receiptPaths[] = $file->store('claim_receipts/'.$employee->id.'/'.$expenseDate->format('Y-m'), 'local');
+            }
+        }
+
+        // Optional supporting documents — stored separately from the receipt (not scanned).
+        $supportingPaths = [];
+        if ($request->hasFile('support_files')) {
+            foreach ($request->file('support_files') as $file) {
+                if ($file) {
+                    $supportingPaths[] = $file->store('claim_supporting/'.$employee->id.'/'.$expenseDate->format('Y-m'), 'local');
+                }
+            }
+        }
+
+        $item = $claim->items()->create([
+            'expense_category_id' => $category->id,
+            'expense_date' => $expenseDate,
+            'description' => strip_tags($validated['description']),
+            'project_client' => $projectClient,
+            'amount' => number_format($amount, 2, '.', ''),
+            'quantity' => $quantity,
+            'unit' => $unit,
+            'rate_applied' => $rateApplied,
+            'mileage_destination' => $mileageDest,
+            'gst_amount' => $gst,
+            'total_with_gst' => $total,
+            'receipt_path' => $receiptPath,
+            'receipt_paths' => $receiptPaths,
+            'receipt_hash' => $receiptHash,
+            'supporting_paths' => $supportingPaths,
+            'ocr_details' => $this->ocrDetailsFromRequest($request),
+            'approver_id' => $claim->manager_id,
+            'manager_status' => 'pending',
+            'review_status' => 'approved',
+        ]);
+
+        $claim->recalculateTotals();
+        $claim->refresh();
+
+        return response()->json([
+            'ok' => true,
+            'cap_note' => $capNote,
+            'item' => $this->inlineItemPayload($item->fresh(), $category),
+            'claim_total' => number_format($claim->total_with_gst, 2),
+            'item_count' => $claim->item_count,
+        ]);
+    }
+
+    /** Inline builder: remove one item from a draft claim (AJAX). Owner + draft only. */
+    public function inlineRemoveItem(ExpenseClaimItem $item)
+    {
+        $employee = Auth::user()->employee;
+        $claim = $item->claim;
+        if (! $claim || ! $employee || $claim->employee_id !== $employee->id) {
+            abort(403);
+        }
+        if (! $claim->isEditable() || $item->is_locked) {
+            return response()->json(['ok' => false, 'message' => 'This item cannot be removed.'], 422);
+        }
+
+        // Removing one bulk-scanned line removes ALL items read from that same attachment.
+        $removedIds = $this->deleteItemGroup($item);
+        $claim->recalculateTotals();
+        $claim->refresh();
+
+        return response()->json([
+            'ok' => true,
+            'removed_ids' => $removedIds,
+            'claim_total' => number_format($claim->total_with_gst, 2),
+            'item_count' => $claim->item_count,
+        ]);
+    }
+
+    /** Inline builder: edit one item on a draft claim (AJAX). Owner + draft only. */
+    public function inlineUpdateItem(Request $request, ExpenseClaimItem $item)
+    {
+        $employee = Auth::user()->employee;
+        $claim = $item->claim;
+        if (! $claim || ! $employee || $claim->employee_id !== $employee->id) {
+            abort(403);
+        }
+        if (! $claim->isEditable() || $item->is_locked) {
+            return response()->json(['ok' => false, 'message' => 'This item can no longer be edited.'], 422);
+        }
+
+        $validated = $request->validate([
+            'expense_category_id' => 'required|exists:expense_categories,id',
+            'description' => 'required|string|max:500',
+            'expense_date' => 'nullable|date|before_or_equal:today|after_or_equal:'.now()->subMonths(18)->toDateString(),
+            'amount' => 'nullable|numeric|min:0|max:99999.99',
+            'gst_amount' => 'nullable|numeric|min:0|max:99999.99',
+            // Editing an item REQUIRES re-uploading the receipt — the old attachment is replaced.
+            'receipt' => 'required|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+            'support_files' => 'nullable|array|max:10',
+            'support_files.*' => 'file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+        ], [
+            'receipt.required' => 'Please re-upload the receipt to save your changes — the previous attachment will be replaced.',
+        ]);
+
+        $category = ExpenseCategory::findOrFail($validated['expense_category_id']);
+        if (! ClaimRulesService::roleAllows($employee, $category->applies_to_role)) {
+            return response()->json(['ok' => false, 'errors' => ['expense_category_id' => 'You are not eligible to claim under this category.']], 422);
+        }
+
+        $expenseDate = ! empty($validated['expense_date'])
+            ? Carbon::parse($validated['expense_date'])
+            : ($claim->event_date ? $claim->event_date->copy() : now());
+
+        $mileageGl = config('claims.mileage.gl_code');
+        $isMileageCat = $mileageGl && $category->gl_code === $mileageGl;
+        $gst = (float) ($validated['gst_amount'] ?? 0);
+        $quantity = null;
+        $unit = null;
+        $rateApplied = null;
+        $mileageDest = null;
+        if ($category->isFixed()) {
+            $amount = (float) ($category->rate_amount ?? 0);
+            $gst = 0;
+        } elseif ($isMileageCat) {
+            $quantity = $request->input('c_km') !== null && $request->input('c_km') !== '' ? (float) $request->input('c_km') : null;
+            if ($quantity === null || $quantity <= 0) {
+                return response()->json(['ok' => false, 'errors' => ['amount' => 'Enter the distance (km) for the mileage claim.']], 422);
+            }
+            $rateApplied = ClaimRulesService::mileageRate($request->input('c_vehicle', 'car'));
+            $amount = round($quantity * $rateApplied, 2);
+            $gst = 0;
+            $unit = 'km';
+            $mileageDest = $request->input('c_itemdesc') ? mb_substr(strip_tags((string) $request->input('c_itemdesc')), 0, 255) : null;
+        } else {
+            $amount = isset($validated['amount']) ? (float) $validated['amount'] : null;
+            if ($amount === null || $amount <= 0) {
+                return response()->json(['ok' => false, 'errors' => ['amount' => 'Enter the amount for this item.']], 422);
+            }
+            // Hard block over-claiming on a plain receipt category (mirrors the client check).
+            if ($overClaim = $this->overClaimError($request, $category, $employee, $amount, $gst)) {
+                return response()->json(['ok' => false, 'errors' => ['amount' => $overClaim]], 422);
+            }
+        }
+
+        // Cap-to-remaining on the CLAIMABLE TOTAL (incl. SST), excluding THIS item.
+        $capAdjust = ClaimRulesService::capAdjust($employee, $category, round($amount + $gst, 2), $expenseDate, $item->id);
+        if ($capAdjust['allowed'] <= 0) {
+            return response()->json(['ok' => false, 'errors' => ['amount' => $capAdjust['message']]], 422);
+        }
+        if ($capAdjust['capped']) {
+            $cappedTotal = $capAdjust['allowed'];
+            if ($gst > 0 && $gst < $cappedTotal) {
+                $amount = round($cappedTotal - $gst, 2);
+            } else {
+                $gst = 0.0;
+                $amount = $cappedTotal;
+            }
+        }
+        $total = round($amount + $gst, 2);
+
+        // Optional receipt replacement (keeps the existing one when no new file).
+        $receiptPath = $item->receipt_path;
+        $receiptHash = $item->receipt_hash;
+        $oldToDelete = null;
+        if ($request->hasFile('receipt')) {
+            $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
+            $newHash = hash_file('sha256', $request->file('receipt')->getRealPath());
+            $dup = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses))
+                ->where('id', '!=', $item->id)->where('receipt_hash', $newHash)->with('claim')->first();
+            if ($dup) {
+                return response()->json(['ok' => false, 'errors' => ['receipt' => 'This receipt has already been uploaded in '.($dup->claim->claim_number ?? 'another claim').'.']], 422);
+            }
+            $receiptPath = $request->file('receipt')->store('claim_receipts/'.$employee->id.'/'.$expenseDate->format('Y-m'), 'local');
+            $receiptHash = $newHash;
+            // Replacing the receipt supersedes any old extra-attachment paths too.
+            $oldToDelete = array_merge($item->attachmentPaths());
+        }
+
+        // Supporting documents: replace with the newly uploaded set when provided; keep the
+        // existing ones otherwise.
+        $supportingPaths = $item->supportingPaths();
+        $oldSupportingToDelete = [];
+        if ($request->hasFile('support_files')) {
+            $oldSupportingToDelete = $supportingPaths;
+            $supportingPaths = [];
+            foreach ($request->file('support_files') as $file) {
+                if ($file) {
+                    $supportingPaths[] = $file->store('claim_supporting/'.$employee->id.'/'.$expenseDate->format('Y-m'), 'local');
+                }
+            }
+        }
+
+        $update = [
+            'expense_category_id' => $category->id,
+            'expense_date' => $expenseDate,
+            'description' => strip_tags($validated['description']),
+            'amount' => number_format($amount, 2, '.', ''),
+            'quantity' => $quantity,
+            'unit' => $unit,
+            'rate_applied' => $rateApplied,
+            'mileage_destination' => $mileageDest,
+            'gst_amount' => $gst,
+            'total_with_gst' => $total,
+            'receipt_path' => $receiptPath,
+            'receipt_paths' => [], // the single re-uploaded receipt replaces any old extras
+            'receipt_hash' => $receiptHash,
+            'supporting_paths' => $supportingPaths,
+        ];
+        // Category C only changes if the user re-scanned during the edit; otherwise keep it.
+        $newOcr = $this->ocrDetailsFromRequest($request);
+        if ($newOcr !== null) {
+            $update['ocr_details'] = $newOcr;
+        }
+        $item->update($update);
+        foreach (array_merge((array) $oldToDelete, $oldSupportingToDelete) as $del) {
+            if ($del) {
+                Storage::disk('local')->delete($del);
+            }
+        }
+
+        $claim->recalculateTotals();
+        $claim->refresh();
+
+        return response()->json([
+            'ok' => true,
+            'item' => $this->inlineItemPayload($item->fresh(), $category),
+            'claim_total' => number_format($claim->total_with_gst, 2),
+            'item_count' => $claim->item_count,
+        ]);
+    }
+
+    /** Inline builder: delete a whole draft claim (discard). Owner + draft only. */
+    public function discardDraft(ExpenseClaim $claim)
+    {
+        $employee = Auth::user()->employee;
+        if (! $employee || $claim->employee_id !== $employee->id) {
+            abort(403);
+        }
+        if ($claim->status !== 'draft') {
+            return back()->with('error', 'Only a draft claim can be deleted.');
+        }
+
+        $claim->load('items');
+        foreach ($claim->items as $it) {
+            foreach ($it->attachmentPaths() as $path) {
+                Storage::disk('local')->delete($path);
+            }
+        }
+        $number = $claim->claim_number;
+        $claim->items()->delete();
+        $claim->delete();
+
+        return redirect()->route('user.claims.index')->with('success', 'Draft '.$number.' deleted.');
+    }
+
+    /**
+     * Over-claim guard (server mirror of applyReceiptCheck in the My Claims page): for a plain
+     * receipt category (not capped/computed), the claimed total (amount + SST) may NOT exceed
+     * the receipt total the scan read. Under-claims are allowed. Returns an error message to
+     * block with, or null when fine. No-op when no receipt total was captured.
+     */
+    private function overClaimError(Request $request, ExpenseCategory $category, Employee $employee, float $amount, float $gst): ?string
+    {
+        // Capped categories (Medical, Optical & Dental, etc.) intentionally claim ≠ receipt.
+        if (ClaimRulesService::effectiveLimit($category, $employee) !== null) {
+            return null;
+        }
+        $receiptTotal = $request->input('c_total');
+        if (! is_numeric($receiptTotal) || (float) $receiptTotal <= 0) {
+            return null; // nothing read off the receipt to compare against.
+        }
+        if (round($amount + $gst, 2) > round((float) $receiptTotal, 2) + 0.001) {
+            return 'You can’t claim more than the receipt total of RM '.number_format((float) $receiptTotal, 2).'. Lower the amount and try again.';
+        }
+
+        return null;
+    }
+
+    /** Shared JSON shape for one inline item row. */
+    private function inlineItemPayload(ExpenseClaimItem $item, ExpenseCategory $category): array
+    {
+        return [
+            'id' => $item->id,
+            'date' => $item->expense_date->format('d/m/Y'),
+            'date_input' => $item->expense_date->format('Y-m-d'),
+            'description' => $item->description,
+            'category' => $category->name,
+            'category_id' => $category->id,
+            'amount' => number_format($item->amount, 2),
+            'gst' => number_format($item->gst_amount, 2),
+            'total' => number_format($item->total_with_gst, 2),
+            'has_receipt' => (bool) $item->receipt_path || count((array) $item->receipt_paths) > 0,
+            'receipt_url' => ((bool) $item->receipt_path || count((array) $item->receipt_paths) > 0)
+                ? route('user.claims.items.receipt', $item)
+                : null,
+            'receipt_hash' => $item->receipt_hash ?: '',
+            'ocr' => $item->ocr_details ?: null,
+        ];
+    }
+
+    /**
+     * Delete an item AND every sibling read from the SAME attachment (a bulk scan splits one
+     * image into several items that share a receipt_hash) — there's no editing, so a wrong
+     * line is fixed by deleting the whole attachment's items and adding them again. Items with
+     * no receipt_hash (e.g. mileage) are deleted on their own. Returns the deleted item IDs.
+     */
+    private function deleteItemGroup(ExpenseClaimItem $item): array
+    {
+        $claim = $item->claim;
+        $group = $item->receipt_hash
+            ? $claim->items()->where('receipt_hash', $item->receipt_hash)->get()
+            : collect([$item]);
+        if ($group->isEmpty()) {
+            $group = collect([$item]);
+        }
+
+        $ids = [];
+        foreach ($group as $gi) {
+            foreach (array_merge($gi->attachmentPaths(), $gi->supportingPaths()) as $path) {
+                Storage::disk('local')->delete($path);
+            }
+            $ids[] = $gi->id;
+            $gi->delete();
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Category C — the read-only receipt details the OCR read at scan (company, item
+     * description, date, who paid, total paid). Returns null when nothing was captured.
+     */
+    private function ocrDetailsFromRequest(Request $request): ?array
+    {
+        $details = array_filter([
+            'company' => $request->input('c_company'),
+            'item_description' => $request->input('c_itemdesc'),
+            'date' => $request->input('c_date'),
+            'paid_by' => $request->input('c_paidby'),
+            'total' => $request->input('c_total'),
+            'calculation' => $request->input('c_calc'),
+            'km' => $request->input('c_km'),
+            'vehicle' => $request->input('c_vehicle'),
+        ], fn ($v) => $v !== null && trim((string) $v) !== '');
+
+        return $details ?: null;
+    }
+
+    /**
+     * Inline builder: submit a draft claim to its Category B approver (whole claim,
+     * single approver). Mirrors submit() but takes the approver from the claim, not a
+     * per-item picker. Owner + draft only.
+     */
+    public function inlineSubmitClaim(Request $request, ExpenseClaim $claim)
+    {
+        $employee = Auth::user()->employee;
+        if (! $employee || $claim->employee_id !== $employee->id) {
+            abort(403);
+        }
+        // Validation bounces re-open THIS draft (?open) so the form stays put — the user isn't
+        // dumped back to an empty page having to scroll and find the claim again.
+        $bounce = fn (string $msg) => redirect()->route('user.claims.index', ['open' => $claim->id])->with('error', $msg);
+
+        if (! $claim->isSubmittable()) {
+            return $bounce('Add at least one item before submitting.');
+        }
+        if (empty($claim->project_client) && ! self::isSalesTeam($employee)) {
+            return $bounce('Enter the project / client name before submitting.');
+        }
+
+        $approverId = $claim->manager_id;
+        if (! $approverId || ! ClaimRulesService::signableApprovers()->pluck('id')->contains((int) $approverId)) {
+            return $bounce('Choose an approving PIC / manager before submitting.');
+        }
+
+        // No receipt, no claim (mileage exempt) — enforced at submit so drafts save freely.
+        $claim->load('items.category');
+        $missing = $claim->items->filter(fn ($it) => $it->needsReceipt());
+        if ($missing->isNotEmpty()) {
+            return $bounce('Attach a receipt to: '.$missing->take(5)->pluck('description')->implode(', ').($missing->count() > 5 ? ', …' : '').'.');
+        }
+
+        $claim->recalculateTotals();
+        DB::transaction(function () use ($claim, $approverId) {
+            $claim->items()->update([
+                'approver_id' => $approverId,
+                'manager_status' => 'pending',
+                'manager_remarks' => null,
+                'review_status' => 'approved',
+                'is_locked' => true,
+            ]);
+            $claim->update(['status' => 'submitted', 'submitted_at' => now(), 'manager_id' => $approverId]);
+        });
+
+        $this->logClaim($claim, 'submitted', 'Submitted to the approving Manager/PIC.');
+
+        $manager = Employee::find($approverId);
+        if ($manager && $manager->user) {
+            Mail::to($manager->user->work_email)->send(new ClaimSubmittedMail($claim, $employee, 'manager'));
+        }
+
+        return redirect()->route('user.claims.index', ['open' => $claim->id])
+            ->with('success', 'Claim submitted to '.($manager->full_name ?? 'your approver').' for approval.');
     }
 
     /**
@@ -189,6 +837,7 @@ class ExpenseClaimController extends Controller
             'mileage_destination' => 'nullable|string|max:255',
             'mileage_origin' => 'nullable|string|max:255',
             'receipt' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+            'receipt_attachments.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
         ], [
             'expense_date.after_or_equal' => 'The expense date is too far in the past (older than 18 months).',
             'expense_date.before_or_equal' => 'The expense date cannot be in the future.',
@@ -243,6 +892,14 @@ class ExpenseClaimController extends Controller
                 $computed = round($km * $rateApplied, 2);
                 $quantity = $km;
                 $unit = 'km';
+            } elseif ($category->isFixed()) {
+                // Flat-subsidy category (e.g. season parking RM80) — the claimable
+                // amount is always rate_amount, regardless of the receipt total. No
+                // quantity/rate, so no qty×rate sanity badge fires on it.
+                $computed = ClaimRulesService::computeAmount($category, []);
+                $quantity = null;
+                $unit = null;
+                $rateApplied = null;
             } else {
                 $computed = ClaimRulesService::computeAmount($category, [
                     'quantity' => $validated['quantity'] ?? null,
@@ -266,9 +923,12 @@ class ExpenseClaimController extends Controller
         }
 
         // ── Duplicate item detection (same date + description + amount across active claims) ──
+        // Dead claims (rejected/cancelled) are excluded — they're void, and a
+        // correction legitimately re-uses the rejected report's lines (#12a).
+        $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
         $cleanDescription = strip_tags($validated['description']);
-        $duplicateItem = ExpenseClaimItem::whereHas('claim', function ($q) use ($employee) {
-            $q->where('employee_id', $employee->id);
+        $duplicateItem = ExpenseClaimItem::whereHas('claim', function ($q) use ($employee, $deadStatuses) {
+            $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses);
         })
             ->where('expense_date', $validated['expense_date'])
             ->where('description', $cleanDescription)
@@ -284,12 +944,14 @@ class ExpenseClaimController extends Controller
         // Handle receipt upload
         $receiptPath = null;
         $receiptHash = null;
+        $receiptPaths = [];
+        $newAttachmentPaths = [];
         if ($request->hasFile('receipt')) {
             // ── Receipt duplicate detection via SHA-256 hash ──
             $receiptHash = hash_file('sha256', $request->file('receipt')->getRealPath());
 
-            $existingReceipt = ExpenseClaimItem::whereHas('claim', function ($q) use ($employee) {
-                $q->where('employee_id', $employee->id);
+            $existingReceipt = ExpenseClaimItem::whereHas('claim', function ($q) use ($employee, $deadStatuses) {
+                $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses);
             })
                 ->where('receipt_hash', $receiptHash)
                 ->first();
@@ -306,11 +968,28 @@ class ExpenseClaimController extends Controller
             );
         }
 
+        if ($request->hasFile('receipt_attachments')) {
+            foreach ($request->file('receipt_attachments') as $file) {
+                if (! $file) {
+                    continue;
+                }
+                $path = $file->store(
+                    'claim_receipts/'.$employee->id.'/'.$expenseDate->format('Y-m'),
+                    'local'
+                );
+                $receiptPaths[] = $path;
+                $newAttachmentPaths[] = $path;
+            }
+        }
+
         // Validate total integrity — server-side check that total = amount + GST
         $expectedTotal = round((float) $validated['amount'] + (float) ($validated['gst_amount'] ?? 0), 2);
         if (abs($expectedTotal - (float) $validated['total_with_gst']) > 0.01) {
             if ($receiptPath) {
                 Storage::disk('local')->delete($receiptPath);
+            }
+            foreach ($newAttachmentPaths as $path) {
+                Storage::disk('local')->delete($path);
             }
 
             return back()->withErrors(['total_with_gst' => 'Total does not match amount + GST.'])->withInput();
@@ -319,19 +998,30 @@ class ExpenseClaimController extends Controller
         // Period-aware cap: instead of rejecting an over-cap receipt, claim only what's
         // left of the allowance (e.g. RM250 receipt, RM100 left → claim RM100). Block
         // only when the allowance is fully used up.
-        $capAdjust = ClaimRulesService::capAdjust($employee, $category, (float) $validated['amount'], $expenseDate);
+        $reqGst = (float) ($validated['gst_amount'] ?? 0);
+        $capAdjust = ClaimRulesService::capAdjust($employee, $category, round((float) $validated['amount'] + $reqGst, 2), $expenseDate);
         if ($capAdjust['allowed'] <= 0) {
             if ($receiptPath) {
                 Storage::disk('local')->delete($receiptPath);
+            }
+            foreach ($newAttachmentPaths as $path) {
+                Storage::disk('local')->delete($path);
             }
 
             return back()->withErrors(['amount' => $capAdjust['message']])->withInput();
         }
         $capNote = null;
         if ($capAdjust['capped']) {
-            $validated['amount'] = number_format($capAdjust['allowed'], 2, '.', '');
-            $validated['gst_amount'] = 0;
-            $expectedTotal = (float) $validated['amount'];
+            $cappedTotal = $capAdjust['allowed'];
+            // Keep the SST if it still fits under the cap; otherwise drop it.
+            if ($reqGst > 0 && $reqGst < $cappedTotal) {
+                $validated['amount'] = number_format($cappedTotal - $reqGst, 2, '.', '');
+                $validated['gst_amount'] = number_format($reqGst, 2, '.', '');
+            } else {
+                $validated['amount'] = number_format($cappedTotal, 2, '.', '');
+                $validated['gst_amount'] = 0;
+            }
+            $expectedTotal = (float) $validated['amount'] + (float) $validated['gst_amount'];
             $capNote = $capAdjust['message'];
         }
 
@@ -349,6 +1039,7 @@ class ExpenseClaimController extends Controller
             'gst_amount' => $validated['gst_amount'] ?? 0,
             'total_with_gst' => $expectedTotal,
             'receipt_path' => $receiptPath,
+            'receipt_paths' => $receiptPaths ?: null,
             'receipt_hash' => $receiptHash,
         ]);
 
@@ -392,6 +1083,7 @@ class ExpenseClaimController extends Controller
             'mileage_destination' => 'nullable|string|max:255',
             'mileage_origin' => 'nullable|string|max:255',
             'receipt' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+            'receipt_attachments.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
         ], [
             'expense_date.after_or_equal' => 'The expense date is too far in the past (older than 18 months).',
             'expense_date.before_or_equal' => 'The expense date cannot be in the future.',
@@ -431,6 +1123,13 @@ class ExpenseClaimController extends Controller
                 $computed = round($km * $rateApplied, 2);
                 $quantity = $km;
                 $unit = 'km';
+            } elseif ($category->isFixed()) {
+                // Flat-subsidy category (e.g. season parking RM80) — claimable amount
+                // is always rate_amount, irrespective of the receipt total.
+                $computed = ClaimRulesService::computeAmount($category, []);
+                $quantity = null;
+                $unit = null;
+                $rateApplied = null;
             } else {
                 $computed = ClaimRulesService::computeAmount($category, [
                     'quantity' => $validated['quantity'] ?? null,
@@ -453,8 +1152,11 @@ class ExpenseClaimController extends Controller
         }
 
         // Duplicate detection — same date+description+amount on another item.
+        // Dead claims (rejected/cancelled) excluded so a correction can legitimately
+        // re-use the rejected report's lines (#12a).
+        $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
         $cleanDescription = strip_tags($validated['description']);
-        $duplicateItem = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id))
+        $duplicateItem = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses))
             ->where('id', '!=', $item->id)
             ->where('expense_date', $validated['expense_date'])
             ->where('description', $cleanDescription)
@@ -467,10 +1169,12 @@ class ExpenseClaimController extends Controller
         // Receipt: replace only when a new file is uploaded; otherwise keep the old one.
         $receiptPath = $item->receipt_path;
         $receiptHash = $item->receipt_hash;
+        $receiptPaths = $item->receipt_paths ?: [];
+        $newAttachmentPaths = [];
         $oldReceiptToDelete = null;
         if ($request->hasFile('receipt')) {
             $newHash = hash_file('sha256', $request->file('receipt')->getRealPath());
-            $existingReceipt = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id))
+            $existingReceipt = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses))
                 ->where('id', '!=', $item->id)
                 ->where('receipt_hash', $newHash)
                 ->first();
@@ -482,11 +1186,42 @@ class ExpenseClaimController extends Controller
             $oldReceiptToDelete = $item->receipt_path;
         }
 
+        if ($request->hasFile('receipt_attachments')) {
+            foreach ($request->file('receipt_attachments') as $file) {
+                if (! $file) {
+                    continue;
+                }
+                $path = $file->store(
+                    'claim_receipts/'.$employee->id.'/'.$expenseDate->format('Y-m'),
+                    'local'
+                );
+                $receiptPaths[] = $path;
+                $newAttachmentPaths[] = $path;
+            }
+        }
+
+        // Remove attachments the employee unticked (#1). Handles both the extra
+        // receipt_paths and the primary receipt_path; files are deleted after save.
+        $removePaths = array_values(array_filter((array) $request->input('receipt_remove', [])));
+        $attachmentsToDelete = [];
+        if ($removePaths) {
+            $receiptPaths = array_values(array_diff($receiptPaths, $removePaths));
+            if ($receiptPath !== null && in_array($receiptPath, $removePaths, true) && ! $request->hasFile('receipt')) {
+                $attachmentsToDelete[] = $receiptPath;
+                $receiptPath = null;
+                $receiptHash = null;
+            }
+            $attachmentsToDelete = array_merge($attachmentsToDelete, $removePaths);
+        }
+
         // Total integrity.
         $expectedTotal = round((float) $validated['amount'] + (float) ($validated['gst_amount'] ?? 0), 2);
         if (abs($expectedTotal - (float) $validated['total_with_gst']) > 0.01) {
             if ($oldReceiptToDelete !== null && $receiptPath) {
                 Storage::disk('local')->delete($receiptPath); // roll back the just-stored new file
+            }
+            foreach ($newAttachmentPaths as $path) {
+                Storage::disk('local')->delete($path);
             }
 
             return back()->withErrors(['total_with_gst' => 'Total does not match amount + GST.'])->withInput();
@@ -494,19 +1229,29 @@ class ExpenseClaimController extends Controller
 
         // Cap → claim only what's left (exclude this item's own current amount). Block
         // only if the allowance is fully used by the employee's OTHER items.
-        $capAdjust = ClaimRulesService::capAdjust($employee, $category, (float) $validated['amount'], $expenseDate, $item->id);
+        $reqGst = (float) ($validated['gst_amount'] ?? 0);
+        $capAdjust = ClaimRulesService::capAdjust($employee, $category, round((float) $validated['amount'] + $reqGst, 2), $expenseDate, $item->id);
         if ($capAdjust['allowed'] <= 0) {
             if ($oldReceiptToDelete !== null && $receiptPath) {
                 Storage::disk('local')->delete($receiptPath);
+            }
+            foreach ($newAttachmentPaths as $path) {
+                Storage::disk('local')->delete($path);
             }
 
             return back()->withErrors(['amount' => $capAdjust['message']])->withInput();
         }
         $capNote = null;
         if ($capAdjust['capped']) {
-            $validated['amount'] = number_format($capAdjust['allowed'], 2, '.', '');
-            $validated['gst_amount'] = 0;
-            $expectedTotal = (float) $validated['amount'];
+            $cappedTotal = $capAdjust['allowed'];
+            if ($reqGst > 0 && $reqGst < $cappedTotal) {
+                $validated['amount'] = number_format($cappedTotal - $reqGst, 2, '.', '');
+                $validated['gst_amount'] = number_format($reqGst, 2, '.', '');
+            } else {
+                $validated['amount'] = number_format($cappedTotal, 2, '.', '');
+                $validated['gst_amount'] = 0;
+            }
+            $expectedTotal = (float) $validated['amount'] + (float) $validated['gst_amount'];
             $capNote = $capAdjust['message'];
         }
 
@@ -524,11 +1269,15 @@ class ExpenseClaimController extends Controller
             'gst_amount' => $validated['gst_amount'] ?? 0,
             'total_with_gst' => $expectedTotal,
             'receipt_path' => $receiptPath,
+            'receipt_paths' => array_values($receiptPaths),
             'receipt_hash' => $receiptHash,
         ]);
 
         if ($oldReceiptToDelete) {
             Storage::disk('local')->delete($oldReceiptToDelete);
+        }
+        foreach (array_unique($attachmentsToDelete) as $path) {
+            Storage::disk('local')->delete($path);
         }
 
         $claim->recalculateTotals();
@@ -553,15 +1302,13 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'This item cannot be removed.');
         }
 
-        // Delete receipt file
-        if ($item->receipt_path) {
-            Storage::disk('local')->delete($item->receipt_path);
-        }
-
-        $item->delete();
+        // Removing one bulk-scanned line removes ALL items read from that same attachment.
+        $count = count($this->deleteItemGroup($item));
         $claim->recalculateTotals();
 
-        return back()->with('success', 'Expense item removed.');
+        return back()->with('success', $count > 1
+            ? $count.' items (read from the same attachment) were removed.'
+            : 'Expense item removed.');
     }
 
     /**
@@ -777,7 +1524,7 @@ class ExpenseClaimController extends Controller
             ]);
         });
 
-        $this->logClaim($claim, 'submitted', 'Submitted to the approving manager.');
+        $this->logClaim($claim, 'submitted', 'Submitted to the approving Manager/PIC.');
 
         // Notify the approving manager.
         $manager = Employee::find($approverId);
@@ -842,33 +1589,80 @@ class ExpenseClaimController extends Controller
 
         $myId = $employee->id;
 
-        // Claims with at least one item routed to me that still awaits my decision.
-        $pendingClaims = ExpenseClaim::where('status', 'submitted')
-            ->whereHas('items', fn ($q) => $q->where('approver_id', $myId)->where('manager_status', 'pending'))
+        // Every claim routed to this manager — the single approving manager chosen at submit
+        // (manager_id), NOT individual item approvers (which can be stale legacy data).
+        $myClaims = ExpenseClaim::where('manager_id', $myId)
+            ->whereIn('status', ['submitted', 'manager_approved', 'manager_rejected', 'hr_approved', 'hr_rejected', 'paid'])
             ->with(['employee', 'items.category', 'items.approver'])
-            ->orderBy('submitted_at')
+            ->orderByDesc('year')->orderByDesc('month')->orderByDesc('submitted_at')
             ->get();
 
-        // HR-rejected claims I approved that are waiting for me to release to the employee.
-        $toRelease = ExpenseClaim::where('status', 'hr_rejected')
-            ->whereNull('released_at')
-            ->where(function ($q) use ($myId) {
-                $q->where('manager_approved_by', $myId)->orWhere('manager_id', $myId)
-                    ->orWhereHas('items', fn ($i) => $i->where('approver_id', $myId));
-            })
-            ->with(['employee', 'items.category'])
-            ->orderByDesc('hr_approved_at')
-            ->get();
+        // Manager-perspective card counts — each status maps to exactly one bucket.
+        $cardCounts = [
+            'pending' => $myClaims->where('status', 'submitted')->count(),
+            'approved' => $myClaims->whereIn('status', ['manager_approved', 'hr_approved', 'paid'])->count(),
+            'rejected' => $myClaims->where('status', 'manager_rejected')->count(),
+            'hr_rejected' => $myClaims->where('status', 'hr_rejected')->count(),
+        ];
 
-        // History: claims I approved items on that have moved past the manager stage.
-        $historyClaims = ExpenseClaim::whereNotIn('status', ['draft', 'submitted'])
-            ->whereHas('items', fn ($q) => $q->where('approver_id', $myId))
-            ->with(['employee', 'items.category'])
-            ->orderByDesc('updated_at')
-            ->limit(50)
-            ->get();
+        return view('user.claims.team', compact('myClaims', 'cardCounts', 'employee'));
+    }
 
-        return view('user.claims.team', compact('pendingClaims', 'toRelease', 'historyClaims', 'employee'));
+    /**
+     * Dedicated review page for a Manager/PIC (stage 1) or HR (stage 2): the claim AS a
+     * report + Approve/Reject, and on reject the reviewer can flag specific items with a
+     * per-item comment for the employee. Stage is derived from the claim's current status.
+     */
+    public function reviewClaim(ExpenseClaim $claim)
+    {
+        $user = Auth::user();
+        $emp = $user->employee;
+        $claim->load(['items.category', 'items.approver', 'employee', 'manager', 'managerApprover', 'hrApprover']);
+
+        $isOwner = $emp && $claim->employee_id === $emp->id;
+        $isManager = $emp && (int) $claim->manager_id === (int) $emp->id; // the approving manager
+
+        // Must have some relationship to the claim to even view it.
+        if (! $isOwner && ! $isManager && ! $user->canViewAllClaims() && ! $user->isSuperadmin()) {
+            abort(403);
+        }
+
+        // Stage = who can ACT now, based on BOTH the claim status AND this viewer's role.
+        // Everyone else (e.g. a manager looking at an HR-stage claim) gets a read-only view.
+        if ($claim->status === 'submitted' && ($isManager || $user->isSuperadmin())) {
+            $stage = 'manager';
+        } elseif ($claim->status === 'manager_approved' && $user->canManageClaims()) {
+            $stage = 'hr';
+        } else {
+            $stage = 'view';
+        }
+
+        $company = \App\Models\Company::forName($claim->employee->company);
+        $items = $claim->items;
+        $approver = $claim->manager ?? $claim->managerApprover;
+
+        // Where Approve/Reject post to, and where to return, depend on the stage.
+        $approveUrl = $stage === 'hr' ? route('hr.claims.approve', $claim) : route('user.claims.team.approve', $claim);
+        $rejectUrl = $stage === 'hr' ? route('hr.claims.reject', $claim) : route('user.claims.team.reject', $claim);
+        $backUrl = $stage === 'hr' ? route('hr.claims.index') : route('user.claims.team');
+
+        return view('user.claims.review', compact('claim', 'company', 'items', 'approver', 'stage', 'approveUrl', 'rejectUrl', 'backUrl'));
+    }
+
+    /** Save per-item rejection comments (reviewer flagged specific lines for the employee). */
+    private function saveItemRejectComments(ExpenseClaim $claim, $comments): void
+    {
+        if (! is_array($comments) || empty($comments)) {
+            return;
+        }
+        $claimItemIds = $claim->items->pluck('id')->all();
+        foreach ($comments as $itemId => $text) {
+            $text = trim(strip_tags((string) $text));
+            if ($text === '' || ! in_array((int) $itemId, $claimItemIds, true)) {
+                continue;
+            }
+            ExpenseClaimItem::where('id', (int) $itemId)->update(['reject_comment' => mb_substr($text, 0, 1000)]);
+        }
     }
 
     /**
@@ -882,27 +1676,24 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'This claim is not pending approval.');
         }
 
-        // A manager approves only the items routed to THEM (per-item approver).
-        $claim->load('items');
-        $myItems = $claim->items->where('approver_id', $employee->id)->where('manager_status', 'pending');
-        if ($myItems->isEmpty() && ! Auth::user()->isSuperadmin()) {
-            abort(403, 'You have no items to review on this claim.');
+        // One approving manager per claim (the one chosen at submit = manager_id). They — or a
+        // superadmin — approve the WHOLE claim (single-approver model).
+        if ((int) $claim->manager_id !== (int) $employee->id && ! Auth::user()->isSuperadmin()) {
+            abort(403, 'You are not the approving manager for this claim.');
         }
 
-        DB::transaction(function () use ($myItems) {
-            foreach ($myItems as $item) {
-                $item->update(['manager_status' => 'approved']);
-            }
+        $claim->load('items');
+        DB::transaction(function () use ($claim) {
+            $claim->items()->update(['manager_status' => 'approved']);
         });
 
-        $this->logClaim($claim, 'manager_approved', $employee->full_name.' approved their '.$myItems->count().' item(s).');
+        $this->logClaim($claim, 'manager_approved', $employee->full_name.' approved the claim.');
 
-        Log::info('Claim manager-approved (items)', [
-            'claim_id' => $claim->id, 'claim_number' => $claim->claim_number,
-            'my_items' => $myItems->count(), 'actor_id' => Auth::id(),
+        Log::info('Claim manager-approved', [
+            'claim_id' => $claim->id, 'claim_number' => $claim->claim_number, 'actor_id' => Auth::id(),
         ]);
 
-        return back()->with('success', $this->finalizeManagerStage($claim, $employee));
+        return redirect()->route('user.claims.team')->with('success', $this->finalizeManagerStage($claim, $employee));
     }
 
     /**
@@ -942,19 +1733,18 @@ class ExpenseClaimController extends Controller
     {
         $employee = Auth::user()->employee;
 
-        $request->validate(['remarks' => 'required|string|max:1000']);
+        $request->validate(['remarks' => 'nullable|string|max:1000']);
 
         if ($claim->status !== 'submitted') {
             return back()->with('error', 'This claim is not pending approval.');
         }
 
         $claim->load('items');
-        $isApprover = $claim->items->where('approver_id', $employee->id)->isNotEmpty();
-        if (! $isApprover && ! Auth::user()->isSuperadmin()) {
-            abort(403, 'You are not an approver on this claim.');
+        if ((int) $claim->manager_id !== (int) $employee->id && ! Auth::user()->isSuperadmin()) {
+            abort(403, 'You are not the approving manager for this claim.');
         }
 
-        $reason = mb_substr(strip_tags($request->input('remarks')), 0, 1000);
+        $reason = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
 
         // Manager rejection is terminal for this report; the employee can immediately file
         // a correction (a brand-new report). The rejected report is kept as history.
@@ -965,6 +1755,9 @@ class ExpenseClaimController extends Controller
             'manager_approved_at' => now(),
         ]);
 
+        // Per-item flags/comments the reviewer left for the employee's reference.
+        $this->saveItemRejectComments($claim, $request->input('item_comments'));
+
         if ($claim->employee->user) {
             Mail::to($claim->employee->user->work_email)->send(new ClaimRejectedMail($claim, $claim->employee, 'manager'));
         }
@@ -974,48 +1767,7 @@ class ExpenseClaimController extends Controller
             'claim_id' => $claim->id, 'claim_number' => $claim->claim_number, 'actor_id' => Auth::id(),
         ]);
 
-        return back()->with('success', 'Claim rejected — '.$claim->employee->full_name.' can now file a correction.');
-    }
-
-    /**
-     * The approving manager releases an HR-rejected claim back to the employee, optionally
-     * with a comment, so the employee can file a correction. Until released, the employee
-     * waits (HR rejections don't go straight back to staff).
-     */
-    public function releaseRejection(Request $request, ExpenseClaim $claim)
-    {
-        $employee = Auth::user()->employee;
-
-        if ($claim->status !== 'hr_rejected' || $claim->released_at !== null) {
-            return back()->with('error', 'This claim is not awaiting release.');
-        }
-
-        // Only the approving manager (or superadmin) may release it.
-        $isApprover = $employee && (
-            $claim->manager_approved_by === $employee->id
-            || $claim->manager_id === $employee->id
-            || $claim->items->where('approver_id', $employee->id)->isNotEmpty()
-        );
-        if (! $isApprover && ! Auth::user()->isSuperadmin()) {
-            abort(403, 'You are not the approving manager for this claim.');
-        }
-
-        $note = $request->filled('release_remarks')
-            ? mb_substr(strip_tags($request->input('release_remarks')), 0, 1000) : null;
-
-        $claim->update([
-            'released_at' => now(),
-            'released_by' => $employee?->id,
-            'release_remarks' => $note,
-        ]);
-
-        if ($claim->employee->user) {
-            Mail::to($claim->employee->user->work_email)->send(new ClaimRejectedMail($claim, $claim->employee, 'released'));
-        }
-
-        $this->logClaim($claim, 'released', ($employee->full_name ?? 'Manager').' released the HR-rejected claim to the employee'.($note ? ' with a note: '.$note : '.'));
-
-        return back()->with('success', 'Released to '.$claim->employee->full_name.' — they can now make a correction.');
+        return redirect()->route('user.claims.team')->with('success', 'Claim rejected — '.$claim->employee->full_name.' can now file a correction.');
     }
 
     /**
@@ -1029,6 +1781,13 @@ class ExpenseClaimController extends Controller
         if (! $employee || $claim->employee_id !== $employee->id) {
             abort(403);
         }
+        // Only one correction is allowed per rejected report.
+        if ($claim->hasCorrection()) {
+            return back()->with('error', 'A correction has already been filed for '.$claim->claim_number.'. You can only correct a rejected claim once.');
+        }
+        if ($claim->correctionWindowClosed()) {
+            return back()->with('error', 'The correction window for '.$claim->claim_number.' closed at the end of '.($claim->year ?: optional($claim->created_at)->year).'. This rejected claim can no longer be corrected.');
+        }
         if (! $claim->canCorrect()) {
             return back()->with('error', 'This claim is not ready for correction yet.');
         }
@@ -1039,7 +1798,7 @@ class ExpenseClaimController extends Controller
                 'employee_id' => $employee->id,
                 'year' => $claim->year, 'month' => $claim->month,
                 'event' => $claim->event, 'title' => $claim->title,
-                'claim_number' => ExpenseClaim::generateClaimNumber($claim->year, $claim->month),
+                'claim_number' => ExpenseClaim::nextClaimNumber($claim->year, $claim->month, true),
                 'status' => 'draft', 'correction_of_id' => $claim->id,
                 'submission_deadline' => $claim->submission_deadline,
                 'manager_id' => $employee->manager_id,
@@ -1053,7 +1812,7 @@ class ExpenseClaimController extends Controller
                     'rate_applied' => $it->rate_applied, 'gst_amount' => $it->gst_amount,
                     'total_with_gst' => $it->total_with_gst, 'mileage_origin' => $it->mileage_origin,
                     'mileage_destination' => $it->mileage_destination, 'receipt_path' => $it->receipt_path,
-                    'receipt_hash' => $it->receipt_hash, 'is_locked' => false,
+                    'receipt_paths' => $it->receipt_paths, 'receipt_hash' => $it->receipt_hash, 'is_locked' => false,
                     'manager_status' => 'pending', 'review_status' => 'approved',
                 ]);
             }
@@ -1065,8 +1824,10 @@ class ExpenseClaimController extends Controller
         $this->logClaim($claim, 'correction_created', 'Employee started a correction — new report '.$new->claim_number.'.');
         $this->logClaim($new, 'created_as_correction', 'Created as a correction of '.$claim->claim_number.'.');
 
-        return redirect()->route('user.claims.show', $new)
-            ->with('success', 'Correction started from '.$claim->claim_number.' — edit the item(s) and resubmit.');
+        // Open the correction in the SAME inline editor used for normal drafts (Category B
+        // auto-save + add-item + delete), so corrections behave exactly like editing a draft.
+        return redirect()->route('user.claims.index', ['open' => $new->id])
+            ->with('success', 'Correction started from '.$claim->claim_number.' — edit the details and resubmit.');
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -1080,33 +1841,31 @@ class ExpenseClaimController extends Controller
     {
         $this->authorizeViewClaims();
 
-        $query = ExpenseClaim::with(['employee', 'items.category']);
+        // HR only ever sees claims that have been APPROVED by the Manager/PIC (and beyond) —
+        // submitted (pending manager), manager-rejected and drafts never reach HR. Filtering
+        // (status pills + search by name/event/month/date) is done client-side, like Team Claims.
+        $hrStatuses = ['manager_approved', 'hr_approved', 'hr_rejected', 'paid'];
 
-        // Filters — exclude drafts by default; only show when explicitly selected
-        if ($status = $request->input('status')) {
-            $query->where('status', $status);
-        } else {
-            $query->where('status', '!=', 'draft');
-        }
-        if ($year = $request->input('year')) {
-            $query->where('year', $year);
-        }
-        if ($month = $request->input('month')) {
-            $query->where('month', $month);
-        }
-        if ($employeeId = $request->input('employee_id')) {
-            $query->where('employee_id', $employeeId);
-        }
-        if ($company = $request->input('company')) {
-            $query->whereHas('employee', fn ($q) => $q->where('company', $company));
+        // Scalability: the page renders every claim as a year→month→employee accordion and
+        // filters client-side, so it needs the full set for the view it shows — but loading ALL
+        // years unbounded doesn't scale. Scope to ONE year (default current), with a year
+        // selector for older years. Each year loads fully, so the client-side filters still work.
+        $availableYears = ExpenseClaim::whereIn('status', $hrStatuses)
+            ->distinct()->orderByDesc('year')->pluck('year')->map(fn ($y) => (int) $y)->all();
+        $selectedYear = (int) $request->query('year', (int) now()->year);
+        if (! empty($availableYears) && ! in_array($selectedYear, $availableYears, true)) {
+            $selectedYear = $availableYears[0]; // fall back to the most recent year that has claims
         }
 
-        $claims = $query->orderByDesc('year')->orderByDesc('month')->orderByDesc('submitted_at')->paginate(25);
+        $claims = ExpenseClaim::with(['employee', 'items.category'])
+            ->whereIn('status', $hrStatuses)
+            ->where('year', $selectedYear)
+            ->orderByDesc('year')->orderByDesc('month')->orderByDesc('submitted_at')
+            ->get();
 
-        $employees = Employee::whereNull('active_until')->orderBy('full_name')->get();
         $stats = $this->getClaimStats();
 
-        return view('hr.claims.index', compact('claims', 'employees', 'stats'));
+        return view('hr.claims.index', compact('claims', 'stats', 'availableYears', 'selectedYear'));
     }
 
     /**
@@ -1117,6 +1876,7 @@ class ExpenseClaimController extends Controller
         $this->authorizeViewClaims();
 
         $claim->load(['employee', 'items.category', 'items.approver', 'manager', 'managerApprover', 'hrApprover']);
+        $company = \App\Models\Company::forName($claim->employee->company);
 
         // Employee spend context (#7) — this employee's claim history for the claim's year.
         $yearClaims = ExpenseClaim::where('employee_id', $claim->employee_id)
@@ -1131,7 +1891,7 @@ class ExpenseClaimController extends Controller
             'avg_claim' => $approved->count() ? (float) $approved->sum('total_with_gst') / $approved->count() : 0.0,
         ];
 
-        return view('hr.claims.show', compact('claim', 'spendStats'));
+        return view('hr.claims.show', compact('claim', 'spendStats', 'company'));
     }
 
     /**
@@ -1169,7 +1929,7 @@ class ExpenseClaimController extends Controller
 
         $this->logClaim($claim, 'hr_approved', 'HR approved — RM '.number_format($claim->total_with_gst, 2).'.');
 
-        return back()->with('success', 'HR approved.');
+        return redirect()->route('hr.claims.index')->with('success', 'HR approved.');
     }
 
     /**
@@ -1179,23 +1939,25 @@ class ExpenseClaimController extends Controller
     {
         $this->authorizeManageClaims();
 
-        $request->validate(['remarks' => 'required|string|max:1000']);
+        $request->validate(['remarks' => 'nullable|string|max:1000']);
 
         if ($claim->status !== 'manager_approved') {
             return back()->with('error', 'This claim is not pending HR approval.');
         }
 
-        $remarks = mb_substr(strip_tags($request->input('remarks')), 0, 1000);
+        $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
 
-        // HR rejection does NOT go straight to the employee: it's held for the approving
-        // manager to review and release. The report is frozen as hr_rejected.
+        // HR rejection is terminal for this report; the employee may file a correction
+        // immediately (no manager "release" gate). The report is frozen as hr_rejected.
         $claim->update([
             'status' => 'hr_rejected',
             'hr_approved_by' => Auth::id(),
             'hr_approved_at' => now(),
             'hr_remarks' => $remarks,
-            'released_at' => null,
         ]);
+
+        // Per-item flags/comments the reviewer left for the employee's reference.
+        $this->saveItemRejectComments($claim, $request->input('item_comments'));
 
         Log::info('Claim hr-rejected', [
             'claim_id' => $claim->id, 'claim_number' => $claim->claim_number,
@@ -1204,20 +1966,21 @@ class ExpenseClaimController extends Controller
 
         $employee = $claim->employee;
 
-        // Notify the approving manager to review + release.
-        $manager = $claim->managerApprover ?? $claim->manager;
-        if ($manager && $manager->user) {
-            Mail::to($manager->user->work_email)->send(new ClaimReleaseRequestMail($claim, $manager));
-        }
-
-        // Inform the employee (they must wait for the manager to release it).
+        // Tell the employee they can correct + resubmit straight away.
         if ($employee->user) {
             Mail::to($employee->user->work_email)->send(new ClaimRejectedMail($claim, $employee, 'hr'));
         }
 
-        $this->logClaim($claim, 'hr_rejected', 'HR rejected: '.$remarks.' (sent to the approving manager to release).');
+        // Notify the approving manager/PIC that HR rejected the claim (informational — no
+        // action required from them; the employee handles the correction).
+        $manager = $claim->managerApprover ?? $claim->manager;
+        if ($manager && $manager->user) {
+            Mail::to($manager->user->work_email)->send(new ClaimHrRejectedNoticeMail($claim, $manager));
+        }
 
-        return back()->with('success', 'Claim rejected by HR — sent to the approving manager to release to the employee.');
+        $this->logClaim($claim, 'hr_rejected', 'HR rejected: '.$remarks.' (employee can correct immediately; approving manager notified).');
+
+        return redirect()->route('hr.claims.index')->with('success', 'Claim rejected by HR — '.$employee->full_name.' can correct it now; the approving manager has been notified.');
     }
 
     /**
@@ -1509,6 +2272,65 @@ class ExpenseClaimController extends Controller
     }
 
     /**
+     * Multi-stop driving distance via ORS — geocodes every stop in order and asks the
+     * directions API for the TOTAL distance across all legs (e.g. A → B → A). Used to
+     * auto-fill the mileage distance when a Google Maps screenshot has no km on it but
+     * the route addresses were read. Fails open (ok=false / enabled=false → manual km).
+     */
+    public function mileageDistanceRoute(Request $request)
+    {
+        $data = $request->validate([
+            'stops' => 'required|array|min:2|max:12',
+            'stops.*' => 'nullable|string|max:255',
+        ]);
+
+        $stops = array_values(array_filter(array_map(fn ($s) => trim(strip_tags((string) $s)), $data['stops']), fn ($s) => $s !== '' && $s !== '?'));
+        if (count($stops) < 2) {
+            return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Need at least two stops to measure the distance.']);
+        }
+
+        $key = config('claims.distance.ors_key');
+        if (config('claims.distance.provider', 'google') !== 'ors' || ! $key) {
+            return response()->json(['enabled' => false]);
+        }
+
+        try {
+            $coords = [];
+            $prev = null;
+            foreach ($stops as $stop) {
+                $c = $this->orsGeocode($key, $stop, $prev);
+                if (! $c) {
+                    return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Could not locate “'.$stop.'” — enter the km manually.']);
+                }
+                $coords[] = $c;
+                $prev = $c;
+            }
+
+            $resp = Http::timeout(15)
+                ->withHeaders(['Authorization' => $key, 'Content-Type' => 'application/json'])
+                ->post('https://api.openrouteservice.org/v2/directions/driving-car', [
+                    'coordinates' => $coords,
+                ]);
+
+            $meters = $resp->json('routes.0.summary.distance');
+            if (! $resp->successful() || $meters === null) {
+                return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Distance lookup failed — please enter the km manually.']);
+            }
+
+            return response()->json([
+                'enabled' => true,
+                'ok' => true,
+                'km' => round($meters / 1000, 1),
+                'stops' => $stops,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('ORS multi-stop distance failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['enabled' => true, 'ok' => false, 'message' => 'Distance lookup failed — please enter the km manually.']);
+        }
+    }
+
+    /**
      * OpenRouteService driving distance (free, no credit card): geocode the origin
      * + destination to coordinates, then ask the directions API for the driving
      * distance. Fails open — any missing key/error returns ok=false and the user
@@ -1679,29 +2501,206 @@ class ExpenseClaimController extends Controller
         }
 
         $request->validate([
-            'receipt' => 'required|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+            'receipt' => 'required_without:receipt_files|nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+            'receipt_files' => 'required_without:receipt|nullable|array|max:12',
+            'receipt_files.*' => 'file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
         ]);
 
         // Offer the employee's eligible categories so the AI can also classify the receipt.
         $employee = Auth::user()->employee;
         $categories = $employee ? ClaimRulesService::categoriesFor($employee) : collect();
-        $catList = $categories->map(fn ($c) => ['code' => $c->code, 'name' => $c->name])->all();
+        $catList = $categories->map(fn ($c) => ['code' => $c->code, 'name' => $c->name, 'description' => $c->description])->all();
+
+        // ── Multi-FILE upload: OCR each file, aggregate every transaction into one
+        // review list. Each item remembers its source file index so the right image
+        // attaches on add. (Maps are receipt-irrelevant here and are skipped.)
+        if ($request->hasFile('receipt_files')) {
+            $allItems = [];
+            $truncated = false;
+            foreach (array_values($request->file('receipt_files')) as $idx => $f) {
+                if (! $f) {
+                    continue;
+                }
+                $sub = ClaimReceiptOcrService::scanDocument($f->getRealPath(), $f->getMimeType(), $company, $catList);
+                if ($sub === null) {
+                    continue;
+                }
+                $truncated = $truncated || ! empty($sub['truncated']);
+                foreach ($sub['items'] as $it) {
+                    $row = $this->resolveScannedItem($it, $categories, $company);
+                    $row['file_index'] = $idx;
+                    $allItems[] = $row;
+                }
+            }
+
+            return response()->json([
+                'enabled' => true, 'ok' => count($allItems) > 0, 'multi' => true,
+                'items' => $allItems, 'truncated' => $truncated,
+            ]);
+        }
 
         $file = $request->file('receipt');
-        $data = ClaimReceiptOcrService::extract($file->getRealPath(), $file->getMimeType(), $company, $catList);
+        $doc = ClaimReceiptOcrService::scanDocument($file->getRealPath(), $file->getMimeType(), $company, $catList);
 
-        if ($data === null) {
+        if ($doc === null) {
             return response()->json(['enabled' => true, 'ok' => false]);
         }
 
-        // Map the validated category code back to the dropdown's id so the form can pre-select it.
-        if (! empty($data['category'])) {
-            $match = $categories->firstWhere('code', $data['category']);
-            $data['category_id'] = $match?->id;
-            $data['category_name'] = $match?->name;
+        // ── Map / route screenshot → single mileage response (the JS map branch reads
+        // distance_km / route_* at the top level, unchanged). Multi never applies to maps.
+        // Guard: only treat as a mileage map when there are NO receipt items — a ride-hailing
+        // receipt (Grab, etc.) shows a route map too but is a Travelling RECEIPT, not mileage.
+        if (! empty($doc['map']) && empty($doc['items'])) {
+            $m = $doc['map'];
+
+            return response()->json([
+                'enabled' => true, 'ok' => true, 'multi' => false,
+                'amount' => null, 'date' => null, 'vendor' => null,
+                'item_description' => null, 'paid_by' => null,
+                'category_id' => null, 'category_name' => null,
+                'distance_km' => $m['distance_km'],
+                'route_from' => $m['route_from'],
+                'route_to' => $m['route_to'],
+                'route_stops' => $m['route_stops'],
+            ]);
         }
 
-        return response()->json(array_merge(['enabled' => true, 'ok' => true], $data));
+        // ── Receipt(s): resolve each item's category (AI guess + keyword override). ──
+        $items = array_map(fn ($it) => $this->resolveScannedItem($it, $categories, $company), $doc['items']);
+
+        // Single receipt → flatten to the top level so the existing single-fill path is
+        // untouched (zero behaviour change for the common one-receipt case).
+        if (count($items) <= 1) {
+            $one = $items[0] ?? [];
+
+            return response()->json([
+                'enabled' => true, 'ok' => true, 'multi' => false,
+                'amount' => $one['amount'] ?? null,
+                'gst' => $one['gst'] ?? null,
+                'date' => $one['date'] ?? null,
+                'vendor' => $one['vendor'] ?? null,
+                'item_description' => $one['item_description'] ?? null,
+                'paid_by' => $one['paid_by'] ?? null,
+                'category_id' => $one['category_id'] ?? null,
+                'category_name' => $one['category_name'] ?? null,
+                'distance_km' => null, 'route_from' => null, 'route_to' => null, 'route_stops' => null,
+            ]);
+        }
+
+        // Multiple receipts / a dated statement → return the list for the review table.
+        return response()->json([
+            'enabled' => true, 'ok' => true, 'multi' => true, 'items' => $items,
+            'truncated' => (bool) ($doc['truncated'] ?? false),
+        ]);
+    }
+
+    /**
+     * Resolve a scanned receipt object's category: validated AI code → dropdown id, then
+     * the deterministic keyword override (same precedence as the single-scan path).
+     */
+    private function resolveScannedItem(array $it, $categories, ?string $company): array
+    {
+        $catId = null;
+        $catName = null;
+        $catCode = $it['category'] ?? null;
+        if ($catCode) {
+            $match = $categories->firstWhere('code', $catCode);
+            $catId = $match?->id;
+            $catName = $match?->name;
+        }
+        $hint = trim(($it['vendor'] ?? '').' '.($it['item_description'] ?? ''));
+        if ($hint !== '') {
+            $kwCat = ExpenseCategory::detectFromDescription($hint, $company);
+            if ($kwCat && $categories->contains('id', $kwCat->id)) {
+                $catId = $kwCat->id;
+                $catName = $kwCat->name;
+                $catCode = $kwCat->code;
+            }
+        }
+
+        // A SEASON / monthly car-park pass (Season Holder, CAR PARK SEASON, WSI/Jaya One season,
+        // a whole-month billing) is the flat RM80 office-parking subsidy — it must land on the
+        // fixed season category, never the per-trip 916-000 line. The model flags it via
+        // transaction_type; force the fixed category here so the claimable becomes RM80.
+        $isSeasonParking = ($it['transaction_type'] ?? null) === 'season_parking';
+        if ($isSeasonParking) {
+            $seasonCat = $categories->firstWhere('code', 'PARKING_JAYAONE');
+            if ($seasonCat) {
+                $catId = $seasonCat->id;
+                $catName = $seasonCat->name;
+                $catCode = $seasonCat->code;
+            }
+        }
+
+        // Non-claimable rows (TnG reloads/top-ups, service fees, "other charges") default
+        // OFF in the review table. Use the model's transaction_type when present, plus a
+        // deterministic keyword fallback so it works even when that field is missing.
+        $type = $it['transaction_type'] ?? null;
+        $blob = strtolower(trim(($it['vendor'] ?? '').' '.($it['item_description'] ?? '')));
+        $nonClaimable = in_array($type, ['reload', 'fee'], true)
+            || $blob !== '' && (bool) preg_match('/\b(reload|top[\s-]?up|topup|internet reload|other charges?|service charge|admin (?:fee|charge)|balance b\/f)\b/', $blob);
+
+        // "Item" (receipt-detail) preference:
+        //  1. A toll row's ROUTE (Entry → Exit plaza) — most useful, beats a generic "TOLL".
+        //  2. The model's own item_description.
+        //  3. The merchant/location name (vendor) so it's never blank for a statement row.
+        $entry = trim((string) ($it['entry_location'] ?? ''));
+        $exit = trim((string) ($it['exit_location'] ?? ''));
+        $txnType = $it['transaction_type'] ?? null;
+        $route = null;
+        if ($entry !== '' || $exit !== '') {
+            $loc = $entry !== '' ? $entry : $exit;
+            if ($txnType === 'parking') {
+                // Parking → single location, "PARKING - <place>" (not a toll plaza route).
+                $route = 'PARKING - '.$loc;
+            } elseif ($entry !== '' && $exit !== '') {
+                // Road toll → show BOTH plazas, "TOLL - Entry - Exit" (even when the same).
+                $route = 'TOLL - '.$entry.' - '.$exit;
+            } else {
+                $route = 'TOLL - '.$loc;
+            }
+        }
+        // A ride / e-hailing receipt (Grab, taxi) → "Pickup → Dropoff" route, like the toll.
+        $pickup = trim((string) ($it['pickup_location'] ?? ''));
+        $dropoff = trim((string) ($it['dropoff_location'] ?? ''));
+        $rideRoute = null;
+        if ($pickup !== '' && $dropoff !== '') {
+            $rideRoute = $pickup.' → '.$dropoff;
+        } elseif ($pickup !== '' || $dropoff !== '') {
+            $rideRoute = $pickup !== '' ? $pickup : $dropoff;
+        }
+        $modelItem = is_string($it['item_description'] ?? null) && trim($it['item_description']) !== ''
+            ? trim($it['item_description'])
+            : null;
+        // A forwarded e-receipt email → use its Subject line (e.g. "Your Grab E-Receipt").
+        $emailSubject = is_string($it['email_subject'] ?? null) && trim($it['email_subject']) !== ''
+            ? trim($it['email_subject'])
+            : null;
+        // Priority: season label → toll route → ride route → email subject → model's item → merchant.
+        // A season pass always reads "Season parking" (the receipt's own "Current Billing" line is
+        // meaningless on the report), so it overrides every other description source.
+        $itemDesc = $isSeasonParking
+            ? 'Season parking'
+            : ($route ?: ($rideRoute ?: ($emailSubject ?: ($modelItem ?: ($it['vendor'] ?? null)))));
+
+        // Who paid: explicit payer → "Bill to" name → account email (when the receipt shows
+        // no exact payer, fall back to who it was billed to / the account owner).
+        $paidBy = trim((string) ($it['paid_by'] ?? '')) ?: (trim((string) ($it['bill_to'] ?? '')) ?: (trim((string) ($it['account_email'] ?? '')) ?: null));
+
+        return [
+            'amount' => $it['amount'] ?? null,
+            'gst' => $it['tax_amount'] ?? null,
+            'date' => $it['date'] ?? null,
+            'vendor' => $it['vendor'] ?? null,
+            'item_description' => $itemDesc,
+            'paid_by' => $paidBy,
+            'category_id' => $catId,
+            'category_name' => $catName,
+            'category_code' => $catCode,
+            'highlighted' => (bool) ($it['highlighted'] ?? false),
+            'transaction_type' => $type,
+            'non_claimable' => $nonClaimable,
+        ];
     }
 
     /**
@@ -1732,12 +2731,36 @@ class ExpenseClaimController extends Controller
                 if ($data && $data['amount'] !== null) {
                     $receiptAmt = (float) $data['amount'];
                     $claimed = (float) $item->total_with_gst;
+
+                    // A claimed amount BELOW the receipt is legitimate (not a discrepancy)
+                    // for fixed subsidies and capped categories — the flat rate / cap
+                    // deliberately limits the claim under an expensive receipt (#12b).
+                    // We only flag the dangerous direction (claiming MORE than the
+                    // receipt) for those; uncapped categories still need an exact match.
+                    $category = $item->category;
+                    $isFixed = $category && $category->isFixed();
+                    $isCapped = $category && ClaimRulesService::effectiveLimit($category, $claim->employee) !== null;
+                    $tolerance = max(0.50, $claimed * 0.02);
+
+                    if ($isFixed) {
+                        // Flat subsidy — the receipt is evidence only, amount is fixed.
+                        $match = true;
+                        $reason = 'fixed';
+                    } elseif (($isCapped) && $receiptAmt + $tolerance >= $claimed) {
+                        // Claimed at/under the receipt because a cap limited it — fine.
+                        $match = true;
+                        $reason = $receiptAmt > $claimed + $tolerance ? 'capped' : null;
+                    } else {
+                        $match = abs($receiptAmt - $claimed) <= $tolerance;
+                        $reason = null;
+                    }
+
                     $result['receipt'] = [
                         'ok' => true,
                         'receipt_amount' => $receiptAmt,
                         'claimed' => $claimed,
-                        // tolerance: 50 sen or 2% of the claimed amount, whichever is larger
-                        'match' => abs($receiptAmt - $claimed) <= max(0.50, $claimed * 0.02),
+                        'match' => $match,
+                        'reason' => $reason, // 'fixed' | 'capped' | null
                         'vendor' => $data['vendor'] ?? null,
                     ];
                 } else {
@@ -1825,6 +2848,17 @@ class ExpenseClaimController extends Controller
         if ($emp && $claim->employee && $claim->employee->manager_id === $emp->id) {
             return;
         }
+        // A manager who had any item on this claim routed to them for approval may
+        // review it — including re-viewing it after it's approved/rejected (#4), even
+        // if the employee's reporting line has since changed.
+        if ($emp) {
+            $isItemApprover = $claim->relationLoaded('items')
+                ? $claim->items->contains('approver_id', $emp->id)
+                : $claim->items()->where('approver_id', $emp->id)->exists();
+            if ($isItemApprover) {
+                return;
+            }
+        }
         abort(403, 'You are not allowed to verify this claim.');
     }
 
@@ -1849,13 +2883,12 @@ class ExpenseClaimController extends Controller
 
     private function getClaimStats(): array
     {
+        // HR-perspective counts — only claims that reached HR (manager-approved and beyond).
         return [
-            'pending' => ExpenseClaim::whereIn('status', ['submitted', 'manager_approved'])->count(),
-            'approved' => ExpenseClaim::where('status', 'hr_approved')->count(),
-            'total_approved' => ExpenseClaim::where('status', 'hr_approved')
-                ->whereYear('created_at', now()->year)
-                ->sum('total_with_gst'),
-            'total' => ExpenseClaim::where('status', '!=', 'draft')->count(),
+            'pending_hr' => ExpenseClaim::where('status', 'manager_approved')->count(),
+            'hr_approved' => ExpenseClaim::whereIn('status', ['hr_approved', 'paid'])->count(),
+            'hr_rejected' => ExpenseClaim::where('status', 'hr_rejected')->count(),
+            'total' => ExpenseClaim::whereIn('status', ['manager_approved', 'hr_approved', 'hr_rejected', 'paid'])->count(),
         ];
     }
 

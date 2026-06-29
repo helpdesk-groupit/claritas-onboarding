@@ -91,24 +91,26 @@
         <div class="alert alert-danger mx-3 mt-3 mb-0">
             <div class="fw-semibold"><i class="bi bi-x-octagon me-1"></i>Rejected by your manager{{ $claim->managerApprover ? ' ('.$claim->managerApprover->full_name.')' : '' }}</div>
             @if($claim->manager_remarks)<div class="mt-1"><strong>Reason:</strong> {{ $claim->manager_remarks }}</div>@endif
-            <form action="{{ route('user.claims.correct', $claim) }}" method="POST" class="js-confirm mt-2" data-confirm="Start a correction? A new report opens pre-filled with these items so you can fix and resubmit. This rejected report is kept as history." data-confirm-title="Make correction" data-confirm-ok="Make correction" data-confirm-variant="primary">
+            @if($claim->canCorrect())
+            <form action="{{ route('user.claims.correct', $claim) }}" method="POST" class="js-confirm mt-2" data-confirm="Start a correction? A new report opens pre-filled with these items so you can fix and resubmit. This rejected report is kept as history. A rejected claim can be corrected only once." data-confirm-title="Make correction" data-confirm-ok="Make correction" data-confirm-variant="primary">
                 @csrf
                 <button class="btn btn-primary btn-sm"><i class="bi bi-pencil-square me-1"></i>Make correction</button>
             </form>
+            @elseif($claim->hasCorrection())
+            <div class="mt-2 small"><i class="bi bi-info-circle me-1"></i>A correction has already been filed{{ optional($claim->corrections->first())->claim_number ? ' ('.$claim->corrections->first()->claim_number.')' : '' }} — a rejected claim can be corrected only once.</div>
+            @endif
         </div>
         @elseif($claim->status === 'hr_rejected')
-        <div class="alert {{ $claim->canCorrect() ? 'alert-danger' : 'alert-warning' }} mx-3 mt-3 mb-0">
+        <div class="alert alert-danger mx-3 mt-3 mb-0">
             <div class="fw-semibold"><i class="bi bi-x-octagon me-1"></i>Rejected by HR</div>
             @if($claim->hr_remarks)<div class="mt-1"><strong>HR reason:</strong> {{ $claim->hr_remarks }}</div>@endif
-            @if($claim->awaitingRelease())
-            <div class="mt-2 small"><i class="bi bi-hourglass-split me-1"></i>Your approving manager is reviewing this. You'll be able to make a correction once they release it to you.</div>
-            @else
-            @if($claim->release_remarks)<div class="mt-1"><strong>Manager's note:</strong> {{ $claim->release_remarks }}</div>@endif
-            <div class="mt-1 small text-success"><i class="bi bi-unlock me-1"></i>Released by {{ optional($claim->releasedBy)->full_name ?? 'your manager' }} on {{ $claim->released_at?->format('d/m/Y') }}.</div>
-            <form action="{{ route('user.claims.correct', $claim) }}" method="POST" class="js-confirm mt-2" data-confirm="Start a correction? A new report opens pre-filled with these items so you can fix and resubmit. This rejected report is kept as history." data-confirm-title="Make correction" data-confirm-ok="Make correction" data-confirm-variant="primary">
+            @if($claim->canCorrect())
+            <form action="{{ route('user.claims.correct', $claim) }}" method="POST" class="js-confirm mt-2" data-confirm="Start a correction? A new report opens pre-filled with these items so you can fix and resubmit. This rejected report is kept as history. A rejected claim can be corrected only once." data-confirm-title="Make correction" data-confirm-ok="Make correction" data-confirm-variant="primary">
                 @csrf
                 <button class="btn btn-primary btn-sm"><i class="bi bi-pencil-square me-1"></i>Make correction</button>
             </form>
+            @elseif($claim->hasCorrection())
+            <div class="mt-2 small"><i class="bi bi-info-circle me-1"></i>A correction has already been filed{{ optional($claim->corrections->first())->claim_number ? ' ('.$claim->corrections->first()->claim_number.')' : '' }} — a rejected claim can be corrected only once.</div>
             @endif
         </div>
         @elseif($claim->correction_of_id)
@@ -214,6 +216,13 @@
                         <small class="text-info mt-1" id="ocrHint" style="display:none;"></small>
                         @error('receipt')<div class="invalid-feedback d-block">{{ $message }}</div>@enderror
                         <small class="text-muted d-block">JPG, PNG, PDF (max 5MB)</small>
+
+                        <div class="mt-3">
+                            <label class="form-label fw-semibold mb-1">Additional Attachments <span class="text-muted small">(optional)</span></label>
+                            <input type="file" name="receipt_attachments[]" class="form-control @error('receipt_attachments.*') is-invalid @enderror" accept=".jpg,.jpeg,.png,.pdf" multiple>
+                            @error('receipt_attachments.*')<div class="invalid-feedback d-block">{{ $message }}</div>@enderror
+                            <small class="text-muted d-block">Upload extra supporting documents (max 5MB each).</small>
+                        </div>
                     </div>
 
                     <div class="row g-3">
@@ -246,7 +255,8 @@
                             <select name="expense_category_id" class="form-select @error('expense_category_id') is-invalid @enderror" id="expenseCategory" required>
                                 <option value="">-- Select Category --</option>
                                 @foreach($categories as $cat)
-                                <option value="{{ $cat->id }}" {{ old('expense_category_id') == $cat->id ? 'selected' : '' }} data-requires-receipt="{{ $cat->requires_receipt ? '1' : '0' }}" data-rate-type="{{ $cat->rate_type }}" data-rate-amount="{{ $cat->rate_amount ?? '' }}" data-gl-code="{{ $cat->gl_code ?? '' }}">{{ $cat->name }}</option>
+                                @php $catLabel = ($cat->gl_code ? $cat->gl_code.': ' : '').$cat->name.($cat->code === 'PARKING_JAYAONE' ? ' — Season pass (flat RM80)' : ''); @endphp
+                                <option value="{{ $cat->id }}" {{ old('expense_category_id') == $cat->id ? 'selected' : '' }} data-requires-receipt="{{ $cat->requires_receipt ? '1' : '0' }}" data-rate-type="{{ $cat->rate_type }}" data-rate-amount="{{ $cat->rate_amount ?? '' }}" data-gl-code="{{ $cat->gl_code ?? '' }}">{{ $catLabel }}</option>
                                 @endforeach
                             </select>
                             @error('expense_category_id')
@@ -367,34 +377,31 @@
                             <td class="text-end fw-bold {{ $item->isRejected() ? 'text-decoration-line-through text-muted' : '' }}">{{ number_format($item->total_with_gst, 2) }}</td>
                             <td>
                                 @if($item->receipt_path)
-                                <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-paperclip"></i></a>
-                                @elseif($item->needsReceipt())
+                                <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary me-1"><i class="bi bi-paperclip"></i></a>
+                                @endif
+                                @foreach($item->receipt_paths ?? [] as $attachment)
+                                <a href="{{ route('secure.file', $attachment) }}" target="_blank" class="btn btn-sm btn-outline-secondary me-1" title="Additional attachment"><i class="bi bi-file-earmark-arrow-down"></i></a>
+                                @endforeach
+                                @if(!$item->receipt_path && empty($item->receipt_paths) && $item->needsReceipt())
                                 <span class="badge bg-warning text-dark" title="Attach a receipt before submitting"><i class="bi bi-exclamation-triangle me-1"></i>Needed</span>
-                                @else
+                                @elseif(!$item->receipt_path && empty($item->receipt_paths))
                                 <span class="text-muted">—</span>
                                 @endif
                             </td>
                             @if($canEdit)
                             <td>
                                 @if(!$item->is_locked)
-                                <div class="d-flex gap-1">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#edit-row-{{ $item->id }}" aria-expanded="false" title="Edit item"><i class="bi bi-pencil"></i></button>
-                                    <form action="{{ route('user.claims.remove-item', $item) }}" method="POST" class="js-confirm" data-confirm="Remove this item from the claim?" data-confirm-title="Remove item" data-confirm-ok="Remove" data-confirm-variant="danger">
-                                        @csrf @method('DELETE')
-                                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
-                                    </form>
-                                </div>
+                                @php $grpN = $item->receipt_hash ? $claim->items->where('receipt_hash', $item->receipt_hash)->count() : 1; @endphp
+                                <form action="{{ route('user.claims.remove-item', $item) }}" method="POST" class="js-confirm"
+                                      data-confirm="{{ $grpN > 1 ? 'This attachment was read into '.$grpN.' items. Deleting it will remove ALL '.$grpN.' items from this attachment. There is no editing — to change an item, delete it and add it again.' : 'Delete this item? There is no editing — to change it, delete it and add it again.' }}"
+                                      data-confirm-title="{{ $grpN > 1 ? 'Delete '.$grpN.' items' : 'Delete item' }}" data-confirm-ok="Delete" data-confirm-variant="danger">
+                                    @csrf @method('DELETE')
+                                    <button class="btn btn-sm btn-outline-danger" title="Delete (to change an item, delete it and add it again)"><i class="bi bi-trash"></i></button>
+                                </form>
                                 @endif
                             </td>
                             @endif
                         </tr>
-                        @if($canEdit && !$item->is_locked)
-                        <tr class="collapse" id="edit-row-{{ $item->id }}">
-                            <td colspan="10" class="p-0 border-0 bg-light">
-                                @include('partials.claim-item-edit', ['item' => $item, 'projectRequired' => $projectRequired ?? false])
-                            </td>
-                        </tr>
-                        @endif
                         @endforeach
                     </tbody>
                     <tfoot class="table-light">
@@ -431,11 +438,16 @@
                             @if($item->receipt_path)
                             <a href="{{ route('user.claims.items.receipt', $item) }}" target="_blank" class="btn btn-sm btn-outline-primary py-0"><i class="bi bi-paperclip"></i></a>
                             @endif
+                            @foreach($item->receipt_paths ?? [] as $attachment)
+                            <a href="{{ route('secure.file', $attachment) }}" target="_blank" class="btn btn-sm btn-outline-secondary py-0" title="Additional attachment"><i class="bi bi-file-earmark-arrow-down"></i></a>
+                            @endforeach
                             @if($canEdit && !$item->is_locked)
-                            <button type="button" class="btn btn-sm btn-outline-secondary py-0" data-bs-toggle="collapse" data-bs-target="#edit-card-{{ $item->id }}" aria-expanded="false" title="Edit item"><i class="bi bi-pencil"></i></button>
-                            <form action="{{ route('user.claims.remove-item', $item) }}" method="POST" class="js-confirm" data-confirm="Remove this item from the claim?" data-confirm-title="Remove item" data-confirm-ok="Remove" data-confirm-variant="danger">
+                            @php $grpN = $item->receipt_hash ? $claim->items->where('receipt_hash', $item->receipt_hash)->count() : 1; @endphp
+                            <form action="{{ route('user.claims.remove-item', $item) }}" method="POST" class="js-confirm"
+                                  data-confirm="{{ $grpN > 1 ? 'This attachment was read into '.$grpN.' items. Deleting it will remove ALL '.$grpN.' items from this attachment. There is no editing — to change an item, delete it and add it again.' : 'Delete this item? There is no editing — to change it, delete it and add it again.' }}"
+                                  data-confirm-title="{{ $grpN > 1 ? 'Delete '.$grpN.' items' : 'Delete item' }}" data-confirm-ok="Delete" data-confirm-variant="danger">
                                 @csrf @method('DELETE')
-                                <button class="btn btn-sm btn-outline-danger py-0"><i class="bi bi-trash"></i></button>
+                                <button class="btn btn-sm btn-outline-danger py-0" title="Delete (to change an item, delete it and add it again)"><i class="bi bi-trash"></i></button>
                             </form>
                             @endif
                         </div>
@@ -449,11 +461,6 @@
                         </span>
                         <span class="fw-bold">RM {{ number_format($item->total_with_gst, 2) }}</span>
                     </div>
-                    @if($canEdit && !$item->is_locked)
-                    <div class="collapse mt-2" id="edit-card-{{ $item->id }}">
-                        @include('partials.claim-item-edit', ['item' => $item, 'projectRequired' => $projectRequired ?? false])
-                    </div>
-                    @endif
                 </div>
                 @endforeach
                 <div class="border-top pt-2 mt-2 d-flex justify-content-between fw-bold">
@@ -685,6 +692,21 @@ document.addEventListener('DOMContentLoaded', function() {
         const mileageCat = isMileageCat(opt);
         if (mileagePanel) mileagePanel.style.display = mileageCat ? '' : 'none';
         if (mileageCat) { applyPetrolMode(); return; }
+
+        // Fixed-subsidy category (e.g. season parking RM80): no quantity, amount is
+        // locked to the category's flat rate regardless of the receipt total.
+        if (rt === 'fixed') {
+            if (quantityGroup) quantityGroup.style.display = 'none';
+            if (amountInput) {
+                amountInput.value = (parseFloat(opt.dataset.rateAmount) || 0).toFixed(2);
+                amountInput.readOnly = true;
+            }
+            if (gstInput) { gstInput.value = '0'; gstInput.readOnly = true; }
+            recalcTotal();
+            updateReceiptRequiredMark();
+            updateScanButtonLabel();
+            return;
+        }
 
         const computed = (rt === 'per_day' || rt === 'per_hour');
         if (quantityGroup) quantityGroup.style.display = computed ? '' : 'none';

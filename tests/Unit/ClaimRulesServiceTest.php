@@ -53,6 +53,37 @@ class ClaimRulesServiceTest extends TestCase
         $this->assertNull(ClaimRulesService::computeAmount($cat, ['quantity' => 5]));
     }
 
+    public function test_category_match_score_is_word_boundary_aware(): void
+    {
+        $pad = fn ($s) => ' '.strtolower(preg_replace('/[^a-z0-9\s]/i', ' ', $s)).' ';
+
+        $training = new ExpenseCategory(['name' => 'Seminar & Training', 'keywords' => ['training', 'workshop', 'course']]);
+        // "ot" must NOT match inside "robotics"; "training" should score.
+        $this->assertGreaterThan(0, $training->descriptionMatchScore($pad('Robotics workshop training')));
+
+        $ot = new ExpenseCategory(['name' => 'Extra Hours', 'keywords' => ['ot']]);
+        $this->assertSame(0.0, $ot->descriptionMatchScore($pad('Robotics promotion notes')));
+        $this->assertGreaterThan(0, $ot->descriptionMatchScore($pad('claimed ot for late night')));
+
+        // Phrase keyword outweighs a single word; more specific category wins.
+        $food = new ExpenseCategory(['name' => 'Office Food & Refreshment', 'keywords' => ['lunch', 'food']]);
+        $entertainment = new ExpenseCategory(['name' => 'Entertainment', 'keywords' => ['client lunch', 'client dinner']]);
+        $this->assertGreaterThan(
+            $food->descriptionMatchScore($pad('client lunch with vendor')),
+            $entertainment->descriptionMatchScore($pad('client lunch with vendor'))
+        );
+    }
+
+    public function test_fixed_category_returns_flat_rate_amount(): void
+    {
+        // Season parking: amount is always the flat rate, no quantity involved.
+        $cat = new ExpenseCategory(['rate_type' => 'fixed', 'rate_amount' => 80]);
+        $this->assertTrue($cat->isFixed());
+        $this->assertTrue($cat->isComputed());
+        $this->assertEqualsWithDelta(80.0, ClaimRulesService::computeAmount($cat, []), 0.001);
+        $this->assertEqualsWithDelta(80.0, ClaimRulesService::computeAmount($cat, ['quantity' => 5]), 0.001); // qty ignored
+    }
+
     public function test_deadline_rolls_back_off_weekend(): void
     {
         // 20 Jun 2026 is a Saturday → preceding working day = Fri 19 Jun.

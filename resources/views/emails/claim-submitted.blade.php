@@ -22,13 +22,14 @@
 <body>
 @php
     $period = \Carbon\Carbon::create($claim->year, $claim->month)->format('F Y');
+    $event = $claim->eventName();
     $company = $employee->company ?? config('app.name');
 @endphp
 <div class="email-wrap">
 
   <div class="header">
     <h1>Expense Claim Submitted</h1>
-    <p>{{ $period }} &mdash; Action Required</p>
+    <p>{{ $event ? $event.' — '.$period : $period }} &mdash; Action Required</p>
   </div>
 
   <div class="body">
@@ -46,6 +47,7 @@
 
     <div class="info-box">
       <div class="detail-row"><span class="detail-label">Claim No.</span> <span class="detail-value">{{ $claim->claim_number }}</span></div>
+      @if($event)<div class="detail-row"><span class="detail-label">Event</span> <span class="detail-value">{{ $event }}</span></div>@endif
       <div class="detail-row"><span class="detail-label">Period</span> <span class="detail-value">{{ $period }}</span></div>
       <div class="detail-row"><span class="detail-label">Employee</span> <span class="detail-value">{{ $employee->full_name }}</span></div>
       <div class="detail-row"><span class="detail-label">Department</span> <span class="detail-value">{{ $employee->department ?? '-' }}</span></div>

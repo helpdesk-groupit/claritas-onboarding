@@ -26,6 +26,7 @@ class SecureFileController extends Controller
         'invoices' => ['hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
         'rental_contracts' => ['hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
         'claim_receipts' => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
+        'claim_supporting' => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
         // ticket_attachments is intentionally not listed here — it follows
         // ticket-level access (creator / assignee / dept manager / sysadmin),
         // not directory roles, since work-role-gated dept managers (Tech,
@@ -88,6 +89,15 @@ class SecureFileController extends Controller
         // DIRECTORY_PERMISSIONS. Mirrors TicketController::authorizeView().
         if ($directory === 'ticket_attachments') {
             return $this->canAccessTicketFile($user, $path);
+        }
+
+        // Expense-claim receipts/supporting docs follow CLAIM-level access (owner, HR, the
+        // claim's approving manager, or an item approver) — not just directory-level roles,
+        // because work-role-gated managers (e.g. IT/Group managers) who legitimately review a
+        // team claim carry users.role='employee'/'it_manager' and aren't in DIRECTORY_PERMISSIONS.
+        // Mirrors ExpenseClaimController::authorizeReview() + owner check.
+        if ($directory === 'claim_receipts' || $directory === 'claim_supporting') {
+            return $this->canAccessClaimFile($user, $path);
         }
 
         $permissions = self::DIRECTORY_PERMISSIONS[$directory] ?? null;
@@ -156,6 +166,60 @@ class SecureFileController extends Controller
     }
 
     /**
+     * Decide if $user can read an expense-claim receipt/supporting file at $path.
+     *
+     * Same access set as ExpenseClaimController::viewReceipt()/authorizeReview():
+     *   - superadmin / system_admin / HR (canViewAllClaims) — all claims
+     *   - the claim owner
+     *   - the claim's approving manager, or any item's approver
+     *   - the employee's reporting manager
+     */
+    private function canAccessClaimFile($user, string $path): bool
+    {
+        if ($user->role === 'superadmin' || $user->role === 'system_admin') {
+            return true;
+        }
+        if (method_exists($user, 'canViewAllClaims') && $user->canViewAllClaims()) {
+            return true;
+        }
+
+        $item = \App\Models\ExpenseClaimItem::where(function ($q) use ($path) {
+            $q->where('receipt_path', $path)
+                ->orWhereJsonContains('receipt_paths', $path)
+                ->orWhereJsonContains('supporting_paths', $path);
+        })->with('claim.employee')->first();
+
+        if (! $item || ! $item->claim) {
+            return false;
+        }
+
+        $emp = $user->employee;
+        if (! $emp) {
+            return false;
+        }
+        $claim = $item->claim;
+
+        // Owner of the claim.
+        if ((int) $claim->employee_id === (int) $emp->id) {
+            return true;
+        }
+        // The approving manager for the whole claim.
+        if ((int) $claim->manager_id === (int) $emp->id) {
+            return true;
+        }
+        // The employee's reporting manager.
+        if ($claim->employee && (int) $claim->employee->manager_id === (int) $emp->id) {
+            return true;
+        }
+        // A manager any item on the claim was routed to for approval (covers legacy split data).
+        if ($claim->items()->where('approver_id', $emp->id)->exists()) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
      * Determine if a file belongs to the authenticated user's employee record.
      */
     private function isOwnFile($user, string $path): bool
@@ -193,9 +257,13 @@ class SecureFileController extends Controller
             }
         }
 
-        // Check expense-claim receipt files (claim_receipts/{employee}/{Y-m}/…).
-        // Owned when the receipt belongs to an item on one of the employee's own claims.
-        if (\App\Models\ExpenseClaimItem::where('receipt_path', $path)
+        // Check expense-claim receipt + supporting files (claim_receipts / claim_supporting).
+        // Owned when the file belongs to an item on one of the employee's own claims.
+        if (\App\Models\ExpenseClaimItem::where(function ($q) use ($path) {
+            $q->where('receipt_path', $path)
+                ->orWhereJsonContains('receipt_paths', $path)
+                ->orWhereJsonContains('supporting_paths', $path);
+        })
             ->whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id))
             ->exists()) {
             return true;

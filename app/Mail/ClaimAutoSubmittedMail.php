@@ -10,33 +10,35 @@ use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
-class ClaimSubmittedMail extends Mailable
+/**
+ * Sent to the EMPLOYEE when the monthly cutoff sweep (claims:auto-submit) submits a draft
+ * they left unsubmitted — so they know it has gone to their approver, not vanished.
+ */
+class ClaimAutoSubmittedMail extends Mailable
 {
     use Queueable, SerializesModels;
 
     public function __construct(
         public ExpenseClaim $claim,
         public Employee $employee,
-        public string $recipientType,
+        public ?string $managerName = null,
+        public int $cutoffDay = 20,
     ) {}
 
     public function envelope(): Envelope
     {
-        $name = $this->employee->preferred_name ?? $this->employee->full_name;
         $label = $this->claim->subjectLabel();
-        $subject = $this->recipientType === 'manager'
-            ? "Expense Claim Pending Approval: {$name} — {$label}"
-            : "Expense Claim Submitted for HR Review: {$name} — {$label}";
 
-        return new Envelope(subject: $subject);
+        return new Envelope(subject: "Your expense claim was auto-submitted: {$label}");
     }
 
     public function content(): Content
     {
-        return new Content(view: 'emails.claim-submitted', with: [
+        return new Content(view: 'emails.claim-auto-submitted', with: [
             'claim' => $this->claim,
             'employee' => $this->employee,
-            'recipientType' => $this->recipientType,
+            'managerName' => $this->managerName,
+            'cutoffDay' => $this->cutoffDay,
         ]);
     }
 }

@@ -22,9 +22,10 @@ class ClaimApprovedMail extends Mailable
 
     public function envelope(): Envelope
     {
-        $period = \Carbon\Carbon::create($this->claim->year, $this->claim->month)->format('F Y');
+        $label = $this->claim->subjectLabel();
         $by = $this->approverType === 'manager' ? 'Manager' : 'HR';
-        return new Envelope(subject: "Expense Claim Approved by {$by}: {$period}");
+
+        return new Envelope(subject: "Expense Claim Approved by {$by}: {$label}");
     }
 
     public function content(): Content

@@ -110,6 +110,14 @@ return [
         // Ollama host (when provider=ollama). Null = reuse the accounting
         // ollama_base_url, then default http://localhost:11434.
         'ollama_url' => env('CLAIMS_OCR_OLLAMA_URL'),
+        // Multi-receipt scan: max transactions read from ONE image (a long bank/toll
+        // statement is split into this many rows at most). The review table flags a
+        // "truncated" result so nothing is silently dropped. Raise for very long
+        // statements at the cost of accuracy + tokens; split/crop is the alternative.
+        'max_items' => (int) env('CLAIMS_OCR_MAX_ITEMS', 40),
+        // Output token budget for the multi-item scan; must be generous enough to fit
+        // max_items objects of JSON. ~100 tokens/row is a safe rule of thumb.
+        'max_tokens' => (int) env('CLAIMS_OCR_MAX_TOKENS', 4096),
     ],
 
     /*

@@ -30,6 +30,8 @@
                     if (d.receipt) {
                         if (d.receipt.disabled) html += chip(false, 'Receipt OCR is off');
                         else if (!d.receipt.ok) html += chip(false, 'Receipt unreadable — check manually');
+                        else if (d.receipt.reason === 'fixed') html += chip(true, 'Fixed subsidy ' + money(d.receipt.claimed) + ' (receipt ' + money(d.receipt.receipt_amount) + ')');
+                        else if (d.receipt.reason === 'capped') html += chip(true, 'Capped to allowance ' + money(d.receipt.claimed) + ' (receipt ' + money(d.receipt.receipt_amount) + ')');
                         else if (d.receipt.match) html += chip(true, 'Receipt ' + money(d.receipt.receipt_amount) + ' matches');
                         else html += chip(false, 'Receipt ' + money(d.receipt.receipt_amount) + ' ≠ claimed ' + money(d.receipt.claimed));
                     }

@@ -11,8 +11,8 @@ class ExpenseClaimItem extends Model
     protected $fillable = [
         'expense_claim_id', 'expense_category_id', 'expense_date',
         'description', 'project_client', 'amount', 'quantity', 'unit', 'rate_applied',
-        'gst_amount', 'total_with_gst', 'receipt_path', 'receipt_hash', 'is_locked', 'remarks',
-        'review_status', 'mileage_destination', 'mileage_origin', 'approver_id', 'manager_status', 'manager_remarks',
+        'gst_amount', 'total_with_gst', 'receipt_path', 'receipt_paths', 'receipt_hash', 'supporting_paths', 'ocr_details', 'is_locked', 'remarks',
+        'review_status', 'mileage_destination', 'mileage_origin', 'approver_id', 'manager_status', 'manager_remarks', 'reject_comment',
     ];
 
     /** The manager assigned to approve this specific item (per-item routing). */
@@ -156,9 +156,26 @@ class ExpenseClaimItem extends Model
     /** @return array{message:string, item_id:int}|null */
     public function duplicateFlag(): ?array
     {
+        // Claims that should NEVER count as a duplicate source:
+        //  - dead claims (rejected/cancelled): void, not real spend; a correction
+        //    copies the original's receipt_hash + line data, so the rejected
+        //    original would otherwise raise a false "same receipt" flag (#12a).
+        //  - this item's own correction lineage (the report it corrects, plus any
+        //    sibling corrections of the same original).
+        $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
+        $lineageClaimIds = $this->correctionLineageClaimIds();
+
+        $excludeDead = function ($q) use ($deadStatuses, $lineageClaimIds) {
+            $q->whereNotIn('status', $deadStatuses);
+            if (! empty($lineageClaimIds)) {
+                $q->whereNotIn('id', $lineageClaimIds);
+            }
+        };
+
         if ($this->receipt_hash) {
             $dupReceipt = static::where('receipt_hash', $this->receipt_hash)
                 ->where('id', '!=', $this->id)
+                ->whereHas('claim', $excludeDead)
                 ->with('claim')
                 ->first();
             if ($dupReceipt) {
@@ -172,7 +189,10 @@ class ExpenseClaimItem extends Model
                 ->where('expense_date', $this->expense_date)
                 ->where('amount', $this->amount)
                 ->where('description', $this->description)
-                ->whereHas('claim', fn ($q) => $q->where('employee_id', $employeeId))
+                ->whereHas('claim', function ($q) use ($employeeId, $excludeDead) {
+                    $q->where('employee_id', $employeeId);
+                    $excludeDead($q);
+                })
                 ->with('claim')
                 ->first();
             if ($dupLine) {
@@ -183,6 +203,49 @@ class ExpenseClaimItem extends Model
         return null;
     }
 
+    /**
+     * Claim ids in this item's correction lineage — the original report this claim
+     * corrects (walking up correction_of_id), plus every correction that descends
+     * from the same root. Used to keep dedup from flagging a claim against the very
+     * report it supersedes.
+     *
+     * @return int[]
+     */
+    protected function correctionLineageClaimIds(): array
+    {
+        $claim = $this->claim;
+        if (! $claim) {
+            return [];
+        }
+
+        // Walk up to the root of the correction chain.
+        $root = $claim;
+        $guard = 0;
+        while ($root->correction_of_id && $guard++ < 20) {
+            $parent = ExpenseClaim::find($root->correction_of_id);
+            if (! $parent) {
+                break;
+            }
+            $root = $parent;
+        }
+
+        // Collect the root and all descendants (corrections of corrections).
+        $ids = [$root->id];
+        $frontier = [$root->id];
+        $guard = 0;
+        while (! empty($frontier) && $guard++ < 50) {
+            $children = ExpenseClaim::whereIn('correction_of_id', $frontier)->pluck('id')->all();
+            $children = array_values(array_diff($children, $ids));
+            if (empty($children)) {
+                break;
+            }
+            $ids = array_merge($ids, $children);
+            $frontier = $children;
+        }
+
+        return $ids;
+    }
+
     protected $casts = [
         'expense_date' => 'date',
         'amount' => 'decimal:2',
@@ -191,6 +254,9 @@ class ExpenseClaimItem extends Model
         'gst_amount' => 'decimal:2',
         'total_with_gst' => 'decimal:2',
         'is_locked' => 'boolean',
+        'receipt_paths' => 'array',
+        'supporting_paths' => 'array',
+        'ocr_details' => 'array',
     ];
 
     public function claim(): BelongsTo
@@ -201,5 +267,21 @@ class ExpenseClaimItem extends Model
     public function category(): BelongsTo
     {
         return $this->belongsTo(ExpenseCategory::class, 'expense_category_id');
+    }
+
+    public function attachmentPaths(): array
+    {
+        $paths = array_filter((array) $this->receipt_paths);
+        if ($this->receipt_path) {
+            array_unshift($paths, $this->receipt_path);
+        }
+
+        return array_values(array_unique($paths));
+    }
+
+    /** Optional, non-receipt supporting documents attached to this item. */
+    public function supportingPaths(): array
+    {
+        return array_values(array_filter((array) $this->supporting_paths));
     }
 }

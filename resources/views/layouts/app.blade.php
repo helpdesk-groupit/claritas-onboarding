@@ -371,7 +371,7 @@
             </a>
         </div>
         @endif
-        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
                class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
@@ -413,18 +413,12 @@
                 <i class="bi bi-receipt-cutoff"></i> My Claims
             </a>
         </div>
-        <div class="nav-item">
-            <a href="{{ route('user.claims.reports') }}"
-               class="nav-link {{ request()->routeIs('user.claims.reports') || request()->routeIs('user.claims.report-print') ? 'active' : '' }}">
-                <i class="bi bi-file-earmark-text"></i> Claim Reports
-            </a>
-        </div>
-        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
         <div class="nav-item">
             <a href="{{ route('user.claims.team') }}"
                class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
                 <i class="bi bi-people"></i> Team Claims
-                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'submitted')->count(); @endphp
+                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
                 @if($__pendingTeamClaims > 0)
                 <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
                 @endif
@@ -604,7 +598,7 @@
             </a>
         </div>
         @endif
-        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
                class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
@@ -646,18 +640,12 @@
                 <i class="bi bi-receipt-cutoff"></i> My Claims
             </a>
         </div>
-        <div class="nav-item">
-            <a href="{{ route('user.claims.reports') }}"
-               class="nav-link {{ request()->routeIs('user.claims.reports') || request()->routeIs('user.claims.report-print') ? 'active' : '' }}">
-                <i class="bi bi-file-earmark-text"></i> Claim Reports
-            </a>
-        </div>
-        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
         <div class="nav-item">
             <a href="{{ route('user.claims.team') }}"
                class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
                 <i class="bi bi-people"></i> Team Claims
-                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'submitted')->count(); @endphp
+                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
                 @if($__pendingTeamClaims > 0)
                 <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
                 @endif
@@ -767,7 +755,7 @@
             </a>
         </div>
         @endif
-        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
                class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
@@ -809,18 +797,12 @@
                 <i class="bi bi-receipt-cutoff"></i> My Claims
             </a>
         </div>
-        <div class="nav-item">
-            <a href="{{ route('user.claims.reports') }}"
-               class="nav-link {{ request()->routeIs('user.claims.reports') || request()->routeIs('user.claims.report-print') ? 'active' : '' }}">
-                <i class="bi bi-file-earmark-text"></i> Claim Reports
-            </a>
-        </div>
-        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
         <div class="nav-item">
             <a href="{{ route('user.claims.team') }}"
                class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
                 <i class="bi bi-people"></i> Team Claims
-                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'submitted')->count(); @endphp
+                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
                 @if($__pendingTeamClaims > 0)
                 <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
                 @endif
@@ -891,7 +873,7 @@
             </a>
         </div>
         @endif
-        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
                class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
@@ -933,18 +915,12 @@
                 <i class="bi bi-receipt-cutoff"></i> My Claims
             </a>
         </div>
-        <div class="nav-item">
-            <a href="{{ route('user.claims.reports') }}"
-               class="nav-link {{ request()->routeIs('user.claims.reports') || request()->routeIs('user.claims.report-print') ? 'active' : '' }}">
-                <i class="bi bi-file-earmark-text"></i> Claim Reports
-            </a>
-        </div>
-        @if(Auth::user()->employee && \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists())
+        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
         <div class="nav-item">
             <a href="{{ route('user.claims.team') }}"
                class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
                 <i class="bi bi-people"></i> Team Claims
-                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'submitted')->count(); @endphp
+                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
                 @if($__pendingTeamClaims > 0)
                 <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
                 @endif

@@ -5,11 +5,13 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\UniqueConstraintViolationException;
+use Illuminate\Support\Facades\DB;
 
 class ExpenseClaim extends Model
 {
     protected $fillable = [
-        'employee_id', 'claim_number', 'title', 'event', 'year', 'month',
+        'employee_id', 'claim_number', 'title', 'event', 'event_date', 'project_client', 'year', 'month',
         'total_amount', 'total_gst', 'total_with_gst', 'item_count',
         'status', 'submitted_at', 'submission_deadline',
         'manager_id', 'manager_approved_by', 'manager_approved_at', 'manager_remarks',
@@ -23,6 +25,7 @@ class ExpenseClaim extends Model
         'total_gst' => 'decimal:2',
         'total_with_gst' => 'decimal:2',
         'submitted_at' => 'datetime',
+        'event_date' => 'date',
         'submission_deadline' => 'date',
         'manager_approved_at' => 'datetime',
         'hr_approved_at' => 'datetime',
@@ -60,6 +63,18 @@ class ExpenseClaim extends Model
     public function correctionOf(): BelongsTo
     {
         return $this->belongsTo(self::class, 'correction_of_id');
+    }
+
+    /** Correction claim(s) filed against this (rejected) claim. */
+    public function corrections(): HasMany
+    {
+        return $this->hasMany(self::class, 'correction_of_id');
+    }
+
+    /** True once a correction has already been filed for this rejected claim (only one allowed). */
+    public function hasCorrection(): bool
+    {
+        return $this->corrections()->exists();
     }
 
     public function items(): HasMany
@@ -201,16 +216,29 @@ class ExpenseClaim extends Model
     /** True when the employee may file a correction of this rejected claim. */
     public function canCorrect(): bool
     {
-        // Manager rejection → correct immediately. HR rejection → only after the manager
-        // has released it back to the employee.
-        return $this->status === 'manager_rejected'
-            || ($this->status === 'hr_rejected' && $this->released_at !== null);
+        // Either rejection (manager OR HR) is correctable immediately — there is no manager
+        // "release" gate on HR rejections anymore. But only ONE correction is allowed per
+        // rejected report, so once a correction exists this returns false. Corrections are
+        // also only allowed until the END OF THE CLAIM'S YEAR — after 31 Dec of that year the
+        // window is closed for good (see correctionWindowClosed()).
+        return in_array($this->status, ['manager_rejected', 'hr_rejected'], true)
+            && ! $this->hasCorrection()
+            && ! $this->correctionWindowClosed();
     }
 
-    /** HR-rejected and still waiting for the approving manager to release it. */
-    public function awaitingRelease(): bool
+    /**
+     * A rejected claim may only be corrected up to the end of its claim year. Once the
+     * calendar year has rolled past the claim's reporting year, the correction window is
+     * permanently closed. Falls back to the created-at year when the stamp is missing.
+     */
+    public function correctionWindowClosed(): bool
     {
-        return $this->status === 'hr_rejected' && $this->released_at === null;
+        $claimYear = (int) ($this->year ?: optional($this->created_at)->year);
+        if ($claimYear === 0) {
+            return false; // no usable year — don't block.
+        }
+
+        return now()->year > $claimYear;
     }
 
     /**
@@ -247,6 +275,38 @@ class ExpenseClaim extends Model
         return trim($raw).'.pdf';
     }
 
+    /** Human month-year for this claim's reporting period, e.g. "June 2026". */
+    public function periodLabel(): string
+    {
+        return \Carbon\Carbon::create($this->year, $this->month)->format('F Y');
+    }
+
+    /**
+     * The claim's event/purpose, or null when it's a plain "General Claim" (or empty)
+     * — those have no meaningful event to show.
+     */
+    public function eventName(): ?string
+    {
+        $event = trim((string) $this->event);
+        if ($event === '' || preg_match('/^general claim/i', $event)) {
+            return null;
+        }
+
+        return $event;
+    }
+
+    /**
+     * Event + period label for emails/subjects, e.g. "Sales Trip — June 2026" or just
+     * "June 2026" when there's no specific event. Keeps every claim notification
+     * identifiable now that an employee can file several claims in one month (#5/#6).
+     */
+    public function subjectLabel(): string
+    {
+        $event = $this->eventName();
+
+        return $event ? "{$event} — {$this->periodLabel()}" : $this->periodLabel();
+    }
+
     /**
      * @return array{class: string, label: string}
      */
@@ -279,17 +339,92 @@ class ExpenseClaim extends Model
     }
 
     /**
+     * Two-stage pipeline badges (Manager stage + HR stage) for the My Claims list, so each
+     * claim shows where it sits in BOTH approvals at a glance — e.g. a submitted claim reads
+     * "Pending Manager" + "Pending HR"; a manager-approved one reads "Manager Approved" +
+     * "Pending HR". Returns a list of ['label' => ..., 'class' => ...] (bootstrap colour).
+     * A draft/cancelled/manager-rejected claim has a single badge (no HR stage to show).
+     */
+    public function stageBadges(): array
+    {
+        if ($this->status === 'draft') {
+            return [['label' => 'Draft', 'class' => 'secondary']];
+        }
+        if ($this->status === 'cancelled') {
+            return [['label' => 'Cancelled', 'class' => 'dark']];
+        }
+        if ($this->status === 'manager_rejected') {
+            return [['label' => 'Manager Rejected', 'class' => 'danger']];
+        }
+
+        // Manager stage: only "submitted" is still waiting on the manager.
+        $manager = $this->status === 'submitted'
+            ? ['label' => 'Pending Manager', 'class' => 'warning']
+            : ['label' => 'Manager Approved', 'class' => 'success'];
+
+        // HR stage: resolved only at HR approve/reject; otherwise still pending.
+        $hr = match ($this->status) {
+            'hr_approved', 'paid' => ['label' => 'HR Approved', 'class' => 'success'],
+            'hr_rejected' => ['label' => 'HR Rejected', 'class' => 'danger'],
+            default => ['label' => 'Pending HR', 'class' => 'warning'], // submitted, manager_approved
+        };
+
+        return [$manager, $hr];
+    }
+
+    /**
      * Generate next claim number: EC-YYYY-MM-NNNN
      */
-    public static function generateClaimNumber(int $year, int $month): string
+    /**
+     * Compute the next claim number for a period (EC-YYYY-MM-NNNN). When $lock is true the
+     * range read takes a FOR UPDATE lock so concurrent allocations serialise — this MUST be
+     * called inside a transaction (see createWithClaimNumber / the controller's allocation
+     * paths). On MySQL's default REPEATABLE READ the gap lock on the unique-index range blocks
+     * a second creator from inserting the same number until the first commits.
+     */
+    public static function nextClaimNumber(int $year, int $month, bool $lock = false): string
     {
         $prefix = 'EC-'.$year.'-'.str_pad($month, 2, '0', STR_PAD_LEFT);
-        $last = static::where('claim_number', 'like', $prefix.'-%')
-            ->orderByDesc('claim_number')
-            ->value('claim_number');
-
+        $query = static::where('claim_number', 'like', $prefix.'-%')->orderByDesc('claim_number');
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+        $last = $query->value('claim_number');
         $seq = $last ? ((int) substr($last, -4)) + 1 : 1;
 
         return $prefix.'-'.str_pad($seq, 4, '0', STR_PAD_LEFT);
+    }
+
+    /** Backwards-compatible alias — UNLOCKED read (not concurrency-safe; prefer createWithClaimNumber). */
+    public static function generateClaimNumber(int $year, int $month): string
+    {
+        return static::nextClaimNumber($year, $month, false);
+    }
+
+    /**
+     * Concurrency-safe claim creation: allocates the claim number under a row lock and inserts
+     * it in one transaction, retrying if a racing creator beat us to the number (belt-and-
+     * suspenders for non-gap-locking isolation levels). $attributes must include year + month;
+     * any caller-supplied claim_number is ignored — it is always allocated here.
+     */
+    public static function createWithClaimNumber(array $attributes): self
+    {
+        $year = (int) $attributes['year'];
+        $month = (int) $attributes['month'];
+        unset($attributes['claim_number']);
+
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            try {
+                return DB::transaction(function () use ($attributes, $year, $month) {
+                    $attributes['claim_number'] = static::nextClaimNumber($year, $month, true);
+
+                    return static::create($attributes);
+                });
+            } catch (UniqueConstraintViolationException $e) {
+                usleep(random_int(5_000, 25_000)); // lost the race — brief jittered backoff, then retry
+            }
+        }
+
+        throw new \RuntimeException('Could not allocate a unique claim number after multiple attempts.');
     }
 }

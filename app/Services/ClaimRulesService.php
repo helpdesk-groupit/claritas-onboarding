@@ -56,6 +56,26 @@ class ClaimRulesService
             ->get(['id', 'full_name', 'department']);
     }
 
+    /**
+     * Everyone who can be picked to APPROVE/sign a claim — ANY currently-employed person,
+     * not just managers and not gated on having a login, because a manager may delegate the
+     * sign-off to a representative/colleague. Scoped to $company when given (the form's
+     * company selector narrows it); null = all companies (for cross-company events).
+     *
+     * NB: an approver still needs an active login to actually act on Team Claims — those
+     * without one are flagged via has_login so the UI can warn.
+     */
+    public static function signableApprovers(?string $company = null): Collection
+    {
+        return Employee::query()
+            ->whereNull('active_until')
+            ->when(! empty($company), fn ($q) => $q->where('company', $company))
+            ->select(['id', 'full_name', 'preferred_name', 'department', 'company'])
+            ->withExists(['user as has_login' => fn ($q) => $q->where('is_active', true)])
+            ->orderBy('full_name')
+            ->get();
+    }
+
     /** The employee's reporting manager id, but only if they can actually approve. */
     public static function defaultApproverId(Employee $employee): ?int
     {
@@ -70,8 +90,20 @@ class ClaimRulesService
     /** Is the employee an intern or still on probation? */
     public static function isInternOrProbationer(Employee $employee): bool
     {
+        // Employment type from the work record (e.g. "Intern", "Internship").
         $type = strtolower((string) $employee->employment_type);
         if (in_array($type, array_map('strtolower', config('claims.intern_employment_types', ['intern'])), true)) {
+            return true;
+        }
+
+        // Designation that names an intern role — covers "Intern", "IT Intern", etc., which
+        // is how interns are usually recorded even when employment_type isn't set.
+        if (str_contains(strtolower((string) $employee->designation), 'intern')) {
+            return true;
+        }
+
+        // System role: any *_intern role (it_intern, hr_intern, …) on the linked account.
+        if (str_contains(strtolower((string) ($employee->user?->role ?? '')), 'intern')) {
             return true;
         }
 
@@ -115,6 +147,7 @@ class ClaimRulesService
             'per_km' => $qty === null ? null : round($qty * self::mileageRate($input['vehicle'] ?? 'car'), 2),
             'per_day' => $qty === null ? null : round($qty * (float) ($category->rate_amount ?? 0), 2),
             'per_hour' => $qty === null ? null : self::otBandAmount($qty),
+            'fixed' => round((float) ($category->rate_amount ?? 0), 2), // flat subsidy (e.g. season parking RM80)
             default => null,
         };
     }
@@ -196,7 +229,9 @@ class ClaimRulesService
             $query->whereMonth('expense_date', $date->month);
         }
 
-        return (float) $query->sum('amount');
+        // Cap is measured on the CLAIMABLE total (incl. SST), so the allowance covers what
+        // the company actually pays out, not just the pre-SST base.
+        return (float) $query->sum('total_with_gst');
     }
 
     /**

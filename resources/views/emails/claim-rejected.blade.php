@@ -56,8 +56,8 @@
     @else
     <p style="color:#475569;font-size:15px;line-height:1.6;">
       Your claim <strong>{{ $claim->claim_number }}</strong> ({{ $claim->event ?: $period }}) was rejected by HR.
-      It has been sent to your approving manager for review &mdash; <strong>please wait</strong>; you'll be notified
-      when they release it and you can make a correction.
+      You can <strong>make a correction now</strong> &mdash; a new report opens pre-filled so you can fix the issue
+      and resubmit. Your approving manager has been notified.
     </p>
     @endif
 
@@ -80,7 +80,7 @@
     @endif
 
     <p style="text-align:center;">
-      <a href="{{ route('login') }}" class="btn">{{ $rejectorType === 'hr' ? 'View claim →' : 'Make correction →' }}</a>
+      <a href="{{ route('login') }}" class="btn">Make correction →</a>
     </p>
   </div>
 

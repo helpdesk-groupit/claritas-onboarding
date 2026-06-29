@@ -8,6 +8,9 @@ Schedule::command('security:audit-report')->hourly();
 Schedule::command('leave:remind-managers')->dailyAt('09:00');
 Schedule::command('claims:remind')->dailyAt('09:00');
 Schedule::command('claims:remind-approvers')->dailyAt('09:00');
+// Safety net: on the monthly submission cutoff (e.g. the 20th), auto-submit every complete
+// draft still left unsubmitted. Self-gates to the cutoff day; runs late so same-day edits land.
+Schedule::command('claims:auto-submit')->dailyAt('23:30');
 // Birthdays: check every minute so candidates activated mid-day (e.g. a
 // rehire, or an employee whose start_date lands on their birthday) get the
 // e-card almost immediately. Idempotent via employees.birthday_email_sent_year

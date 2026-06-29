@@ -165,7 +165,9 @@ class User extends Authenticatable
 
     public function canManageClaims(): bool
     {
-        return in_array($this->role, ['hr_manager', 'superadmin', 'system_admin']);
+        // In the eClaim module, HR Executive has the same control as HR Manager
+        // (approve/reject, manage categories, view & edit policy).
+        return in_array($this->role, ['hr_manager', 'hr_executive', 'superadmin', 'system_admin']);
     }
 
     public function employee() { return $this->hasOne(Employee::class)->whereNull('active_until'); }

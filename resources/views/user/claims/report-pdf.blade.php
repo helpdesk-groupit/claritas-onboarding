@@ -13,7 +13,27 @@
     $appr = ($approver ?? null) ?? $claim->managerApprover ?? $claim->manager ?? null;
     $mgrDone = $claim->manager_approved_at && in_array($claim->status, ['manager_approved','hr_approved','paid']);
     $hrDone = $claim->hr_approved_at && in_array($claim->status, ['hr_approved','paid']);
+    $apprDetails = collect([$appr?->designation, $appr?->department, $appr?->company])->filter()->implode(' · ');
+    $hrAppr = $claim->hrApprover ?? null; $hrEmp = $hrAppr?->employee ?? null;
+    $hrName = $hrEmp?->full_name ?? $hrAppr?->name;
+    $hrDetails = collect([$hrEmp?->designation, $hrEmp?->department, $hrEmp?->company])->filter()->implode(' · ');
     $imageExt = ['jpg','jpeg','png','gif','webp'];
+    // Group items sharing one attachment (same content hash) so a split statement embeds its
+    // image ONCE with a summed total, instead of repeating the whole image on every row.
+    $attGroups = [];
+    foreach ($items as $gi) { $gk = $gi->receipt_hash ?: ('solo-'.$gi->id); $attGroups[$gk][] = $gi; }
+    // Keep each group's rows contiguous (by date), groups ordered by earliest date, so a
+    // statement's rows + its single attachment stay together (not interleaved by global date).
+    $orderedGroups = collect($attGroups)
+        ->map(fn ($g) => collect($g)->sortBy(fn ($x) => $x->expense_date?->timestamp ?? 0)->values())
+        ->sortBy(fn ($g) => $g->first()->expense_date?->timestamp ?? 0)
+        ->values();
+    $orderedItems = $orderedGroups->flatMap(fn ($g) => $g)->values();
+    $groupLastId = [];
+    foreach ($orderedGroups as $g) {
+        $gk = $g->first()->receipt_hash ?: ('solo-'.$g->first()->id);
+        $groupLastId[$gk] = $g->last()->id;
+    }
 @endphp
 <!DOCTYPE html>
 <html>
@@ -81,7 +101,13 @@
             </tr>
         </thead>
         <tbody>
-            @foreach($items as $item)
+            @foreach($orderedItems as $item)
+            @php
+                $gk = $item->receipt_hash ?: ('solo-'.$item->id);
+                $grp = $attGroups[$gk];
+                $shared = count($grp) > 1;
+                $oc = $item->ocr_details;
+            @endphp
             <tr>
                 <td class="c">{{ $item->expense_date->format('d/m/Y') }}</td>
                 <td>{{ $item->description }}</td>
@@ -91,13 +117,101 @@
                 <td class="r">{{ $item->gst_amount > 0 ? 'RM'.number_format($item->gst_amount, 2) : '-' }}</td>
                 <td class="r">RM{{ number_format($item->total_with_gst, 2) }}</td>
             </tr>
+            @if($shared)
+                {{-- Shared statement → embed the image ONCE with a summed total, after the last row. --}}
+                @if($groupLastId[$gk] === $item->id)
+                @php
+                    $g0 = $grp[0]; $gAtts = $g0->attachmentPaths(); $gOc = $g0->ocr_details;
+                    $gCount = count($grp); $gSum = collect($grp)->sum('total_with_gst');
+                    $gAmt = collect($grp)->sum('amount'); $gGst = collect($grp)->sum('gst_amount');
+                    $gDatesC = collect($grp)->map(fn ($x) => $x->expense_date)->filter();
+                    $gMin = $gDatesC->min(); $gMax = $gDatesC->max();
+                    $gDateLabel = ($gMin && $gMax && $gMin->format('Y-m-d') !== $gMax->format('Y-m-d')) ? $gMin->format('j M Y').' – '.$gMax->format('j M Y') : ($gMin?->format('j M Y') ?? '—');
+                @endphp
+                {{-- Subtotal for this bulk attachment (sum of its rows). --}}
+                <tr style="background:#f1f5f9;font-weight:bold;">
+                    <td colspan="4" class="r">Subtotal — {{ $gCount }} transactions</td>
+                    <td class="r">RM{{ number_format($gAmt, 2) }}</td>
+                    <td class="r">{{ $gGst > 0 ? 'RM'.number_format($gGst, 2) : '-' }}</td>
+                    <td class="r">RM{{ number_format($gSum, 2) }}</td>
+                </tr>
+                <tr><td colspan="7" style="background:#fafafa;padding:6px 8px;">
+                    <table style="width:100%;border:0;border-collapse:collapse;"><tr style="border:0;">
+                        <td style="width:62%;vertical-align:top;border:0;padding:0 8px 0 0;">
+                            @if(count($gAtts) > 0)
+                            <div class="muted" style="margin-bottom:3px;">Attachment for {{ $gCount }} transactions ({{ strtoupper($item->category->name ?? '') }})</div>
+                            @foreach($gAtts as $attachment)
+                            @php $aext = strtolower(pathinfo($attachment, PATHINFO_EXTENSION)); $adata = in_array($aext, $imageExt) ? $imgData('local', $attachment) : null; @endphp
+                            @if($adata)<img src="{{ $adata }}" style="max-width:100%;max-height:480px;display:block;margin:3px 0;">@else<div class="muted">Attachment: {{ strtoupper($aext) }} file (not embeddable in this PDF).</div>@endif
+                            @endforeach
+                            @else<div class="muted">No attachment.</div>@endif
+                            @php $gSupp = collect($grp)->flatMap(fn ($x) => $x->supportingPaths())->unique()->values(); @endphp
+                            @if($gSupp->count() > 0)
+                            <div class="muted" style="margin:6px 0 3px;">Supporting documents</div>
+                            @foreach($gSupp as $sp)
+                            @php $sext = strtolower(pathinfo($sp, PATHINFO_EXTENSION)); $sdata = in_array($sext, $imageExt) ? $imgData('local', $sp) : null; @endphp
+                            @if($sdata)<img src="{{ $sdata }}" style="max-width:100%;max-height:300px;display:block;margin:3px 0;">@else<div class="muted">Supporting: {{ strtoupper($sext) }} file (not embeddable).</div>@endif
+                            @endforeach
+                            @endif
+                        </td>
+                        <td style="width:38%;vertical-align:top;border:0;padding:0;">
+                            <div style="font-weight:bold;text-transform:uppercase;margin-bottom:3px;color:#475569;">Receipt details</div>
+                            <div><strong>Company:</strong> {{ $gOc['company'] ?? '—' }}</div>
+                            <div><strong>Item:</strong> {{ $gCount }} transactions
+                                @foreach($grp as $gItem)
+                                <div style="margin-left:8px;">• {{ $gItem->ocr_details['item_description'] ?? $gItem->description }} (RM{{ number_format($gItem->amount, 2) }})</div>
+                                @endforeach
+                            </div>
+                            <div><strong>Date:</strong> {{ $gDateLabel }}</div>
+                            <div><strong>Who paid:</strong> {{ $gOc['paid_by'] ?? '—' }}</div>
+                            <div><strong>Total paid:</strong> RM {{ number_format($gSum, 2) }} (sum of {{ $gCount }})</div>
+                        </td>
+                    </tr></table>
+                </td></tr>
+                @endif
+            @else
+                {{-- Solo item → its own attachment + receipt details below it (unchanged). --}}
+                @php $atts = $item->attachmentPaths(); $supp = $item->supportingPaths(); @endphp
+                @if(count($atts) > 0 || ! empty($oc) || count($supp) > 0)
+                <tr><td colspan="7" style="background:#fafafa;padding:6px 8px;">
+                    <table style="width:100%;border:0;border-collapse:collapse;"><tr style="border:0;">
+                        <td style="width:62%;vertical-align:top;border:0;padding:0 8px 0 0;">
+                            @if(count($atts) > 0)
+                            <div class="muted" style="margin-bottom:3px;">Attachment for: {{ $item->description }}</div>
+                            @foreach($atts as $attachment)
+                            @php $aext = strtolower(pathinfo($attachment, PATHINFO_EXTENSION)); $adata = in_array($aext, $imageExt) ? $imgData('local', $attachment) : null; @endphp
+                            @if($adata)<img src="{{ $adata }}" style="max-width:100%;max-height:420px;display:block;margin:3px 0;">@else<div class="muted">Attachment: {{ strtoupper($aext) }} file (not embeddable in this PDF).</div>@endif
+                            @endforeach
+                            @else
+                            <div class="muted">No attachment.</div>
+                            @endif
+                            @if(count($supp) > 0)
+                            <div class="muted" style="margin:6px 0 3px;">Supporting documents</div>
+                            @foreach($supp as $sp)
+                            @php $sext = strtolower(pathinfo($sp, PATHINFO_EXTENSION)); $sdata = in_array($sext, $imageExt) ? $imgData('local', $sp) : null; @endphp
+                            @if($sdata)<img src="{{ $sdata }}" style="max-width:100%;max-height:300px;display:block;margin:3px 0;">@else<div class="muted">Supporting: {{ strtoupper($sext) }} file (not embeddable).</div>@endif
+                            @endforeach
+                            @endif
+                        </td>
+                        <td style="width:38%;vertical-align:top;border:0;padding:0;">
+                            @if(! empty($oc))
+                            <div style="font-weight:bold;text-transform:uppercase;margin-bottom:3px;color:#475569;">Receipt details</div>
+                            <div><strong>Company:</strong> {{ $oc['company'] ?? '—' }}</div>
+                            <div><strong>Item:</strong> {{ $oc['item_description'] ?? '—' }}</div>
+                            <div><strong>Date:</strong> {{ $oc['date'] ?? '—' }}</div>
+                            <div><strong>Who paid:</strong> {{ $oc['paid_by'] ?? '—' }}</div>
+                            <div><strong>Total paid:</strong> {{ isset($oc['total']) && $oc['total'] !== '' ? 'RM '.number_format((float) $oc['total'], 2) : '—' }}</div>
+                            @if(! empty($oc['calculation']))<div style="margin-top:2px;"><strong>Calculation:</strong> {{ $oc['calculation'] }}</div>@endif
+                            @endif
+                        </td>
+                    </tr></table>
+                </td></tr>
+                @endif
+            @endif
             @endforeach
-            @for($r = $items->count(); $r < 6; $r++)
-            <tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td class="r">-</td></tr>
-            @endfor
         </tbody>
         <tfoot>
-            <tr class="tot"><td colspan="4" class="r">TOTAL</td>
+            <tr class="tot"><td colspan="4" class="r">GRAND TOTAL</td>
                 <td class="r">{{ number_format($items->sum('amount'), 2) }}</td>
                 <td class="r">{{ number_format($items->sum('gst_amount'), 2) }}</td>
                 <td class="r">{{ number_format($items->sum('total_with_gst'), 2) }}</td>
@@ -109,38 +223,18 @@
     <table class="sign">
         <tr>
             <td>
-                <div><strong>Staff :-</strong> {{ $claim->employee->full_name }}</div>
-                <div>@if($claim->submitted_at)<span class="ok">Submitted electronically — {{ $claim->submitted_at->format('d/m/Y, g:ia') }}</span>@else<span class="muted">Not yet submitted</span>@endif</div>
-                <div style="margin-top:10px;"><strong>Approving Manager :-</strong> {{ $appr->full_name ?? '—' }}</div>
-                <div>@if($mgrDone)<span class="ok">Approved electronically — {{ $claim->manager_approved_at->format('d/m/Y, g:ia') }}</span>@elseif($claim->status==='manager_rejected')<span class="bad">Returned to staff</span>@else<span class="muted">Awaiting approval</span>@endif</div>
+                <div><strong>Approving Manager :-</strong> {{ $appr->full_name ?? '—' }}</div>
+                @if($apprDetails)<div class="muted">{{ $apprDetails }}</div>@endif
+                <div>@if($mgrDone)<span class="ok">Approved digitally — {{ $claim->manager_approved_at->format('d/m/Y, g:ia') }}</span>@elseif($claim->status==='manager_rejected')<span class="bad">Returned to staff</span>@else<span class="muted">Awaiting approval</span>@endif</div>
             </td>
             <td>
-                <div><strong>Checked by :-</strong> {{ optional($claim->hrApprover)->name ?? '(HR / Finance)' }}</div>
-                <div>@if($hrDone)<span class="ok">Approved electronically — {{ $claim->hr_approved_at->format('d/m/Y') }}</span>@elseif($claim->status==='hr_rejected')<span class="bad">Rejected</span>@else<span class="muted">Pending HR / Finance</span>@endif</div>
-                <div style="margin-top:10px;"><strong>Payment processed :-</strong></div>
-                <div>@if($claim->status==='paid')<span class="ok">Paid</span>@else<span class="muted">Pending payment</span>@endif</div>
+                <div><strong>Checked by :-</strong> {{ $hrDone ? ($hrName ?? '(HR)') : '(HR)' }}</div>
+                @if($hrDone && $hrDetails)<div class="muted">{{ $hrDetails }}</div>@endif
+                <div>@if($hrDone)<span class="ok">Approved digitally — {{ $claim->hr_approved_at->format('d/m/Y, g:ia') }}</span>@elseif($claim->status==='hr_rejected')<span class="bad">Rejected</span>@else<span class="muted">Pending HR</span>@endif</div>
             </td>
         </tr>
     </table>
     <div class="note">Digitally approved — each sign-off is the recorded system action (name + timestamp), held in the claim's audit trail. No physical signature required.</div>
-
-    {{-- Supporting documents (image receipts embedded; PDF receipts noted) --}}
-    @php $withAtt = $items->filter(fn ($it) => $it->receipt_path); @endphp
-    @if($withAtt->count() > 0)
-    <div style="page-break-before: always;"></div>
-    <div class="att-title">Supporting Documents</div>
-    @foreach($items as $item)
-        @if($item->receipt_path)
-        @php
-            $ext = strtolower(pathinfo($item->receipt_path, PATHINFO_EXTENSION));
-            $data = in_array($ext, $imageExt) ? $imgData('local', $item->receipt_path) : null;
-        @endphp
-        <div class="att">
-            <div class="cap">{{ $loop->iteration }}. {{ $item->expense_date->format('jS M Y') }} — {{ $item->description }} (RM{{ number_format($item->total_with_gst, 2) }})</div>
-            @if($data)<img src="{{ $data }}">@else<div class="muted">Attachment: {{ strtoupper($ext) }} file — included with the claim, not embeddable in this PDF.</div>@endif
-        </div>
-        @endif
-    @endforeach
-    @endif
+    {{-- Attachments are shown inline under each item above (no separate section). --}}
 </body>
 </html>
