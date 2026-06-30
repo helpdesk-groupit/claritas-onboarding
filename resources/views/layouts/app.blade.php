@@ -371,12 +371,13 @@
             </a>
         </div>
         @endif
-        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
+        {{-- Team Leave is restricted to superadmin only (hidden from managers/approvers and all other staff). --}}
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
                class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
                 <i class="bi bi-people"></i> Team Leave
-                @php $__pendingTeam = \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count(); @endphp
+                @php $__pendingTeam = Auth::user()->employee ? \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count() : 0; @endphp
                 @if($__pendingTeam > 0)
                 <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
                 @endif
@@ -598,12 +599,13 @@
             </a>
         </div>
         @endif
-        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
+        {{-- Team Leave is restricted to superadmin only (hidden from managers/approvers and all other staff). --}}
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
                class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
                 <i class="bi bi-people"></i> Team Leave
-                @php $__pendingTeam = \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count(); @endphp
+                @php $__pendingTeam = Auth::user()->employee ? \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count() : 0; @endphp
                 @if($__pendingTeam > 0)
                 <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
                 @endif
@@ -755,12 +757,13 @@
             </a>
         </div>
         @endif
-        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
+        {{-- Team Leave is restricted to superadmin only (hidden from managers/approvers and all other staff). --}}
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
                class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
                 <i class="bi bi-people"></i> Team Leave
-                @php $__pendingTeam = \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count(); @endphp
+                @php $__pendingTeam = Auth::user()->employee ? \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count() : 0; @endphp
                 @if($__pendingTeam > 0)
                 <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
                 @endif
@@ -873,12 +876,13 @@
             </a>
         </div>
         @endif
-        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
+        {{-- Team Leave is restricted to superadmin only (hidden from managers/approvers and all other staff). --}}
+        @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.leave.team') }}"
                class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
                 <i class="bi bi-people"></i> Team Leave
-                @php $__pendingTeam = \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count(); @endphp
+                @php $__pendingTeam = Auth::user()->employee ? \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count() : 0; @endphp
                 @if($__pendingTeam > 0)
                 <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
                 @endif
