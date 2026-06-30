@@ -184,8 +184,8 @@
                                     <div class="acc-body month-body">
                                         @foreach($byPerson as $pid => $personClaims)
                                         @php $person = $personClaims->first()->employee; @endphp
-                                        <div class="acc-group emp-grp" data-default-open="1">
-                                            <button type="button" class="acc-head emp-head" data-bs-toggle="collapse" data-bs-target="#hrp-{{ $yr }}-{{ $mo }}-{{ $pid }}" aria-expanded="true">
+                                        <div class="acc-group emp-grp" data-default-open="0">
+                                            <button type="button" class="acc-head emp-head" data-bs-toggle="collapse" data-bs-target="#hrp-{{ $yr }}-{{ $mo }}-{{ $pid }}" aria-expanded="false">
                                                 <span class="acc-head-left">
                                                     <span class="acc-chip"><i class="bi bi-person-fill"></i></span>
                                                     <span><span class="acc-title">{{ $person->full_name ?? '—' }}</span><span class="acc-sub">{{ $person->department ?? '—' }} · {{ $personClaims->count() }} claim{{ $personClaims->count() === 1 ? '' : 's' }}</span><span class="acc-hint"></span></span>
@@ -195,17 +195,29 @@
                                                     <i class="bi bi-chevron-down acc-chev"></i>
                                                 </span>
                                             </button>
-                                            <div class="collapse show" id="hrp-{{ $yr }}-{{ $mo }}-{{ $pid }}">
+                                            <div class="collapse" id="hrp-{{ $yr }}-{{ $mo }}-{{ $pid }}">
                                                 <div class="acc-body emp-body">
                                                     @foreach($personClaims as $claim)
-                                                    @php $approvable = $claim->status === 'manager_approved'; @endphp
+                                                    @php
+                                                        $approvable = $claim->status === 'manager_approved';
+                                                        // Status-based report icon colour — same scheme as the My Claims page.
+                                                        $iconBg = match ($claim->status) {
+                                                            'submitted' => 'linear-gradient(135deg,#f59e0b,#d97706)',
+                                                            'manager_approved' => 'linear-gradient(135deg,#14b8a6,#0d9488)',
+                                                            'hr_approved', 'paid' => 'linear-gradient(135deg,#22c55e,#15803d)',
+                                                            'manager_rejected', 'hr_rejected' => 'linear-gradient(135deg,#ef4444,#b91c1c)',
+                                                            default => 'linear-gradient(135deg,#64748b,#475569)',
+                                                        };
+                                                    @endphp
                                                     <div class="claim-row claim-card-wrap"
                                                          data-status-group="{{ $hrGroup($claim->status) }}"
                                                          data-employee="{{ strtolower($person->full_name ?? '') }}"
                                                          data-event="{{ strtolower($claim->event ?: '') }}"
                                                          data-month="{{ sprintf('%04d-%02d', $claim->year, $claim->month) }}"
                                                          data-date="{{ $claim->submitted_at?->format('Y-m-d') ?? '' }}">
-                                                        <div>
+                                                        <div class="cr-left">
+                                                            <span class="report-icon" style="background:{{ $iconBg }};"><i class="bi bi-file-earmark-text"></i></span>
+                                                            <div>
                                                             <div class="ev-title">{{ trim((string) $claim->event) ?: 'Untitled event' }}</div>
                                                             <div class="ev-sub">{{ $claim->claim_number }} · {{ $claim->item_count }} item{{ $claim->item_count === 1 ? '' : 's' }} · Submitted {{ $claim->submitted_at?->format('d M Y') ?? '—' }}</div>
                                                             <div class="mt-1 d-inline-flex flex-wrap gap-1">
@@ -216,6 +228,7 @@
                                                                 <span class="badge bg-{{ $sb['class'] }} {{ $sb['class'] === 'warning' ? 'text-dark' : '' }}">{{ $sb['label'] }}</span>
                                                                 @endforeach
                                                             </div>
+                                                        </div>
                                                         </div>
                                                         <div class="claim-row-meta">
                                                             <span class="ev-amount">RM {{ number_format($claim->total_with_gst, 2) }}</span>
@@ -297,6 +310,8 @@
 
     /* Claim rows (white) — matches My Claims / Team Claims */
     .claim-row { display:flex; justify-content:space-between; align-items:center; gap:.75rem; flex-wrap:wrap; border:1px solid #e8edf5; border-radius:12px; padding:.85rem 1rem; background:#fff; transition:all .15s ease; }
+    .cr-left { display:flex; align-items:flex-start; gap:.7rem; min-width:0; }
+    .report-icon { width:34px; height:34px; border-radius:9px; flex-shrink:0; color:#fff; display:inline-flex; align-items:center; justify-content:center; margin-top:.1rem; }
     .claim-row:hover { border-color:#c7d7ec; background:#f8fafc; }
     .ev-title { font-weight:600; color:#1e293b; }
     .ev-sub { font-size:.8rem; color:#64748b; }
@@ -338,11 +353,13 @@
             setOpen(g.querySelector(':scope > .collapse'), g.dataset.defaultOpen === '1');
         });
     }
+    const hasVisible = (g, sel) => Array.from(g.querySelectorAll(sel)).some(r => r.style.display !== 'none');
     function apply() {
         const text = (search.value || '').toLowerCase().trim();
         const month = monthEl.value || '';
         const date = dateEl.value || '';
-        const filtering = activeFilter !== 'all' || text || month || date;
+        const searching = !!(text || month || date);
+        const statusFilter = activeFilter !== 'all';
         let anyVisible = false;
 
         document.querySelectorAll('.claim-card-wrap').forEach(function (row) {
@@ -354,22 +371,26 @@
             row.style.display = show ? '' : 'none';
             if (show) anyVisible = true;
         });
-        document.querySelectorAll('.emp-grp').forEach(function (g) {
-            const any = Array.from(g.querySelectorAll('.claim-card-wrap')).some(r => r.style.display !== 'none');
-            g.style.display = any ? '' : 'none';
-            if (filtering) setOpen(g.querySelector(':scope > .collapse'), any);
-        });
-        document.querySelectorAll('.month-grp').forEach(function (g) {
-            const any = Array.from(g.querySelectorAll('.emp-grp')).some(r => r.style.display !== 'none');
-            g.style.display = any ? '' : 'none';
-            if (filtering) setOpen(g.querySelector(':scope > .collapse'), any);
-        });
-        document.querySelectorAll('.year-grp').forEach(function (g) {
-            const any = Array.from(g.querySelectorAll('.month-grp')).some(r => r.style.display !== 'none');
-            g.style.display = any ? '' : 'none';
-            if (filtering) setOpen(g.querySelector(':scope > .collapse'), any);
-        });
-        if (!filtering) restoreDefault();
+        // Hide empty groups (employee → month → year).
+        document.querySelectorAll('.emp-grp').forEach(g => { g.style.display = hasVisible(g, '.claim-card-wrap') ? '' : 'none'; });
+        document.querySelectorAll('.month-grp').forEach(g => { g.style.display = hasVisible(g, '.emp-grp') ? '' : 'none'; });
+        document.querySelectorAll('.year-grp').forEach(g => { g.style.display = hasVisible(g, '.month-grp') ? '' : 'none'; });
+
+        // Collapse depth:
+        //  • SEARCH (name/month/date) → reveal the matching claims (expand all the way down).
+        //  • STATUS filter → collapse to the MONTH list; click a month to drill in.
+        //  • "All" (no search) → default: current year+month open down to employee NAMES, employees collapsed.
+        if (searching) {
+            document.querySelectorAll('.emp-grp').forEach(g => setOpen(g.querySelector(':scope > .collapse'), hasVisible(g, '.claim-card-wrap')));
+            document.querySelectorAll('.month-grp').forEach(g => setOpen(g.querySelector(':scope > .collapse'), hasVisible(g, '.emp-grp')));
+            document.querySelectorAll('.year-grp').forEach(g => setOpen(g.querySelector(':scope > .collapse'), hasVisible(g, '.month-grp')));
+        } else if (statusFilter) {
+            document.querySelectorAll('.emp-grp').forEach(g => setOpen(g.querySelector(':scope > .collapse'), false));
+            document.querySelectorAll('.month-grp').forEach(g => setOpen(g.querySelector(':scope > .collapse'), false));
+            document.querySelectorAll('.year-grp').forEach(g => setOpen(g.querySelector(':scope > .collapse'), hasVisible(g, '.month-grp')));
+        } else {
+            restoreDefault();
+        }
         if (noMatch) noMatch.classList.toggle('d-none', anyVisible);
     }
 
