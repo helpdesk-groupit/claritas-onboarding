@@ -314,7 +314,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <p class="text-secondary mb-2" id="deleteItemLead">By choosing to delete the receipt, you will delete the items that are attached to this receipt. To recapture the items, you have to reupload the receipt.</p>
+                <p class="text-secondary mb-2" id="deleteItemLead">By choosing to delete the receipt, you will delete all the items that are attached to this receipt. To recapture the items, you have to reupload the receipt.</p>
                 <ul class="list-group mb-2" id="deleteItemList"></ul>
                 <p class="fw-semibold mb-0">Are you sure?</p>
             </div>
@@ -1370,7 +1370,7 @@
         document.getElementById('deleteItemTitle').innerHTML = '<i class="bi bi-trash me-2 text-danger"></i>' +
             (n > 1 ? 'Delete ' + n + ' items from this receipt?' : 'Delete this item?');
         document.getElementById('deleteItemLead').textContent =
-            'By choosing to delete the receipt, you will delete the items that are attached to this receipt. To recapture the items, you have to reupload the receipt.';
+            'By choosing to delete the receipt, you will delete all the items that are attached to this receipt. To recapture the items, you have to reupload the receipt.';
         const list = document.getElementById('deleteItemList');
         list.innerHTML = '';
         items.forEach(function (it) {
