@@ -18,7 +18,7 @@
     {{-- The claim AS a report (#11): letterhead form + itemised table + digital sign-offs,
          exactly as it prints — not a bare item list. --}}
     @php
-        $canReview = $claim->status === 'manager_approved' && Auth::user()->canManageClaims();
+        $canReview = $claim->status === 'manager_approved' && Auth::user()->canApproveRejectClaims();
     @endphp
     <div class="card shadow-sm border-0 mb-4">
         <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">

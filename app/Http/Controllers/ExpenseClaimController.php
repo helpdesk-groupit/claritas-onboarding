@@ -1636,7 +1636,7 @@ class ExpenseClaimController extends Controller
         // claim's actual chosen approver — superadmin does NOT get it just for being superadmin.
         if ($claim->status === 'submitted' && $isManager) {
             $stage = 'manager';
-        } elseif ($claim->status === 'manager_approved' && $user->canManageClaims()) {
+        } elseif ($claim->status === 'manager_approved' && $user->canApproveRejectClaims()) {
             $stage = 'hr';
         } else {
             $stage = 'view';
@@ -1904,7 +1904,7 @@ class ExpenseClaimController extends Controller
      */
     public function hrApprove(Request $request, ExpenseClaim $claim)
     {
-        $this->authorizeManageClaims();
+        $this->authorizeApproveRejectClaims();
 
         if ($claim->status !== 'manager_approved') {
             return back()->with('error', 'This claim is not pending HR approval.');
@@ -1942,7 +1942,7 @@ class ExpenseClaimController extends Controller
      */
     public function hrReject(Request $request, ExpenseClaim $claim)
     {
-        $this->authorizeManageClaims();
+        $this->authorizeApproveRejectClaims();
 
         $request->validate(['remarks' => 'nullable|string|max:1000']);
 
@@ -1993,7 +1993,7 @@ class ExpenseClaimController extends Controller
      */
     public function bulkApprove(Request $request)
     {
-        $this->authorizeManageClaims();
+        $this->authorizeApproveRejectClaims();
 
         $validated = $request->validate([
             'claim_ids' => 'required|array|min:1',
@@ -2914,6 +2914,14 @@ class ExpenseClaimController extends Controller
     {
         if (! Auth::user()->canManageClaims()) {
             abort(403, 'You do not have permission to manage claims.');
+        }
+    }
+
+    /** Only HR Manager / HR Executive may approve or reject a claim (NOT superadmin). */
+    private function authorizeApproveRejectClaims(): void
+    {
+        if (! Auth::user()->canApproveRejectClaims()) {
+            abort(403, 'Only HR may approve or reject claims.');
         }
     }
 

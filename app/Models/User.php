@@ -166,8 +166,20 @@ class User extends Authenticatable
     public function canManageClaims(): bool
     {
         // In the eClaim module, HR Executive has the same control as HR Manager
-        // (approve/reject, manage categories, view & edit policy).
+        // (manage categories, view & edit policy). Superadmin/system_admin keep this for
+        // configuration oversight, but NOT the approve/reject action — see canApproveRejectClaims().
         return in_array($this->role, ['hr_manager', 'hr_executive', 'superadmin', 'system_admin']);
+    }
+
+    /**
+     * May the user APPROVE or REJECT a claim on the HR Claims page?
+     * Deliberately narrower than canManageClaims(): only HR Manager and HR Executive.
+     * Superadmin/system_admin may VIEW all claims (canViewAllClaims) and manage categories/
+     * policy (canManageClaims), but must never act as the HR approver on a claim.
+     */
+    public function canApproveRejectClaims(): bool
+    {
+        return in_array($this->role, ['hr_manager', 'hr_executive']);
     }
 
     /**
