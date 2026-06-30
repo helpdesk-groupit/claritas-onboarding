@@ -38,14 +38,14 @@
 
                 {{-- Body --}}
                 <div class="col-12">
-                    <label class="form-label fw-semibold">Message <span class="text-muted fw-normal small">(max 500 characters)</span></label>
-                    <textarea name="body" id="createBodyField" rows="5" maxlength="500"
+                    <label class="form-label fw-semibold">Message <span class="text-muted fw-normal small">(max 1000 characters)</span></label>
+                    <textarea name="body" id="createBodyField" rows="5" maxlength="1000"
                               class="form-control @error('body') is-invalid @enderror"
                               placeholder="Write your announcement here...">{{ old('body') }}</textarea>
                     @error('body')<div class="invalid-feedback">{{ $message }}</div>@enderror
                     <div class="d-flex justify-content-between mt-1">
                         <span class="form-text">Supports line breaks. Employees will receive this as an email notification.</span>
-                        <span id="createBodyCounter" class="form-text text-end" style="flex-shrink:0;">{{ strlen(old('body','')) }}/500</span>
+                        <span id="createBodyCounter" class="form-text text-end" style="flex-shrink:0;">{{ strlen(old('body','')) }}/1000</span>
                     </div>
                 </div>
 
@@ -124,7 +124,7 @@ function updateCounter(fieldId, counterId) {
     var counter = document.getElementById(counterId);
     if (!field || !counter) return;
     var len = field.value.length;
-    counter.textContent = len + '/500';
+    counter.textContent = len + '/1000';
     counter.style.color = len >= 480 ? '#ef4444' : '#94a3b8';
 }
 

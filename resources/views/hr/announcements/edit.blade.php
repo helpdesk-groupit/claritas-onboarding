@@ -38,12 +38,12 @@
 
                 {{-- Body --}}
                 <div class="col-12">
-                    <label class="form-label fw-semibold">Message <span class="text-muted fw-normal small">(max 500 characters)</span></label>
-                    <textarea name="body" id="editBodyField" rows="5" maxlength="500"
+                    <label class="form-label fw-semibold">Message <span class="text-muted fw-normal small">(max 1000 characters)</span></label>
+                    <textarea name="body" id="editBodyField" rows="5" maxlength="1000"
                               class="form-control @error('body') is-invalid @enderror">{{ old('body', $announcement->body) }}</textarea>
                     @error('body')<div class="invalid-feedback">{{ $message }}</div>@enderror
                     <div class="d-flex justify-content-end mt-1">
-                        <span id="editBodyCounter" class="form-text">{{ strlen(old('body', $announcement->body ?? '')) }}/500</span>
+                        <span id="editBodyCounter" class="form-text">{{ strlen(old('body', $announcement->body ?? '')) }}/1000</span>
                     </div>
                 </div>
 
@@ -144,7 +144,7 @@ function updateCounter(fieldId, counterId) {
     var counter = document.getElementById(counterId);
     if (!field || !counter) return;
     var len = field.value.length;
-    counter.textContent = len + '/500';
+    counter.textContent = len + '/1000';
     counter.style.color = len >= 480 ? '#ef4444' : '#94a3b8';
 }
 document.addEventListener('DOMContentLoaded', function() {

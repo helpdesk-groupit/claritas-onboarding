@@ -67,7 +67,7 @@ class AnnouncementController extends Controller
 
         $request->validate([
             'title'         => 'required|string|max:255',
-            'body'          => 'nullable|string|max:500',
+            'body'          => 'nullable|string|max:1000',
             'companies'     => 'nullable|array',
             'companies.*'   => 'string|max:255',
             'attachments'   => 'nullable|array|max:10',
@@ -117,7 +117,7 @@ class AnnouncementController extends Controller
 
         $request->validate([
             'title'               => 'required|string|max:255',
-            'body'                => 'nullable|string|max:500',
+            'body'                => 'nullable|string|max:1000',
             'companies'           => 'nullable|array',
             'companies.*'         => 'string|max:255',
             'attachments'         => 'nullable|array|max:10',
@@ -185,7 +185,12 @@ class AnnouncementController extends Controller
 
             $query = Employee::whereNull('active_until')->whereNotNull('company_email');
             if (!empty($ann->companies)) {
-                $query->whereIn('company', $ann->companies);
+                // Match tolerant of the Sdn Bhd / Sdn. Bhd. variant so targeted employees aren't
+                // missed when their stored company differs only by the period (see Announcement).
+                $targets = collect($ann->companies)
+                    ->flatMap(fn ($c) => Announcement::companyNameVariants((string) $c))
+                    ->unique()->values()->all();
+                $query->whereIn('company', $targets);
             }
 
             foreach ($query->get() as $employee) {

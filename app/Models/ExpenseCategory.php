@@ -58,8 +58,13 @@ class ExpenseCategory extends Model
 
         $query = static::where('is_active', true)->orderBy('sort_order');
         if ($company) {
+            // Category.company is the short entity token ("Claritas"); employees store the full
+            // registered name. Match the token as a prefix of the employee's company (same rule
+            // as ClaimRulesService::categoriesFor) so entity-scoped categories — e.g. the Claritas
+            // Optical & Dental benefit — actually compete in detection.
             $query->where(function ($q) use ($company) {
-                $q->where('company', $company)->orWhereNull('company');
+                $q->whereNull('company')
+                    ->orWhereRaw("LOWER(TRIM(?)) LIKE LOWER(CONCAT(`company`, '%'))", [$company]);
             });
         }
 

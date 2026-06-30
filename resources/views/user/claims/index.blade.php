@@ -806,13 +806,69 @@
             .catch(() => { btn.disabled = false; hint.textContent = 'Scan failed — try again or add manually.'; });
     }
 
+    // ── PDF receipts: rasterise page 1 IN THE BROWSER (PDF.js, served same-origin) so the
+    // image OCR can read it. The server never touches the PDF; the original PDF is still what
+    // gets attached on "Add to list". Lazy-loaded only when a PDF is actually scanned. ──
+    let __pdfjs = null;
+    function loadPdfJs() {
+        if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+        if (__pdfjs) return __pdfjs;
+        __pdfjs = new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = '{{ asset('vendor/pdfjs/pdf.min.js') }}';
+            s.onload = () => {
+                if (!window.pdfjsLib) return reject(new Error('pdfjsLib missing'));
+                window.pdfjsLib.GlobalWorkerOptions.workerSrc = '{{ asset('vendor/pdfjs/pdf.worker.min.js') }}';
+                resolve(window.pdfjsLib);
+            };
+            s.onerror = () => reject(new Error('pdf.js load failed'));
+            document.head.appendChild(s);
+        });
+        return __pdfjs;
+    }
+    const isPdfFile = (f) => f && (f.type === 'application/pdf' || /\.pdf$/i.test(f.name || ''));
+    // PDF File → PNG File of its first page (for OCR only). Resolves null on any failure.
+    async function pdfToPngFile(file) {
+        try {
+            const lib = await loadPdfJs();
+            const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+            const page = await pdf.getPage(1);
+            let viewport = page.getViewport({ scale: 2 }); // 2x for legible OCR
+            const MAXW = 1600;
+            if (viewport.width > MAXW) viewport = page.getViewport({ scale: 2 * (MAXW / viewport.width) });
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); // flatten transparency
+            await page.render({ canvasContext: ctx, viewport }).promise;
+            const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+            if (!blob) return null;
+            return new File([blob], (file.name || 'receipt').replace(/\.pdf$/i, '') + '.png', { type: 'image/png' });
+        } catch (e) { return null; }
+    }
+
     function scanItem(c, btn) {
         const file = q(c,'.cc-i-file'); if (!file.files.length) return;
         const hint = q(c,'.cc-scan-hint'), details = q(c,'.cc-ocr-details');
         const files = Array.from(file.files);
+        // A single PDF → render page 1 to an image, then scan that image. (Multi-file batches
+        // pass straight through to the existing path.)
+        if (files.length === 1 && isPdfFile(files[0])) {
+            btn.disabled = true; hint.textContent = 'Preparing PDF…';
+            pdfToPngFile(files[0]).then(png => {
+                btn.disabled = false;
+                if (!png) { hint.textContent = 'Couldn’t read this PDF — please enter the details manually.'; return; }
+                scanSingle(c, btn, png, hint, details);
+            });
+            return;
+        }
         // Multiple files chosen → multi-file path (each file OCR'd, then the review list).
         if (files.length > 1) { scanMultipleFiles(c, files, hint, btn); return; }
-        const fd = new FormData(); fd.append('receipt', files[0]);
+        scanSingle(c, btn, files[0], hint, details);
+    }
+
+    function scanSingle(c, btn, scanFile, hint, details) {
+        const fd = new FormData(); fd.append('receipt', scanFile);
         btn.disabled = true; hint.textContent = 'Scanning…';
         fetch(SCAN_URL, { method: 'POST', headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' }, body: fd })
             .then(r => r.json()).then(d => {
@@ -830,7 +886,9 @@
                         return;
                     }
                     hint.textContent = '✨ Found ' + d.items.length + ' transactions — review and add them.';
-                    openMultiReview(c, d.items, [files[0]], d.truncated);
+                    // Attach the ORIGINAL uploaded file (e.g. the PDF), not the rasterised scan image.
+                    const origFile = (q(c,'.cc-i-file').files[0]) || scanFile;
+                    openMultiReview(c, d.items, [origFile], d.truncated);
                     return;
                 }
                 const desc = q(c,'.cc-i-desc'), cat = q(c,'.cc-i-cat'), amount = q(c,'.cc-i-amount'), gst = q(c,'.cc-i-gst'), date = q(c,'.cc-i-date');

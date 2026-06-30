@@ -99,7 +99,10 @@ class ExpenseCategorySeeder extends Seeder
             '930-000' => ['staff entertainment', 'team lunch', 'team dinner', 'staff makan', 'team building',
                 'gathering', 'makan session', 'staff birthday'],
             '931-000' => ['entertainment', 'client lunch', 'client dinner', 'client makan', 'business lunch'],
-            '932-000' => ['medical', 'clinic', 'doctor', 'hospital', 'pharmacy', 'medicine', 'dental', 'optical', 'glasses'],
+            // Medical only — dental/optical/glasses belong to the Optical & Dental benefit
+            // category, so they're intentionally NOT here (they'd otherwise steal dental/optical
+            // receipts from Optical & Dental, which carries the stronger dental/optical signals).
+            '932-000' => ['medical', 'clinic', 'klinik', 'doctor', 'hospital', 'pharmacy', 'medicine'],
             '933-000' => ['newspaper', 'periodical', 'magazine', 'book'],
             '934-000' => ['postage', 'courier', 'poslaju', 'stamp', 'mailing'],
             '936-000' => ['seminar', 'training', 'workshop', 'course', 'conference'],
@@ -296,7 +299,7 @@ class ExpenseCategorySeeder extends Seeder
                 'name' => 'Optical & Dental',
                 'company' => 'Claritas',
                 'description' => 'Claritas optical and dental benefit, capped at RM500 per calendar year.',
-                'keywords' => json_encode(['optical', 'dental', 'glasses', 'spectacles', 'teeth', 'eye']),
+                'keywords' => json_encode(['optical', 'dental', 'dental clinic', 'dentist', 'pergigian', 'klinik pergigian', 'optometry', 'optician', 'glasses', 'spectacles', 'teeth', 'eye', 'lens', 'contact lens']),
                 'monthly_limit' => 500.00,
                 'rate_type' => 'receipt',
                 'rate_amount' => null,
