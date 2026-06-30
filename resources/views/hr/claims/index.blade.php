@@ -288,22 +288,28 @@
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label small fw-semibold mb-1">Employee</label>
-                        <select name="employee_id" class="form-select form-select-sm">
-                            <option value="">All employees</option>
+                        <label class="form-label small fw-semibold mb-1">Employee <span class="text-muted fw-normal">(tick one or more)</span></label>
+                        <div class="border rounded p-2" style="max-height:150px;overflow-y:auto;">
                             @foreach($exportEmployees as $emp)
-                            <option value="{{ $emp->id }}">{{ $emp->full_name }}</option>
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="checkbox" name="employee_id[]" value="{{ $emp->id }}" id="exp-emp-{{ $emp->id }}">
+                                <label class="form-check-label small" for="exp-emp-{{ $emp->id }}">{{ $emp->full_name }}</label>
+                            </div>
                             @endforeach
-                        </select>
+                        </div>
+                        <div class="form-text small">Leave all unticked to include every employee.</div>
                     </div>
                     <div class="mb-1">
-                        <label class="form-label small fw-semibold mb-1">Company</label>
-                        <select name="company" class="form-select form-select-sm">
-                            <option value="">All companies</option>
-                            @foreach($exportCompanies as $co)
-                            <option value="{{ $co }}">{{ $co }}</option>
+                        <label class="form-label small fw-semibold mb-1">Company <span class="text-muted fw-normal">(tick one or more)</span></label>
+                        <div class="border rounded p-2" style="max-height:150px;overflow-y:auto;">
+                            @foreach($exportCompanies as $i => $co)
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="checkbox" name="company[]" value="{{ $co }}" id="exp-co-{{ $i }}">
+                                <label class="form-check-label small" for="exp-co-{{ $i }}">{{ $co }}</label>
+                            </div>
                             @endforeach
-                        </select>
+                        </div>
+                        <div class="form-text small">Leave all unticked to include every company.</div>
                     </div>
                     @endif
                 </div>

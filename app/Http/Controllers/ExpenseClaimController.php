@@ -1395,11 +1395,15 @@ class ExpenseClaimController extends Controller
         if ($m = $request->input('month')) {
             $q->where('month', $m);
         }
-        if ($e = $request->input('employee_id')) {
-            $q->where('employee_id', $e);
+        // Employee / company accept one OR many values (employee_id[]=.. / company[]=..).
+        // The (array) cast keeps old single-value links working too.
+        $employeeIds = array_values(array_filter((array) $request->input('employee_id', [])));
+        if (! empty($employeeIds)) {
+            $q->whereIn('employee_id', $employeeIds);
         }
-        if ($c = $request->input('company')) {
-            $q->whereHas('employee', fn ($x) => $x->where('company', $c));
+        $companies = array_values(array_filter((array) $request->input('company', []), fn ($v) => $v !== '' && $v !== null));
+        if (! empty($companies)) {
+            $q->whereHas('employee', fn ($x) => $x->whereIn('company', $companies));
         }
         $claims = $q->orderByDesc('hr_approved_at')->limit(200)->get();
 
