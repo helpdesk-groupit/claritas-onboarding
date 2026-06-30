@@ -74,7 +74,15 @@ class CompanyController extends Controller
             $data['logo_path'] = $request->file('logo')->store('company-logos', 'public');
         }
 
+        $oldName = $company->name;
         $company->update($data);
+
+        // Cascade a rename onto employees so their company stays exactly the registered name
+        // (the source of truth) — otherwise the two drift apart and company-scoped features
+        // (announcements, tickets, claims) stop matching.
+        if ($oldName !== $company->name) {
+            \App\Models\Employee::where('company', $oldName)->update(['company' => $company->name]);
+        }
 
         return back()->with('success', 'Company updated successfully.');
     }

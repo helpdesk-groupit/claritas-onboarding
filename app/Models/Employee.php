@@ -50,6 +50,19 @@ class Employee extends Model
         'nric_file_paths' => 'array',
     ];
 
+    /**
+     * Always store the EXACT registered company name (Company Registration is the source of
+     * truth). Any saved value — from a form, the onboarding flush, or a CSV import — is resolved
+     * to its registered Company via Company::forName (tolerant of the Sdn Bhd / Sdn. Bhd. and
+     * trailing-entity-word variations). An unregistered value is left as-is rather than dropped.
+     */
+    public function setCompanyAttribute($value): void
+    {
+        $this->attributes['company'] = $value
+            ? (Company::forName($value)?->name ?? $value)
+            : $value;
+    }
+
     // ── Relationships ─────────────────────────────────────────────────────
     public function onboarding()
     {
