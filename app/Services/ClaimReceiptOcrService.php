@@ -375,7 +375,10 @@ class ClaimReceiptOcrService
     {
         return '"paid_by" (the NAME of the person or company who paid — a cardholder name, "Bill to" name, '
             .'or account owner. For a LALAMOVE or similar courier / delivery receipt that lists one or more '
-            .'"Recipient" names, use the FIRST "Recipient" name as the payer. If no payer NAME is shown, fall '
+            .'"Recipient" names, use the FIRST "Recipient" name as the payer. On a clinic / medical / personal '
+            .'receipt issued to a named individual — e.g. a "Name:" beside an NRIC/IC number, or a "Patient" / '
+            .'"Customer" name — use that person\'s name as the payer (a cardholder or "Bill to" name still takes '
+            .'priority; do NOT use the clinic / merchant / staff "Received by" name). If no payer NAME is shown, fall '
             .'back to the account owner — the "Your account: …" / "Account:" email or the "Bill to" name (e.g. on '
             .'a Google Play / app subscription, use the account email). '
             .'IMPORTANT: a PAYMENT METHOD is NOT a payer — NEVER return "Cash", "Card", "Credit Card", "Debit", '
