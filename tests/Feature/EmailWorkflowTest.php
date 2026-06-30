@@ -77,8 +77,8 @@ class EmailWorkflowTest extends TestCase
             ->assertRedirect();
 
         $this->assertDatabaseHas('email_workflows', [
-            'name'       => 'Supplier invoices',
-            'status'     => EmailWorkflow::STATUS_DRAFT,
+            'name' => 'Supplier invoices',
+            'status' => EmailWorkflow::STATUS_DRAFT,
             'created_by' => $this->itManager->id,
         ]);
     }
@@ -91,14 +91,14 @@ class EmailWorkflowTest extends TestCase
 
         $this->actingAs($this->itManager)
             ->put(route('it.automation.email-workflow.update', $wf->id), [
-                'step'             => 2,
-                'subject_enabled'  => '1',
-                'subject_mode'     => 'contains',
+                'step' => 2,
+                'subject_enabled' => '1',
+                'subject_mode' => 'contains',
                 'subject_keywords' => 'invoice, receipt',
                 'attachment_required' => '1',
                 'attachment_types' => ['pdf'],
                 'combine_subject_body' => 'or',
-                'capture_logic'    => 'attachment_and_text',
+                'capture_logic' => 'attachment_and_text',
             ])
             ->assertRedirect();
 
@@ -123,19 +123,19 @@ class EmailWorkflowTest extends TestCase
 
     public function test_can_activate_a_fully_configured_workflow_then_pause(): void
     {
-        $email   = $this->makeConnection('email', 'gmail');
+        $email = $this->makeConnection('email', 'gmail');
         $storage = $this->makeConnection('storage', 'gdrive');
-        $log     = $this->makeConnection('log', 'gsheets');
+        $log = $this->makeConnection('log', 'gsheets');
 
         $wf = EmailWorkflow::create([
-            'created_by'            => $this->itManager->id,
-            'name'                  => 'Complete',
-            'status'                => 'draft',
-            'email_connection_id'   => $email->id,
+            'created_by' => $this->itManager->id,
+            'name' => 'Complete',
+            'status' => 'draft',
+            'email_connection_id' => $email->id,
             'storage_connection_id' => $storage->id,
-            'log_connection_id'     => $log->id,
-            'storage_config_json'   => ['folder_ref' => 'folder-123', 'monthly_subfolders' => true],
-            'log_config_json'       => ['target_ref' => 'sheet-123', 'partition_by_month' => true],
+            'log_connection_id' => $log->id,
+            'storage_config_json' => ['folder_ref' => 'folder-123', 'monthly_subfolders' => true],
+            'log_config_json' => ['target_ref' => 'sheet-123', 'partition_by_month' => true],
         ]);
 
         // Activate.
@@ -168,9 +168,9 @@ class EmailWorkflowTest extends TestCase
     {
         $this->actingAs($this->itManager)
             ->post(route('it.automation.email-workflow.connections.save'), [
-                'category'      => 'email',
-                'provider_id'   => 'gmail',
-                'client_id'     => 'public-client-id',
+                'category' => 'email',
+                'provider_id' => 'gmail',
+                'client_id' => 'public-client-id',
                 'client_secret' => 'super-secret-value',
             ])
             ->assertRedirect();
@@ -198,16 +198,69 @@ class EmailWorkflowTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_saving_an_imap_connection_encrypts_the_app_password_and_connects(): void
+    {
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.connections.save'), [
+                'category' => 'email',
+                'provider_id' => 'yahoo',
+                'imap_host' => 'imap.mail.yahoo.com',
+                'imap_port' => 993,
+                'imap_encryption' => 'ssl',
+                'imap_username' => 'me@yahoo.com',
+                'imap_password' => 'yahoo-app-password',
+            ])->assertRedirect();
+
+        $conn = EmailWorkflowConnection::latest('id')->first();
+        $this->assertSame('yahoo', $conn->provider_id);
+        $this->assertSame(EmailWorkflowConnection::STATUS_CONNECTED, $conn->status);
+        $this->assertTrue($conn->isImap());
+
+        // Raw column must not hold the plaintext app password.
+        $raw = DB::table('email_workflow_connections')->where('id', $conn->id)->first();
+        $this->assertStringNotContainsString('yahoo-app-password', (string) $raw->imap_password);
+        // Model decrypts transparently.
+        $this->assertSame('yahoo-app-password', $conn->imap_password);
+    }
+
+    public function test_imap_save_requires_host_username_password(): void
+    {
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.connections.save'), [
+                'category' => 'email', 'provider_id' => 'imap',
+            ])
+            ->assertSessionHasErrors(['imap_host', 'imap_username', 'imap_password']);
+    }
+
+    public function test_oauth_connect_redirects_to_provider_consent(): void
+    {
+        $conn = EmailWorkflowConnection::create([
+            'created_by' => $this->itManager->id,
+            'category' => 'email', 'provider_id' => 'gmail',
+            'client_id' => 'my-client-id', 'client_secret' => 'my-secret',
+            'status' => EmailWorkflowConnection::STATUS_PENDING,
+        ]);
+
+        $res = $this->actingAs($this->itManager)
+            ->get(route('it.automation.email-workflow.connections.connect', $conn->id));
+
+        $res->assertRedirect();
+        $location = $res->headers->get('Location');
+        $this->assertStringContainsString('accounts.google.com', $location);
+        $this->assertStringContainsString('client_id=my-client-id', $location);
+        $this->assertStringContainsString('access_type=offline', $location);
+    }
+
     private function makeConnection(string $category, string $providerId): EmailWorkflowConnection
     {
         return EmailWorkflowConnection::create([
-            'created_by'    => $this->itManager->id,
-            'category'      => $category,
-            'provider_id'   => $providerId,
-            'client_id'     => 'cid',
+            'created_by' => $this->itManager->id,
+            'category' => $category,
+            'provider_id' => $providerId,
+            'client_id' => 'cid',
             'client_secret' => 'csecret',
-            'access_token'  => 'atoken',
-            'status'        => EmailWorkflowConnection::STATUS_CONNECTED,
+            'access_token' => 'atoken',
+            'status' => EmailWorkflowConnection::STATUS_CONNECTED,
         ]);
     }
 }

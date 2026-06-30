@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\Automation\ProviderRegistry;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -34,18 +35,21 @@ class EmailWorkflowConnection extends Model
         'created_by', 'category', 'provider_id', 'account_label',
         'client_id', 'client_secret', 'access_token', 'refresh_token',
         'scopes', 'status', 'token_expires_at',
+        'imap_host', 'imap_port', 'imap_encryption', 'imap_username', 'imap_password',
     ];
 
     protected $casts = [
         'client_secret' => 'encrypted',
         'access_token' => 'encrypted',
         'refresh_token' => 'encrypted',
+        'imap_password' => 'encrypted',
         'scopes' => 'array',
         'token_expires_at' => 'datetime',
+        'imap_port' => 'integer',
     ];
 
     /** Never serialize secrets — keeps tokens out of logs/JSON/error dumps. */
-    protected $hidden = ['client_secret', 'access_token', 'refresh_token'];
+    protected $hidden = ['client_secret', 'access_token', 'refresh_token', 'imap_password'];
 
     public function owner(): BelongsTo
     {
@@ -58,9 +62,47 @@ class EmailWorkflowConnection extends Model
         return filled($this->client_id) && filled($this->client_secret);
     }
 
-    /** True once a successful OAuth consent has produced live tokens. */
+    /** True once IMAP host + username + password are present. */
+    public function hasImapCredentials(): bool
+    {
+        return filled($this->imap_host) && filled($this->imap_username) && filled($this->imap_password);
+    }
+
+    /** True once the connection can actually talk to its provider. */
     public function isConnected(): bool
     {
-        return $this->status === self::STATUS_CONNECTED && filled($this->access_token);
+        if ($this->status !== self::STATUS_CONNECTED) {
+            return false;
+        }
+
+        return $this->isImap() ? $this->hasImapCredentials() : filled($this->access_token);
+    }
+
+    public function isOAuth(): bool
+    {
+        return ProviderRegistry::isOAuth($this->provider_id);
+    }
+
+    public function isImap(): bool
+    {
+        return ProviderRegistry::isImap($this->provider_id);
+    }
+
+    /**
+     * Connection config the webklex IMAP client needs.
+     *
+     * @return array<string,mixed>
+     */
+    public function imapConfig(): array
+    {
+        return [
+            'host' => $this->imap_host,
+            'port' => $this->imap_port ?: 993,
+            'encryption' => $this->imap_encryption ?: 'ssl',
+            'validate_cert' => true,
+            'username' => $this->imap_username,
+            'password' => $this->imap_password, // decrypted by the cast
+            'protocol' => 'imap',
+        ];
     }
 }

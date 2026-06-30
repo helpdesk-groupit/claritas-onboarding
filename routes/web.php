@@ -113,9 +113,12 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
         Route::post('/{workflow}/toggle',     [\App\Http\Controllers\EmailWorkflowController::class, 'toggleActive'])->name('toggle');
         Route::post('/{workflow}/test-rules', [\App\Http\Controllers\EmailWorkflowController::class, 'testRules'])->name('test-rules');
         Route::delete('/{workflow}',          [\App\Http\Controllers\EmailWorkflowController::class, 'destroy'])->name('destroy');
-        // Connections (user-supplied OAuth credentials).
+        // Connections (user-supplied OAuth client creds or IMAP host/app-password).
         Route::post('/connections',                 [\App\Http\Controllers\EmailWorkflowController::class, 'saveConnection'])->name('connections.save');
         Route::delete('/connections/{connection}',  [\App\Http\Controllers\EmailWorkflowController::class, 'deleteConnection'])->name('connections.delete');
+        // OAuth consent round-trip (Gmail / Outlook).
+        Route::get('/connections/{connection}/connect', [\App\Http\Controllers\EmailWorkflowController::class, 'connectStart'])->name('connections.connect');
+        Route::get('/connections/callback',             [\App\Http\Controllers\EmailWorkflowController::class, 'connectCallback'])->name('connections.callback');
     });
 
     // Two-Factor Authentication management

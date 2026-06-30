@@ -5,9 +5,12 @@ namespace App\Http\Controllers;
 use App\Models\EmailWorkflow;
 use App\Models\EmailWorkflowConnection;
 use App\Support\Automation\DetectionEngine;
+use App\Support\Automation\EmailAdapterFactory;
+use App\Support\Automation\OAuthService;
 use App\Support\Automation\ProviderRegistry;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 /**
@@ -241,8 +244,8 @@ class EmailWorkflowController extends Controller
             ->with('success', "Workflow “{$name}” deleted.");
     }
 
-    // ── Test rules (read-only preview against sample data) ───────────────
-    public function testRules(Request $request, int $workflow)
+    // ── Test rules (read-only preview) ───────────────────────────────────
+    public function testRules(Request $request, int $workflow, EmailAdapterFactory $factory)
     {
         $this->authorizeModule();
         $model = $this->findOwned($workflow);
@@ -250,16 +253,34 @@ class EmailWorkflowController extends Controller
         $rules = $this->parseRules($request);
         $engine = new DetectionEngine;
 
-        // Phase 1: preview against representative sample messages so the user
-        // can sanity-check their rules before live Gmail access exists.
-        // Phase 2 swaps this for the last N real emails via GmailAdapter.
-        $samples = $this->sampleMessages();
+        // Live preview against the connected inbox when one exists; otherwise
+        // fall back to representative samples so rules can still be sanity-checked.
+        $note = 'Preview uses sample emails — connect an email account to test live.';
+        $messages = $this->sampleMessages();
+
+        $conn = $model->email_connection_id
+            ? EmailWorkflowConnection::where('created_by', Auth::id())->find($model->email_connection_id)
+            : null;
+
+        if ($conn && $conn->isConnected()) {
+            try {
+                $live = $factory->for($conn)->search($conn, ['since_days' => 30], ['limit' => 15]);
+                if (! empty($live)) {
+                    $messages = $live;
+                    $note = 'Previewing your last '.count($live).' emails from '.ProviderRegistry::name($conn->provider_id).'.';
+                }
+            } catch (\Throwable $e) {
+                // Never surface raw provider errors to the user.
+                $note = 'Could not reach the mailbox — showing sample emails instead. Check the connection.';
+            }
+        }
+
         $preview = [];
-        foreach ($samples as $msg) {
+        foreach ($messages as $msg) {
             $r = $engine->evaluate($msg, $rules);
             $preview[] = [
-                'subject' => $msg['subject'],
-                'from' => $msg['from'],
+                'subject' => $msg['subject'] ?? '',
+                'from' => $msg['from'] ?? '',
                 'matched' => $r['matched'],
                 'reasons' => $r['reasons'],
                 'attachments' => array_map(fn ($a) => $a['name'], $r['attachments']),
@@ -268,42 +289,120 @@ class EmailWorkflowController extends Controller
             ];
         }
 
-        return response()->json([
-            'note' => 'Preview uses sample emails until a Gmail account is connected.',
-            'results' => $preview,
-        ]);
+        return response()->json(['note' => $note, 'results' => $preview]);
     }
 
-    // ── Connections: save user-supplied OAuth credentials ────────────────
+    // ── Connections: save user-supplied credentials (OAuth or IMAP) ──────
     public function saveConnection(Request $request)
     {
         $this->authorizeModule();
 
-        $data = $request->validate([
+        $base = $request->validate([
             'category' => ['required', Rule::in(EmailWorkflowConnection::CATEGORIES)],
             'provider_id' => 'required|string|max:40',
+        ]);
+
+        $provider = ProviderRegistry::find($base['provider_id']);
+        if (! $provider || ! $provider['enabled'] || $provider['category'] !== $base['category']) {
+            return back()->with('error', 'That provider is not available yet.');
+        }
+
+        // IMAP / Yahoo: host + username + app password (no OAuth client).
+        if (ProviderRegistry::isImap($base['provider_id'])) {
+            $imap = $request->validate([
+                'imap_host' => 'required|string|max:255',
+                'imap_port' => 'required|integer|min:1|max:65535',
+                'imap_encryption' => ['required', Rule::in(['ssl', 'tls', 'starttls', 'none'])],
+                'imap_username' => 'required|string|max:255',
+                'imap_password' => 'required|string|max:500',
+            ]);
+
+            EmailWorkflowConnection::create([
+                'created_by' => Auth::id(),
+                'category' => $base['category'],
+                'provider_id' => $base['provider_id'],
+                'account_label' => $imap['imap_username'],
+                'imap_host' => $imap['imap_host'],
+                'imap_port' => $imap['imap_port'],
+                'imap_encryption' => $imap['imap_encryption'] === 'none' ? null : $imap['imap_encryption'],
+                'imap_username' => $imap['imap_username'],
+                'imap_password' => $imap['imap_password'],
+                'status' => EmailWorkflowConnection::STATUS_CONNECTED, // ready to use immediately
+            ]);
+
+            return back()->with('success', ProviderRegistry::name($base['provider_id'])
+                .' mailbox connected. You can now test rules against it.');
+        }
+
+        // OAuth (Gmail / Outlook): store client id/secret, then consent.
+        $oauth = $request->validate([
             'client_id' => 'required|string|max:500',
             'client_secret' => 'required|string|max:500',
         ]);
 
-        $provider = ProviderRegistry::find($data['provider_id']);
-        if (! $provider || ! $provider['enabled'] || $provider['category'] !== $data['category']) {
-            return back()->with('error', 'That provider is not available yet.');
-        }
-
-        $conn = EmailWorkflowConnection::create([
+        EmailWorkflowConnection::create([
             'created_by' => Auth::id(),
-            'category' => $data['category'],
-            'provider_id' => $data['provider_id'],
-            'client_id' => $data['client_id'],
-            'client_secret' => $data['client_secret'],
+            'category' => $base['category'],
+            'provider_id' => $base['provider_id'],
+            'client_id' => $oauth['client_id'],
+            'client_secret' => $oauth['client_secret'],
             'scopes' => $provider['scopes'],
             'status' => EmailWorkflowConnection::STATUS_PENDING,
         ]);
 
-        // Phase 2: redirect into the provider OAuth consent flow here.
-        return back()->with('success', ProviderRegistry::name($data['provider_id'])
+        return back()->with('success', ProviderRegistry::name($base['provider_id'])
             .' credentials saved. Click “Connect” to authorize the account.');
+    }
+
+    // ── Connections: OAuth consent round-trip (Gmail / Outlook) ──────────
+    public function connectStart(Request $request, int $connection, OAuthService $oauth)
+    {
+        $this->authorizeModule();
+        $conn = EmailWorkflowConnection::where('created_by', Auth::id())->findOrFail($connection);
+
+        if (! $conn->isOAuth() || ! $conn->hasCredentials()) {
+            return back()->with('error', 'Add OAuth client credentials before connecting.');
+        }
+
+        // CSRF-style state, bound to the session, verified on callback.
+        $state = Str::random(40);
+        $request->session()->put("ewf_oauth_state_{$conn->id}", $state);
+
+        $url = $oauth->authorizeUrl($conn, $this->oauthRedirectUri(), $state.'.'.$conn->id);
+
+        return redirect()->away($url);
+    }
+
+    public function connectCallback(Request $request, OAuthService $oauth)
+    {
+        $this->authorizeModule();
+
+        // Provider errors (user denied consent, etc.).
+        if ($request->filled('error')) {
+            return redirect()->route('it.automation.email-workflow.index')
+                ->with('error', 'Authorization was cancelled or failed.');
+        }
+
+        [$state, $connId] = array_pad(explode('.', (string) $request->query('state')), 2, null);
+        $conn = EmailWorkflowConnection::where('created_by', Auth::id())->find((int) $connId);
+
+        if (! $conn || $request->session()->pull("ewf_oauth_state_{$conn->id}") !== $state) {
+            return redirect()->route('it.automation.email-workflow.index')
+                ->with('error', 'Authorization state mismatch — please try connecting again.');
+        }
+
+        $ok = $oauth->exchangeCode($conn, (string) $request->query('code'), $this->oauthRedirectUri());
+
+        return redirect()->route('it.automation.email-workflow.index')
+            ->with($ok ? 'success' : 'error', $ok
+                ? ProviderRegistry::name($conn->provider_id).' account connected.'
+                : 'Could not complete authorization. Check the client credentials and redirect URI.');
+    }
+
+    /** The single OAuth redirect URI this app exposes (whitelist it in the provider console). */
+    private function oauthRedirectUri(): string
+    {
+        return route('it.automation.email-workflow.connections.callback');
     }
 
     // ── Connections: remove ──────────────────────────────────────────────

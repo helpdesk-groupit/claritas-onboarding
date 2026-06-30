@@ -41,6 +41,10 @@ class ProviderRegistry
                     'https://www.googleapis.com/auth/gmail.readonly',
                     'https://www.googleapis.com/auth/gmail.modify',
                 ],
+                'authorize_url' => 'https://accounts.google.com/o/oauth2/v2/auth',
+                'token_url' => 'https://oauth2.googleapis.com/token',
+                // Google requires offline access + consent prompt to return a refresh token.
+                'auth_params' => ['access_type' => 'offline', 'prompt' => 'consent'],
                 'enabled' => true,
                 'blurb' => 'Read invoices & receipts from a Gmail inbox.',
             ],
@@ -50,29 +54,38 @@ class ProviderRegistry
                 'category' => self::CATEGORY_EMAIL,
                 'icon' => 'bi-microsoft',
                 'auth_type' => 'oauth',
-                'scopes' => ['Mail.Read'],
-                'enabled' => false,
-                'blurb' => 'Coming soon — Microsoft Graph mailbox.',
+                // Microsoft Graph delegated scopes. offline_access → refresh token.
+                'scopes' => ['offline_access', 'Mail.Read'],
+                'authorize_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+                'token_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+                'auth_params' => ['response_mode' => 'query'],
+                'enabled' => true,
+                'blurb' => 'Read mail from an Outlook / Microsoft 365 mailbox.',
             ],
             [
                 'id' => 'imap',
                 'name' => 'Generic IMAP',
                 'category' => self::CATEGORY_EMAIL,
                 'icon' => 'bi-inbox',
-                'auth_type' => 'credentials',
+                'auth_type' => 'imap',
                 'scopes' => [],
-                'enabled' => false,
-                'blurb' => 'Coming soon — any IMAP mailbox.',
+                // No fixed host — the user supplies host/port. Sensible SSL defaults.
+                'imap' => ['host' => '', 'port' => 993, 'encryption' => 'ssl'],
+                'enabled' => true,
+                'blurb' => 'Connect any IMAP mailbox with host + app password.',
             ],
             [
                 'id' => 'yahoo',
                 'name' => 'Yahoo Mail',
                 'category' => self::CATEGORY_EMAIL,
                 'icon' => 'bi-envelope',
-                'auth_type' => 'oauth',
+                // Yahoo discontinued basic-auth IMAP; third-party access is via an
+                // app password over IMAP SSL (not OAuth). Preset the Yahoo host.
+                'auth_type' => 'imap',
                 'scopes' => [],
-                'enabled' => false,
-                'blurb' => 'Coming soon.',
+                'imap' => ['host' => 'imap.mail.yahoo.com', 'port' => 993, 'encryption' => 'ssl'],
+                'enabled' => true,
+                'blurb' => 'Yahoo Mail via IMAP — needs a Yahoo app password.',
             ],
 
             // ── STORAGE DESTINATIONS ───────────────────────────────────
@@ -192,5 +205,21 @@ class ProviderRegistry
     public static function name(string $id): string
     {
         return self::find($id)['name'] ?? $id;
+    }
+
+    /** Auth type for a provider: 'oauth' | 'imap' (or '' if unknown). */
+    public static function authType(string $id): string
+    {
+        return (string) (self::find($id)['auth_type'] ?? '');
+    }
+
+    public static function isOAuth(string $id): bool
+    {
+        return self::authType($id) === 'oauth';
+    }
+
+    public static function isImap(string $id): bool
+    {
+        return self::authType($id) === 'imap';
     }
 }
