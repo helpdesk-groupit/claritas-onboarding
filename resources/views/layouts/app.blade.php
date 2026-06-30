@@ -265,6 +265,24 @@
             </a>
         </div>
 
+        {{-- Automation (parent) › Email Workflow (sub-link) --}}
+        @php $automationOpen = request()->routeIs('it.automation.*'); @endphp
+        <div class="nav-item">
+            <a href="#automationMenuAdmin" data-bs-toggle="collapse" role="button"
+               aria-expanded="{{ $automationOpen ? 'true' : 'false' }}"
+               class="nav-link {{ $automationOpen ? 'active' : '' }}">
+                <i class="bi bi-robot"></i> Automation
+                <i class="bi bi-chevron-down ms-auto" style="font-size:12px;"></i>
+            </a>
+            <div class="collapse {{ $automationOpen ? 'show' : '' }}" id="automationMenuAdmin">
+                <a href="{{ route('it.automation.email-workflow.index') }}"
+                   class="nav-link {{ request()->routeIs('it.automation.email-workflow.*') ? 'active' : '' }}"
+                   style="padding-left:38px;">
+                    <i class="bi bi-envelope-paper"></i> Email Workflow
+                </a>
+            </div>
+        </div>
+
         {{-- ── Finance ── --}}
         <div class="sidebar-section">Finance</div>
         <div class="nav-item">
@@ -730,6 +748,24 @@
                class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
                 <i class="bi bi-gear-wide-connected"></i> Ticket Management
             </a>
+        </div>
+
+        {{-- Automation (parent) › Email Workflow (sub-link) --}}
+        @php $automationOpenIt = request()->routeIs('it.automation.*'); @endphp
+        <div class="nav-item">
+            <a href="#automationMenuIt" data-bs-toggle="collapse" role="button"
+               aria-expanded="{{ $automationOpenIt ? 'true' : 'false' }}"
+               class="nav-link {{ $automationOpenIt ? 'active' : '' }}">
+                <i class="bi bi-robot"></i> Automation
+                <i class="bi bi-chevron-down ms-auto" style="font-size:12px;"></i>
+            </a>
+            <div class="collapse {{ $automationOpenIt ? 'show' : '' }}" id="automationMenuIt">
+                <a href="{{ route('it.automation.email-workflow.index') }}"
+                   class="nav-link {{ request()->routeIs('it.automation.email-workflow.*') ? 'active' : '' }}"
+                   style="padding-left:38px;">
+                    <i class="bi bi-envelope-paper"></i> Email Workflow
+                </a>
+            </div>
         </div>
 
         @if(Auth::user()->isItManager())
