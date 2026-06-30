@@ -555,13 +555,19 @@
             apply(btn.dataset.filter);
         });
     });
-    // Draft summary-row delete (Option B) — confirm, then submit its hidden DELETE form.
+    // Draft summary-row delete (Option B) — open the styled confirmation modal, then submit
+    // its hidden DELETE form on Proceed. (Falls back to a native confirm if Bootstrap is absent.)
     document.addEventListener('click', function (e) {
         const del = e.target.closest('.draft-delete-btn');
         if (!del) return;
-        if (!confirm('Delete this draft claim and all its items? This cannot be undone.')) return;
         const form = del.parentElement.querySelector('.draft-delete-form');
-        if (form) form.submit();
+        const dm = document.getElementById('deleteClaimModal');
+        if (dm && window.bootstrap) {
+            dm._pendingDeleteForm = form;
+            bootstrap.Modal.getOrCreateInstance(dm).show();
+        } else if (form && confirm('Delete this draft claim and all its items? This cannot be undone.')) {
+            form.submit();
+        }
     });
 })();
 
@@ -1089,8 +1095,12 @@
         ok.addEventListener('click', function () {
             const c = pendingDeleteCard; pendingDeleteCard = null;
             const dm = document.getElementById('deleteClaimModal');
+            // The pending form is either a list-row delete (set on the modal element) or the
+            // detail card's own form; submit whichever is set, then clear both.
+            const listForm = dm ? dm._pendingDeleteForm : null;
+            if (dm) dm._pendingDeleteForm = null;
             if (dm && window.bootstrap) bootstrap.Modal.getOrCreateInstance(dm).hide();
-            const form = c && c.querySelector('.cc-delete-form'); if (form) form.submit();
+            const form = listForm || (c && c.querySelector('.cc-delete-form')); if (form) form.submit();
         });
     })();
     function showToast(msg, variant) {
@@ -1549,6 +1559,7 @@
             const dm = document.getElementById('deleteClaimModal');
             if (dm && window.bootstrap) {
                 pendingDeleteCard = c;
+                dm._pendingDeleteForm = null;   // this delete uses the card form, not a list-row form
                 bootstrap.Modal.getOrCreateInstance(dm).show();
             } else {
                 // Fallback if Bootstrap isn't available.
