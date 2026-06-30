@@ -818,7 +818,7 @@
             .then(r => r.json()).then(d => {
                 btn.disabled = false;
                 if (!d || d.enabled === false) { hint.textContent = 'OCR is off — enter details manually.'; return; }
-                if (!d.ok) { hint.textContent = 'Couldn’t read it — enter details manually.'; return; }
+                if (!d.ok) { hint.textContent = (d && d.message) ? d.message : 'Couldn’t read it — enter details manually.'; return; }
                 // One image holding several receipts / a dated statement → review table.
                 // When editing a single item, a re-scan must be one receipt — but if it still
                 // reads as several lines, unlock the fields anyway so the user isn't stuck.

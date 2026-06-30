@@ -135,7 +135,6 @@
                             <img src="{{ route('secure.file', $att) }}" alt="Attachment" style="max-width:100%;max-height:520px;display:block;margin:0 0 6px;border:1px solid #e2e8f0;">
                             @elseif($ext === 'pdf')
                             <iframe src="{{ route('secure.file', $att) }}" title="Attachment PDF" style="width:100%;height:600px;border:1px solid #e2e8f0;display:block;margin:0 0 6px;" class="d-print-none" loading="lazy"></iframe>
-                            <div class="mb-1"><i class="bi bi-file-earmark-pdf text-danger me-1"></i><a href="{{ route('secure.file', $att) }}" target="_blank">Open attachment (PDF) in a new tab</a></div>
                             @else
                             <div class="mb-1"><i class="bi bi-file-earmark text-secondary me-1"></i><a href="{{ route('secure.file', $att) }}" target="_blank">Open attachment ({{ strtoupper($ext) }})</a></div>
                             @endif
@@ -192,7 +191,6 @@
                             <img src="{{ route('secure.file', $att) }}" alt="Attachment" style="max-width:100%;max-height:460px;display:block;margin:0 0 6px;border:1px solid #e2e8f0;">
                             @elseif($ext === 'pdf')
                             <iframe src="{{ route('secure.file', $att) }}" title="Attachment PDF" style="width:100%;height:600px;border:1px solid #e2e8f0;display:block;margin:0 0 6px;" class="d-print-none" loading="lazy"></iframe>
-                            <div class="mb-1"><i class="bi bi-file-earmark-pdf text-danger me-1"></i><a href="{{ route('secure.file', $att) }}" target="_blank">Open attachment (PDF) in a new tab</a></div>
                             @else
                             <div class="mb-1"><i class="bi bi-file-earmark text-secondary me-1"></i><a href="{{ route('secure.file', $att) }}" target="_blank">Open attachment ({{ strtoupper($ext) }})</a></div>
                             @endif

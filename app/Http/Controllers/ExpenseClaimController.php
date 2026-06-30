@@ -2545,6 +2545,12 @@ class ExpenseClaimController extends Controller
         }
 
         $file = $request->file('receipt');
+        // The vision model reads IMAGES only; a PDF can't be auto-scanned (it would need
+        // server-side rasterisation we don't run on the NAS). Say so plainly rather than
+        // returning the generic "couldn't read it".
+        if (str_contains((string) $file->getMimeType(), 'pdf') || strtolower((string) $file->getClientOriginalExtension()) === 'pdf') {
+            return response()->json(['enabled' => true, 'ok' => false, 'message' => 'PDF receipts can’t be auto-scanned — please type the details in manually.']);
+        }
         $doc = ClaimReceiptOcrService::scanDocument($file->getRealPath(), $file->getMimeType(), $company, $catList);
 
         if ($doc === null) {
