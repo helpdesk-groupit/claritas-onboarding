@@ -46,6 +46,30 @@ class EmailWorkflowTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_create_wizard_page_renders(): void
+    {
+        // Regression: the create wizard 500'd on a brand-new (unsaved) workflow
+        // because the test-rules fetch URL called route(..., $workflow->id) with
+        // a null id, and a literal {{date}} placeholder broke Blade compilation.
+        $this->actingAs($this->itManager)
+            ->get(route('it.automation.email-workflow.create'))
+            ->assertOk()
+            ->assertSee('Name your workflow');
+    }
+
+    public function test_edit_wizard_renders_every_step(): void
+    {
+        $wf = EmailWorkflow::create([
+            'created_by' => $this->itManager->id, 'name' => 'Render test', 'status' => 'draft',
+        ]);
+
+        foreach (range(1, EmailWorkflow::TOTAL_STEPS) as $step) {
+            $this->actingAs($this->itManager)
+                ->get(route('it.automation.email-workflow.edit', ['workflow' => $wf->id, 'step' => $step]))
+                ->assertOk();
+        }
+    }
+
     public function test_create_persists_a_draft_workflow(): void
     {
         $this->actingAs($this->itManager)

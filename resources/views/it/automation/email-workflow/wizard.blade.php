@@ -492,7 +492,7 @@
             var btn = this;
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing…';
-            fetch("{{ route('it.automation.email-workflow.test-rules', $workflow->id) }}", {
+            fetch("{{ $workflow->exists ? route('it.automation.email-workflow.test-rules', $workflow->id) : '' }}", {
                 method: 'POST',
                 headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
                 body: data
