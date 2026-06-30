@@ -18,8 +18,14 @@ class SecurityHeaders
 
         $response = $next($request);
 
+        // Files served by SecureFileController (e.g. a PDF receipt) may be embedded INLINE in our
+        // own pages (the claim report). Allow SAME-ORIGIN framing for that route only — every
+        // other response stays DENY / frame-ancestors 'none'. External framing is still blocked,
+        // so this doesn't open a clickjacking vector.
+        $allowSameOriginFrame = $request->routeIs('secure.file');
+
         // Prevent clickjacking
-        $response->headers->set('X-Frame-Options', 'DENY');
+        $response->headers->set('X-Frame-Options', $allowSameOriginFrame ? 'SAMEORIGIN' : 'DENY');
 
         // Prevent MIME-type sniffing
         $response->headers->set('X-Content-Type-Options', 'nosniff');
@@ -42,7 +48,7 @@ class SecurityHeaders
             "font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com",
             "img-src 'self' data: blob: https://api.qrserver.com",
             "connect-src 'self'",
-            "frame-ancestors 'none'",
+            'frame-ancestors '.($allowSameOriginFrame ? "'self'" : "'none'"),
             "base-uri 'self'",
             "form-action 'self'",
         ]));

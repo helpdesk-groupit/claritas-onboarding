@@ -1631,8 +1631,10 @@ class ExpenseClaimController extends Controller
         }
 
         // Stage = who can ACT now, based on BOTH the claim status AND this viewer's role.
-        // Everyone else (e.g. a manager looking at an HR-stage claim) gets a read-only view.
-        if ($claim->status === 'submitted' && ($isManager || $user->isSuperadmin())) {
+        // Everyone else (e.g. a superadmin viewing for oversight, or a manager looking at an
+        // HR-stage claim) gets a read-only view. The manager Approve/Reject is shown ONLY to the
+        // claim's actual chosen approver — superadmin does NOT get it just for being superadmin.
+        if ($claim->status === 'submitted' && $isManager) {
             $stage = 'manager';
         } elseif ($claim->status === 'manager_approved' && $user->canManageClaims()) {
             $stage = 'hr';
