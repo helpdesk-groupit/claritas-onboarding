@@ -1582,20 +1582,23 @@ class ExpenseClaimController extends Controller
      */
     public function teamClaims()
     {
-        $employee = Auth::user()->employee;
-        if (! $employee) {
+        $user = Auth::user();
+        $employee = $user->employee;
+        $isSuper = $user->isSuperadmin();
+        if (! $employee && ! $isSuper) {
             return back()->with('error', 'No employee profile found.');
         }
 
-        $myId = $employee->id;
-
         // Every claim routed to this manager — the single approving manager chosen at submit
         // (manager_id), NOT individual item approvers (which can be stale legacy data).
-        $myClaims = ExpenseClaim::where('manager_id', $myId)
-            ->whereIn('status', ['submitted', 'manager_approved', 'manager_rejected', 'hr_approved', 'hr_rejected', 'paid'])
+        // Superadmin gets oversight of ALL team claims, not just ones routed to them.
+        $query = ExpenseClaim::whereIn('status', ['submitted', 'manager_approved', 'manager_rejected', 'hr_approved', 'hr_rejected', 'paid'])
             ->with(['employee', 'items.category', 'items.approver'])
-            ->orderByDesc('year')->orderByDesc('month')->orderByDesc('submitted_at')
-            ->get();
+            ->orderByDesc('year')->orderByDesc('month')->orderByDesc('submitted_at');
+        if (! $isSuper) {
+            $query->where('manager_id', $employee->id);
+        }
+        $myClaims = $query->get();
 
         // Manager-perspective card counts — each status maps to exactly one bucket.
         $cardCounts = [

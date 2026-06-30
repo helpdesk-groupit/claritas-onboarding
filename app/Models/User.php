@@ -170,6 +170,24 @@ class User extends Authenticatable
         return in_array($this->role, ['hr_manager', 'hr_executive', 'superadmin', 'system_admin']);
     }
 
+    /**
+     * May the user open the Team Claims page (the approver's inbox)? True for an approving
+     * manager (has direct reports) OR anyone chosen as an approver on a claim item — and for
+     * superadmin, who gets oversight of ALL team claims (see ExpenseClaimController::teamClaims()).
+     */
+    public function canViewTeamClaims(): bool
+    {
+        if ($this->isSuperadmin()) {
+            return true;
+        }
+        if (! $this->employee) {
+            return false;
+        }
+
+        return \App\Models\Employee::where('manager_id', $this->employee->id)->exists()
+            || \App\Models\ExpenseClaimItem::where('approver_id', $this->employee->id)->exists();
+    }
+
     public function employee() { return $this->hasOne(Employee::class)->whereNull('active_until'); }
 
     public function permissions() { return $this->hasMany(UserPermission::class); }

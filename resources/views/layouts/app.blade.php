@@ -413,7 +413,7 @@
                 <i class="bi bi-receipt-cutoff"></i> My Claims
             </a>
         </div>
-        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
+        @if(Auth::user()->canViewTeamClaims())
         <div class="nav-item">
             <a href="{{ route('user.claims.team') }}"
                class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
@@ -640,7 +640,7 @@
                 <i class="bi bi-receipt-cutoff"></i> My Claims
             </a>
         </div>
-        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
+        @if(Auth::user()->canViewTeamClaims())
         <div class="nav-item">
             <a href="{{ route('user.claims.team') }}"
                class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
@@ -797,7 +797,7 @@
                 <i class="bi bi-receipt-cutoff"></i> My Claims
             </a>
         </div>
-        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
+        @if(Auth::user()->canViewTeamClaims())
         <div class="nav-item">
             <a href="{{ route('user.claims.team') }}"
                class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
@@ -915,7 +915,7 @@
                 <i class="bi bi-receipt-cutoff"></i> My Claims
             </a>
         </div>
-        @if(Auth::user()->employee && (\App\Models\Employee::where('manager_id', Auth::user()->employee->id)->exists() || \App\Models\ExpenseClaimItem::where('approver_id', Auth::user()->employee->id)->exists()))
+        @if(Auth::user()->canViewTeamClaims())
         <div class="nav-item">
             <a href="{{ route('user.claims.team') }}"
                class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">

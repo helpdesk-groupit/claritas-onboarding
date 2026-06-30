@@ -181,7 +181,7 @@
                                         @foreach($empClaims as $claim)
                                         @php
                                             $isPending = $claim->status === 'submitted';
-                                            $myItems = $claim->items->where('approver_id', $employee->id)->values();
+                                            $myItems = $employee ? $claim->items->where('approver_id', $employee->id)->values() : collect();
                                         @endphp
                                         <div class="claim-card-wrap"
                                              data-status-group="{{ $mgrGroup($claim->status) }}"
