@@ -604,6 +604,11 @@ class LeaveController extends Controller
     public function teamLeave(Request $request)
     {
         $user = Auth::user();
+        // Team Leave is temporarily restricted to superadmin only — hidden from the nav and
+        // not reachable by direct URL for managers/approvers or other staff.
+        if (! $user->isSuperadmin()) {
+            return redirect()->route('user.dashboard')->with('error', 'Team Leave is currently unavailable.');
+        }
         $manager = $user->employee;
         if (!$manager) {
             return redirect()->route('user.dashboard')->with('error', 'No employee profile found.');
@@ -637,6 +642,10 @@ class LeaveController extends Controller
     public function managerApprove(LeaveApplication $application)
     {
         $user = Auth::user();
+        // Team Leave is temporarily restricted to superadmin only.
+        if (! $user->isSuperadmin()) {
+            abort(403);
+        }
         $manager = $user->employee;
 
         if (!$manager) {
@@ -691,6 +700,10 @@ class LeaveController extends Controller
     public function managerReject(Request $request, LeaveApplication $application)
     {
         $user = Auth::user();
+        // Team Leave is temporarily restricted to superadmin only.
+        if (! $user->isSuperadmin()) {
+            abort(403);
+        }
         $manager = $user->employee;
 
         if (!$manager) {
