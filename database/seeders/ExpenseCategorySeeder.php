@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ExpenseCategorySeeder extends Seeder
 {
@@ -258,19 +259,29 @@ class ExpenseCategorySeeder extends Seeder
         );
 
         // ── Claritas-only allowances (entity-scoped) ────────────────────────────
+        // Phone & Petrol Allowance is a FIXED RM500/month entitlement granted to ONE person
+        // (Chung Ming Choon). Resolve his employee id by work email on whichever DB this runs,
+        // so it stays correct across local/live where ids differ. If he can't be resolved, the
+        // restriction is left unset (logs a warning) — we never silently open it to everyone.
+        $phonePetrolEmployee = DB::table('employees')->where('company_email', 'mcchung@claritas.asia')->value('id')
+            ?? DB::table('employees')->where('full_name', 'Chung Ming Choon')->value('id');
+        if (! $phonePetrolEmployee) {
+            Log::warning('ExpenseCategorySeeder: could not resolve Chung Ming Choon (mcchung@claritas.asia) for the Phone & Petrol Allowance restriction; category left unrestricted.');
+        }
         DB::table('expense_categories')->updateOrInsert(
             ['code' => 'CLARITAS_PHONE_PETROL'],
             [
-                'gl_code' => null,
+                'gl_code' => '919-000',
                 'name' => 'Phone & Petrol Allowance',
                 'company' => 'Claritas',
-                'description' => 'Claritas monthly allowance covering phone and petrol for eligible staff, capped at RM500/month.',
-                'keywords' => json_encode(['phone allowance', 'petrol allowance', 'allowance']),
+                'description' => 'Claritas fixed monthly phone & petrol allowance of RM500, granted to one eligible staff member. Auto-claims RM500; attach receipts as proof of usage.',
+                'keywords' => json_encode(['phone allowance', 'petrol allowance', 'support allowance', 'allowance']),
                 'monthly_limit' => 500.00,
-                'rate_type' => 'receipt',
-                'rate_amount' => null,
+                'rate_type' => 'fixed',
+                'rate_amount' => 500.00,
                 'limit_period' => 'monthly',
                 'applies_to_role' => null,
+                'applies_to_employee_ids' => $phonePetrolEmployee ? json_encode([(int) $phonePetrolEmployee]) : null,
                 'requires_receipt' => true,
                 'is_active' => true,
                 'sort_order' => 52,

@@ -27,12 +27,16 @@ class ClaimRulesService
             ->where(function ($q) use ($company) {
                 $q->whereNull('company');
                 if ($company) {
-                    $q->orWhere('company', $company);
+                    // Category.company holds the short entity token ("Claritas"); employees store
+                    // the full registered name ("Claritas Consulting (Asia) Sdn Bhd"). Match the
+                    // token as a prefix of the employee's company so entity-scoped categories are
+                    // actually reachable (exact match still works — it's a prefix of itself).
+                    $q->orWhereRaw("LOWER(TRIM(?)) LIKE LOWER(CONCAT(`company`, '%'))", [$company]);
                 }
             })
             ->orderBy('sort_order')
             ->get()
-            ->filter(fn (ExpenseCategory $c) => self::roleAllows($employee, $c->applies_to_role))
+            ->filter(fn (ExpenseCategory $c) => self::categoryAllowed($employee, $c))
             ->values();
     }
 
@@ -130,6 +134,27 @@ class ClaimRulesService
             'intern' => self::isInternOrProbationer($employee),
             default => true,
         };
+    }
+
+    /**
+     * Per-employee restriction: a category with a non-empty applies_to_employee_ids is only
+     * usable by the listed employees (e.g. a personal allowance). Null/empty = no restriction.
+     */
+    public static function employeeAllowed(Employee $employee, ExpenseCategory $category): bool
+    {
+        $ids = $category->applies_to_employee_ids;
+        if (empty($ids)) {
+            return true;
+        }
+
+        return in_array((int) $employee->id, array_map('intval', (array) $ids), true);
+    }
+
+    /** Full category eligibility for an employee: role AND per-employee restriction. */
+    public static function categoryAllowed(Employee $employee, ExpenseCategory $category): bool
+    {
+        return self::roleAllows($employee, $category->applies_to_role)
+            && self::employeeAllowed($employee, $category);
     }
 
     // ── Computed amounts ─────────────────────────────────────────────────────

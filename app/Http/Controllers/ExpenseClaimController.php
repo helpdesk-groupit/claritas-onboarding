@@ -270,7 +270,7 @@ class ExpenseClaimController extends Controller
         ]);
 
         $category = ExpenseCategory::findOrFail($validated['expense_category_id']);
-        if (! ClaimRulesService::roleAllows($employee, $category->applies_to_role)) {
+        if (! ClaimRulesService::categoryAllowed($employee, $category)) {
             return response()->json(['ok' => false, 'errors' => ['expense_category_id' => 'You are not eligible to claim under this category.']], 422);
         }
 
@@ -457,7 +457,7 @@ class ExpenseClaimController extends Controller
         ]);
 
         $category = ExpenseCategory::findOrFail($validated['expense_category_id']);
-        if (! ClaimRulesService::roleAllows($employee, $category->applies_to_role)) {
+        if (! ClaimRulesService::categoryAllowed($employee, $category)) {
             return response()->json(['ok' => false, 'errors' => ['expense_category_id' => 'You are not eligible to claim under this category.']], 422);
         }
 
@@ -862,7 +862,7 @@ class ExpenseClaimController extends Controller
         }
 
         // Role eligibility (e.g. intern-only categories).
-        if (! ClaimRulesService::roleAllows($employee, $category->applies_to_role)) {
+        if (! ClaimRulesService::categoryAllowed($employee, $category)) {
             return back()->withErrors(['expense_category_id' => 'You are not eligible to claim under this category.'])->withInput();
         }
 
@@ -1099,7 +1099,7 @@ class ExpenseClaimController extends Controller
         if ($category->company && $employee->company && $category->company !== $employee->company) {
             return back()->withErrors(['expense_category_id' => 'This category is not available for your company.'])->withInput();
         }
-        if (! ClaimRulesService::roleAllows($employee, $category->applies_to_role)) {
+        if (! ClaimRulesService::categoryAllowed($employee, $category)) {
             return back()->withErrors(['expense_category_id' => 'You are not eligible to claim under this category.'])->withInput();
         }
 

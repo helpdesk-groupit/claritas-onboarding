@@ -9,7 +9,7 @@ class ExpenseCategory extends Model
     protected $fillable = [
         'company', 'name', 'code', 'gl_code', 'description',
         'monthly_limit', 'rate_type', 'rate_amount', 'limit_period', 'applies_to_role',
-        'requires_receipt', 'is_active',
+        'applies_to_employee_ids', 'requires_receipt', 'is_active',
         'sort_order', 'keywords',
     ];
 
@@ -19,6 +19,7 @@ class ExpenseCategory extends Model
         'requires_receipt' => 'boolean',
         'is_active' => 'boolean',
         'keywords' => 'array',
+        'applies_to_employee_ids' => 'array',
     ];
 
     /** True when the line amount is computed/derived rather than the receipt total. */
