@@ -102,6 +102,22 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::post('/it/onboarding/{onboarding}/assign-pic', [ItTaskController::class, 'assignPic'])->name('it.assign.pic');
     Route::post('/it/tasks/{task}/reassign', [ItTaskController::class, 'reassign'])->name('it.tasks.reassign');
 
+    // ── IT: Automation › Email Workflow ─────────────────────────────────
+    // Controller self-gates to IT roles + superadmin/system_admin.
+    Route::prefix('it/automation/email-workflow')->name('it.automation.email-workflow.')->group(function () {
+        Route::get('/',                       [\App\Http\Controllers\EmailWorkflowController::class, 'index'])->name('index');
+        Route::get('/create',                 [\App\Http\Controllers\EmailWorkflowController::class, 'create'])->name('create');
+        Route::post('/',                      [\App\Http\Controllers\EmailWorkflowController::class, 'store'])->name('store');
+        Route::get('/{workflow}/edit',        [\App\Http\Controllers\EmailWorkflowController::class, 'edit'])->name('edit');
+        Route::put('/{workflow}',             [\App\Http\Controllers\EmailWorkflowController::class, 'update'])->name('update');
+        Route::post('/{workflow}/toggle',     [\App\Http\Controllers\EmailWorkflowController::class, 'toggleActive'])->name('toggle');
+        Route::post('/{workflow}/test-rules', [\App\Http\Controllers\EmailWorkflowController::class, 'testRules'])->name('test-rules');
+        Route::delete('/{workflow}',          [\App\Http\Controllers\EmailWorkflowController::class, 'destroy'])->name('destroy');
+        // Connections (user-supplied OAuth credentials).
+        Route::post('/connections',                 [\App\Http\Controllers\EmailWorkflowController::class, 'saveConnection'])->name('connections.save');
+        Route::delete('/connections/{connection}',  [\App\Http\Controllers\EmailWorkflowController::class, 'deleteConnection'])->name('connections.delete');
+    });
+
     // Two-Factor Authentication management
     Route::get('/two-factor/setup', [TwoFactorController::class, 'setup'])->name('two-factor.setup');
     Route::post('/two-factor/confirm', [TwoFactorController::class, 'confirm'])->name('two-factor.confirm');

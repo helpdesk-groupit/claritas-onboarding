@@ -1,0 +1,45 @@
+<?php
+
+namespace App\Support\Automation\Contracts;
+
+use App\Models\EmailWorkflowConnection;
+
+/**
+ * Email source provider contract (Gmail, Outlook, IMAP, …).
+ *
+ * Every email provider implements this interface; the capture/reconcile
+ * engine (Phase 2) and the wizard depend only on the contract, never on a
+ * concrete provider. Adding a provider = one class implementing this + one
+ * ProviderRegistry entry.
+ *
+ * NOTE: Phase 1 ships the contract + registry + detection engine. Concrete
+ * network-calling adapters (GmailAdapter, …) land in Phase 2 with their
+ * integration tests against recorded fixtures.
+ */
+interface EmailSourceAdapter
+{
+    /** Registry id, e.g. 'gmail'. */
+    public function providerId(): string;
+
+    /**
+     * Search the mailbox.
+     *
+     * @param  array<string,mixed>  $query  provider-agnostic query (window, keywords)
+     * @param  array<string,mixed>  $paging  cursor/limit
+     * @return array<int, array<string,mixed>> lightweight message headers
+     */
+    public function search(EmailWorkflowConnection $conn, array $query, array $paging = []): array;
+
+    /**
+     * Fetch a full message (body + attachment metadata).
+     *
+     * @return array<string,mixed>
+     */
+    public function getMessage(EmailWorkflowConnection $conn, string $messageId): array;
+
+    /** Download one attachment's bytes. */
+    public function downloadAttachment(EmailWorkflowConnection $conn, string $messageId, string $attachmentId): string;
+
+    /** Optionally label/mark a message processed (idempotency aid). */
+    public function markProcessed(EmailWorkflowConnection $conn, string $messageId, string $label): void;
+}
