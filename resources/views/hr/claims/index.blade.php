@@ -255,12 +255,11 @@
     </div>
 </div>
 
-{{-- Export approved-claim PDFs as a ZIP, filtered by month / employee / company.
+{{-- Export approved-claim PDFs as a ZIP, filtered by month / company.
      The download-zip endpoint already honours these query params; this just drives them. --}}
 @php
     $approvedForExport = $claims->whereIn('status', ['hr_approved', 'paid']);
     $exportMonths = $approvedForExport->pluck('month')->filter()->unique()->sort()->values();
-    $exportEmployees = $approvedForExport->pluck('employee')->filter()->unique('id')->sortBy('full_name')->values();
     $exportCompanies = $approvedForExport->map(fn ($c) => $c->employee?->company)->filter()->unique()->sort()->values();
     $exportMonthNames = [1=>'January',2=>'February',3=>'March',4=>'April',5=>'May',6=>'June',7=>'July',8=>'August',9=>'September',10=>'October',11=>'November',12=>'December'];
 @endphp
@@ -286,18 +285,6 @@
                             <option value="{{ $m }}">{{ $exportMonthNames[(int) $m] ?? $m }}</option>
                             @endforeach
                         </select>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label small fw-semibold mb-1">Employee <span class="text-muted fw-normal">(tick one or more)</span></label>
-                        <div class="border rounded p-2" style="max-height:150px;overflow-y:auto;">
-                            @foreach($exportEmployees as $emp)
-                            <div class="form-check mb-0">
-                                <input class="form-check-input" type="checkbox" name="employee_id[]" value="{{ $emp->id }}" id="exp-emp-{{ $emp->id }}">
-                                <label class="form-check-label small" for="exp-emp-{{ $emp->id }}">{{ $emp->full_name }}</label>
-                            </div>
-                            @endforeach
-                        </div>
-                        <div class="form-text small">Leave all unticked to include every employee.</div>
                     </div>
                     <div class="mb-1">
                         <label class="form-label small fw-semibold mb-1">Company <span class="text-muted fw-normal">(tick one or more)</span></label>
