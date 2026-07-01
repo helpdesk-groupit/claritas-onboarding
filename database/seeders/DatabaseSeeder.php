@@ -61,7 +61,7 @@ class DatabaseSeeder extends Seeder
 
         // ── Asset inventory ────────────────────────────────────────────────
         $laptop1 = AssetInventory::create([
-            'asset_tag'=>'LPT-001','asset_name'=>'Dell Latitude 5540','asset_type'=>'laptop',
+            'asset_tag'=>'LPT-001','asset_type'=>'laptop',
             'brand'=>'Dell','model'=>'Latitude 5540','serial_number'=>'SN-DELL-001',
             'status'=>'available','asset_condition'=>'new',
             'processor'=>'Intel Core i7-1365U','ram_size'=>'16GB DDR5',
@@ -71,7 +71,7 @@ class DatabaseSeeder extends Seeder
             'warranty_expiry_date'=>'2027-01-15','maintenance_status'=>'none',
         ]);
         $laptop2 = AssetInventory::create([
-            'asset_tag'=>'LPT-002','asset_name'=>'HP EliteBook 840 G10','asset_type'=>'laptop',
+            'asset_tag'=>'LPT-002','asset_type'=>'laptop',
             'brand'=>'HP','model'=>'EliteBook 840 G10','serial_number'=>'SN-HP-002',
             'status'=>'available','asset_condition'=>'new',
             'processor'=>'Intel Core i5-1345U','ram_size'=>'8GB DDR5',
@@ -81,28 +81,28 @@ class DatabaseSeeder extends Seeder
             'warranty_expiry_date'=>'2027-02-01','maintenance_status'=>'none',
         ]);
         $monitor1 = AssetInventory::create([
-            'asset_tag'=>'MON-001','asset_name'=>'Dell 24" Monitor','asset_type'=>'monitor',
+            'asset_tag'=>'MON-001','asset_type'=>'monitor',
             'brand'=>'Dell','model'=>'P2422H','serial_number'=>'SN-MON-001',
             'status'=>'available','asset_condition'=>'good',
             'purchase_vendor'=>'Dell Malaysia','purchase_cost'=>800.00,
             'purchase_date'=>'2023-06-01','warranty_expiry_date'=>'2026-06-01','maintenance_status'=>'none',
         ]);
         AssetInventory::create([
-            'asset_tag'=>'MON-002','asset_name'=>'Dell 24" Monitor','asset_type'=>'monitor',
+            'asset_tag'=>'MON-002','asset_type'=>'monitor',
             'brand'=>'Dell','model'=>'P2422H','serial_number'=>'SN-MON-002',
             'status'=>'available','asset_condition'=>'good',
             'purchase_vendor'=>'Dell Malaysia','purchase_cost'=>800.00,
             'purchase_date'=>'2023-06-01','warranty_expiry_date'=>'2026-06-01','maintenance_status'=>'none',
         ]);
         AssetInventory::create([
-            'asset_tag'=>'CNV-001','asset_name'=>'USB-C Converter Hub','asset_type'=>'converter',
+            'asset_tag'=>'CNV-001','asset_type'=>'converter',
             'brand'=>'Anker','model'=>'7-in-1 Hub','serial_number'=>'SN-CNV-001',
             'status'=>'available','asset_condition'=>'new',
             'purchase_vendor'=>'Shopee','purchase_cost'=>150.00,
             'purchase_date'=>'2024-01-01','maintenance_status'=>'none',
         ]);
         AssetInventory::create([
-            'asset_tag'=>'ACS-001','asset_name'=>'RFID Access Card','asset_type'=>'access_card',
+            'asset_tag'=>'ACS-001','asset_type'=>'access_card',
             'brand'=>'Internal','model'=>'RFID Card','serial_number'=>'SN-ACS-001',
             'status'=>'available','asset_condition'=>'new',
             'purchase_vendor'=>'Internal','purchase_cost'=>10.00,
