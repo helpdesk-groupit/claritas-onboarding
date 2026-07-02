@@ -527,15 +527,22 @@
     var mgrSel = document.getElementById('emp_reporting_manager');
     var mgrIdInput = document.getElementById('emp_manager_id');
 
-    function normalize(s){ return (s||'').toString().trim().toLowerCase(); }
+    // Normalized company name -> group label; companies in the same group share
+    // their reporting-manager pool (e.g. the Cozzi branches). grpNorm() mirrors
+    // Company::normName() in PHP.
+    var EMP_COMPANY_GROUPS = @json($companyGroups ?? []);
+    function grpNorm(s){ return (s||'').toString().toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); }
+    function companyGroupOf(name){ return EMP_COMPANY_GROUPS[grpNorm(name)] || ''; }
 
     function filterManagers(){
         if (!mgrSel) return;
-        var comp = normalize(companySel ? companySel.value : '');
+        var comp = companySel ? grpNorm(companySel.value) : '';
+        var compGroup = comp ? companyGroupOf(companySel.value) : '';
         Array.prototype.forEach.call(mgrSel.options, function(opt){
             if (!opt.value) return; // keep placeholder
-            var oc = normalize(opt.getAttribute('data-company'));
-            var show = !comp || !oc || oc === comp;
+            var oc = grpNorm(opt.getAttribute('data-company'));
+            var og = companyGroupOf(opt.getAttribute('data-company'));
+            var show = !comp || !oc || oc === comp || (compGroup && og === compGroup);
             opt.hidden = !show;
             opt.disabled = !show;
         });

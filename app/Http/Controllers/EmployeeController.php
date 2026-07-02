@@ -858,8 +858,9 @@ class EmployeeController extends Controller
             ->orderBy('full_name')
             ->get(['id', 'full_name', 'preferred_name', 'department', 'company', 'work_role']);
         $companies = Company::orderBy('name')->get(['name', 'address']);
+        $companyGroups = Company::groupMap();
 
-        return view('hr.employees.create', compact('managers', 'companies'));
+        return view('hr.employees.create', compact('managers', 'companies', 'companyGroups'));
     }
 
     public function store(Request $request)
@@ -1139,7 +1140,9 @@ class EmployeeController extends Controller
             ->orderBy('asset_type')
             ->get();
 
-        return view('hr.employees.edit', compact('employee', 'managers', 'companies', 'directAssets'));
+        $companyGroups = Company::groupMap();
+
+        return view('hr.employees.edit', compact('employee', 'managers', 'companies', 'directAssets', 'companyGroups'));
     }
 
     // ── Helper: send consent request email for employee record edits ─────────

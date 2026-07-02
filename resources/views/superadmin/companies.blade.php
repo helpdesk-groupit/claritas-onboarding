@@ -4,6 +4,13 @@
 
 @section('content')
 
+{{-- Existing group labels for the Group/Affiliation autocomplete --}}
+<datalist id="companyGroupsList">
+    @foreach($companies->pluck('company_group')->filter()->unique()->sort() as $grp)
+    <option value="{{ $grp }}"></option>
+    @endforeach
+</datalist>
+
 <div class="row g-4">
 
     {{-- ── Add Company Form ─────────────────────────────────────────────── --}}
@@ -20,6 +27,16 @@
                         <input type="text" name="name" class="form-control @error('name') is-invalid @enderror"
                                value="{{ old('name') }}" placeholder="e.g. Claritas Asia Sdn. Bhd." required>
                         @error('name')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Group / Affiliation
+                            <span class="text-muted fw-normal small">(optional)</span>
+                        </label>
+                        <input type="text" name="company_group" list="companyGroupsList"
+                               class="form-control @error('company_group') is-invalid @enderror"
+                               value="{{ old('company_group') }}" placeholder="e.g. Cozzi">
+                        <div class="form-text">Companies sharing a group (e.g. the Cozzi branches) share reporting-manager pools.</div>
+                        @error('company_group')<div class="invalid-feedback">{{ $message }}</div>@enderror
                     </div>
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Company Address</label>
@@ -182,6 +199,14 @@
                         <label class="form-label fw-semibold">Company Name <span class="text-danger">*</span></label>
                         <input type="text" name="name" class="form-control"
                                value="{{ old('name', $company->name) }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Group / Affiliation
+                            <span class="text-muted fw-normal small">(optional)</span>
+                        </label>
+                        <input type="text" name="company_group" list="companyGroupsList" class="form-control"
+                               value="{{ old('company_group', $company->company_group) }}" placeholder="e.g. Cozzi">
+                        <div class="form-text">Same group = shared reporting-manager pool.</div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Company Address</label>

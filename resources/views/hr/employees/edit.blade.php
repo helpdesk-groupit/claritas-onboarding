@@ -1812,14 +1812,22 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
+// Normalized company name -> group label (companies in the same group share
+// their reporting-manager pool, e.g. the Cozzi branches). Keep grpNorm() in
+// sync with Company::normName() in PHP.
+var EMP_COMPANY_GROUPS = @json($companyGroups ?? []);
+function grpNorm(s) { return (s || '').toString().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+function companyGroupOf(name) { return EMP_COMPANY_GROUPS[grpNorm(name)] || ''; }
 function filterManagersByCompany(companyName, mgrSelectId) {
-    var norm = function(s) { return s.replace(/[.,]/g, '').replace(/\s+/g, ' ').trim().toLowerCase(); };
     var sel = document.getElementById(mgrSelectId);
     if (!sel) return;
-    var target = companyName ? norm(companyName) : '';
+    var target = companyName ? grpNorm(companyName) : '';
+    var targetGroup = target ? companyGroupOf(companyName) : '';
     Array.from(sel.options).forEach(function(opt) {
         if (!opt.value || !opt.dataset.company) return;
-        var match = !target || norm(opt.dataset.company) === target;
+        var oc = grpNorm(opt.dataset.company);
+        var og = companyGroupOf(opt.dataset.company);
+        var match = !target || oc === target || (targetGroup && og === targetGroup);
         opt.hidden   = !match;
         opt.disabled = !match;
     });
