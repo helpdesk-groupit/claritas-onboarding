@@ -62,6 +62,8 @@ Uses a **custom authentication provider** (`WorkEmailUserProvider`) that authent
 
 **Two-factor auth (TOTP):** `pragmarx/google2fa-laravel` + `bacon/bacon-qr-code`. `TwoFactorController` handles setup/confirm/disable and a pre-auth `/two-factor-challenge` (session-gated, `throttle:5,1`). The `EnforceTwoFactor` middleware sits in the main `auth` group and redirects users who haven't completed their 2FA challenge. Superadmin can reset a user's 2FA via `superadmin.accounts.reset-2fa`.
 
+**Trusted-device ("remember this device") flow:** `TrustedDeviceService` + `config/trusted-device.php` let a confirmed 2FA device skip the challenge for `TRUSTED_DEVICE_DAYS` (default 30). When `check_country` is on, a trusted device is re-challenged if the login country differs from the one recorded at trust time — but it **fails OPEN**: if the country can't be resolved (no GeoLite2 DB, private/local IP, lookup error) the device stays trusted, so local/intranet use isn't broken. Country lookups use `geoip2/geoip2` against the GeoLite2-Country DB refreshed by `geoip:update`.
+
 ### Employee Lifecycle Flow
 ```
 OnboardingInvite → register/set-password → Employee (active) → Offboarding
@@ -99,6 +101,7 @@ AssetInventory → AssetAssignment (to employee) → AssetProvisioning → retur
 - `backup:run` — daily at 2 AM (full encrypted backup, 30-day retention) + database snapshots daily (`--type=database`, 7-day retention)
 - `system:refresh-metadata` — hourly; caches dashboard/knowledge-base metadata (1-hour TTL) via `SystemMetadataService`
 - `system:check-updates` — daily at 6 AM; checks for dependency/system updates via `UpdateCheckerService` (24-hour cache)
+- `geoip:update` — monthly; refreshes the GeoLite2-Country DB (stored on the `local` disk via Storage facade, NAS-safe) used by the trusted-device location check (see 2FA below)
 
 ### Security Architecture
 - **`EnforceSingleSession`** middleware — prevents concurrent logins by rotating session tokens; kicks prior session when a new login occurs
@@ -114,6 +117,8 @@ AssetInventory → AssetAssignment (to employee) → AssetProvisioning → retur
 
 ### File Storage
 Two disks: `local` (private: `storage/app/private`, served via `SecureFileController`) and `public` (public: `storage/app/public`). Sensitive files (NRIC, contracts, certificates) go to the private disk and are served with role-gated access checks.
+
+Use the global `secure_file_url($path)` helper (autoloaded from `app/helpers.php`) to build file URLs in views — it routes paths under its sensitive-directory list (`nric_documents`, `employee_contracts`, `education_certificates`, `claim_receipts`, `aarfs`, `invoices`, etc.) through the authenticated `SecureFileController` and everything else (profile pictures, logos) through the public storage symlink. Don't hand-build storage URLs.
 
 ### Mail & Notifications
 Mailable classes live in `app/Mail/` with Blade templates in `resources/views/emails/`. Database notifications (bell icon) live in `app/Notifications/` and use Laravel's `Notification` facade with the `database` channel. Default sender is `hr@claritas.com` (configured via `MAIL_FROM_ADDRESS`).
@@ -182,6 +187,7 @@ Both views display Sections F–I via `partials.employee-extra-sections-view`. T
 - `AttachmentProcessor` — centralised secure-storage + image-compression pipeline for ticket uploads (resizes images to 1920px max width via GD, re-encodes to strip EXIF, moves PDFs/other files as-is). Used by both `TicketAttachment` (creation) and `TicketMessageAttachment` (chat).
 - `SecurityScoreService` — computes a cached (1-hour TTL) security-posture score/breakdown from `SecurityAuditLog` + config/schema checks; surfaced on the admin security dashboard
 - `UpdateCheckerService` — checks for dependency/system updates via HTTP; results cached 24 hours, refreshed by `system:check-updates`
+- `TrustedDeviceService` — "remember this device" for 2FA: records/validates trusted devices, GeoIP country gating (fails open), trust-window expiry. Config in `config/trusted-device.php` (see Two-factor auth)
 - `ClaimRulesService` — pure (HTTP-free, unit-tested) rules engine for the eClaim module: category eligibility, computed amounts (per-km/per-day/per-hour), period-aware + role-based caps with **cap-to-remaining** (`capAdjust`), and the two-stage working-day-aware deadlines (`submissionDeadline` = HR cutoff; `employeeSubmissionDeadline` = cutoff − buffer). See the Expense Claims section. Also does the ORS mileage distance (`mileageDistance`) and place autocomplete.
 - `ClaimReceiptOcrService` — AI-vision reader for the claim form: a receipt → `{amount, date, vendor, category}`, OR a **Google Maps screenshot** → `{distance_km, route_from, route_to}` (short landmark names). Reuses the accounting AI provider (`AccountingSetting::resolveForAi`) with `config/claims.php` overrides. Config-gated and **fails OPEN** — any error returns `null` and the user types details manually; OCR never blocks a claim.
 
@@ -322,6 +328,12 @@ Path 2 requires the `employees.department` value to **exactly match** the canoni
 - Routes at `/help/my-tickets`, `/help/ticket-management`, `/help/department-settings` — see [`HelpController`](app/Http/Controllers/HelpController.php). **Auth-gated** (sit inside the main `auth` middleware group in `routes/web.php`); URLs are shareable but viewers must log in. Layout still emits `noindex,nofollow`. Unauthenticated visitors land on the login page.
 - Each modal footer carries a **Copy share link** button (`.um-share-btn` with `data-share-url`) and an **Open in new tab** anchor pointing to the public help URL. The clipboard-copy JS lives once in [`partials/_user-manual-share-js.blade.php`](resources/views/partials/_user-manual-share-js.blade.php) (guarded by `@once` so multiple modal includes don't push it twice).
 - Don't put real company names back into the body partials — the public pages would expose them. Keep the placeholder vocabulary (`Company A`, `Company B`, `Company C`, `Company D`).
+
+### Email Workflow Automation (IT module)
+IT-scoped "Email Source → Detection Rules → Storage → Log → Schedule" wizard that harvests invoices/receipts from a mailbox. Routes under `it/automation/email-workflow/*` (`EmailWorkflowController`); models `EmailWorkflow` + `EmailWorkflowConnection`. Engine lives in `app/Support/Automation/` (not `app/Services/`):
+- **`ProviderRegistry`** — declares the supported email sources and their auth: **Gmail** + **Outlook/365** (OAuth) and generic **IMAP** (`webklex/php-imap`). `OAuthService` handles the OAuth token dance; `EmailAdapterFactory` resolves a provider id to its adapter.
+- **Adapters** (`Adapters/`, behind the `EmailSourceAdapter` contract) — `GmailAdapter`, `OutlookAdapter`, `ImapAdapter` each normalize provider messages to the same shape (`message_id/from/subject/body/date/attachments`), so the rest of the pipeline is provider-independent.
+- **`DetectionEngine`** — pure, network-free, heavily unit-tested. Takes a normalized message + rule set, decides match + which attachments to capture, and best-effort extracts fields (date/from/subject + amount/currency/description). Shared by both the "Test rules" preview (`test-rules` route) and the real capture run. Rule shape is `EmailWorkflow::DEFAULT_RULES` (subject/body keyword or regex match, `combine_subject_body` and/or, attachment required + type allow-list). Keep new detection logic here so it stays testable.
 
 ### Notifications / Bell Icon
 Uses Laravel's standard `notifications` table via the `Notifiable` trait on `User`. All ticket notifications are `database`-only (no mail channel — email goes via separate `Mail::to()->send($mailable)` calls inside controllers/commands).

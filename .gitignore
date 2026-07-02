@@ -22,7 +22,11 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
+desktop.ini
 @eaDir
 
 # Real employee claim samples for analysis — never commit (contains PII)
 /claim-samples
+
+# Database dumps / backups — contain real data, never commit
+*.sql
