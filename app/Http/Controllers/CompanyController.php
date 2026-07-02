@@ -80,6 +80,7 @@ class CompanyController extends Controller
         }
 
         $oldName = $company->name;
+        $oldAddress = $company->address;
         $company->update($data);
 
         // Cascade a rename onto employees so their company stays exactly the registered name
@@ -87,6 +88,16 @@ class CompanyController extends Controller
         // (announcements, tickets, claims) stop matching.
         if ($oldName !== $company->name) {
             \App\Models\Employee::where('company', $oldName)->update(['company' => $company->name]);
+        }
+
+        // Cascade an address change onto employees who were using the company's previous
+        // default address (office_location is a per-employee copy taken at registration).
+        // Only rows that still match the OLD address are updated, so a staff member with a
+        // custom office (e.g. a branch or remote address) is left untouched.
+        if (! empty($oldAddress) && $oldAddress !== $company->address) {
+            \App\Models\Employee::where('company', $company->name)
+                ->where('office_location', $oldAddress)
+                ->update(['office_location' => $company->address]);
         }
 
         return back()->with('success', 'Company updated successfully.');
