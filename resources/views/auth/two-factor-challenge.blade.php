@@ -49,13 +49,20 @@
                     </div>
                 </div>
 
-                <div class="form-check mb-3">
-                    <input class="form-check-input" type="checkbox" name="remember_device" value="1" id="rememberDevice">
-                    <label class="form-check-label small text-muted" for="rememberDevice">
-                        Trust this device for 30 days &mdash; you won't be asked for a code again on this
-                        device unless you sign in from a new device or country.
-                    </label>
-                </div>
+                <label for="rememberDevice" class="d-flex align-items-start gap-2 mb-3 p-3 rounded-3"
+                       style="background:#eff6ff;border:1px solid #bfdbfe;cursor:pointer;">
+                    <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" name="remember_device" value="1"
+                           id="rememberDevice" style="width:1.3rem;height:1.3rem;">
+                    <span>
+                        <span class="fw-semibold text-primary d-block">
+                            <i class="bi bi-shield-check me-1"></i>Trust this device for 30 days
+                        </span>
+                        <span class="small text-muted">
+                            You won't be asked for a code again on this device unless you sign in from a
+                            new device or country.
+                        </span>
+                    </span>
+                </label>
 
                 <button type="submit" class="btn btn-login w-100 mb-3">
                     <i class="bi bi-box-arrow-in-right me-2"></i>Verify
