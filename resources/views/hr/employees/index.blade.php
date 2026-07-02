@@ -138,6 +138,9 @@
         <h6 class="mb-0 fw-bold"><i class="bi bi-people me-2 text-primary"></i>Active Employees</h6>
         <div class="d-flex gap-2">
             @if(in_array(Auth::user()->role, ['hr_manager', 'superadmin']))
+            <a href="{{ route('employees.create') }}" class="btn btn-sm btn-primary" title="Add a new employee">
+                <i class="bi bi-person-plus me-1"></i>Add Employee
+            </a>
             <a href="{{ route('employees.import.template') }}" class="btn btn-sm btn-outline-secondary" title="Download CSV Template">
                 <i class="bi bi-file-earmark-arrow-down me-1"></i>CSV Template
             </a>

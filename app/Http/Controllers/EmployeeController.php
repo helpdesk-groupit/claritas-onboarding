@@ -845,6 +845,264 @@ class EmployeeController extends Controller
         return back()->with('success', "Asset [{$asset->asset_tag}] marked as returned.");
     }
 
+    // ── HR Manager / Superadmin only: Add a new employee (manual, one-by-one) ──
+    public function create()
+    {
+        $u = Auth::user();
+        if (! in_array($u->role, ['hr_manager', 'superadmin'])) {
+            abort(403);
+        }
+
+        // Reporting-manager picker pool: ALL active employees (mirrors edit()).
+        $managers = Employee::whereNull('active_until')
+            ->orderBy('full_name')
+            ->get(['id', 'full_name', 'preferred_name', 'department', 'company', 'work_role']);
+        $companies = Company::orderBy('name')->get(['name', 'address']);
+
+        return view('hr.employees.create', compact('managers', 'companies'));
+    }
+
+    public function store(Request $request)
+    {
+        $u = Auth::user();
+        if (! in_array($u->role, ['hr_manager', 'superadmin'])) {
+            abort(403);
+        }
+
+        // Same field set as update(); full_name + company required (identity + duplicate check).
+        $rules = [
+            // Personal
+            'full_name' => 'required|string|max:255',
+            'preferred_name' => 'nullable|string|max:100',
+            'official_document_id' => 'nullable|string|max:100',
+            'date_of_birth' => 'nullable|date',
+            'sex' => 'nullable|string',
+            'marital_status' => 'nullable|string',
+            'religion' => 'nullable|string|max:100',
+            'race' => 'nullable|string|max:100',
+            'is_disabled' => 'nullable|boolean',
+            'residential_address' => 'nullable|string',
+            'personal_contact_number' => 'nullable|string|max:50',
+            'house_tel_no' => 'nullable|string|max:20',
+            'personal_email' => 'nullable|email',
+            'bank_account_number' => 'nullable|string|max:100',
+            'bank_name' => 'nullable|string|max:100',
+            'bank_name_other' => 'nullable|string|max:100',
+            'epf_no' => 'nullable|string|max:50',
+            'income_tax_no' => 'nullable|string|max:50',
+            'socso_no' => 'nullable|string|max:50',
+            // NRIC files
+            'nric_files' => 'nullable|array|max:5',
+            'nric_files.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+            // Work
+            'employee_number' => 'nullable|string|max:50',
+            'designation' => 'nullable|string|max:255',
+            'department' => 'nullable|string|max:255',
+            'company' => 'required|string|max:255',
+            'office_location' => 'nullable|string|max:255',
+            'reporting_manager' => 'nullable|string|max:255',
+            'manager_id' => 'nullable|integer|exists:employees,id',
+            'company_email' => 'nullable|email',
+            'google_id' => 'nullable|string|max:255',
+            'employment_type' => 'nullable|string',
+            'work_role' => 'nullable|string',
+            'start_date' => 'nullable|date',
+            'exit_date' => 'nullable|date|after_or_equal:start_date',
+            'confirmation_date' => 'nullable|date',
+            'employment_status' => 'nullable|in:active,resigned,terminated,contract_ended',
+            'remarks' => 'nullable|string|max:2000',
+            // Section F - Education
+            'edu_qualification.*' => 'nullable|string|max:255',
+            'edu_institution.*' => 'nullable|string|max:255',
+            'edu_year.*' => 'nullable|integer|min:1950|max:2099',
+            'edu_experience_total' => 'nullable|string|max:10',
+            'edu_certificate.*.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
+            // Section G - Spouse
+            'spouses' => 'nullable|array',
+            'spouses.*.name' => 'nullable|string|max:255',
+            'spouses.*.nric_no' => 'nullable|string|max:50',
+            'spouses.*.tel_no' => 'nullable|string|max:30',
+            'spouses.*.occupation' => 'nullable|string|max:255',
+            'spouses.*.income_tax_no' => 'nullable|string|max:50',
+            'spouses.*.address' => 'nullable|string',
+            'spouses.*.is_working' => 'nullable|boolean',
+            'spouses.*.is_disabled' => 'nullable|boolean',
+            // Section H - Emergency Contacts
+            'emergency.1.name' => 'nullable|string|max:255',
+            'emergency.1.tel_no' => 'nullable|string|max:30',
+            'emergency.1.relationship' => 'nullable|string|max:100',
+            'emergency.2.name' => 'nullable|string|max:255',
+            'emergency.2.tel_no' => 'nullable|string|max:30',
+            'emergency.2.relationship' => 'nullable|string|max:100',
+            // Section I - Child Registration
+            'cat_a_100' => 'nullable|integer|min:0|max:99', 'cat_a_50' => 'nullable|integer|min:0|max:99',
+            'cat_b_100' => 'nullable|integer|min:0|max:99', 'cat_b_50' => 'nullable|integer|min:0|max:99',
+            'cat_c_100' => 'nullable|integer|min:0|max:99', 'cat_c_50' => 'nullable|integer|min:0|max:99',
+            'cat_d_100' => 'nullable|integer|min:0|max:99', 'cat_d_50' => 'nullable|integer|min:0|max:99',
+            'cat_e_100' => 'nullable|integer|min:0|max:99', 'cat_e_50' => 'nullable|integer|min:0|max:99',
+        ];
+
+        $data = $request->validate($rules);
+
+        // ── Duplicate prevention (active employees) ──────────────────────
+        $name = $data['full_name'];
+        $nric = $data['official_document_id'] ?? null;
+        $company = $data['company'];
+        $email = $data['company_email'] ?? null;
+
+        $dupeErrors = [];
+        $nameDupe = Employee::whereNull('active_until')
+            ->whereRaw('LOWER(full_name) = ?', [mb_strtolower($name)])
+            ->where('company', $company)
+            ->exists();
+        if ($nameDupe) {
+            $dupeErrors['full_name'] = 'An active employee with this name ('.$name.') already exists at '.$company.'.';
+        }
+        if ($nric) {
+            $nricDupe = Employee::whereNull('active_until')
+                ->where('official_document_id', $nric)
+                ->where('company', $company)
+                ->exists();
+            if ($nricDupe) {
+                $dupeErrors['official_document_id'] = 'An active employee with this NRIC/Passport ('.$nric.') already exists at '.$company.'.';
+            }
+        }
+        if ($email) {
+            $emailDupe = Employee::whereNull('active_until')->where('company_email', $email)->exists()
+                || \App\Models\User::where('work_email', $email)->exists();
+            if ($emailDupe) {
+                $dupeErrors['company_email'] = 'This company email ('.$email.') is already in use.';
+            }
+        }
+        if ($dupeErrors) {
+            return back()->withErrors($dupeErrors)->withInput();
+        }
+
+        // Resolve bank_name (Other fallback)
+        if (isset($data['bank_name']) && in_array($data['bank_name'], ['Other', 'other'])) {
+            $data['bank_name'] = $data['bank_name_other'] ?? null;
+        }
+        unset($data['bank_name_other']);
+        unset($data['nric_files']); // handled separately below
+
+        $data['is_disabled'] = $request->boolean('is_disabled');
+
+        // work_role can only be set by superadmin
+        if (! $u->isSuperadmin()) {
+            unset($data['work_role']);
+        }
+
+        // Handle NRIC file uploads
+        $newNricPaths = [];
+        if ($request->hasFile('nric_files')) {
+            foreach ($request->file('nric_files') as $file) {
+                if ($file && $file->isValid()) {
+                    $newNricPaths[] = $file->store('nric_documents', 'local');
+                }
+            }
+        }
+        if (! empty($newNricPaths)) {
+            $data['nric_file_paths'] = $newNricPaths;
+            $data['nric_file_path'] = $newNricPaths[0];
+        }
+
+        // Auto-sync google_id from company_email if not explicitly set
+        if (! empty($data['company_email']) && empty($data['google_id'])) {
+            $data['google_id'] = $data['company_email'];
+        }
+
+        // New record defaults — active from today, no exit
+        $data['active_from'] = now()->toDateString();
+        $data['active_until'] = null;
+        if (empty($data['employment_status'])) {
+            $data['employment_status'] = 'active';
+        }
+
+        // Employee::create() ignores non-fillable keys (edu_*, spouses, emergency, cat_*),
+        // so those pass through harmlessly and are persisted to their own tables below.
+        $employee = Employee::create($data);
+
+        // Resolve manager_id if not explicitly provided but reporting_manager was set
+        if (empty($data['manager_id']) && ! empty($data['reporting_manager'])) {
+            $resolvedId = Employee::resolveManagerId($data['reporting_manager']);
+            if ($resolvedId && $resolvedId !== $employee->id) {
+                $employee->update(['manager_id' => $resolvedId]);
+            }
+        }
+
+        // ── Section F: Education ─────────────────────────────────────────
+        $expTotal = $request->input('edu_experience_total');
+        foreach ($request->input('edu_qualification', []) as $i => $qual) {
+            if (empty(trim((string) $qual))) {
+                continue;
+            }
+            $newCertPaths = [];
+            if ($request->hasFile("edu_certificate.{$i}")) {
+                foreach ((array) $request->file("edu_certificate.{$i}") as $certFile) {
+                    if ($certFile instanceof \Illuminate\Http\UploadedFile && $certFile->isValid()) {
+                        $newCertPaths[] = $certFile->store('education_certificates', 'local');
+                    }
+                }
+            }
+            $mergedCerts = array_slice($newCertPaths, 0, 5);
+            \App\Models\EmployeeEducationHistory::create([
+                'employee_id' => $employee->id,
+                'qualification' => $qual,
+                'institution' => $request->input("edu_institution.{$i}"),
+                'year_graduated' => $request->input("edu_year.{$i}"),
+                'years_experience' => ($i === 0) ? $expTotal : null,
+                'certificate_path' => $mergedCerts[0] ?? null,
+                'certificate_paths' => ! empty($mergedCerts) ? $mergedCerts : null,
+            ]);
+        }
+
+        // ── Section G: Spouse ────────────────────────────────────────────
+        foreach ($request->input('spouses', []) as $sp) {
+            if (empty($sp['name'])) {
+                continue;
+            }
+            \App\Models\EmployeeSpouseDetail::create([
+                'employee_id' => $employee->id,
+                'name' => $sp['name'],
+                'nric_no' => $sp['nric_no'] ?? null,
+                'tel_no' => $sp['tel_no'] ?? null,
+                'occupation' => $sp['occupation'] ?? null,
+                'income_tax_no' => $sp['income_tax_no'] ?? null,
+                'address' => $sp['address'] ?? null,
+                'is_working' => ! empty($sp['is_working']),
+                'is_disabled' => ! empty($sp['is_disabled']),
+            ]);
+        }
+
+        // ── Section H: Emergency Contacts ────────────────────────────────
+        foreach ([1, 2] as $order) {
+            $ec = $request->input("emergency.{$order}");
+            if (! empty($ec['name'])) {
+                \App\Models\EmployeeEmergencyContact::create([
+                    'employee_id' => $employee->id,
+                    'contact_order' => $order,
+                    'name' => $ec['name'],
+                    'tel_no' => $ec['tel_no'] ?? null,
+                    'relationship' => $ec['relationship'] ?? null,
+                ]);
+            }
+        }
+
+        // ── Section I: Child Registration ────────────────────────────────
+        $childData = [];
+        foreach (['a', 'b', 'c', 'd', 'e'] as $key) {
+            $childData["cat_{$key}_100"] = (int) ($request->input("cat_{$key}_100") ?? 0);
+            $childData["cat_{$key}_50"] = (int) ($request->input("cat_{$key}_50") ?? 0);
+        }
+        if (! empty(array_filter($childData))) {
+            $childData['employee_id'] = $employee->id;
+            \App\Models\EmployeeChildRegistration::create($childData);
+        }
+
+        return redirect()->route('employees.show', $employee)
+            ->with('success', 'New employee "'.$employee->full_name.'" added.');
+    }
+
     // ── HR Manager only: Edit employee detail ────────────────────────────
     public function edit(Employee $employee)
     {

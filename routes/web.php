@@ -209,6 +209,9 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::get('/hr/employees/export', [EmployeeController::class, 'export'])->name('employees.export');
     Route::get('/hr/employees/import-template', [EmployeeController::class, 'importTemplate'])->name('employees.import.template');
     Route::post('/hr/employees/import', [EmployeeController::class, 'importCsv'])->name('employees.import')->middleware('throttle:uploads');
+    // Add Employee (manual, one-by-one) — must precede the {employee} wildcard
+    Route::get('/hr/employees/create', [EmployeeController::class, 'create'])->name('employees.create');
+    Route::post('/hr/employees', [EmployeeController::class, 'store'])->name('employees.store')->middleware('throttle:uploads');
     Route::get('/hr/employees/{employee}', [EmployeeController::class, 'show'])->name('employees.show');
     Route::get('/hr/employees/{employee}/edit', [EmployeeController::class, 'edit'])->name('employees.edit');
     Route::put('/hr/employees/{employee}', [EmployeeController::class, 'update'])->name('employees.update')->middleware('throttle:uploads');
