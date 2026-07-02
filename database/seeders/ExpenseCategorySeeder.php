@@ -177,11 +177,14 @@ class ExpenseCategorySeeder extends Seeder
             );
         }
 
-        // ── Extra Hours (not in the GL list; paid in bands, no receipt) ─────────
+        // ── Extra Hours (paid in bands, no receipt) ─────────────────────────────
+        // Posts to GL 914(b)-000 (Transportation) — Finance books overtime there.
+        // gl_code is intentionally shared with the receipt-based Transportation
+        // category; the two stay distinct by `code` (EXTRA_HOURS vs 914(b)-000).
         DB::table('expense_categories')->updateOrInsert(
             ['code' => 'EXTRA_HOURS'],
             [
-                'gl_code' => null,
+                'gl_code' => '914(b)-000',
                 'name' => 'Extra Hours',
                 'company' => null,
                 'description' => 'Extra working hours, paid in bands: 4 hours = RM50, 8 hours = RM100. Specify the hours worked. Can be taken as cash or replacement leave.',
