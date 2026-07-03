@@ -86,9 +86,7 @@
       @endif
     @endif
 
-    <p style="text-align:center;">
-      <a href="{{ route('login') }}" class="btn">Open My Claims →</a>
-    </p>
+    @include('emails.partials._button', ['url' => route('login'), 'label' => 'Open My Claims →'])
   </div>
 
   <div class="footer">

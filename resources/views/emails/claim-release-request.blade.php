@@ -30,7 +30,7 @@
     <div class="box">
       <strong>HR's reason:</strong><br>{{ $claim->hr_remarks }}
     </div>
-    <p style="text-align:center;"><a href="{{ route('login') }}" class="btn">Review &amp; Release →</a></p>
+    @include('emails.partials._button', ['url' => route('login'), 'label' => 'Review & Release →'])
   </div>
   <div class="footer">Automated message. The employee can't correct this claim until you release it.</div>
 </div>

@@ -41,7 +41,7 @@
         @endforeach
       </tbody>
     </table>
-    <p style="text-align:center;"><a href="{{ route('login') }}" class="btn">Review &amp; Approve →</a></p>
+    @include('emails.partials._button', ['url' => route('login'), 'label' => 'Review & Approve →'])
   </div>
   <div class="footer">Automated message. Claims are not auto-approved &mdash; please review and approve them yourself.</div>
 </div>

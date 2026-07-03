@@ -79,9 +79,7 @@
     </div>
     @endif
 
-    <p style="text-align:center;">
-      <a href="{{ route('login') }}" class="btn">Make correction →</a>
-    </p>
+    @include('emails.partials._button', ['url' => route('login'), 'label' => 'Make correction →'])
   </div>
 
   <div class="footer">

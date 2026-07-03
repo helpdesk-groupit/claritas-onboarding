@@ -56,9 +56,7 @@
       <div class="detail-row"><span class="detail-label">Total (w/ SST)</span> <span class="detail-value">RM {{ number_format($claim->total_with_gst, 2) }}</span></div>
     </div>
 
-    <p style="text-align:center;">
-      <a href="{{ route('login') }}" class="btn">View Claim →</a>
-    </p>
+    @include('emails.partials._button', ['url' => route('login'), 'label' => 'View Claim →'])
   </div>
 
   <div class="footer">
