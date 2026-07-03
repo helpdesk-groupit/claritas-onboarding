@@ -7,6 +7,15 @@
 @php
     $editable = $claim->status === 'draft';
     $approverName = $claim->manager?->full_name ?? '';
+    // Receipt dates are constrained to the claim's reporting month (a receipt is claimed
+    // under its own month). Max is the month end, but never the future.
+    [$ccPeriodStart, $ccPeriodEnd] = \App\Services\ClaimRulesService::periodBounds($claim->year, $claim->month);
+    $ccDateMin = $ccPeriodStart->toDateString();
+    $ccDateMax = ($ccPeriodEnd->greaterThan(now()) ? now() : $ccPeriodEnd)->toDateString();
+    $ccMonthName = $ccPeriodStart->format('F Y');
+    $ccDefaultDate = ($claim->event_date && \App\Services\ClaimRulesService::itemDateInPeriod($claim->event_date, $claim->year, $claim->month))
+        ? $claim->event_date->toDateString()
+        : $ccDateMax;
 @endphp
 
 {{-- Rejection banner (terminal claims kept as history) --}}
@@ -98,7 +107,10 @@
         </div>
         <div class="col-md-4">
             <label class="form-label small mb-1">Date of Expense <span class="text-danger">*</span></label>
-            <input type="date" class="form-control form-control-sm cc-i-date" max="{{ now()->toDateString() }}" value="{{ $claim->event_date?->toDateString() ?? now()->toDateString() }}">
+            <input type="date" class="form-control form-control-sm cc-i-date" min="{{ $ccDateMin }}" max="{{ $ccDateMax }}" value="{{ $ccDefaultDate }}">
+            <div class="cc-date-note small mt-1 py-2 px-2 rounded" style="background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;">
+                <i class="bi bi-calendar-check me-1"></i>This is a <strong>{{ $ccMonthName }}</strong> claim — every receipt added here must be dated in <strong>{{ $ccMonthName }}</strong>. A receipt from another month should be claimed under that month's own claim.
+            </div>
         </div>
     </div>
 

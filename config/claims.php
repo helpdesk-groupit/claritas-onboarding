@@ -13,6 +13,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Year-end grace day
+    |--------------------------------------------------------------------------
+    | A receipt must be claimed under a report for its own month, and within the
+    | same calendar year — except for a grace window into January: up to and
+    | including this day of January, the PREVIOUS year's months may still be
+    | filed (catch-up for December, etc.). After it, the previous year is closed.
+    */
+    'year_end_grace_day' => 20,
+
+    /*
+    |--------------------------------------------------------------------------
     | Mileage
     |--------------------------------------------------------------------------
     | Per-km rates by vehicle. Distance is measured from `origin` (default

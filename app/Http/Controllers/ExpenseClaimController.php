@@ -138,6 +138,18 @@ class ExpenseClaimController extends Controller
             $period = $now->copy();
         }
 
+        // A claim can only be filed for a month that is still open: the current year, or
+        // (until the January grace day) the previous year. Blocks reviving a closed year.
+        if (! ClaimRulesService::isPeriodOpenForFiling($period->year, $period->month, $now)) {
+            $graceDay = (int) config('claims.year_end_grace_day', 20);
+
+            return back()->with('error',
+                'You can only file claims for '.$now->year.'. '
+                .($now->year - 1).' claims are closed (they could be filed only up to '
+                .$graceDay.' January '.$now->year.'). Please pick a month in '.$now->year.'.'
+            );
+        }
+
         // Reuse an EMPTY draft (0 items) so repeated clicks don't pile up blanks — but ALWAYS
         // re-stamp it to the CHOSEN reporting month, so the month picked in the picker is what
         // the claim is filed under (and its number/deadline follow that month).
@@ -287,6 +299,16 @@ class ExpenseClaimController extends Controller
         $expenseDate = ! empty($validated['expense_date'])
             ? Carbon::parse($validated['expense_date'])
             : ($claim->event_date ? $claim->event_date->copy() : now());
+
+        // A receipt can only be claimed under a report for its OWN month.
+        if (! ClaimRulesService::itemDateInPeriod($expenseDate, $claim->year, $claim->month)) {
+            return response()->json([
+                'ok' => false,
+                'message' => $this->outOfMonthMessage($expenseDate, $claim),
+                'errors' => ['expense_date' => 'This receipt is not from this claim’s month.'],
+            ], 422);
+        }
+
         $projectClient = $claim->project_client;
 
         // Amount: fixed-subsidy = flat rate; mileage = km × vehicle rate (server-authoritative);
@@ -472,6 +494,15 @@ class ExpenseClaimController extends Controller
         $expenseDate = ! empty($validated['expense_date'])
             ? Carbon::parse($validated['expense_date'])
             : ($claim->event_date ? $claim->event_date->copy() : now());
+
+        // A receipt can only be claimed under a report for its OWN month.
+        if (! ClaimRulesService::itemDateInPeriod($expenseDate, $claim->year, $claim->month)) {
+            return response()->json([
+                'ok' => false,
+                'message' => $this->outOfMonthMessage($expenseDate, $claim),
+                'errors' => ['expense_date' => 'This receipt is not from this claim’s month.'],
+            ], 422);
+        }
 
         $mileageGl = config('claims.mileage.gl_code');
         $isMileageCat = $mileageGl && $category->gl_code === $mileageGl;
@@ -745,6 +776,18 @@ class ExpenseClaimController extends Controller
             return $bounce('Attach a receipt to: '.$missing->take(5)->pluck('description')->implode(', ').($missing->count() > 5 ? ', …' : '').'.');
         }
 
+        // The claim's month must still be open, and every receipt must fall inside it.
+        $claimMonth = Carbon::create($claim->year, $claim->month, 1)->format('F Y');
+        if (! ClaimRulesService::isPeriodOpenForFiling($claim->year, $claim->month)) {
+            return $bounce('This is a '.$claimMonth.' claim, and that period is now closed for filing.');
+        }
+        $wrongMonth = $claim->items->filter(fn ($it) => $it->expense_date && ! ClaimRulesService::itemDateInPeriod($it->expense_date, $claim->year, $claim->month));
+        if ($wrongMonth->isNotEmpty()) {
+            return $bounce('This '.$claimMonth.' report has receipt(s) dated in another month: '
+                .$wrongMonth->take(5)->pluck('description')->implode(', ').($wrongMonth->count() > 5 ? ', …' : '')
+                .'. Please move each receipt to a claim for its own month before submitting.');
+        }
+
         $claim->recalculateTotals();
         DB::transaction(function () use ($claim, $approverId) {
             $claim->items()->update([
@@ -818,6 +861,11 @@ class ExpenseClaimController extends Controller
         ]);
 
         $expenseDate = Carbon::parse($validated['expense_date']);
+
+        // A receipt can only be claimed under a report for its OWN month.
+        if (! ClaimRulesService::itemDateInPeriod($expenseDate, $claim->year, $claim->month)) {
+            return back()->with('error', $this->outOfMonthMessage($expenseDate, $claim))->withInput();
+        }
 
         if (! $claim->isEditable()) {
             return back()->with('error', 'This claim has already been submitted and cannot be edited.');
@@ -1064,6 +1112,11 @@ class ExpenseClaimController extends Controller
         ]);
 
         $expenseDate = Carbon::parse($validated['expense_date']);
+
+        // A receipt can only be claimed under a report for its OWN month.
+        if (! ClaimRulesService::itemDateInPeriod($expenseDate, $claim->year, $claim->month)) {
+            return back()->with('error', $this->outOfMonthMessage($expenseDate, $claim))->withInput();
+        }
 
         $category = ExpenseCategory::find($validated['expense_category_id']);
         if (! $category || ! $category->is_active) {
@@ -1475,6 +1528,20 @@ class ExpenseClaimController extends Controller
 
             return redirect()->route('user.claims.index', ['open' => $claim->id])
                 ->with('error', 'Attach a receipt before submitting these item(s): '.$names.($missing->count() > 5 ? ', …' : '').'.');
+        }
+
+        // The claim's month must still be open, and every receipt must fall inside it.
+        $claimMonth = Carbon::create($claim->year, $claim->month, 1)->format('F Y');
+        if (! ClaimRulesService::isPeriodOpenForFiling($claim->year, $claim->month)) {
+            return redirect()->route('user.claims.index', ['open' => $claim->id])
+                ->with('error', 'This is a '.$claimMonth.' claim, and that period is now closed for filing.');
+        }
+        $wrongMonth = $claim->items->filter(fn ($it) => $it->expense_date && ! ClaimRulesService::itemDateInPeriod($it->expense_date, $claim->year, $claim->month));
+        if ($wrongMonth->isNotEmpty()) {
+            return redirect()->route('user.claims.index', ['open' => $claim->id])
+                ->with('error', 'This '.$claimMonth.' report has receipt(s) dated in another month: '
+                    .$wrongMonth->take(5)->pluck('description')->implode(', ').($wrongMonth->count() > 5 ? ', …' : '')
+                    .'. Please move each receipt to a claim for its own month before submitting.');
         }
 
         // One approving manager for the whole event-claim (the event owner / reporting manager).
@@ -2838,6 +2905,18 @@ class ExpenseClaimController extends Controller
     private static function isSalesTeam(?Employee $employee): bool
     {
         return $employee && str_contains(strtolower((string) $employee->department), 'sales');
+    }
+
+    /** Polite, specific message when a receipt's date doesn't fall in the claim's month. */
+    private function outOfMonthMessage(Carbon $receiptDate, ExpenseClaim $claim): string
+    {
+        $receiptMonth = $receiptDate->format('F Y');           // e.g. "April 2026"
+        $claimMonth = Carbon::create($claim->year, $claim->month, 1)->format('F Y'); // "June 2026"
+
+        return "Sorry — this receipt can’t be added to this report. This report is for {$claimMonth}, "
+            ."but the receipt is dated {$receiptDate->format('j M Y')}, which falls in {$receiptMonth}. "
+            .'Each receipt must be claimed under a report for its own month. '
+            ."Please open or create a {$receiptMonth} claim and add this receipt there instead.";
     }
 
     private function notifyHr(ExpenseClaim $claim, string $type): void

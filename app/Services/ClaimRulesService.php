@@ -105,6 +105,54 @@ class ClaimRulesService
         return self::signableApprovers()->pluck('id')->contains($approverId);
     }
 
+    // ── Claim-month / receipt-month rules ─────────────────────────────────────
+
+    /** Start-of-month and end-of-month Carbon for a claim's reporting period. */
+    public static function periodBounds(int $year, int $month): array
+    {
+        $start = Carbon::create($year, $month, 1)->startOfMonth();
+
+        return [$start->copy(), $start->copy()->endOfMonth()];
+    }
+
+    /**
+     * May a claim for ($year,$month) still be filed (created or submitted) today?
+     * The month must not be in the future, and its YEAR must be the current year —
+     * with a grace window into January (config claims.year_end_grace_day, default
+     * 20) during which the PREVIOUS year's months may still be filed.
+     */
+    public static function isPeriodOpenForFiling(int $year, int $month, ?Carbon $now = null): bool
+    {
+        $now = $now ? $now->copy() : Carbon::now();
+
+        // Not a future month.
+        if (Carbon::create($year, $month, 1)->startOfMonth()->greaterThan($now->copy()->startOfMonth())) {
+            return false;
+        }
+
+        if ($year === $now->year) {
+            return true;
+        }
+
+        // Previous-year grace: only up to the grace day of January.
+        if ($year === $now->year - 1) {
+            $graceDay = (int) config('claims.year_end_grace_day', 20);
+
+            return $now->month === 1 && $now->day <= $graceDay;
+        }
+
+        return false;
+    }
+
+    /** Is an item's expense date within the claim's reporting month? */
+    public static function itemDateInPeriod($date, int $year, int $month): bool
+    {
+        [$start, $end] = self::periodBounds($year, $month);
+        $d = $date instanceof Carbon ? $date : Carbon::parse($date);
+
+        return $d->greaterThanOrEqualTo($start) && $d->lessThanOrEqualTo($end);
+    }
+
     /** Is the employee an intern or still on probation? */
     public static function isInternOrProbationer(Employee $employee): bool
     {

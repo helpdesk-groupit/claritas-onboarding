@@ -113,13 +113,18 @@
                 // mismatch); otherwise default to the current month for a brand-new claim.
                 $claimMonthValue = $activeDraft ? sprintf('%04d-%02d', $activeDraft->year, $activeDraft->month) : now()->format('Y-m');
                 $claimMonthName = $activeDraft ? \Carbon\Carbon::createFromDate($activeDraft->year, $activeDraft->month, 1)->format('F') : now()->format('F');
+                // Fileable range: the current year (Jan → current month); during the January
+                // grace window (config claims.year_end_grace_day) the previous year is still open.
+                $graceDay = (int) config('claims.year_end_grace_day', 20);
+                $inGrace = now()->month === 1 && now()->day <= $graceDay;
+                $claimMonthMin = ($inGrace ? now()->year - 1 : now()->year).'-01';
             @endphp
             {{-- Month indicator (reflects the open draft, else the current month) --}}
             <div class="d-flex align-items-center gap-2 flex-wrap mb-3">
                 <label for="claimMonth" class="fw-semibold mb-0"><i class="bi bi-calendar3 me-1 text-primary"></i>Claim month</label>
                 <input type="month" id="claimMonth" class="form-control form-control-sm" style="max-width:190px;"
-                       value="{{ $claimMonthValue }}" max="{{ now()->format('Y-m') }}">
-                <span class="text-muted small">{{ $activeDraft ? "This draft's reporting month. Change it to file a new claim under a different month." : 'The reporting month a new claim is filed under.' }}</span>
+                       value="{{ $claimMonthValue }}" min="{{ $claimMonthMin }}" max="{{ now()->format('Y-m') }}">
+                <span class="text-muted small">{{ $activeDraft ? "This draft's reporting month. Change it to file a new claim under a different month." : 'The reporting month a new claim is filed under. A receipt must be claimed under its own month.' }}</span>
             </div>
 
             {{-- Category A — company letterhead (name, department, date, company) --}}
@@ -1427,9 +1432,39 @@
         });
     })();
 
+    // Live receipt-month reminder: keep the note visible, and flash a polite warning the
+    // moment the entered date falls outside the claim's month (before Add / Submit).
+    function monthLabelFromISO(iso) {
+        if (!iso || iso.length < 7) return '';
+        const p = iso.split('-');
+        const names = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+        return (names[parseInt(p[1], 10) - 1] || '') + ' ' + p[0];
+    }
+    function checkItemDateMonth(c) {
+        const d = q(c, '.cc-i-date'), note = q(c, '.cc-date-note');
+        if (!d || !note) return;
+        const v = d.value, min = d.getAttribute('min'), max = d.getAttribute('max');
+        const claimMonth = monthLabelFromISO(min);
+        const out = v && ((min && v < min) || (max && v > max));
+        if (out) {
+            const rcpt = monthLabelFromISO(v);
+            note.style.cssText = 'background:#fffbeb;border:1px solid #fcd34d;color:#92400e;';
+            note.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>This receipt is dated <strong>' + escHtml(rcpt) +
+                '</strong>, but this is a <strong>' + escHtml(claimMonth) + '</strong> claim. Each receipt must be claimed under its own month — please open or create a <strong>' +
+                escHtml(rcpt) + '</strong> claim and add it there instead.';
+        } else {
+            note.style.cssText = 'background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;';
+            note.innerHTML = '<i class="bi bi-calendar-check me-1"></i>This is a <strong>' + escHtml(claimMonth) +
+                '</strong> claim — every receipt added here must be dated in <strong>' + escHtml(claimMonth) +
+                '</strong>. A receipt from another month should be claimed under that month’s own claim.';
+        }
+    }
+    document.querySelectorAll('[data-claim-card]').forEach(checkItemDateMonth);
+
     // Delegated events ──────────────────────────────────────────────
     document.addEventListener('input', function (e) {
         if (e.target.matches('.cc-i-amount, .cc-i-gst')) { const c = cardOf(e.target); if (c) { syncTotal(c); const er = q(c,'.cc-item-error'); if (er) er.classList.add('d-none'); } }
+        if (e.target.matches('.cc-i-date')) { const c = cardOf(e.target); if (c) checkItemDateMonth(c); }
         if (e.target.matches('.cc-i-km')) { const c = cardOf(e.target); if (c) computeMileage(c); }
         if (e.target.matches('.cc-appr-search')) { const c = cardOf(e.target); if (c) { q(c,'.cc-appr-id').value = ''; filterAppr(c, e.target.value); q(c,'.cc-appr-list').classList.remove('d-none'); } }
         // Auto-save the claim header (event / project) as the user types.
@@ -1451,6 +1486,8 @@
     document.addEventListener('change', function (e) {
         // Auto-save the claim header when the event date changes.
         if (e.target.matches('.cc-details [name="event_date"]')) { const c = cardOf(e.target); if (c) autoSaveCatB(c); }
+        // Live receipt-month reminder when the expense date changes.
+        if (e.target.matches('.cc-i-date')) { const c = cardOf(e.target); if (c) checkItemDateMonth(c); }
         // Approver-company switch (cross-company events): drop a now-out-of-company approver
         // and re-open the filtered list for the newly chosen company.
         if (e.target.matches('.cc-appr-company')) {
