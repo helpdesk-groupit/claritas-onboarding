@@ -91,6 +91,20 @@ class ClaimRulesService
         return null;
     }
 
+    /**
+     * Is $approverId a valid approving PIC/manager for a claim owned by $ownerId?
+     * An employee can never approve their own claim, so the owner is always excluded —
+     * even if they would otherwise be a signable approver.
+     */
+    public static function isValidApproverFor(int $ownerId, ?int $approverId): bool
+    {
+        if (! $approverId || $approverId === $ownerId) {
+            return false;
+        }
+
+        return self::signableApprovers()->pluck('id')->contains($approverId);
+    }
+
     /** Is the employee an intern or still on probation? */
     public static function isInternOrProbationer(Employee $employee): bool
     {

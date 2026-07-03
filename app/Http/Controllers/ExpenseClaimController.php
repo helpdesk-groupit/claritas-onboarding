@@ -179,9 +179,13 @@ class ExpenseClaimController extends Controller
         // A claim starts with sensible defaults; the employee fills in the Category B
         // details (event, approver, date, project) inside the claim card.
         $event = ! empty($data['event']) ? mb_substr(strip_tags($data['event']), 0, 255) : 'General Claim '.$period->format('F');
-        $managerId = ! empty($data['manager_id']) && ClaimRulesService::signableApprovers()->pluck('id')->contains((int) $data['manager_id'])
+        // An employee can never be their own approver (isValidApproverFor excludes self).
+        $managerId = ClaimRulesService::isValidApproverFor($employee->id, (int) ($data['manager_id'] ?? 0))
             ? (int) $data['manager_id']
             : ($employee->manager_id ?: ClaimRulesService::defaultApproverId($employee));
+        if ($managerId === $employee->id) {
+            $managerId = null;
+        }
 
         $claim = ExpenseClaim::createWithClaimNumber([
             'employee_id' => $employee->id,
@@ -224,9 +228,13 @@ class ExpenseClaimController extends Controller
             'project_client' => 'nullable|string|max:255',
         ]);
 
-        $managerId = ! empty($data['manager_id']) && ClaimRulesService::signableApprovers()->pluck('id')->contains((int) $data['manager_id'])
+        // An employee can never be their own approver (isValidApproverFor excludes self).
+        $managerId = ClaimRulesService::isValidApproverFor($employee->id, (int) ($data['manager_id'] ?? 0))
             ? (int) $data['manager_id']
             : $claim->manager_id;
+        if ($managerId === $employee->id) {
+            $managerId = null;
+        }
 
         $claim->update([
             'event' => mb_substr(strip_tags($data['event']), 0, 255),
@@ -723,7 +731,10 @@ class ExpenseClaimController extends Controller
         }
 
         $approverId = $claim->manager_id;
-        if (! $approverId || ! ClaimRulesService::signableApprovers()->pluck('id')->contains((int) $approverId)) {
+        if ((int) $approverId === (int) $claim->employee_id) {
+            return $bounce('You cannot be your own approving PIC / manager — choose someone else.');
+        }
+        if (! ClaimRulesService::isValidApproverFor($claim->employee_id, (int) $approverId)) {
             return $bounce('Choose an approving PIC / manager before submitting.');
         }
 
@@ -1474,7 +1485,8 @@ class ExpenseClaimController extends Controller
                 ->with('error', 'Attach a receipt before submitting these item(s): '.$names.($missing->count() > 5 ? ', …' : '').'.');
         }
 
-        $approvers = ClaimRulesService::eligibleApprovers();
+        // An employee can never approve their own claim — exclude self from the picker.
+        $approvers = ClaimRulesService::eligibleApprovers()->where('id', '!=', $employee->id)->values();
         $defaultApproverId = ClaimRulesService::defaultApproverId($employee);
 
         return view('user.claims.submit', compact('claim', 'approvers', 'defaultApproverId', 'employee'));
@@ -1506,6 +1518,10 @@ class ExpenseClaimController extends Controller
         // One approving manager for the whole event-claim (the event owner / reporting manager).
         $eligibleIds = ClaimRulesService::eligibleApprovers()->pluck('id')->all();
         $approverId = (int) $request->input('approver_id');
+        if ($approverId === $employee->id) {
+            return redirect()->route('user.claims.submit-form', $claim)
+                ->with('error', 'You cannot be your own approving manager — choose someone else.');
+        }
         if (! in_array($approverId, $eligibleIds, true)) {
             return redirect()->route('user.claims.submit-form', $claim)
                 ->with('error', 'Please choose an approving manager for this claim.');

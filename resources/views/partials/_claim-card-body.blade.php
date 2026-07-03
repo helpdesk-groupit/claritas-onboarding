@@ -54,6 +54,7 @@
                     <input type="hidden" name="manager_id" class="cc-appr-id" value="{{ $claim->manager_id }}">
                     <div class="list-group position-absolute w-100 shadow-sm d-none cc-appr-list" style="z-index:1050;max-height:240px;overflow:auto;">
                         @foreach($approvers as $ap)
+                        @continue($ap->id === $claim->employee_id) {{-- an employee can't approve their own claim --}}
                         @php
                             $nick = trim((string) $ap->preferred_name);
                             $nickTxt = ($nick !== '' && strcasecmp($nick, $ap->full_name) !== 0) ? ' "'.$nick.'"' : '';
