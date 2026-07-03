@@ -15,14 +15,15 @@ use Illuminate\Support\Facades\Mail;
 
 class WeeklyPendingSweep extends Command
 {
-    protected $signature   = 'sweep:pending-weekly';
+    protected $signature = 'sweep:pending-weekly';
+
     protected $description = 'Weekly sweep of all pending acknowledgements and approvals — sends reminders to responsible parties';
 
     public function handle(): int
     {
         $this->info('Starting weekly pending sweep...');
 
-        $sent    = 0;
+        $sent = 0;
         $skipped = 0;
 
         // ── 1. Employee profile consent — remind the employee ────────────
@@ -36,9 +37,10 @@ class WeeklyPendingSweep extends Command
             $email = $log->consent_sent_to_email
                 ?? $log->employee?->user?->work_email;
 
-            if (!$email) {
+            if (! $email) {
                 $this->warn("Skipping consent log #{$log->id} — no email.");
                 $skipped++;
+
                 continue;
             }
 
@@ -69,9 +71,9 @@ class WeeklyPendingSweep extends Command
         $pendingAarfEmployee = Aarf::where('acknowledged', false)
             ->whereHas('employee', function ($e) {
                 $e->whereNull('active_until')
-                  ->whereHas('assetAssignments', function ($a) {
-                      $a->where('status', 'assigned');
-                  });
+                    ->whereHas('assetAssignments', function ($a) {
+                        $a->where('status', 'assigned');
+                    });
             })
             ->with('employee.user')
             ->get();
@@ -79,8 +81,9 @@ class WeeklyPendingSweep extends Command
         foreach ($pendingAarfEmployee as $aarf) {
             $email = $aarf->employee?->user?->work_email;
 
-            if (!$email) {
+            if (! $email) {
                 $skipped++;
+
                 continue;
             }
 
@@ -114,16 +117,16 @@ class WeeklyPendingSweep extends Command
             ->where(function ($q) {
                 $q->where(function ($n) {
                     $n->whereNull('employee_id')
-                      ->whereHas('onboarding.assetAssignments', function ($a) {
-                          $a->where('status', 'assigned');
-                      });
-                })
-                  ->orWhereHas('employee', function ($e) {
-                      $e->whereNull('active_until')
-                        ->whereHas('assetAssignments', function ($a) {
+                        ->whereHas('onboarding.assetAssignments', function ($a) {
                             $a->where('status', 'assigned');
                         });
-                  });
+                })
+                    ->orWhereHas('employee', function ($e) {
+                        $e->whereNull('active_until')
+                            ->whereHas('assetAssignments', function ($a) {
+                                $a->where('status', 'assigned');
+                            });
+                    });
             })
             ->with('employee')
             ->get();
@@ -154,19 +157,21 @@ class WeeklyPendingSweep extends Command
             ->with(['employee', 'leaveType'])
             ->get();
 
-        $leaveByManager = $pendingLeave->groupBy(fn($app) => $app->employee?->manager_id);
+        $leaveByManager = $pendingLeave->groupBy(fn ($app) => $app->employee?->manager_id);
 
         foreach ($leaveByManager as $managerId => $apps) {
-            if (!$managerId) {
+            if (! $managerId) {
                 $skipped += $apps->count();
+
                 continue;
             }
 
             $manager = Employee::with('user')->find($managerId);
-            $email   = $manager?->user?->work_email;
+            $email = $manager?->user?->work_email;
 
-            if (!$email) {
+            if (! $email) {
                 $skipped++;
+
                 continue;
             }
 
@@ -194,16 +199,18 @@ class WeeklyPendingSweep extends Command
         $claimsByManager = $pendingClaims->groupBy('manager_id');
 
         foreach ($claimsByManager as $managerId => $claims) {
-            if (!$managerId) {
+            if (! $managerId) {
                 $skipped += $claims->count();
+
                 continue;
             }
 
             $manager = $claims->first()->manager;
-            $email   = $manager?->user?->work_email;
+            $email = $manager?->user?->work_email;
 
-            if (!$email) {
+            if (! $email) {
                 $skipped++;
+
                 continue;
             }
 
@@ -229,7 +236,8 @@ class WeeklyPendingSweep extends Command
             ->get();
 
         if ($hrPendingClaims->isNotEmpty()) {
-            $hrUsers = User::whereIn('role', ['hr_manager', 'superadmin'])
+            // HR approvers (incl. HR Executives) + superadmin — see User::scopeClaimHrRole.
+            $hrUsers = User::claimHrRole()
                 ->whereNotNull('work_email')
                 ->get();
 
@@ -250,6 +258,7 @@ class WeeklyPendingSweep extends Command
         }
 
         $this->info("Weekly sweep complete. Sent: {$sent}, Skipped: {$skipped}");
+
         return self::SUCCESS;
     }
 }

@@ -11,12 +11,14 @@ class User extends Authenticatable
     use HasFactory, Notifiable;
 
     protected $fillable = ['name', 'work_email', 'password', 'role', 'is_active', 'profile_picture', 'login_attempts', 'deactivation_reason', 'deactivated_at', 'session_token', 'two_factor_secret', 'two_factor_recovery_codes', 'two_factor_confirmed_at'];
-    protected $hidden   = ['password', 'remember_token', 'two_factor_secret', 'two_factor_recovery_codes'];
-    protected $casts    = ['password' => 'hashed', 'is_active' => 'boolean', 'deactivated_at' => 'datetime', 'two_factor_confirmed_at' => 'datetime'];
+
+    protected $hidden = ['password', 'remember_token', 'two_factor_secret', 'two_factor_recovery_codes'];
+
+    protected $casts = ['password' => 'hashed', 'is_active' => 'boolean', 'deactivated_at' => 'datetime', 'two_factor_confirmed_at' => 'datetime'];
 
     public function hasTwoFactorEnabled(): bool
     {
-        return !is_null($this->two_factor_secret) && !is_null($this->two_factor_confirmed_at);
+        return ! is_null($this->two_factor_secret) && ! is_null($this->two_factor_confirmed_at);
     }
 
     /** Roles that must have 2FA enabled to access the application. */
@@ -31,12 +33,19 @@ class User extends Authenticatable
 
     public function mustSetupTwoFactor(): bool
     {
-        return $this->requiresTwoFactor() && !$this->hasTwoFactorEnabled();
+        return $this->requiresTwoFactor() && ! $this->hasTwoFactorEnabled();
     }
 
     // Tell Laravel password broker to use work_email
-    public function getEmailForPasswordReset(): string { return $this->work_email; }
-    public function routeNotificationForMail(): string { return $this->work_email; }
+    public function getEmailForPasswordReset(): string
+    {
+        return $this->work_email;
+    }
+
+    public function routeNotificationForMail(): string
+    {
+        return $this->work_email;
+    }
 
     public function sendPasswordResetNotification($token): void
     {
@@ -46,28 +55,69 @@ class User extends Authenticatable
     public function getProfilePictureUrlAttribute(): string
     {
         if ($this->profile_picture) {
-            return asset('storage/' . $this->profile_picture);
+            return asset('storage/'.$this->profile_picture);
         }
+
         return self::defaultAvatarUrl($this->employee?->sex);
     }
 
     public static function defaultAvatarUrl(?string $sex = null): string
     {
         $file = ($sex === 'female') ? 'default-avatar-female.svg' : 'default-avatar-male.svg';
-        return asset('images/' . $file);
+
+        return asset('images/'.$file);
     }
 
     // ── Role checks ───────────────────────────────────────────────────────
-    public function isHrManager(): bool   { return $this->role === 'hr_manager'; }
-    public function isHrExecutive(): bool  { return $this->role === 'hr_executive'; }
-    public function isHrIntern(): bool     { return $this->role === 'hr_intern'; }
-    public function isHr(): bool           { return in_array($this->role, ['hr_manager','hr_executive','hr_intern']); }
-    public function isItManager(): bool    { return $this->role === 'it_manager'; }
-    public function isItExecutive(): bool  { return $this->role === 'it_executive'; }
-    public function isItIntern(): bool     { return $this->role === 'it_intern'; }
-    public function isIt(): bool           { return in_array($this->role, ['it_manager','it_executive','it_intern']); }
-    public function isSuperadmin(): bool   { return $this->role === 'superadmin'; }
-    public function isSystemAdmin(): bool  { return $this->role === 'system_admin'; }
+    public function isHrManager(): bool
+    {
+        return $this->role === 'hr_manager';
+    }
+
+    public function isHrExecutive(): bool
+    {
+        return $this->role === 'hr_executive';
+    }
+
+    public function isHrIntern(): bool
+    {
+        return $this->role === 'hr_intern';
+    }
+
+    public function isHr(): bool
+    {
+        return in_array($this->role, ['hr_manager', 'hr_executive', 'hr_intern']);
+    }
+
+    public function isItManager(): bool
+    {
+        return $this->role === 'it_manager';
+    }
+
+    public function isItExecutive(): bool
+    {
+        return $this->role === 'it_executive';
+    }
+
+    public function isItIntern(): bool
+    {
+        return $this->role === 'it_intern';
+    }
+
+    public function isIt(): bool
+    {
+        return in_array($this->role, ['it_manager', 'it_executive', 'it_intern']);
+    }
+
+    public function isSuperadmin(): bool
+    {
+        return $this->role === 'superadmin';
+    }
+
+    public function isSystemAdmin(): bool
+    {
+        return $this->role === 'system_admin';
+    }
 
     public function isHrOrIt(): bool
     {
@@ -76,17 +126,17 @@ class User extends Authenticatable
 
     public function canViewOnboarding(): bool
     {
-        return in_array($this->role, ['hr_manager','hr_executive','hr_intern','superadmin','system_admin']);
+        return in_array($this->role, ['hr_manager', 'hr_executive', 'hr_intern', 'superadmin', 'system_admin']);
     }
 
     public function canAddOnboarding(): bool
     {
-        return in_array($this->role, ['hr_manager','superadmin','system_admin']);
+        return in_array($this->role, ['hr_manager', 'superadmin', 'system_admin']);
     }
 
     public function canEditOnboarding(): bool
     {
-        return in_array($this->role, ['hr_manager','superadmin','system_admin']);
+        return in_array($this->role, ['hr_manager', 'superadmin', 'system_admin']);
     }
 
     public function canEditAllOnboardingSections(): bool
@@ -96,28 +146,29 @@ class User extends Authenticatable
 
     public function canViewAssets(): bool
     {
-        return in_array($this->role, ['hr_manager','hr_executive','it_manager','it_executive','it_intern','superadmin','system_admin']);
+        return in_array($this->role, ['hr_manager', 'hr_executive', 'it_manager', 'it_executive', 'it_intern', 'superadmin', 'system_admin']);
     }
 
     public function canAddAsset(): bool
     {
-        return in_array($this->role, ['hr_manager','hr_executive','it_manager','it_executive','superadmin','system_admin']);
+        return in_array($this->role, ['hr_manager', 'hr_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin']);
     }
 
     public function canEditAsset(): bool
     {
-        return in_array($this->role, ['hr_manager','hr_executive','it_manager','it_executive','superadmin']);
+        return in_array($this->role, ['hr_manager', 'hr_executive', 'it_manager', 'it_executive', 'superadmin']);
     }
 
     public function canEditAllAssetSections(): bool
     {
-        return in_array($this->role, ['hr_manager','hr_executive','it_manager', 'superadmin']);
+        return in_array($this->role, ['hr_manager', 'hr_executive', 'it_manager', 'superadmin']);
     }
 
     public function canEditAarf(Aarf $aarf): bool
     {
         $allowed = in_array($this->role, ['it_manager', 'superadmin']);
-        return $allowed && !$aarf->acknowledged;
+
+        return $allowed && ! $aarf->acknowledged;
     }
 
     public function canAcknowledgeAarf(): bool
@@ -183,6 +234,17 @@ class User extends Authenticatable
     }
 
     /**
+     * Roles that should be notified when a claim reaches the HR stage: the HR approvers
+     * (hr_manager, hr_executive) plus superadmin for oversight. Single source of truth so
+     * the submission email and the weekly sweep stay in sync — HR Executives must not be
+     * dropped, since they can approve/reject claims (canApproveRejectClaims).
+     */
+    public function scopeClaimHrRole($query)
+    {
+        return $query->whereIn('role', ['hr_manager', 'hr_executive', 'superadmin']);
+    }
+
+    /**
      * May the user open the Team Claims page (the approver's inbox)? True for an approving
      * manager (has direct reports) OR anyone chosen as an approver on a claim item — and for
      * superadmin, who gets oversight of ALL team claims (see ExpenseClaimController::teamClaims()).
@@ -200,11 +262,20 @@ class User extends Authenticatable
             || \App\Models\ExpenseClaimItem::where('approver_id', $this->employee->id)->exists();
     }
 
-    public function employee() { return $this->hasOne(Employee::class)->whereNull('active_until'); }
+    public function employee()
+    {
+        return $this->hasOne(Employee::class)->whereNull('active_until');
+    }
 
-    public function permissions() { return $this->hasMany(UserPermission::class); }
+    public function permissions()
+    {
+        return $this->hasMany(UserPermission::class);
+    }
 
-    public function trustedDevices() { return $this->hasMany(TrustedDevice::class); }
+    public function trustedDevices()
+    {
+        return $this->hasMany(TrustedDevice::class);
+    }
 
     /**
      * Return the custom access level for a resource, or null if none is set.
@@ -215,6 +286,7 @@ class User extends Authenticatable
         if ($this->relationLoaded('permissions')) {
             return $this->permissions->where('resource', $resource)->first()?->access_level;
         }
+
         return $this->permissions()->where('resource', $resource)->value('access_level');
     }
 
@@ -222,6 +294,7 @@ class User extends Authenticatable
     public function canViewResource(string $resource): bool
     {
         $p = $this->customPermission($resource);
+
         return $p !== null && $p !== 'none';
     }
 
@@ -229,14 +302,26 @@ class User extends Authenticatable
     public function canEditResource(string $resource): bool
     {
         $p = $this->customPermission($resource);
+
         return in_array($p, ['full', 'edit']);
     }
 
     // ── Accounting Module ──────────────────────────────────────────────
 
-    public function isFinanceManager(): bool  { return $this->role === 'finance_manager'; }
-    public function isFinanceExecutive(): bool { return $this->role === 'finance_executive'; }
-    public function isFinance(): bool          { return in_array($this->role, ['finance_manager', 'finance_executive']); }
+    public function isFinanceManager(): bool
+    {
+        return $this->role === 'finance_manager';
+    }
+
+    public function isFinanceExecutive(): bool
+    {
+        return $this->role === 'finance_executive';
+    }
+
+    public function isFinance(): bool
+    {
+        return in_array($this->role, ['finance_manager', 'finance_executive']);
+    }
 
     public function canViewAccounting(): bool
     {
@@ -272,7 +357,7 @@ class User extends Authenticatable
     /** True if the user manages tickets for at least one department. */
     public function isTicketManager(): bool
     {
-        return !empty(\App\Models\Ticket::departmentsManagedBy($this));
+        return ! empty(\App\Models\Ticket::departmentsManagedBy($this));
     }
 
     /**
@@ -299,6 +384,7 @@ class User extends Authenticatable
         if (in_array($this->role, ['hr_manager', 'it_manager', 'finance_manager'], true)) {
             return true;
         }
+
         // Work-role-gated true managers
         return $this->employee && $this->employee->work_role === 'manager';
     }

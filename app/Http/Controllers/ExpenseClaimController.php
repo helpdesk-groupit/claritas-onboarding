@@ -2885,7 +2885,8 @@ class ExpenseClaimController extends Controller
 
     private function notifyHr(ExpenseClaim $claim, string $type): void
     {
-        $hrUsers = \App\Models\User::whereIn('role', ['hr_manager', 'superadmin'])
+        // HR approvers (incl. HR Executives) + superadmin — see User::scopeClaimHrRole.
+        $hrUsers = \App\Models\User::claimHrRole()
             ->where('is_active', true)
             ->get();
 
