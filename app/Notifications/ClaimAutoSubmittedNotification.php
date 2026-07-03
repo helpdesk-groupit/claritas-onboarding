@@ -32,7 +32,7 @@ class ClaimAutoSubmittedNotification extends Notification
             'color' => 'warning',
             'message' => "Your draft {$this->claim->claim_number} was auto-submitted at the cutoff"
                 .($this->managerName ? " to {$this->managerName}" : '').' — it may be processed next month.',
-            'url' => route('user.claims.show', $this->claim),
+            'url' => route('user.claims.index', ['open' => $this->claim->id]),
         ];
     }
 }

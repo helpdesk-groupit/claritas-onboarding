@@ -15,7 +15,6 @@ flowchart TD
     B -->|"Pass"| C["Item saved to Draft\nReceipt stored\nTotals recalculated"]
     C --> D["Employee Submits\nStatus: submitted\nItems LOCKED"]
     D --> E["ClaimSubmittedMail → Manager"]
-    D -.->|"Employee recalls"| C
 
     E --> F{"Manager Review"}
     F -->|"Approve"| G["Status: manager_approved\nStaleness check performed"]

@@ -769,44 +769,6 @@ class ExpenseClaimController extends Controller
     }
 
     /**
-     * The detail page for one of the employee's own claims: letterhead, add-item form,
-     * items, and submit. Owner-only.
-     */
-    public function showClaim(ExpenseClaim $claim)
-    {
-        $employee = Auth::user()->employee;
-        if (! $employee || $claim->employee_id !== $employee->id) {
-            abort(403);
-        }
-
-        $claim->load('items.category', 'items.approver');
-        $policy = ExpenseClaimPolicy::forCompany($employee->company);
-        $company = \App\Models\Company::forName($employee->company);
-        $categories = ExpenseCategory::active()
-            ->where(function ($q) use ($employee) {
-                $q->where('company', $employee->company)->orWhereNull('company');
-            })->get();
-        $projectRequired = ! self::isSalesTeam($employee);
-
-        // Remaining allowance per capped category (for the live "RM X left" hint).
-        $capInfo = [];
-        foreach ($categories as $c) {
-            $lim = ClaimRulesService::effectiveLimit($c, $employee);
-            if ($lim) {
-                $used = ClaimRulesService::usedInPeriod($employee, $c, Carbon::now(), $lim['period']);
-                $capInfo[$c->id] = [
-                    'remaining' => round(max(0, $lim['amount'] - $used), 2),
-                    'limit' => (float) $lim['amount'],
-                    'period' => $lim['period'],
-                    'name' => $c->name,
-                ];
-            }
-        }
-
-        return view('user.claims.show', compact('employee', 'claim', 'categories', 'company', 'policy', 'projectRequired', 'capInfo'));
-    }
-
-    /**
      * Add an item to a specific (event) claim. Claims are per-event now, so the target
      * claim is passed explicitly (claim_id) rather than derived from a viewed month.
      */
@@ -1056,7 +1018,7 @@ class ExpenseClaimController extends Controller
 
         $claim->recalculateTotals();
 
-        return redirect()->route('user.claims.show', $claim)
+        return redirect()->route('user.claims.index', ['open' => $claim->id])
             ->with($capNote ? 'warning' : 'success', $capNote ?: 'Expense item added.');
     }
 
@@ -1293,7 +1255,7 @@ class ExpenseClaimController extends Controller
 
         $claim->recalculateTotals();
 
-        return redirect()->route('user.claims.show', $claim)
+        return redirect()->route('user.claims.index', ['open' => $claim->id])
             ->with($capNote ? 'warning' : 'success', $capNote ?: 'Expense item updated.');
     }
 
@@ -1455,7 +1417,7 @@ class ExpenseClaimController extends Controller
         $data = $request->validate(['event' => 'required|string|max:255']);
         $claim->update(['event' => mb_substr(strip_tags($data['event']), 0, 255)]);
 
-        return redirect()->route('user.claims.show', $claim)->with('success', 'Event saved.');
+        return redirect()->route('user.claims.index', ['open' => $claim->id])->with('success', 'Event saved.');
     }
 
     /**
@@ -1470,7 +1432,7 @@ class ExpenseClaimController extends Controller
             abort(403);
         }
         if (! $claim->isSubmittable()) {
-            return redirect()->route('user.claims.show', $claim)
+            return redirect()->route('user.claims.index', ['open' => $claim->id])
                 ->with('error', 'This claim cannot be submitted. Ensure it has at least one item.');
         }
 
@@ -1481,7 +1443,7 @@ class ExpenseClaimController extends Controller
         if ($missing->isNotEmpty()) {
             $names = $missing->take(5)->pluck('description')->implode(', ');
 
-            return redirect()->route('user.claims.show', $claim)
+            return redirect()->route('user.claims.index', ['open' => $claim->id])
                 ->with('error', 'Attach a receipt before submitting these item(s): '.$names.($missing->count() > 5 ? ', …' : '').'.');
         }
 
@@ -1511,7 +1473,7 @@ class ExpenseClaimController extends Controller
         if ($missing->isNotEmpty()) {
             $names = $missing->take(5)->pluck('description')->implode(', ');
 
-            return redirect()->route('user.claims.show', $claim)
+            return redirect()->route('user.claims.index', ['open' => $claim->id])
                 ->with('error', 'Attach a receipt before submitting these item(s): '.$names.($missing->count() > 5 ? ', …' : '').'.');
         }
 
@@ -1552,29 +1514,8 @@ class ExpenseClaimController extends Controller
             Mail::to($manager->user->work_email)->send(new ClaimSubmittedMail($claim, $employee, 'manager'));
         }
 
-        return redirect()->route('user.claims.show', $claim)
+        return redirect()->route('user.claims.index', ['open' => $claim->id])
             ->with('success', 'Claim submitted to '.($manager->full_name ?? 'your manager').' for approval.');
-    }
-
-    /**
-     * Cancel a submitted claim (only if not yet approved).
-     */
-    public function cancel(ExpenseClaim $claim)
-    {
-        $employee = Auth::user()->employee;
-
-        if ($claim->employee_id !== $employee->id) {
-            abort(403);
-        }
-
-        if (! in_array($claim->status, ['submitted'])) {
-            return back()->with('error', 'Only submitted claims can be cancelled.');
-        }
-
-        $claim->update(['status' => 'draft', 'submitted_at' => null, 'manager_id' => null]);
-        $claim->items()->update(['is_locked' => false]);
-
-        return back()->with('success', 'Claim recalled to draft.');
     }
 
     /**

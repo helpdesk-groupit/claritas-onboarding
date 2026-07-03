@@ -3,7 +3,7 @@
 
 @section('content')
 <div class="container-fluid py-4">
-    <a href="{{ route('user.claims.show', $claim) }}" class="btn btn-sm btn-outline-secondary mb-3">
+    <a href="{{ route('user.claims.index', ['open' => $claim->id]) }}" class="btn btn-sm btn-outline-secondary mb-3">
         <i class="bi bi-arrow-left me-1"></i>Back to claim
     </a>
 
@@ -76,7 +76,7 @@
                 </div>
 
                 <div class="text-end">
-                    <a href="{{ route('user.claims.show', $claim) }}" class="btn btn-outline-secondary me-2">Cancel</a>
+                    <a href="{{ route('user.claims.index', ['open' => $claim->id]) }}" class="btn btn-outline-secondary me-2">Cancel</a>
                     <button type="submit" class="btn btn-primary"><i class="bi bi-send me-1"></i>Submit for Approval</button>
                 </div>
             </form>

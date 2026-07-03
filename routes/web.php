@@ -430,7 +430,6 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::post('/my/claims/{claim}/save-details', [ExpenseClaimController::class, 'saveDetails'])->name('user.claims.save-details');
     Route::get('/my/claims/{claim}/submit', [ExpenseClaimController::class, 'submitForm'])->name('user.claims.submit-form');
     Route::post('/my/claims/{claim}/submit', [ExpenseClaimController::class, 'submit'])->name('user.claims.submit')->middleware('throttle:30,1');
-    Route::post('/my/claims/{claim}/cancel', [ExpenseClaimController::class, 'cancel'])->name('user.claims.cancel');
     Route::post('/my/claims/{claim}/correct', [ExpenseClaimController::class, 'makeCorrection'])->name('user.claims.correct')->middleware('throttle:30,1');
     Route::post('/my/claims/detect-category', [ExpenseClaimController::class, 'detectCategory'])->name('user.claims.detect-category');
     Route::post('/my/claims/mileage-distance', [ExpenseClaimController::class, 'mileageDistance'])->name('user.claims.mileage-distance');
@@ -448,7 +447,6 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::delete('/my/claims/item/{item}/inline-remove', [ExpenseClaimController::class, 'inlineRemoveItem'])->name('user.claims.inline-remove-item');
     Route::post('/my/claims/{claim}/inline-submit', [ExpenseClaimController::class, 'inlineSubmitClaim'])->name('user.claims.inline-submit')->middleware('throttle:30,1');
     Route::delete('/my/claims/{claim}/discard', [ExpenseClaimController::class, 'discardDraft'])->name('user.claims.discard');
-    Route::get('/my/claims/{claim}', [ExpenseClaimController::class, 'showClaim'])->name('user.claims.show');
 
     // Manager: Team Claims Approval
     Route::get('/my/team-claims', [ExpenseClaimController::class, 'teamClaims'])->name('user.claims.team');
