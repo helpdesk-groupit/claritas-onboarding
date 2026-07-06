@@ -292,6 +292,12 @@
             </a>
         </div>
         <div class="nav-item">
+            <a href="{{ route('finance.claim-reports') }}"
+               class="nav-link {{ request()->routeIs('finance.claim-reports') ? 'active' : '' }}">
+                <i class="bi bi-file-earmark-spreadsheet"></i> Claim Reports
+            </a>
+        </div>
+        <div class="nav-item">
             <a href="{{ route('accounting.chart-of-accounts.index') }}"
                class="nav-link {{ request()->routeIs('accounting.chart-of-accounts.*') ? 'active' : '' }}">
                 <i class="bi bi-diagram-3"></i> Chart of Accounts
@@ -991,6 +997,14 @@
                 <i class="bi bi-speedometer2"></i> Dashboard
             </a>
         </div>
+        @if(Auth::user()->canViewClaimReports())
+        <div class="nav-item">
+            <a href="{{ route('finance.claim-reports') }}"
+               class="nav-link {{ request()->routeIs('finance.claim-reports') ? 'active' : '' }}">
+                <i class="bi bi-file-earmark-spreadsheet"></i> Claim Reports
+            </a>
+        </div>
+        @endif
         <div class="nav-item">
             <a href="{{ route('accounting.chart-of-accounts.index') }}"
                class="nav-link {{ request()->routeIs('accounting.chart-of-accounts.*') ? 'active' : '' }}">

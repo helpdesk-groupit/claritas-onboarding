@@ -234,6 +234,16 @@ class User extends Authenticatable
     }
 
     /**
+     * May the user see the finance-facing "Claim Reports" page — the fully-approved
+     * (manager + HR) claims, grouped Year > Month > Company > Employee for posting into
+     * the accounting system? Finance team + superadmin only (not HR).
+     */
+    public function canViewClaimReports(): bool
+    {
+        return in_array($this->role, ['finance_manager', 'finance_executive', 'superadmin', 'system_admin']);
+    }
+
+    /**
      * Roles that should be notified when a claim reaches the HR stage: the HR approvers
      * (hr_manager, hr_executive) plus superadmin for oversight. Single source of truth so
      * the submission email and the weekly sweep stay in sync — HR Executives must not be

@@ -2059,6 +2059,117 @@ class ExpenseClaimController extends Controller
         return back()->with('success', "{$count} claim(s) approved.");
     }
 
+    // ── Finance: Claim Reports ────────────────────────────────────────────
+
+    /** Fully-approved claims (manager + HR) only. Statuses that satisfy "approved by both". */
+    private const FINANCE_REPORT_STATUSES = ['hr_approved', 'paid'];
+
+    /** Shared, filtered query for the finance report (used by the page and the export). */
+    private function financeReportClaims(Request $request, int $year)
+    {
+        $category = $request->query('category');
+
+        return ExpenseClaim::query()
+            ->with(['employee', 'items' => function ($q) use ($category) {
+                $q->with('category');
+                if ($category) {
+                    $q->where('expense_category_id', (int) $category);
+                }
+            }])
+            ->whereIn('status', self::FINANCE_REPORT_STATUSES)
+            ->where('year', $year)
+            ->when($request->query('month'), fn ($q, $m) => $q->where('month', (int) $m))
+            ->when($request->query('company'), fn ($q, $c) => $q->whereHas('employee', fn ($e) => $e->where('company', $c)))
+            ->when($category, fn ($q, $cat) => $q->whereHas('items', fn ($i) => $i->where('expense_category_id', (int) $cat)))
+            ->orderByDesc('year')->orderByDesc('month')
+            ->get();
+    }
+
+    /** Finance-facing report of approved claims, grouped Year > Month > Company > Employee. */
+    public function financeReports(Request $request)
+    {
+        if (! Auth::user()->canViewClaimReports()) {
+            abort(403);
+        }
+
+        $availableYears = ExpenseClaim::whereIn('status', self::FINANCE_REPORT_STATUSES)
+            ->distinct()->orderByDesc('year')->pluck('year')->map(fn ($y) => (int) $y)->all();
+        $selectedYear = (int) $request->query('year', (int) now()->year);
+        if (! empty($availableYears) && ! in_array($selectedYear, $availableYears, true)) {
+            $selectedYear = $availableYears[0];
+        }
+
+        $claims = $this->financeReportClaims($request, $selectedYear);
+
+        // Flatten to one row per item, then nest Year > Month > Company > Employee.
+        $rows = collect();
+        foreach ($claims as $claim) {
+            foreach ($claim->items as $item) {
+                $rows->push([
+                    'year' => (int) $claim->year,
+                    'month' => (int) $claim->month,
+                    'company' => $claim->employee->company ?: '—',
+                    'employee' => $claim->employee->full_name ?: '—',
+                    'gl_code' => $item->category->gl_code ?: '—',
+                    'category' => $item->category->name ?: '—',
+                    'description' => $item->description,
+                    'amount' => (float) $item->total_with_gst,
+                ]);
+            }
+        }
+
+        return view('finance.claim-reports', [
+            'rows' => $rows,
+            'grandTotal' => $rows->sum('amount'),
+            'availableYears' => $availableYears,
+            'selectedYear' => $selectedYear,
+            'companies' => \App\Models\Company::orderBy('name')->pluck('name'),
+            'categories' => ExpenseCategory::active()->orderBy('name')->get(['id', 'name', 'gl_code']),
+            'filterMonth' => $request->query('month'),
+            'filterCompany' => $request->query('company'),
+            'filterCategory' => $request->query('category'),
+        ]);
+    }
+
+    /** CSV export of the finance report, honouring the same filters. */
+    public function financeReportsExport(Request $request)
+    {
+        if (! Auth::user()->canViewClaimReports()) {
+            abort(403);
+        }
+
+        $selectedYear = (int) $request->query('year', (int) now()->year);
+        $claims = $this->financeReportClaims($request, $selectedYear);
+
+        $filename = 'claim_reports_'.$selectedYear.'_'.now()->format('Ymd_His').'.csv';
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => "attachment; filename=\"{$filename}\"",
+        ];
+
+        $callback = function () use ($claims) {
+            $file = fopen('php://output', 'w');
+            fputcsv($file, ['Year', 'Month', 'Company', 'Employee', 'GL Code', 'Category', 'Description', 'Amount (RM)']);
+            foreach ($claims as $claim) {
+                foreach ($claim->items as $item) {
+                    fputcsv($file, [
+                        $claim->year,
+                        str_pad((string) $claim->month, 2, '0', STR_PAD_LEFT),
+                        $this->sanitizeForCsv($claim->employee->company ?? '-'),
+                        $this->sanitizeForCsv($claim->employee->full_name ?? '-'),
+                        $this->sanitizeForCsv($item->category->gl_code ?? '-'),
+                        $this->sanitizeForCsv($item->category->name ?? '-'),
+                        $this->sanitizeForCsv($item->description),
+                        number_format($item->total_with_gst, 2),
+                    ]);
+                }
+            }
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
+    }
+
     /**
      * HR: Export claims to CSV.
      */

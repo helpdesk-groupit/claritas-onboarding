@@ -418,6 +418,10 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::post('/hr/claims/{claim}/approve', [ExpenseClaimController::class, 'hrApprove'])->name('hr.claims.approve');
     Route::post('/hr/claims/{claim}/reject', [ExpenseClaimController::class, 'hrReject'])->name('hr.claims.reject');
 
+    // Finance: Claim Reports — fully-approved claims grouped Year > Month > Company > Employee
+    Route::get('/finance/claim-reports', [ExpenseClaimController::class, 'financeReports'])->name('finance.claim-reports');
+    Route::get('/finance/claim-reports/export', [ExpenseClaimController::class, 'financeReportsExport'])->name('finance.claim-reports.export');
+
     // Self-Service: My Claims (one claim per event)
     Route::get('/my/claims', [ExpenseClaimController::class, 'myClaims'])->name('user.claims.index');
     Route::post('/my/claims/new', [ExpenseClaimController::class, 'createClaim'])->name('user.claims.create')->middleware('throttle:30,1');
