@@ -2,16 +2,15 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\TicketNewMessageMail;
 use App\Models\Ticket;
 use App\Models\TicketMessage;
 use App\Models\TicketMessageAttachment;
 use App\Models\User;
-use App\Mail\TicketNewMessageMail;
 use App\Notifications\NewTicketMessageNotification;
 use App\Services\AttachmentProcessor;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 
@@ -30,17 +29,17 @@ class TicketMessageController extends Controller
 
         $messages = $ticket->messages()
             ->with(['sender:id,name,role,profile_picture', 'attachments'])
-            ->when($afterId > 0, fn($q) => $q->where('id', '>', $afterId))
+            ->when($afterId > 0, fn ($q) => $q->where('id', '>', $afterId))
             ->orderBy('id')
             ->limit(200)
             ->get()
-            ->map(fn(TicketMessage $m) => $this->serialize($m));
+            ->map(fn (TicketMessage $m) => $this->serialize($m));
 
         return response()->json([
-            'messages'    => $messages,
-            'last_id'     => $messages->last()['id'] ?? $afterId,
-            'ticket'      => [
-                'status'      => $ticket->status,
+            'messages' => $messages,
+            'last_id' => $messages->last()['id'] ?? $afterId,
+            'ticket' => [
+                'status' => $ticket->status,
                 'assigned_to' => $ticket->assigned_to,
             ],
         ]);
@@ -59,22 +58,41 @@ class TicketMessageController extends Controller
         }
 
         $request->validate([
-            'message'        => 'nullable|string|max:5000',
-            'attachments'    => 'nullable|array|max:10',
-            'attachments.*'  => 'file|max:10240|mimes:pdf,jpg,jpeg,png,gif,webp|valid_file_content',
+            'message' => 'nullable|string|max:5000',
+            'attachments' => 'nullable|array|max:10',
+            'attachments.*' => 'file|max:10240|mimes:pdf,jpg,jpeg,png,gif,webp|valid_file_content',
         ]);
 
-        $hasMessage     = !empty(trim((string) $request->input('message')));
+        $hasMessage = ! empty(trim((string) $request->input('message')));
         $hasAttachments = $request->hasFile('attachments');
 
-        if (!$hasMessage && !$hasAttachments) {
+        if (! $hasMessage && ! $hasAttachments) {
             return response()->json(['error' => 'Message or attachment is required.'], 422);
+        }
+
+        // Belt-and-suspenders against accidental double-sends (rapid/held Enter, a
+        // double-tap, or a network retry): if this same user just posted this exact
+        // text on this ticket a few seconds ago and this request has no attachments,
+        // return that message instead of creating a duplicate row.
+        if ($hasMessage && ! $hasAttachments) {
+            $dupe = $ticket->messages()
+                ->where('user_id', $user->id)
+                ->where('message', $request->input('message'))
+                ->where('created_at', '>=', now()->subSeconds(8))
+                ->latest('id')
+                ->first();
+            if ($dupe) {
+                return response()->json([
+                    'message' => $this->serialize($dupe->load(['sender:id,name,role,profile_picture', 'attachments'])),
+                    'ticket' => ['status' => $ticket->status],
+                ]);
+            }
         }
 
         $message = TicketMessage::create([
             'ticket_id' => $ticket->id,
-            'user_id'   => $user->id,
-            'message'   => $request->input('message'),
+            'user_id' => $user->id,
+            'message' => $request->input('message'),
             // Legacy single-attachment columns left null for new messages.
         ]);
 
@@ -84,7 +102,7 @@ class TicketMessageController extends Controller
                 $meta = AttachmentProcessor::store(
                     $file,
                     'ticket_attachments',
-                    $message->id . '_msg_'
+                    $message->id.'_msg_'
                 );
                 TicketMessageAttachment::create(array_merge(['message_id' => $message->id], $meta));
             }
@@ -97,7 +115,7 @@ class TicketMessageController extends Controller
         $recipientIds = collect([$ticket->user_id, $ticket->assigned_to])
             ->filter()
             ->unique()
-            ->reject(fn($id) => $id === $user->id)
+            ->reject(fn ($id) => $id === $user->id)
             ->values();
 
         // Manager-loop fallback for un-PIC'd tickets: when the raiser replies
@@ -110,7 +128,7 @@ class TicketMessageController extends Controller
         if (empty($ticket->assigned_to) && (int) $ticket->user_id === (int) $user->id) {
             $managerIds = $ticket->managersForNotification()
                 ->pluck('id')
-                ->reject(fn($id) => (int) $id === (int) $user->id);
+                ->reject(fn ($id) => (int) $id === (int) $user->id);
             $recipientIds = $recipientIds->merge($managerIds)->unique()->values();
         }
 
@@ -128,18 +146,22 @@ class TicketMessageController extends Controller
             // Pass the already-resolved recipient ids in via `use` so the email
             // dispatch matches the bell exactly (including the manager-loop
             // fallback above) — no re-derivation inside the closure.
-            $ticketId       = $ticket->id;
-            $messageId      = $message->id;
-            $senderId       = $user->id;
+            $ticketId = $ticket->id;
+            $messageId = $message->id;
+            $senderId = $user->id;
             $recipientIdSet = $recipientIds->all();
             app()->terminating(function () use ($ticketId, $messageId, $senderId, $recipientIdSet) {
-                $ticket  = \App\Models\Ticket::find($ticketId);
+                $ticket = \App\Models\Ticket::find($ticketId);
                 $message = \App\Models\TicketMessage::find($messageId);
-                $sender  = User::find($senderId);
-                if (!$ticket || !$message || !$sender || empty($recipientIdSet)) return;
+                $sender = User::find($senderId);
+                if (! $ticket || ! $message || ! $sender || empty($recipientIdSet)) {
+                    return;
+                }
 
                 foreach (User::whereIn('id', $recipientIdSet)->get() as $recipient) {
-                    if (empty($recipient->work_email)) continue;
+                    if (empty($recipient->work_email)) {
+                        continue;
+                    }
                     try {
                         \Illuminate\Support\Facades\Log::info(
                             "Ticket chat email firing — to: {$recipient->work_email}, ticket: {$ticket->ticket_number}"
@@ -152,7 +174,7 @@ class TicketMessageController extends Controller
                         );
                     } catch (\Throwable $e) {
                         \Illuminate\Support\Facades\Log::warning(
-                            "Ticket chat email failed for user #{$recipient->id} on ticket {$ticket->ticket_number}: " . $e->getMessage()
+                            "Ticket chat email failed for user #{$recipient->id} on ticket {$ticket->ticket_number}: ".$e->getMessage()
                         );
                     }
                 }
@@ -161,7 +183,7 @@ class TicketMessageController extends Controller
 
         return response()->json([
             'message' => $this->serialize($message->load(['sender:id,name,role,profile_picture', 'attachments'])),
-            'ticket'  => [
+            'ticket' => [
                 'status' => $ticket->fresh()->status,
             ],
         ], 201);
@@ -181,9 +203,9 @@ class TicketMessageController extends Controller
         // Legacy single attachment (messages from before multi-file support)
         if ($m->hasAttachment()) {
             $attachments[] = [
-                'url'      => $m->attachmentUrl(),
-                'name'     => $m->attachment_original_name,
-                'mime'     => $m->attachment_mime,
+                'url' => $m->attachmentUrl(),
+                'name' => $m->attachment_original_name,
+                'mime' => $m->attachment_mime,
                 'is_image' => $m->isImageAttachment(),
             ];
         }
@@ -191,25 +213,25 @@ class TicketMessageController extends Controller
         // New multi-attachment rows
         foreach ($m->attachments as $att) {
             $attachments[] = [
-                'url'      => $att->url(),
-                'name'     => $att->original_name,
-                'mime'     => $att->mime,
+                'url' => $att->url(),
+                'name' => $att->original_name,
+                'mime' => $att->mime,
                 'is_image' => $att->is_image,
             ];
         }
 
         return [
-            'id'            => $m->id,
-            'message'       => $m->message,
-            'sender_id'     => $m->user_id,
-            'sender_name'   => $m->sender?->name ?? 'Unknown',
-            'sender_role'   => $m->sender?->role,
+            'id' => $m->id,
+            'message' => $m->message,
+            'sender_id' => $m->user_id,
+            'sender_name' => $m->sender?->name ?? 'Unknown',
+            'sender_role' => $m->sender?->role,
             'sender_avatar' => $m->sender?->profile_picture_url,
-            'is_mine'       => $m->user_id === Auth::id(),
-            'created_at'    => $m->created_at?->toIso8601String(),
+            'is_mine' => $m->user_id === Auth::id(),
+            'created_at' => $m->created_at?->toIso8601String(),
             'created_human' => $m->created_at?->diffForHumans(),
-            'created_time'  => $m->created_at?->setTimezone(config('app.timezone'))->format('M j, g:i a'),
-            'attachments'   => $attachments,
+            'created_time' => $m->created_at?->setTimezone(config('app.timezone'))->format('M j, g:i a'),
+            'attachments' => $attachments,
         ];
     }
 

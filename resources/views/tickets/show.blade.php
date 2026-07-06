@@ -671,17 +671,24 @@
     input.addEventListener('keydown', function (e) {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
+            if (e.repeat) return;      // ignore auto-repeat from a held Enter key
             form.requestSubmit();
         }
     });
 
     // ── Send message ─────────────────────────────────────────────────────
+    // `sending` is the real guard: disabling the button only blocks mouse clicks,
+    // but Enter → form.requestSubmit() fires the submit event regardless, so a
+    // rapid or held Enter used to post the same message several times.
+    var sending = false;
     form.addEventListener('submit', function (e) {
         e.preventDefault();
+        if (sending) return;
 
         var text = input.value.trim();
         if (!text && pendingFiles.length === 0) return;
 
+        sending = true;
         sendBtn.disabled = true;
 
         var fd = new FormData();
@@ -725,7 +732,8 @@
         .catch(function () {
             sendBtn.disabled = false;
             alert('Network error — message not sent.');
-        });
+        })
+        .finally(function () { sending = false; });
     });
 
     // ── Initial state: lock composer if ticket already in a terminal status
