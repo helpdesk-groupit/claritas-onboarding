@@ -42,20 +42,20 @@ class ClaimReportsTest extends TestCase
         return $claim;
     }
 
-    public function test_only_finance_and_superadmin_can_view(): void
+    public function test_finance_hr_and_superadmin_can_view_others_cannot(): void
     {
-        $finance = $this->financeUser();
-        Employee::factory()->withUser($finance)->create();
-        $this->actingAs($finance)->get(route('finance.claim-reports'))->assertStatus(200);
+        // Allowed: finance, HR manager/executive, superadmin.
+        foreach ([
+            $this->financeUser(),
+            User::factory()->hrManager()->withTwoFactor()->create(),
+            User::factory()->hrExecutive()->withTwoFactor()->create(),
+            User::factory()->superadmin()->withTwoFactor()->create(),
+        ] as $user) {
+            Employee::factory()->withUser($user)->create();
+            $this->actingAs($user)->get(route('finance.claim-reports'))->assertStatus(200);
+        }
 
-        $super = User::factory()->superadmin()->withTwoFactor()->create();
-        Employee::factory()->withUser($super)->create();
-        $this->actingAs($super)->get(route('finance.claim-reports'))->assertStatus(200);
-
-        $hr = User::factory()->hrManager()->withTwoFactor()->create();
-        Employee::factory()->withUser($hr)->create();
-        $this->actingAs($hr)->get(route('finance.claim-reports'))->assertStatus(403);
-
+        // Not allowed: a regular employee.
         $emp = User::factory()->create(['role' => 'employee']);
         Employee::factory()->withUser($emp)->create();
         $this->actingAs($emp)->get(route('finance.claim-reports'))->assertStatus(403);

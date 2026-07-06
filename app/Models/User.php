@@ -234,13 +234,13 @@ class User extends Authenticatable
     }
 
     /**
-     * May the user see the finance-facing "Claim Reports" page — the fully-approved
-     * (manager + HR) claims, grouped Year > Month > Company > Employee for posting into
-     * the accounting system? Finance team + superadmin only (not HR).
+     * May the user see the "Claim Reports" page — the fully-approved (manager + HR) claims,
+     * grouped Year > Month > Company > Employee for posting into the accounting system?
+     * Finance team, HR Manager/Executive, and superadmin/system_admin.
      */
     public function canViewClaimReports(): bool
     {
-        return in_array($this->role, ['finance_manager', 'finance_executive', 'superadmin', 'system_admin']);
+        return in_array($this->role, ['finance_manager', 'finance_executive', 'hr_manager', 'hr_executive', 'superadmin', 'system_admin']);
     }
 
     /**

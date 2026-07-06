@@ -598,6 +598,14 @@
                 <i class="bi bi-receipt-cutoff"></i> Claims
             </a>
         </div>
+        @if(Auth::user()->canViewClaimReports())
+        <div class="nav-item">
+            <a href="{{ route('finance.claim-reports') }}"
+               class="nav-link {{ request()->routeIs('finance.claim-reports') ? 'active' : '' }}">
+                <i class="bi bi-file-earmark-spreadsheet"></i> Claim Reports
+            </a>
+        </div>
+        @endif
         @if(Auth::user()->canAccessTicketManagement())
         <div class="nav-item">
             <a href="{{ route('tickets.manage') }}"
@@ -997,7 +1005,8 @@
                 <i class="bi bi-speedometer2"></i> Dashboard
             </a>
         </div>
-        @if(Auth::user()->canViewClaimReports())
+        {{-- Finance sees Claim Reports here; HR sees it in the HR menu (avoids a duplicate). --}}
+        @if(Auth::user()->isFinance())
         <div class="nav-item">
             <a href="{{ route('finance.claim-reports') }}"
                class="nav-link {{ request()->routeIs('finance.claim-reports') ? 'active' : '' }}">
