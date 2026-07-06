@@ -563,7 +563,17 @@
 
         var url = pollUrl + '?after_id=' + lastMessageId;
         fetch(url, { headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
-            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (r) {
+                // Access to this ticket has been revoked (reassigned / re-routed / closed)
+                // or the session ended. Stop polling so a stale tab doesn't keep hitting a
+                // 403 — which otherwise piles up and trips the security alert falsely.
+                if (r.status === 403 || r.status === 401) {
+                    stopPolling();
+                    if (pollStatus) pollStatus.textContent = ' (no longer available)';
+                    return null;
+                }
+                return r.ok ? r.json() : null;
+            })
             .then(function (data) {
                 if (!data) return;
                 if (Array.isArray(data.messages) && data.messages.length > 0) {

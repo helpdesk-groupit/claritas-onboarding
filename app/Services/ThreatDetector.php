@@ -24,11 +24,30 @@ use Illuminate\Support\Facades\Mail;
  */
 class ThreatDetector
 {
-    private static function loginFailThreshold(): int   { return (int) config('security.login_fail_threshold', 5); }
-    private static function loginFailWindow(): int      { return (int) config('security.login_fail_window', 600); }
-    private static function rapidRequestThreshold(): int { return (int) config('security.rapid_request_threshold', 60); }
-    private static function offHoursStart(): int        { return (int) config('security.off_hours_start', 22); }
-    private static function offHoursEnd(): int          { return (int) config('security.off_hours_end', 6); }
+    private static function loginFailThreshold(): int
+    {
+        return (int) config('security.login_fail_threshold', 5);
+    }
+
+    private static function loginFailWindow(): int
+    {
+        return (int) config('security.login_fail_window', 600);
+    }
+
+    private static function rapidRequestThreshold(): int
+    {
+        return (int) config('security.rapid_request_threshold', 60);
+    }
+
+    private static function offHoursStart(): int
+    {
+        return (int) config('security.off_hours_start', 22);
+    }
+
+    private static function offHoursEnd(): int
+    {
+        return (int) config('security.off_hours_end', 6);
+    }
 
     /**
      * Check for suspicious patterns after a security event is logged.
@@ -87,8 +106,8 @@ class ThreatDetector
      */
     private static function checkBruteForce(array $context): array
     {
-        $ip    = $context['ip_address'] ?? 'unknown';
-        $key   = "login_failures:{$ip}";
+        $ip = $context['ip_address'] ?? 'unknown';
+        $key = "login_failures:{$ip}";
         $count = (int) Cache::get($key, 0);
         $count++;
         Cache::put($key, $count, self::loginFailWindow());
@@ -99,7 +118,7 @@ class ThreatDetector
             $alerts[] = self::buildAlert(
                 'high',
                 'Brute-Force Attack Detected',
-                "IP {$ip} has had {$count} failed login attempts in the last " . (self::loginFailWindow() / 60) . " minutes.",
+                "IP {$ip} has had {$count} failed login attempts in the last ".(self::loginFailWindow() / 60).' minutes.',
                 $context
             );
         }
@@ -122,9 +141,21 @@ class ThreatDetector
     private static function checkPrivilegeEscalation(array $context): array
     {
         $userId = $context['user_id'] ?? null;
-        if (!$userId) return [];
+        if (! $userId) {
+            return [];
+        }
 
-        $key   = "priv_esc_attempts:{$userId}";
+        // A stale browser tab polling a ticket's chat keeps hitting GET
+        // /tickets/{id}/messages for seconds after the user's access is revoked
+        // (ticket reassigned / re-routed / closed). Those benign, idempotent polls
+        // are NOT privilege escalation — don't count them towards the alert.
+        $url = (string) ($context['url'] ?? '');
+        $method = strtoupper((string) ($context['method'] ?? 'GET'));
+        if ($method === 'GET' && preg_match('#/tickets/\d+/messages\b#', $url)) {
+            return [];
+        }
+
+        $key = "priv_esc_attempts:{$userId}";
         $count = (int) Cache::get($key, 0);
         $count++;
         Cache::put($key, $count, 600); // 10 min window
@@ -150,7 +181,7 @@ class ThreatDetector
      */
     public static function checkRateAnomaly(string $ip): ?array
     {
-        $key   = "request_rate:{$ip}";
+        $key = "request_rate:{$ip}";
         $count = (int) Cache::get($key, 0);
         $count++;
         Cache::put($key, $count, 60);
@@ -170,6 +201,7 @@ class ThreatDetector
     private static function isOffHours(): bool
     {
         $hour = (int) now()->setTimezone('Asia/Kuala_Lumpur')->format('G');
+
         return $hour >= self::offHoursStart() || $hour < self::offHoursEnd();
     }
 
@@ -195,14 +227,14 @@ class ThreatDetector
     private static function buildAlert(string $severity, string $title, string $description, array $context): array
     {
         return [
-            'severity'    => $severity,
-            'title'       => $title,
+            'severity' => $severity,
+            'title' => $title,
             'description' => $description,
-            'ip_address'  => $context['ip_address'] ?? null,
-            'work_email'  => $context['work_email'] ?? null,
-            'role'        => $context['role'] ?? null,
-            'url'         => $context['url'] ?? null,
-            'timestamp'   => now()->setTimezone('Asia/Kuala_Lumpur')->toIso8601String(),
+            'ip_address' => $context['ip_address'] ?? null,
+            'work_email' => $context['work_email'] ?? null,
+            'role' => $context['role'] ?? null,
+            'url' => $context['url'] ?? null,
+            'timestamp' => now()->setTimezone('Asia/Kuala_Lumpur')->toIso8601String(),
         ];
     }
 
@@ -218,13 +250,13 @@ class ThreatDetector
         SecurityAuditLog::record('threat_alert', [
             'ip_address' => $alert['ip_address'],
             'work_email' => $alert['work_email'],
-            'role'       => $alert['role'],
-            'url'        => $alert['url'],
-            'details'    => "[{$alert['severity']}] {$alert['title']}: {$alert['description']}",
+            'role' => $alert['role'],
+            'url' => $alert['url'],
+            'details' => "[{$alert['severity']}] {$alert['title']}: {$alert['description']}",
         ]);
 
         // Deduplicate: don't send the same alert type for the same IP within 15 minutes
-        $dedupeKey = "alert_sent:" . md5($alert['title'] . ($alert['ip_address'] ?? '') . ($alert['work_email'] ?? ''));
+        $dedupeKey = 'alert_sent:'.md5($alert['title'].($alert['ip_address'] ?? '').($alert['work_email'] ?? ''));
         if (Cache::has($dedupeKey)) {
             return;
         }
@@ -242,7 +274,7 @@ class ThreatDetector
             try {
                 Mail::to($email)->send(new SuspiciousActivityAlert($alert));
             } catch (\Throwable $e) {
-                Log::warning("ThreatDetector: failed to send alert to {$email}: " . $e->getMessage());
+                Log::warning("ThreatDetector: failed to send alert to {$email}: ".$e->getMessage());
             }
         }
     }
