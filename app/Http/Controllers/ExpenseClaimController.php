@@ -309,6 +309,17 @@ class ExpenseClaimController extends Controller
             ], 422);
         }
 
+        // ...and the receipt's OWN printed date (read into the read-only Category-C field by
+        // the scan) must be in-month too — so a wrong-month receipt can't slip in under a
+        // manually-set Date of Expense.
+        if ($ocrDate = $this->ocrReceiptDateOutOfPeriod($request, $claim)) {
+            return response()->json([
+                'ok' => false,
+                'message' => $this->outOfMonthMessage($ocrDate, $claim),
+                'errors' => ['expense_date' => 'The scanned receipt’s date is not from this claim’s month.'],
+            ], 422);
+        }
+
         $projectClient = $claim->project_client;
 
         // Amount: fixed-subsidy = flat rate; mileage = km × vehicle rate (server-authoritative);
@@ -501,6 +512,15 @@ class ExpenseClaimController extends Controller
                 'ok' => false,
                 'message' => $this->outOfMonthMessage($expenseDate, $claim),
                 'errors' => ['expense_date' => 'This receipt is not from this claim’s month.'],
+            ], 422);
+        }
+
+        // ...and the receipt's OWN printed (scanned) date must be in-month too.
+        if ($ocrDate = $this->ocrReceiptDateOutOfPeriod($request, $claim)) {
+            return response()->json([
+                'ok' => false,
+                'message' => $this->outOfMonthMessage($ocrDate, $claim),
+                'errors' => ['expense_date' => 'The scanned receipt’s date is not from this claim’s month.'],
             ], 422);
         }
 
@@ -866,6 +886,10 @@ class ExpenseClaimController extends Controller
         if (! ClaimRulesService::itemDateInPeriod($expenseDate, $claim->year, $claim->month)) {
             return back()->with('error', $this->outOfMonthMessage($expenseDate, $claim))->withInput();
         }
+        // ...and the receipt's OWN printed (scanned) date must be in-month too.
+        if ($ocrDate = $this->ocrReceiptDateOutOfPeriod($request, $claim)) {
+            return back()->with('error', $this->outOfMonthMessage($ocrDate, $claim))->withInput();
+        }
 
         if (! $claim->isEditable()) {
             return back()->with('error', 'This claim has already been submitted and cannot be edited.');
@@ -1116,6 +1140,10 @@ class ExpenseClaimController extends Controller
         // A receipt can only be claimed under a report for its OWN month.
         if (! ClaimRulesService::itemDateInPeriod($expenseDate, $claim->year, $claim->month)) {
             return back()->with('error', $this->outOfMonthMessage($expenseDate, $claim))->withInput();
+        }
+        // ...and the receipt's OWN printed (scanned) date must be in-month too.
+        if ($ocrDate = $this->ocrReceiptDateOutOfPeriod($request, $claim)) {
+            return back()->with('error', $this->outOfMonthMessage($ocrDate, $claim))->withInput();
         }
 
         $category = ExpenseCategory::find($validated['expense_category_id']);
@@ -3028,6 +3056,29 @@ class ExpenseClaimController extends Controller
             ."but the receipt is dated {$receiptDate->format('j M Y')}, which falls in {$receiptMonth}. "
             .'Each receipt must be claimed under a report for its own month. '
             ."Please open or create a {$receiptMonth} claim and add this receipt there instead.";
+    }
+
+    /**
+     * A receipt can only be claimed under its OWN month. The user-entered "Date of Expense"
+     * is guarded separately, but the scan ALSO captures the receipt's printed date into the
+     * read-only Category-C field (`c_date`). Enforce THAT date is in the claim's period too,
+     * so a receipt the OCR read as (say) April can't be filed under a July claim just because
+     * the Date of Expense was left/typed as July. Returns the offending receipt date, or null
+     * when nothing was scanned (manual / mileage entries have no c_date) or it is in period.
+     */
+    private function ocrReceiptDateOutOfPeriod(Request $request, ExpenseClaim $claim): ?Carbon
+    {
+        $raw = trim((string) $request->input('c_date'));
+        if ($raw === '') {
+            return null;
+        }
+        try {
+            $d = Carbon::parse($raw);
+        } catch (\Throwable $e) {
+            return null; // unreadable date → fall back to the Date-of-Expense guard, never block on noise
+        }
+
+        return ClaimRulesService::itemDateInPeriod($d, $claim->year, $claim->month) ? null : $d;
     }
 
     private function notifyHr(ExpenseClaim $claim, string $type): void

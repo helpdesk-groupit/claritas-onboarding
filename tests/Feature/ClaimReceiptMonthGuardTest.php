@@ -53,6 +53,30 @@ class ClaimReceiptMonthGuardTest extends TestCase
         $this->assertDatabaseMissing('expense_claim_items', ['expense_claim_id' => $claim->id, 'description' => 'April taxi']);
     }
 
+    public function test_scanned_receipt_date_out_of_month_is_rejected_even_when_expense_date_is_in_month(): void
+    {
+        // The reported gap: the user leaves the Date of Expense inside the claim month (June)
+        // but the OCR read an April date into the read-only Category-C field (c_date). The
+        // scanned receipt's own date must be enforced too, so this must NOT be addable.
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->draftClaim($user, $owner);
+        $category = $this->category();
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Grab ride',
+            'expense_date' => '2026-06-15',   // in-month Date of Expense (would pass alone)
+            'c_date' => '2026-04-28',         // but the scan read an April receipt
+            'amount' => 32.20,
+        ]);
+
+        $res->assertStatus(422)->assertJsonPath('ok', false);
+        $this->assertStringContainsString('June 2026', $res->json('message'));
+        $this->assertStringContainsString('April 2026', $res->json('message'));
+        $this->assertDatabaseMissing('expense_claim_items', ['expense_claim_id' => $claim->id, 'description' => 'Grab ride']);
+    }
+
     public function test_receipt_from_the_claim_month_is_accepted(): void
     {
         $user = User::factory()->create(['role' => 'employee']);

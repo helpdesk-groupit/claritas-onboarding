@@ -350,6 +350,10 @@
                     <div id="mrTruncMsg"></div>
                 </div>
                 <div class="small mb-2" id="mrLegend"></div>
+                <div class="alert alert-warning d-none align-items-start gap-2 py-2 px-3 small mb-2" id="mrMonthNote">
+                    <i class="bi bi-calendar-x mt-1"></i>
+                    <div id="mrMonthMsg"></div>
+                </div>
                 <div class="table-responsive">
                     <table class="table table-sm align-middle" id="multiReviewTable">
                         <thead class="table-light">
@@ -933,9 +937,9 @@
                     bits.push('Route ' + route);
                     // (Expense Description & Date are NOT auto-filled — the user enters them.)
                 } else {
-                    // ── Receipt — only the CATEGORY & AMOUNT auto-fill. The user types the
-                    // Expense Description and Date of Expense manually (the OCR's reading of
-                    // company/date/etc. is captured separately as Category C, below).
+                    // ── Receipt — CATEGORY, AMOUNT and (the receipt's own) DATE auto-fill.
+                    // The user types the Expense Description; the OCR's reading of company /
+                    // date / etc. is also captured separately as read-only Category C, below.
                     if (d.category_id) { cat.value = String(d.category_id); cat.dispatchEvent(new Event('change', { bubbles: true })); }
                     if (d.amount && !amount.readOnly) {
                         // Split SST out of the grand total when the receipt shows it: "Amount (w/o SST)"
@@ -946,10 +950,18 @@
                         else { amount.value = total.toFixed(2); }
                         syncTotal(c);
                     }
-                    hint.textContent = '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.';
+                    // The receipt's printed date IS the date of expense — auto-fill the
+                    // (editable) Date of Expense so the month guard checks the real receipt
+                    // date, not a manual default. The user can still adjust it if OCR misread.
+                    const okDate = d.date && /^\d{4}-\d{2}-\d{2}$/.test(d.date);
+                    if (okDate) date.value = d.date;
+                    hint.textContent = okDate
+                        ? '✨ Category, amount & date auto-filled from the receipt — now add the description.'
+                        : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.';
                     // Capture Category C (read-only receipt details) into the fields below.
                     setC(c, { company: d.vendor, itemdesc: d.item_description, date: d.date, paidby: d.paid_by, total: d.amount });
                     applyReceiptCheck(c); // re-check now that the receipt total is captured
+                    if (okDate) checkItemDateMonth(c); // surface a wrong-month receipt immediately
                     // No detailed "extracted" line for receipts — the Category C fields show it.
                 }
 
@@ -1286,6 +1298,7 @@
         const all = document.getElementById('mrCheckAll');
         if (all) all.checked = Array.from(body.querySelectorAll('.mr-pick')).every(cb => cb.checked);
         document.getElementById('mrStatus').textContent = '';
+        const mn = document.getElementById('mrMonthNote'); if (mn) mn.classList.add('d-none');
         const m = document.getElementById('multiReviewModal');
         if (m && window.bootstrap) bootstrap.Modal.getOrCreateInstance(m).show();
     }
@@ -1305,7 +1318,15 @@
         const btn = document.getElementById('mrAddAll'); btn.disabled = true;
         status.textContent = 'Saving…';
         const addUrl = ADDITEM_BASE + '/' + c.dataset.claimId + '/inline-item';
-        let added = 0, failed = 0, lastTotal = null, lastCount = null;
+        // Claim-month bounds (the date input's min/max are the first/last day of the claim
+        // month) so we can flag out-of-month rows clearly, before hitting the server guard.
+        const dEl = q(c, '.cc-i-date');
+        const cMin = dEl ? dEl.getAttribute('min') : null;
+        const cMax = dEl ? dEl.getAttribute('max') : null;
+        const claimMonth = monthLabelFromISO(cMin);
+        const monthNote = document.getElementById('mrMonthNote');
+        if (monthNote) monthNote.classList.add('d-none');
+        let added = 0, failed = 0, monthFailed = 0, lastTotal = null, lastCount = null;
         // Persist Category B once so every line inherits event/project/approver.
         saveCatB(c).then(function (saved) {
             if (!saved) { btn.disabled = false; status.textContent = 'Couldn’t save the claim details (event/approver) — fix them, then retry.'; return; }
@@ -1316,6 +1337,13 @@
                 const date = tr.querySelector('.mr-date').value;
                 const amt = tr.querySelector('.mr-amt').value;
                 if (!cat || !desc || !date) { failed++; markReviewRow(tr, false, 'Fill in the date, description and category.'); return; }
+                // A receipt can only be claimed under its own month — flag March rows on an
+                // April claim right here, with a clear reason, instead of a bare server bounce.
+                if (cMin && cMax && (date < cMin || date > cMax)) {
+                    failed++; monthFailed++;
+                    markReviewRow(tr, false, 'Dated ' + monthLabelFromISO(date) + ' — this is a ' + claimMonth + ' claim.');
+                    return;
+                }
                 const fd = new FormData();
                 fd.append('expense_category_id', cat);
                 fd.append('description', desc);
@@ -1343,6 +1371,15 @@
                 if (lastTotal !== null) updateTotals(c, lastTotal, lastCount);
                 btn.disabled = false;
                 status.textContent = added + ' added' + (failed ? (', ' + failed + ' still need fixing (red rows).') : '.');
+                // Clear, friendly reason for the wrong-month rows (same wording as the add form).
+                if (monthFailed && monthNote) {
+                    document.getElementById('mrMonthMsg').innerHTML =
+                        'This is a <strong>' + escHtml(claimMonth) + '</strong> claim — every receipt added here must be dated in <strong>' +
+                        escHtml(claimMonth) + '</strong>. A receipt from another month should be claimed under that month’s own claim. ' +
+                        '<strong>' + monthFailed + '</strong> line' + (monthFailed === 1 ? '' : 's') + ' from another month ' +
+                        (monthFailed === 1 ? 'was' : 'were') + ' not added — file ' + (monthFailed === 1 ? 'it' : 'them') + ' under that month’s own claim.';
+                    monthNote.classList.remove('d-none');
+                }
                 if (added) showToast(added + ' item' + (added === 1 ? '' : 's') + ' added', 'success');
                 if (!failed) {
                     const m = document.getElementById('multiReviewModal');
