@@ -353,7 +353,12 @@ class ClaimReceiptOcrService
             .'(aircon / aircond) service, repair or installation, electrical / wiring work, plumbing, general '
             .'handyman repairs, cleaning / cleaner service, pest control, or an office renovation / upkeep — maps '
             .'to the Upkeep of Office & Warehouse category, NOT a generic office-supplies, equipment or '
-            .'subscription category): '
+            .'subscription category. '
+            .'A MINI-MARKET / CONVENIENCE-STORE / GROCERY / SUNDRY purchase — 99 Speedmart, KK Mart / KK Super '
+            .'Mart, MyNews, 7-Eleven, Family Mart, or any provision shop — of FOOD, drinks, milk, snacks, '
+            .'biscuits, bread, or pantry / refreshment items maps to the Office Food & Refreshment category, '
+            .'NEVER to Printing & Stationery (the "out-of-pocket" note on the stationery category is for '
+            .'printing / stationery out-of-pockets only, not for groceries or food)): '
             .implode('; ', $lines);
     }
 

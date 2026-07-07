@@ -89,7 +89,9 @@ class ExpenseCategorySeeder extends Seeder
             '920-000' => ['printing', 'stationery', 'stationary', 'paper', 'ink', 'toner', 'pen', 'out of pocket', 'carton', 'carton box', 'packaging', 'packing', 'bubble wrap', 'envelope'],
             '921-000' => ['consultancy', 'consultant', 'outsourced', 'professional fee'],
             '922-000' => ['food', 'refreshment', 'lunch', 'dinner', 'meal', 'drinks', 'coffee', 'catering',
-                'pantry', 'ro water'],
+                'pantry', 'ro water', 'mineral water', 'milk', 'groceries', 'grocery', 'provision', 'sundry',
+                'biscuit', 'snack', 'bread', 'honey', 'madu', 'speed mart', 'speedmart', 'kk mart',
+                'kk super mart', 'mynews', 'mini market', 'minimarket'],
             '924-000' => ['recruitment', 'hiring', 'job ad', 'interview', 'jobstreet', 'hiring consultant'],
             '926-000' => ['penalty', 'penalties', 'late charge', 'late payment'],
             // Computer SMALL items / peripherals (incl. keyboard & mouse, vs 200-200 big items).
