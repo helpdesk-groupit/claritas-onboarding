@@ -348,7 +348,12 @@ class ClaimReceiptOcrService
             .'postage line: a FOOD or bakery order (cake, cupcakes, catering, refreshments) that lists a '
             .'"Delivery Charge" is a FOOD / refreshment expense, NOT transportation; only a standalone courier '
             .'app receipt (Lalamove / GrabExpress / J&T, where the delivery itself IS the product) maps to a '
-            .'transport / delivery category): '
+            .'transport / delivery category. '
+            .'A REPAIR, SERVICING or MAINTENANCE job on the OFFICE / WAREHOUSE / premises — an air-conditioner '
+            .'(aircon / aircond) service, repair or installation, electrical / wiring work, plumbing, general '
+            .'handyman repairs, cleaning / cleaner service, pest control, or an office renovation / upkeep — maps '
+            .'to the Upkeep of Office & Warehouse category, NOT a generic office-supplies, equipment or '
+            .'subscription category): '
             .implode('; ', $lines);
     }
 
@@ -374,8 +379,12 @@ class ClaimReceiptOcrService
     protected static function paidByRule(): string
     {
         return '"paid_by" (the NAME of the person or company who paid — a cardholder name, "Bill to" name, '
-            .'or account owner. For a LALAMOVE or similar courier / delivery receipt that lists one or more '
-            .'"Recipient" names, use the FIRST "Recipient" name as the payer. On a clinic / medical / personal '
+            .'or account owner. For a LALAMOVE / Grab / courier / delivery receipt: the DELIVERY DRIVER / RIDER '
+            .'is NEVER the payer — the driver is the person shown with a STAR RATING (a number like "4.78" next '
+            .'to a star icon), a vehicle (e.g. Motorcycle) and/or a round profile avatar, usually near the '
+            .'BOTTOM of the receipt; IGNORE that name entirely. The payer is the FIRST "Recipient" name — the '
+            .'one beside the PICK-UP / origin address (the TOP address, marked with a circle "○" icon), i.e. the '
+            .'sender who booked and paid for the delivery — use THAT first Recipient name. On a clinic / medical / personal '
             .'receipt issued to a named individual — e.g. a "Name:" beside an NRIC/IC number, or a "Patient" / '
             .'"Customer" name — use that person\'s name as the payer (a cardholder or "Bill to" name still takes '
             .'priority; do NOT use the clinic / merchant / staff "Received by" name). If no payer NAME is shown, fall '
