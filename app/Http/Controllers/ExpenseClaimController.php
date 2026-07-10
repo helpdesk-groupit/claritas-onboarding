@@ -376,21 +376,58 @@ class ExpenseClaimController extends Controller
 
         // Receipt + extra attachments (SHA-256 dedup like addItem; dead claims excluded).
         $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
+        $warnings = [];
+
+        // Same-expense guard: an identical line (same date + description + amount) already on one
+        // of the employee's active claims. For a RECEIPT this hard-blocks (catches the same expense
+        // re-uploaded as a DIFFERENT image). For MILEAGE it is only a SOFT WARNING — the same route
+        // on the same day can be a genuine repeat trip. Skipped for batch (statement) adds.
+        if (! $request->boolean('batch')) {
+            $cleanDescription = strip_tags((string) $request->input('description'));
+            $dupItem = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses))
+                ->where('expense_date', $expenseDate->toDateString())
+                ->where('description', $cleanDescription)
+                ->where('amount', $amount)
+                ->first();
+            if ($dupItem) {
+                if ($isMileageCat) {
+                    $warnings[] = 'You already claimed this route on '.$expenseDate->format('j M Y').' for the same distance (claim '.($dupItem->claim->claim_number ?? '—').') — add it only if this is a separate trip.';
+                } else {
+                    return response()->json(['ok' => false, 'errors' => ['description' => 'A similar expense already exists (same date, description & amount) in claim '.($dupItem->claim->claim_number ?? 'another claim').'.']], 422);
+                }
+            }
+        }
+
         $receiptPath = null;
         $receiptHash = null;
         $receiptPaths = [];
         if ($request->hasFile('receipt')) {
+            // Hash only for now (no storage) so a "needs confirm" bounce below has no side effects.
             $receiptHash = hash_file('sha256', $request->file('receipt')->getRealPath());
-            // Batch add (multi-receipt review table): the ONE scanned image legitimately
-            // backs every row it was split into, so skip the single-receipt dedup that
-            // would otherwise reject rows 2..N. Normal (single) adds still dedup.
+            // Batch add (multi-receipt review): the ONE image backs every row → skip dedup.
             if (! $request->boolean('batch')) {
                 $dup = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses))
                     ->where('receipt_hash', $receiptHash)->with('claim')->first();
                 if ($dup) {
-                    return response()->json(['ok' => false, 'errors' => ['receipt' => 'This receipt has already been uploaded in '.($dup->claim->claim_number ?? 'another claim').'.']], 422);
+                    if ($isMileageCat) {
+                        // A Google Maps screenshot is a distance reference, not a one-time receipt —
+                        // the same map is expected for a repeated trip. Warn (confirm), don't block.
+                        $warnings[] = 'You’ve uploaded this same map screenshot before (claim '.($dup->claim->claim_number ?? '—').') — that’s fine for a repeat trip; just make sure this is a genuine separate journey.';
+                    } else {
+                        return response()->json(['ok' => false, 'errors' => ['receipt' => 'This receipt has already been uploaded in '.($dup->claim->claim_number ?? 'another claim').'.']], 422);
+                    }
                 }
             }
+        }
+
+        // Confirm-before-add: a mileage repeat (route and/or map already claimed) is not blocked,
+        // but we ASK first — return needs_confirm and create the item only when the client
+        // re-submits with confirm_duplicate set. Nothing has been stored/created up to here.
+        if ($warnings && ! $request->boolean('confirm_duplicate')) {
+            return response()->json(['ok' => false, 'needs_confirm' => true, 'warning' => implode(' ', array_unique($warnings))]);
+        }
+
+        if ($request->hasFile('receipt')) {
             $receiptPath = $request->file('receipt')->store('claim_receipts/'.$employee->id.'/'.$expenseDate->format('Y-m'), 'local');
         }
         if ($request->hasFile('receipt_attachments')) {
@@ -571,18 +608,51 @@ class ExpenseClaimController extends Controller
         }
         $total = round($amount + $gst, 2);
 
+        // Same-expense guard (excludes THIS item): don't let an edit turn this line into a
+        // duplicate of another active-claim line with the same date + description + amount.
+        // Hard block for receipts; soft warning for mileage (same route/day may be a real trip).
+        $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
+        $warnings = [];
+        $cleanDescription = strip_tags((string) $request->input('description'));
+        $dupItem = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses))
+            ->where('id', '!=', $item->id)
+            ->where('expense_date', $expenseDate->toDateString())
+            ->where('description', $cleanDescription)
+            ->where('amount', $amount)
+            ->first();
+        if ($dupItem) {
+            if ($isMileageCat) {
+                $warnings[] = 'You already claimed this route on '.$expenseDate->format('j M Y').' for the same distance (claim '.($dupItem->claim->claim_number ?? '—').') — keep it only if this is a separate trip.';
+            } else {
+                return response()->json(['ok' => false, 'errors' => ['description' => 'A similar expense already exists (same date, description & amount) in claim '.($dupItem->claim->claim_number ?? 'another claim').'.']], 422);
+            }
+        }
+
         // Optional receipt replacement (keeps the existing one when no new file).
         $receiptPath = $item->receipt_path;
         $receiptHash = $item->receipt_hash;
         $oldToDelete = null;
+        $newHash = null;
         if ($request->hasFile('receipt')) {
-            $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
+            // Hash only for now; storage happens after the confirm gate below (no side effects).
             $newHash = hash_file('sha256', $request->file('receipt')->getRealPath());
             $dup = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses))
                 ->where('id', '!=', $item->id)->where('receipt_hash', $newHash)->with('claim')->first();
             if ($dup) {
-                return response()->json(['ok' => false, 'errors' => ['receipt' => 'This receipt has already been uploaded in '.($dup->claim->claim_number ?? 'another claim').'.']], 422);
+                if ($isMileageCat) {
+                    $warnings[] = 'You’ve uploaded this same map screenshot before (claim '.($dup->claim->claim_number ?? '—').') — that’s fine for a repeat trip; just make sure this is a genuine separate journey.';
+                } else {
+                    return response()->json(['ok' => false, 'errors' => ['receipt' => 'This receipt has already been uploaded in '.($dup->claim->claim_number ?? 'another claim').'.']], 422);
+                }
             }
+        }
+
+        // Confirm-before-save for a mileage repeat (same as the add path): add only on confirm.
+        if ($warnings && ! $request->boolean('confirm_duplicate')) {
+            return response()->json(['ok' => false, 'needs_confirm' => true, 'warning' => implode(' ', array_unique($warnings))]);
+        }
+
+        if ($request->hasFile('receipt')) {
             $receiptPath = $request->file('receipt')->store('claim_receipts/'.$employee->id.'/'.$expenseDate->format('Y-m'), 'local');
             $receiptHash = $newHash;
             // Replacing the receipt supersedes any old extra-attachment paths too.
@@ -707,20 +777,23 @@ class ExpenseClaimController extends Controller
                 ? route('user.claims.items.receipt', $item)
                 : null,
             'receipt_hash' => $item->receipt_hash ?: '',
+            'is_mileage' => $item->isMileage(),
             'ocr' => $item->ocr_details ?: null,
         ];
     }
 
     /**
-     * Delete an item AND every sibling read from the SAME attachment (a bulk scan splits one
-     * image into several items that share a receipt_hash) — there's no editing, so a wrong
-     * line is fixed by deleting the whole attachment's items and adding them again. Items with
-     * no receipt_hash (e.g. mileage) are deleted on their own. Returns the deleted item IDs.
+     * Delete an item AND every sibling read from the SAME attachment (a bulk statement scan
+     * splits one image into several items that share a receipt_hash) — there's no editing, so
+     * a wrong line is fixed by deleting the whole attachment's items and adding them again.
+     * MILEAGE items are the exception: the same Google Maps screenshot legitimately backs
+     * SEPARATE trips (e.g. "Travelling" + "Travel back"), so they're always deleted on their
+     * own even though they share a hash. Returns the deleted item IDs.
      */
     private function deleteItemGroup(ExpenseClaimItem $item): array
     {
         $claim = $item->claim;
-        $group = $item->receipt_hash
+        $group = ($item->receipt_hash && ! $item->isMileage())
             ? $claim->items()->where('receipt_hash', $item->receipt_hash)->get()
             : collect([$item]);
         if ($group->isEmpty()) {

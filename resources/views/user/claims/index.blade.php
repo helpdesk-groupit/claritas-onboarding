@@ -331,6 +331,25 @@
     </div>
 </div>
 
+<div class="modal fade" id="dupConfirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header border-0 pb-1">
+                <h5 class="modal-title fw-semibold"><i class="bi bi-exclamation-triangle me-2 text-warning"></i>Possible repeat trip</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary mb-2" id="dupConfirmMsg"></p>
+                <p class="fw-semibold mb-0">Add it to the list anyway?</p>
+            </div>
+            <div class="modal-footer border-0 pt-1">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-warning" id="dupConfirmOk"><i class="bi bi-plus-circle me-1"></i>Add anyway</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {{-- Multi-receipt review modal — one uploaded image split into several transactions.
      The user reviews/edits each AI-read line, then adds the selected ones at once. --}}
 <div class="modal fade" id="multiReviewModal" tabindex="-1" aria-labelledby="multiReviewTitle" aria-hidden="true">
@@ -988,6 +1007,7 @@
         tr.setAttribute('data-receipt-url', item.receipt_url || '');
         tr.setAttribute('data-has-receipt', item.has_receipt ? '1' : '');
         tr.setAttribute('data-receipt-hash', item.receipt_hash || '');
+        tr.setAttribute('data-mileage', item.is_mileage ? '1' : '');
         tr.innerHTML =
             '<td class="text-nowrap">' + escHtml(item.date) + '</td>' +
             '<td>' + escHtml(item.description) + '</td>' +
@@ -1120,15 +1140,18 @@
             const form = listForm || (c && c.querySelector('.cc-delete-form')); if (form) form.submit();
         });
     })();
-    function showToast(msg, variant) {
+    function showToast(msg, variant, delay) {
         const el = document.getElementById('claimToast');
         if (!el) return;
+        const ms = delay || 2500;
         el.className = 'toast align-items-center border-0 text-bg-' + (variant || 'success');
         const body = document.getElementById('claimToastMsg'); if (body) body.textContent = msg || 'Saved';
         if (window.bootstrap && bootstrap.Toast) {
-            bootstrap.Toast.getOrCreateInstance(el, { delay: 2500 }).show();
+            // Dispose any cached instance so a per-call delay (e.g. a longer warning) is honoured.
+            const prev = bootstrap.Toast.getInstance(el); if (prev) prev.dispose();
+            new bootstrap.Toast(el, { delay: ms }).show();
         } else { // graceful fallback if Bootstrap JS hasn't loaded
-            el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2500);
+            el.classList.add('show'); setTimeout(() => el.classList.remove('show'), ms);
         }
     }
     function flashSaved(c) { showToast('Draft saved', 'success'); }
@@ -1206,24 +1229,54 @@
         saveCatB(c).then(saved => {
             if (!saved) { btn.disabled = false; return showErr(err, 'Check the claim details (event, approver, project) — they could not be saved.'); }
             updateHeaderTitle(c);
-            fetch(url, { method: 'POST', headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' }, body: fd })
-                .then(r => r.json()).then(d => {
-                    btn.disabled = false;
-                    if (!d.ok) return showErr(err, d.message || Object.values(d.errors || {})[0] || 'Could not save the item.');
-                    if (editingId) {
-                        const row = c.querySelector('[data-item-row="' + editingId + '"]');
-                        if (row) fillRow(row, d.item);
-                        setEditMode(c, false);
-                    } else {
-                        appendRow(c, d.item);
-                    }
-                    updateTotals(c, d.claim_total, d.item_count);
-                    if (d.cap_note) { const h = q(c,'.cc-scan-hint'); if (h) h.textContent = d.cap_note; }
-                    resetEntry(c);
-                })
-                .catch(() => { btn.disabled = false; showErr(err, 'Could not save the item — try again.'); });
+            postItem(c, btn, err, url, fd, editingId);
         });
     }
+
+    // Submit one item add/edit. On a possible mileage repeat the server returns needs_confirm
+    // WITHOUT saving; we ask first, then re-submit confirmed so the item is added only on OK.
+    function postItem(c, btn, err, url, fd, editingId) {
+        btn.disabled = true;
+        fetch(url, { method: 'POST', headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' }, body: fd })
+            .then(r => r.json()).then(d => {
+                btn.disabled = false;
+                if (d.needs_confirm) {
+                    showDupConfirm(d.warning, function () {
+                        fd.set('confirm_duplicate', '1');
+                        postItem(c, btn, err, url, fd, editingId);
+                    });
+                    return;
+                }
+                if (!d.ok) return showErr(err, d.message || Object.values(d.errors || {})[0] || 'Could not save the item.');
+                if (editingId) {
+                    const row = c.querySelector('[data-item-row="' + editingId + '"]');
+                    if (row) fillRow(row, d.item);
+                    setEditMode(c, false);
+                } else {
+                    appendRow(c, d.item);
+                }
+                updateTotals(c, d.claim_total, d.item_count);
+                if (d.cap_note) { const h = q(c,'.cc-scan-hint'); if (h) h.textContent = d.cap_note; }
+                resetEntry(c);
+            })
+            .catch(() => { btn.disabled = false; showErr(err, 'Could not save the item — try again.'); });
+    }
+
+    // Confirm dialog for a possible mileage repeat — runs onProceed() only if the user says yes.
+    let dupConfirmCb = null;
+    function showDupConfirm(msg, onProceed) {
+        dupConfirmCb = onProceed;
+        const body = document.getElementById('dupConfirmMsg'); if (body) body.textContent = msg || 'You may have already claimed this trip.';
+        const m = document.getElementById('dupConfirmModal');
+        if (m && window.bootstrap) { bootstrap.Modal.getOrCreateInstance(m).show(); }
+        else if (confirm((msg || 'Possible repeat.') + '\n\nAdd it to the list anyway?')) { dupConfirmCb = null; onProceed(); }
+    }
+    document.getElementById('dupConfirmOk')?.addEventListener('click', function () {
+        const m = document.getElementById('dupConfirmModal');
+        if (m && window.bootstrap) bootstrap.Modal.getOrCreateInstance(m).hide();
+        const cb = dupConfirmCb; dupConfirmCb = null;
+        if (cb) cb();
+    });
 
     // ── Multi-receipt review (one image split into many lines, or several files) ──
     let reviewCard = null, reviewFiles = [];
@@ -1404,8 +1457,12 @@
         const id = btn.dataset.itemId;
         const row = c.querySelector('[data-item-row="' + id + '"]');
         const hash = (row && row.dataset.receiptHash) ? row.dataset.receiptHash : '';
-        // Items read from ONE attachment share a receipt hash → deleting one deletes them all.
-        const group = hash ? Array.from(c.querySelectorAll('[data-item-row][data-receipt-hash="' + hash + '"]')) : (row ? [row] : []);
+        const isMileage = row && row.dataset.mileage === '1';
+        // Statement rows read from ONE image share a receipt hash → deleting one deletes them all.
+        // Mileage is the exception: the same map backs separate trips, so it deletes on its own.
+        const group = (hash && !isMileage)
+            ? Array.from(c.querySelectorAll('[data-item-row][data-receipt-hash="' + hash + '"]:not([data-mileage="1"])'))
+            : (row ? [row] : []);
         const n = group.length || 1;
         const items = group.map(function (r) {
             return {
