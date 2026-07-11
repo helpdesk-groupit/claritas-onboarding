@@ -145,7 +145,7 @@
                 <option value="">-- Select --</option>
                 @foreach($categories as $cat)
                 @php $catLabel = ($cat->gl_code ? $cat->gl_code.': ' : '').$cat->name.($cat->code === 'PARKING_JAYAONE' ? ' — Season pass (flat RM80)' : ''); @endphp
-                <option value="{{ $cat->id }}" data-rate-type="{{ $cat->rate_type }}" data-rate-amount="{{ $cat->rate_amount ?? '' }}" data-gl-code="{{ $cat->gl_code }}">{{ $catLabel }}</option>
+                <option value="{{ $cat->id }}" data-rate-type="{{ $cat->rate_type }}" data-rate-amount="{{ $cat->rate_amount ?? '' }}" data-gl-code="{{ $cat->gl_code }}" data-mileage="{{ $cat->isMileageClaim() ? '1' : '0' }}">{{ $catLabel }}</option>
                 @endforeach
             </select>
         </div>

@@ -20,6 +20,19 @@ class ClaimRulesServiceTest extends TestCase
         $this->assertEqualsWithDelta(0.70, ClaimRulesService::mileageRate('unknown'), 0.001); // → car
     }
 
+    public function test_mileage_claim_excludes_receipt_categories_on_the_mileage_gl(): void
+    {
+        config(['claims.mileage.gl_code' => '919-000', 'claims.mileage.receipt_categories' => ['CLARITAS_SUPPORT_ALLOWANCE']]);
+
+        $petrol = new ExpenseCategory(['gl_code' => '919-000', 'code' => '919-000']);
+        $support = new ExpenseCategory(['gl_code' => '919-000', 'code' => 'CLARITAS_SUPPORT_ALLOWANCE']);
+        $travel = new ExpenseCategory(['gl_code' => '905-000', 'code' => 'TRAVEL']);
+
+        $this->assertTrue($petrol->isMileageClaim());   // real petrol → distance × rate
+        $this->assertFalse($support->isMileageClaim());  // support allowance → actual receipt amount
+        $this->assertFalse($travel->isMileageClaim());   // not on the mileage GL at all
+    }
+
     public function test_ot_bands_pick_highest_threshold_met(): void
     {
         $this->assertEqualsWithDelta(0, ClaimRulesService::otBandAmount(2), 0.001);

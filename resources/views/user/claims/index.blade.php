@@ -350,6 +350,25 @@
     </div>
 </div>
 
+<div class="modal fade" id="pdfPwdModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header border-0 pb-1">
+                <h5 class="modal-title fw-semibold"><i class="bi bi-file-earmark-lock me-2 text-primary"></i>Password-protected PDF</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary mb-2" id="pdfPwdMsg">This PDF is password-protected. Enter its password to read it.</p>
+                <input type="password" class="form-control" id="pdfPwdInput" placeholder="PDF password" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="modal-footer border-0 pt-1">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="pdfPwdOk"><i class="bi bi-unlock me-1"></i>Unlock &amp; scan</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {{-- Multi-receipt review modal — one uploaded image split into several transactions.
      The user reviews/edits each AI-read line, then adds the selected ones at once. --}}
 <div class="modal fade" id="multiReviewModal" tabindex="-1" aria-labelledby="multiReviewTitle" aria-hidden="true">
@@ -825,19 +844,20 @@
     }
 
     // Several files selected at once → OCR each, aggregate into the review list.
-    function scanMultipleFiles(c, files, hint, btn) {
+    function scanMultipleFiles(c, files, hint, btn, extraNote) {
         const fd = new FormData();
         files.forEach(f => fd.append('receipt_files[]', f));
-        btn.disabled = true; hint.textContent = 'Scanning ' + files.length + ' files…';
+        btn.disabled = true;
+        hint.textContent = 'Scanning ' + files.length + ' page' + (files.length === 1 ? '' : 's') + '… a long statement can take up to a minute.';
         fetch(SCAN_URL, { method: 'POST', headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' }, body: fd })
             .then(r => r.json()).then(d => {
                 btn.disabled = false;
                 if (!d || d.enabled === false) { hint.textContent = 'OCR is off — enter details manually.'; return; }
-                if (!d.ok || !Array.isArray(d.items) || !d.items.length) { hint.textContent = 'Couldn’t read those files — try adding them one at a time.'; return; }
-                hint.textContent = '✨ Found ' + d.items.length + ' transactions across ' + files.length + ' files — review and add them.';
+                if (!d.ok || !Array.isArray(d.items) || !d.items.length) { hint.textContent = 'Couldn’t read those pages — try adding them one at a time, or screenshot just the rows you need.'; return; }
+                hint.textContent = '✨ Found ' + d.items.length + ' transactions — review and add them.' + (extraNote ? ' ' + extraNote : '');
                 openMultiReview(c, d.items, files, d.truncated);
             })
-            .catch(() => { btn.disabled = false; hint.textContent = 'Scan failed — try again or add manually.'; });
+            .catch(() => { btn.disabled = false; hint.textContent = 'Scan failed — try again, or screenshot just the rows you need.'; });
     }
 
     // ── PDF receipts: rasterise page 1 IN THE BROWSER (PDF.js, served same-origin) so the
@@ -860,39 +880,93 @@
         });
         return __pdfjs;
     }
+    // Password prompt for a locked PDF — resolves the entered password, or null if cancelled.
+    let __pdfPwdResolve = null;
+    function askPdfPassword(wrong) {
+        return new Promise((resolve) => {
+            __pdfPwdResolve = resolve;
+            const m = document.getElementById('pdfPwdModal');
+            const inp = document.getElementById('pdfPwdInput');
+            const msg = document.getElementById('pdfPwdMsg');
+            if (inp) inp.value = '';
+            if (msg) msg.textContent = wrong
+                ? 'That password didn’t work — please try again.'
+                : 'This PDF is password-protected. Enter its password to read it.';
+            if (m && window.bootstrap) {
+                bootstrap.Modal.getOrCreateInstance(m).show();
+                setTimeout(() => { if (inp) inp.focus(); }, 250);
+            } else {
+                resolve(window.prompt('This PDF is locked. Enter its password:') || null);
+            }
+        });
+    }
+    function __finishPdfPwd(val) {
+        const r = __pdfPwdResolve; __pdfPwdResolve = null;
+        const m = document.getElementById('pdfPwdModal');
+        if (m && window.bootstrap) bootstrap.Modal.getOrCreateInstance(m).hide();
+        if (r) r(val);
+    }
+    document.getElementById('pdfPwdOk')?.addEventListener('click', () => __finishPdfPwd(document.getElementById('pdfPwdInput')?.value || ''));
+    document.getElementById('pdfPwdInput')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); __finishPdfPwd(document.getElementById('pdfPwdInput')?.value || ''); } });
+    // Cancel / X / backdrop dismiss → treat as "no password" (falls back to manual entry).
+    document.getElementById('pdfPwdModal')?.addEventListener('hidden.bs.modal', () => { if (__pdfPwdResolve) __finishPdfPwd(null); });
+
     const isPdfFile = (f) => f && (f.type === 'application/pdf' || /\.pdf$/i.test(f.name || ''));
-    // PDF File → PNG File of its first page (for OCR only). Resolves null on any failure.
-    async function pdfToPngFile(file) {
+    // PDF → array of PNG Files (one per page, up to PDF_MAX_PAGES) for OCR. Handles
+    // password-protected PDFs (onPassword prompt) and reports progress in `hint`.
+    // Returns { files, total, capped }; files is empty on failure or a cancelled password.
+    const PDF_MAX_PAGES = 20;
+    async function pdfToPngFiles(file, hint) {
         try {
             const lib = await loadPdfJs();
-            const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
-            const page = await pdf.getPage(1);
-            let viewport = page.getViewport({ scale: 2 }); // 2x for legible OCR
-            const MAXW = 1600;
-            if (viewport.width > MAXW) viewport = page.getViewport({ scale: 2 * (MAXW / viewport.width) });
-            const canvas = document.createElement('canvas');
-            canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); // flatten transparency
-            await page.render({ canvasContext: ctx, viewport }).promise;
-            const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
-            if (!blob) return null;
-            return new File([blob], (file.name || 'receipt').replace(/\.pdf$/i, '') + '.png', { type: 'image/png' });
-        } catch (e) { return null; }
+            const loadingTask = lib.getDocument({ data: await file.arrayBuffer() });
+            // Password-protected PDF (e.g. Touch'n Go e-statements): prompt, retry on wrong, and
+            // destroy on cancel so the promise rejects → falls back to manual entry.
+            loadingTask.onPassword = (submit, reason) => {
+                const wrong = lib.PasswordResponses ? (reason === lib.PasswordResponses.INCORRECT_PASSWORD) : (reason === 2);
+                askPdfPassword(wrong).then(pwd => {
+                    if (pwd === null) { try { loadingTask.destroy(); } catch (e) {} }
+                    else submit(pwd);
+                });
+            };
+            const pdf = await loadingTask.promise;
+            const total = pdf.numPages;
+            const n = Math.min(total, PDF_MAX_PAGES);
+            const base = (file.name || 'receipt').replace(/\.pdf$/i, '');
+            const out = [];
+            for (let i = 1; i <= n; i++) {
+                if (hint) hint.textContent = 'Preparing PDF — page ' + i + ' of ' + n + '…';
+                const page = await pdf.getPage(i);
+                let viewport = page.getViewport({ scale: 2 }); // 2x for legible OCR
+                const MAXW = 1600;
+                if (viewport.width > MAXW) viewport = page.getViewport({ scale: 2 * (MAXW / viewport.width) });
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); // flatten transparency
+                await page.render({ canvasContext: ctx, viewport }).promise;
+                const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+                if (blob) out.push(new File([blob], base + '-p' + i + '.png', { type: 'image/png' }));
+            }
+            return { files: out, total: total, capped: total > n };
+        } catch (e) { return { files: [], total: 0, capped: false }; }
     }
 
     function scanItem(c, btn) {
         const file = q(c,'.cc-i-file'); if (!file.files.length) return;
         const hint = q(c,'.cc-scan-hint'), details = q(c,'.cc-ocr-details');
         const files = Array.from(file.files);
-        // A single PDF → render page 1 to an image, then scan that image. (Multi-file batches
-        // pass straight through to the existing path.)
+        // A single PDF → render EVERY page to an image (multi-page statements have rows on
+        // every page), then scan. One page → single scan; many → the multi-file review list.
         if (files.length === 1 && isPdfFile(files[0])) {
             btn.disabled = true; hint.textContent = 'Preparing PDF…';
-            pdfToPngFile(files[0]).then(png => {
+            pdfToPngFiles(files[0], hint).then(res => {
                 btn.disabled = false;
-                if (!png) { hint.textContent = 'Couldn’t read this PDF — please enter the details manually.'; return; }
-                scanSingle(c, btn, png, hint, details);
+                const pages = res.files;
+                if (!pages.length) { hint.textContent = 'Couldn’t read this PDF — please enter the details manually.'; return; }
+                const note = res.capped ? ('Only the first ' + pages.length + ' of ' + res.total + ' pages were read — upload the rest separately if you need them.') : '';
+                if (pages.length === 1) { scanSingle(c, btn, pages[0], hint, details); }
+                else { scanMultipleFiles(c, pages, hint, btn, note); }
             });
             return;
         }
@@ -932,7 +1006,7 @@
                 if (isMap) {
                     // ── Google Maps / route screenshot → Petrol mileage ──
                     // Select the mileage (Petrol) category → reveals the Vehicle + Distance row.
-                    const mOpt = Array.from(cat.options).find(o => o.dataset.glCode && o.dataset.glCode === MILEAGE_GL);
+                    const mOpt = Array.from(cat.options).find(o => o.dataset.mileage === '1');
                     if (mOpt) { cat.value = mOpt.value; cat.dispatchEvent(new Event('change', { bubbles: true })); }
                     // Route → Category C (Item description). Multi-stop: A → B → A.
                     const stops = (Array.isArray(d.route_stops) && d.route_stops.length >= 2)
@@ -1055,7 +1129,7 @@
         q(c,'.cc-i-date').value = tr.dataset.dateInput || '';
         const cat = q(c,'.cc-i-cat'); cat.value = tr.dataset.catId || ''; cat.dispatchEvent(new Event('change', { bubbles: true }));
         const opt = cat.selectedOptions[0];
-        if (opt && opt.dataset.glCode === MILEAGE_GL) {
+        if (opt && opt.dataset.mileage === '1') {
             // Restore vehicle + distance so the mileage amount isn't reset to 0.
             const veh = q(c,'.cc-i-vehicle'); if (veh && tr.dataset.vehicle) veh.value = tr.dataset.vehicle;
             const kmEl = q(c,'.cc-i-km'); if (kmEl) kmEl.value = tr.dataset.km || '';
@@ -1178,7 +1252,7 @@
         if (!date.value) return showErr(err, 'Choose the date of expense.');
         if (!cat.value) return showErr(err, 'Choose a category.');
         const opt = cat.selectedOptions[0];
-        const isMileage = opt && opt.dataset.glCode === MILEAGE_GL;
+        const isMileage = opt && opt.dataset.mileage === '1';
         const fixed = opt && opt.dataset.rateType === 'fixed';
         if (isMileage) {
             if (!(parseFloat(q(c,'.cc-i-km').value) > 0)) return showErr(err, 'Enter the distance (km) for the mileage claim.');
@@ -1597,7 +1671,7 @@
             const c = cardOf(e.target); if (!c) return;
             const opt = e.target.selectedOptions[0];
             const amount = q(c,'.cc-i-amount'), gst = q(c,'.cc-i-gst');
-            const isMileage = opt && opt.dataset.glCode === MILEAGE_GL;
+            const isMileage = opt && opt.dataset.mileage === '1';
             const mrow = c.querySelector('.cc-mileage-row');
             if (mrow) mrow.classList.toggle('d-none', !isMileage);
             if (isMileage) {

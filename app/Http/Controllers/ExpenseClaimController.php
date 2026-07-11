@@ -324,8 +324,7 @@ class ExpenseClaimController extends Controller
 
         // Amount: fixed-subsidy = flat rate; mileage = km × vehicle rate (server-authoritative);
         // everything else uses the entered amount.
-        $mileageGl = config('claims.mileage.gl_code');
-        $isMileageCat = $mileageGl && $category->gl_code === $mileageGl;
+        $isMileageCat = $category->isMileageClaim();
         $gst = (float) ($validated['gst_amount'] ?? 0);
         $quantity = null;
         $unit = null;
@@ -561,8 +560,7 @@ class ExpenseClaimController extends Controller
             ], 422);
         }
 
-        $mileageGl = config('claims.mileage.gl_code');
-        $isMileageCat = $mileageGl && $category->gl_code === $mileageGl;
+        $isMileageCat = $category->isMileageClaim();
         $gst = (float) ($validated['gst_amount'] ?? 0);
         $quantity = null;
         $unit = null;
@@ -987,8 +985,7 @@ class ExpenseClaimController extends Controller
         // Petrol is always a per-km mileage claim (car/motorcycle rate). The origin
         // and destination are chosen by the employee; distance is the evidence, not a
         // receipt. (The legacy "by receipt" Petrol mode has been removed.)
-        $mileageGl = config('claims.mileage.gl_code');
-        $isPetrolMileage = $mileageGl && $category->gl_code === $mileageGl;
+        $isPetrolMileage = $category->isMileageClaim();
 
         // A receipt is NOT required to save a draft item — the employee can add the
         // expense now and attach the receipt later (e.g. a trip planned for tomorrow).
@@ -1230,8 +1227,7 @@ class ExpenseClaimController extends Controller
             return back()->withErrors(['expense_category_id' => 'You are not eligible to claim under this category.'])->withInput();
         }
 
-        $mileageGl = config('claims.mileage.gl_code');
-        $isPetrolMileage = $mileageGl && $category->gl_code === $mileageGl;
+        $isPetrolMileage = $category->isMileageClaim();
 
         // No receipt required to save edits — the attachment can still be added later;
         // it's enforced at submit time (see submit()).
@@ -1536,6 +1532,12 @@ class ExpenseClaimController extends Controller
 
         if ($claims->isEmpty()) {
             return back()->with('error', 'No approved claims match the current filter.');
+        }
+
+        // The ZIP export needs PHP's zip extension (ZipArchive). Degrade gracefully with a
+        // clear message instead of a 500 if the server doesn't have it enabled.
+        if (! class_exists(\ZipArchive::class)) {
+            return back()->with('error', 'ZIP download isn’t available on this server (the PHP “zip” extension is disabled). Please download the claims individually, or ask IT to enable it.');
         }
 
         $tmp = tempnam(sys_get_temp_dir(), 'claims').'.zip';
@@ -2745,9 +2747,13 @@ class ExpenseClaimController extends Controller
             return response()->json(['enabled' => false]);
         }
 
+        // A multi-page PDF statement is split into one image PER PAGE, so a batch can hold ~20
+        // images, each needing its own vision call — give the loop room past PHP's 30s default.
+        @set_time_limit(180);
+
         $request->validate([
             'receipt' => 'required_without:receipt_files|nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
-            'receipt_files' => 'required_without:receipt|nullable|array|max:12',
+            'receipt_files' => 'required_without:receipt|nullable|array|max:25',
             'receipt_files.*' => 'file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
         ]);
 

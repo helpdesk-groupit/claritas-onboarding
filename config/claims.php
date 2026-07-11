@@ -41,6 +41,11 @@ return [
         // Mileage is claimed under the Petrol account; this GL category offers a
         // "claim by mileage" mode in addition to "by receipt".
         'gl_code' => '919-000',
+        // Categories on the mileage GL (919-000) that are NOT distance-based — they take an
+        // actual receipt AMOUNT instead (e.g. the per-person Support Allowance, which is
+        // petrol/transport receipts up to a monthly cap, not km × rate). Everything else on
+        // the mileage GL is treated as mileage/distance as usual.
+        'receipt_categories' => ['CLARITAS_SUPPORT_ALLOWANCE'],
     ],
 
     /*

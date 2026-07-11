@@ -34,6 +34,21 @@ class ExpenseCategory extends Model
         return $this->rate_type === 'fixed';
     }
 
+    /**
+     * Is this category claimed as MILEAGE (distance × rate) rather than a receipt amount?
+     * True for categories on the mileage GL (919-000) — EXCEPT those explicitly listed as
+     * receipt-amount categories in config (e.g. the Support Allowance, which is receipts up
+     * to a monthly cap, not km × rate). Everything else on the mileage GL is mileage.
+     */
+    public function isMileageClaim(): bool
+    {
+        $mileageGl = config('claims.mileage.gl_code');
+
+        return $mileageGl
+            && $this->gl_code === $mileageGl
+            && ! in_array($this->code, (array) config('claims.mileage.receipt_categories', []), true);
+    }
+
     public function scopeActive($query)
     {
         return $query->where('is_active', true)->orderBy('sort_order');

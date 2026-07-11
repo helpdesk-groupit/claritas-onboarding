@@ -266,7 +266,19 @@ class ClaimReceiptOcrService
                 // clear immediately. NOT 429 (quota): that needs a ~20s wait, so a fast
                 // retry only burns more quota — fail open to manual entry instead.
                 $req = Http::timeout($provider === 'ollama' ? 120 : 45)
-                    ->retry(2, 500, fn ($e, $r) => $r && in_array($r->status(), [500, 502, 503], true), throw: false);
+                    ->retry(3, 1000, function (\Throwable $e) {
+                        // Retry transient network blips + 5xx "model overloaded"; NOT 429 (quota
+                        // needs a long wait, so fail open). NB: the retry callback's 2nd arg is the
+                        // PendingRequest — read the status from the EXCEPTION, never call ->status()
+                        // on the request (that threw "PendingRequest::status does not exist" and
+                        // turned every retryable blip into a hard failure).
+                        if ($e instanceof \Illuminate\Http\Client\ConnectionException) {
+                            return true;
+                        }
+
+                        return $e instanceof \Illuminate\Http\Client\RequestException
+                            && in_array($e->response?->status(), [500, 502, 503], true);
+                    }, throw: false);
                 if ($provider !== 'ollama') {
                     $req = $req->withToken($key);
                 }
@@ -289,7 +301,18 @@ class ClaimReceiptOcrService
                 $content = $resp->json('choices.0.message.content');
             }
 
-            if (! $resp->successful() || ! $content) {
+            if (! $resp->successful()) {
+                // Surface the real reason (esp. 429 rate-limit vs 5xx) so long multi-page scans
+                // that drop pages can be diagnosed instead of failing silently.
+                Log::warning('Claim receipt OCR non-2xx', [
+                    'provider' => $provider,
+                    'status' => $resp->status(),
+                    'body' => mb_substr((string) $resp->body(), 0, 300),
+                ]);
+
+                return null;
+            }
+            if (! $content) {
                 return null;
             }
 
