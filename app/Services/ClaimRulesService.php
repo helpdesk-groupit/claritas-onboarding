@@ -242,7 +242,7 @@ class ClaimRulesService
     /** RM per km for the given vehicle (falls back to the car rate). */
     public static function mileageRate(string $vehicle): float
     {
-        $rates = config('claims.mileage.rates', ['car' => 0.70, 'motorcycle' => 0.35]);
+        $rates = config('claims.mileage.rates', ['car' => 0.70, 'motorcycle' => 0.25]);
 
         return (float) ($rates[$vehicle] ?? $rates['car']);
     }

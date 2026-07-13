@@ -36,7 +36,7 @@ return [
         'origin_coords' => env('CLAIMS_MILEAGE_ORIGIN_COORDS'),
         'rates' => [
             'car' => 0.70,
-            'motorcycle' => 0.35,
+            'motorcycle' => 0.25,
         ],
         // Mileage is claimed under the Petrol account; this GL category offers a
         // "claim by mileage" mode in addition to "by receipt".

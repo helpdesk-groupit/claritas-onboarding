@@ -72,6 +72,7 @@ OnboardingInvite → register/set-password → Employee (active) → Offboarding
 - `Employee` model is the central entity; related data lives in separate models (PersonalDetail, WorkDetail, EmployeeEducationHistory, EmployeeSpouseDetail, EmployeeEmergencyContact, EmployeeChildRegistration, EmployeeContract)
 - `EmployeeHistory` records lifecycle events
 - `Offboarding` model tracks the exit process
+- **Company groups:** `companies.company_group` (added 2026-07) pools related companies (e.g. a corporate group) so a reporting manager at one grouped company is selectable for another in the same group. `Company::groupMap()` (normalized name → lowercased group label) feeds the reporting-manager pickers in the employee create/edit forms. Use it rather than re-deriving group membership.
 
 ### IT Asset Flow
 ```
@@ -150,7 +151,7 @@ Notable mail classes:
 
 ### Database
 - MySQL everywhere: `claritas_onboarding` for production/local, `claritas_onboarding_test` for the test suite
-- ~98 migrations spanning 2024-01 to 2026-06; the first 4 (prefixed `2024_01_`) define the core schema, subsequent `2026_03_` through `2026_06_` migrations are incremental enhancements (the bulk of the ticketing, leave/payroll, accounting, and security work)
+- ~128 migrations spanning 2024-01 to 2026-07; the first 4 (prefixed `2024_01_`) define the core schema, subsequent `2026_03_` onward migrations are incremental enhancements (the bulk of the ticketing, leave/payroll, accounting, security, eClaim, and email-workflow work)
 - Timezone: `Asia/Kuala_Lumpur` (set in `config/app.php`)
 
 ### Onboarding Staging JSON (`invite_staging_json`)
@@ -221,7 +222,9 @@ Rejected claims are **terminal/frozen** (kept as history). `cancel()` recalls a 
 
 **Computed categories** (server-authoritative `amount`): `per_km` mileage = `km × vehicle rate` (Petrol is always by-mileage now; From/To via ORS `mileageDistance`, route read from a Google Maps screenshot by `ClaimReceiptOcrService`); `per_day` = `days × rate_amount`; `per_hour` = highest OT band met.
 
-**Caps (`ClaimRulesService`):** `effectiveLimit()` returns a category's monthly/annual cap (interns/probationers get `intern_medical_cap` RM100/mo on Medical via `isInternOrProbationer()`). Live caps: Optical&Dental RM500/yr (Claritas), Phone&Petrol RM500/mo (Claritas), Office Parking-JayaOne RM80/mo, intern Medical RM100/mo. **`capAdjust()` caps an over-cap amount to the REMAINING allowance (cap-to-remaining) rather than rejecting** — only blocks when fully used; the add/update controllers + a live "RM X left" hint on `show.blade` use it. `usedInPeriod` excludes rejected/cancelled and takes an optional `$excludeItemId` (for edits).
+**Caps (`ClaimRulesService`):** `effectiveLimit()` returns a category's monthly/annual cap (interns/probationers get `intern_medical_cap` RM100/mo on Medical via `isInternOrProbationer()`). Live caps: Optical&Dental RM500/yr (Claritas), Support Allowance RM500/mo (Claritas), Office Parking-JayaOne RM80/mo, intern Medical RM100/mo.
+
+**Support Allowance (formerly Phone & Petrol):** the old fixed RM500 "Phone & Petrol Allowance" (`CLARITAS_PHONE_PETROL`, auto-claimed a flat amount) was converted to a receipt-based "Support Allowance" (`CLARITAS_SUPPORT_ALLOWANCE`) by the `2026_07_08_..._convert_phone_petrol_allowance_to_support_allowance` migration — the eligible employee now claims ACTUAL petrol/transport receipts up to RM500/mo (one line per receipt), still posting to the Petrol GL (`919-000`). It lives on the mileage GL but is carved out as receipt-based (amount, not km) via `config('claims.mileage.receipt_categories')` — add any other amount-based category on the mileage GL to that list. **`capAdjust()` caps an over-cap amount to the REMAINING allowance (cap-to-remaining) rather than rejecting** — only blocks when fully used; the add/update controllers + a live "RM X left" hint on `show.blade` use it. `usedInPeriod` excludes rejected/cancelled and takes an optional `$excludeItemId` (for edits).
 
 **Two-stage deadline:** `submission_deadline_day` (20th) is the **HR cutoff** — a claim must be MANAGER-APPROVED by then. `ClaimRulesService::employeeSubmissionDeadline()` = cutoff − `config('claims.manager_buffer_days')` (3) working days, so employees submit earlier. Both roll back off weekends/`config('claims.public_holidays')` (**maintain yearly**). No auto-submit/auto-approve — late ones roll to next cycle.
 

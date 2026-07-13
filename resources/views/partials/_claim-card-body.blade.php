@@ -174,7 +174,7 @@
             <label class="form-label small mb-1">Vehicle <span class="text-danger">*</span></label>
             <select class="form-select form-select-sm cc-i-vehicle">
                 <option value="car" data-rate="{{ (float) config('claims.mileage.rates.car', 0.7) }}">Car — RM{{ number_format((float) config('claims.mileage.rates.car', 0.7), 2) }}/km</option>
-                <option value="motorcycle" data-rate="{{ (float) config('claims.mileage.rates.motorcycle', 0.35) }}">Motorcycle — RM{{ number_format((float) config('claims.mileage.rates.motorcycle', 0.35), 2) }}/km</option>
+                <option value="motorcycle" data-rate="{{ (float) config('claims.mileage.rates.motorcycle', 0.25) }}">Motorcycle — RM{{ number_format((float) config('claims.mileage.rates.motorcycle', 0.25), 2) }}/km</option>
             </select>
         </div>
         <div class="col-md-3">

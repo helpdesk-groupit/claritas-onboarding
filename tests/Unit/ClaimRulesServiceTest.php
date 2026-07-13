@@ -16,7 +16,7 @@ class ClaimRulesServiceTest extends TestCase
     public function test_mileage_rates_by_vehicle_with_fallback(): void
     {
         $this->assertEqualsWithDelta(0.70, ClaimRulesService::mileageRate('car'), 0.001);
-        $this->assertEqualsWithDelta(0.35, ClaimRulesService::mileageRate('motorcycle'), 0.001);
+        $this->assertEqualsWithDelta(0.25, ClaimRulesService::mileageRate('motorcycle'), 0.001);
         $this->assertEqualsWithDelta(0.70, ClaimRulesService::mileageRate('unknown'), 0.001); // → car
     }
 
@@ -46,7 +46,7 @@ class ClaimRulesServiceTest extends TestCase
     {
         $cat = new ExpenseCategory(['rate_type' => 'per_km']);
         $this->assertEqualsWithDelta(21.0, ClaimRulesService::computeAmount($cat, ['quantity' => 30, 'vehicle' => 'car']), 0.001);
-        $this->assertEqualsWithDelta(10.5, ClaimRulesService::computeAmount($cat, ['quantity' => 30, 'vehicle' => 'motorcycle']), 0.001);
+        $this->assertEqualsWithDelta(7.5, ClaimRulesService::computeAmount($cat, ['quantity' => 30, 'vehicle' => 'motorcycle']), 0.001);
         $this->assertNull(ClaimRulesService::computeAmount($cat, [])); // missing quantity
     }
 

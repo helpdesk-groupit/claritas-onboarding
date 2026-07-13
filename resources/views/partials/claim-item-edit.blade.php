@@ -12,7 +12,10 @@
     $isComputed = in_array($rt, ['per_day', 'per_hour']);
     $isFixed = $rt === 'fixed';
     $fixedAmount = $item->category->rate_amount ?? $item->amount;
-    $vehicle = ($item->rate_applied !== null && (float) $item->rate_applied == (float) config('claims.mileage.rates.motorcycle')) ? 'motorcycle' : 'car';
+    // Motorcycle if the saved rate isn't the car rate (only two vehicles). Compared against the
+    // car rate, not the motorcycle rate, so a rate change (e.g. moto 0.35 → 0.25) doesn't
+    // mis-detect already-saved items.
+    $vehicle = ($item->rate_applied !== null && (float) $item->rate_applied != (float) config('claims.mileage.rates.car')) ? 'motorcycle' : 'car';
     $mode = $isMileage ? 'mileage' : ($isComputed ? $rt : ($isFixed ? 'fixed' : 'receipt'));
 @endphp
 <form action="{{ route('user.claims.update-item', $item) }}" method="POST" enctype="multipart/form-data"

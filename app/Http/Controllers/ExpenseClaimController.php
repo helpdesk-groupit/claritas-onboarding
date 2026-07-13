@@ -1512,11 +1512,14 @@ class ExpenseClaimController extends Controller
         $this->authorizeViewClaims();
 
         $q = ExpenseClaim::whereIn('status', ['hr_approved', 'paid'])->with(['employee', 'items.category']);
+        // Scope by SUBMISSION date, not the claim's reporting month/year stamp: a claim
+        // stamped e.g. April but submitted in July belongs to July's export. Fall back to
+        // created_at for any legacy row with no submitted_at.
         if ($y = $request->input('year')) {
-            $q->where('year', $y);
+            $q->whereRaw('YEAR(COALESCE(submitted_at, created_at)) = ?', [$y]);
         }
         if ($m = $request->input('month')) {
-            $q->where('month', $m);
+            $q->whereRaw('MONTH(COALESCE(submitted_at, created_at)) = ?', [$m]);
         }
         // Employee / company accept one OR many values (employee_id[]=.. / company[]=..).
         // The (array) cast keeps old single-value links working too.
@@ -2001,7 +2004,26 @@ class ExpenseClaimController extends Controller
 
         $stats = $this->getClaimStats();
 
-        return view('hr.claims.index', compact('claims', 'stats', 'availableYears', 'selectedYear'));
+        // Approved-PDF ZIP export is scoped by SUBMISSION date, not the reporting month/year
+        // stamp (see downloadApprovedZip): a claim stamped April but submitted in July belongs
+        // to July's export. Drive the modal's month options + company list from that set so the
+        // dropdown matches what the download will actually include. Fall back to created_at for
+        // legacy rows with no submitted_at.
+        $approvedForExport = ExpenseClaim::with('employee')
+            ->whereIn('status', ['hr_approved', 'paid'])
+            ->whereRaw('YEAR(COALESCE(submitted_at, created_at)) = ?', [$selectedYear])
+            ->get();
+        $exportMonths = $approvedForExport
+            ->map(fn ($c) => (int) ($c->submitted_at ?? $c->created_at)->month)
+            ->filter()->unique()->sort()->values();
+        $exportCompanies = $approvedForExport
+            ->map(fn ($c) => $c->employee?->company)
+            ->filter()->unique()->sort()->values();
+
+        return view('hr.claims.index', compact(
+            'claims', 'stats', 'availableYears', 'selectedYear',
+            'approvedForExport', 'exportMonths', 'exportCompanies'
+        ));
     }
 
     /**

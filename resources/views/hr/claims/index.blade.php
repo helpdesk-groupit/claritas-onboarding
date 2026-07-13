@@ -260,9 +260,8 @@
 {{-- Export approved-claim PDFs as a ZIP, filtered by month / company.
      The download-zip endpoint already honours these query params; this just drives them. --}}
 @php
-    $approvedForExport = $claims->whereIn('status', ['hr_approved', 'paid']);
-    $exportMonths = $approvedForExport->pluck('month')->filter()->unique()->sort()->values();
-    $exportCompanies = $approvedForExport->map(fn ($c) => $c->employee?->company)->filter()->unique()->sort()->values();
+    // $approvedForExport / $exportMonths / $exportCompanies come from the controller and are
+    // scoped by SUBMISSION date (when the claim was submitted), not the reporting month stamp.
     $exportMonthNames = [1=>'January',2=>'February',3=>'March',4=>'April',5=>'May',6=>'June',7=>'July',8=>'August',9=>'September',10=>'October',11=>'November',12=>'December'];
 @endphp
 <div class="modal fade" id="exportZipModal" tabindex="-1" aria-labelledby="exportZipTitle" aria-hidden="true">
@@ -276,17 +275,18 @@
                 </div>
                 <div class="modal-body">
                     @if($approvedForExport->isEmpty())
-                        <div class="alert alert-warning mb-0 py-2 px-3"><i class="bi bi-info-circle me-1"></i>No approved claims in {{ $selectedYear }} to export yet.</div>
+                        <div class="alert alert-warning mb-0 py-2 px-3"><i class="bi bi-info-circle me-1"></i>No claims submitted in {{ $selectedYear }} are HR-approved yet.</div>
                     @else
-                    <p class="text-muted small mb-3">Bundles HR-approved claims for <strong>{{ $selectedYear }}</strong> into one ZIP of PDFs. Leave a filter on &ldquo;All&rdquo; to include everything.</p>
+                    <p class="text-muted small mb-3">Bundles HR-approved claims <strong>submitted in {{ $selectedYear }}</strong> into one ZIP of PDFs. Leave a filter on &ldquo;All&rdquo; to include everything.</p>
                     <div class="mb-3">
-                        <label class="form-label small fw-semibold mb-1">Month</label>
+                        <label class="form-label small fw-semibold mb-1">Submission month</label>
                         <select name="month" class="form-select form-select-sm">
                             <option value="">All months</option>
                             @foreach($exportMonths as $m)
                             <option value="{{ $m }}">{{ $exportMonthNames[(int) $m] ?? $m }}</option>
                             @endforeach
                         </select>
+                        <div class="form-text small">Filters by when the claim was <em>submitted</em>, not the claim&rsquo;s own month — a claim for an earlier month submitted this month is included here.</div>
                     </div>
                     <div class="mb-1">
                         <label class="form-label small fw-semibold mb-1">Company <span class="text-muted fw-normal">(tick one or more)</span></label>
