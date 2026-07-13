@@ -90,12 +90,14 @@
                 <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#exportZipModal">
                     <i class="bi bi-file-earmark-zip me-1"></i>Approved PDFs (ZIP)
                 </button>
+                {{-- Categories & Policy buttons hidden for now (restore when ready).
                 <a href="{{ route('hr.claims.categories') }}" class="btn btn-sm btn-outline-primary">
                     <i class="bi bi-tags me-1"></i>Categories
                 </a>
                 <a href="{{ route('hr.claims.policy') }}" class="btn btn-sm btn-outline-secondary">
                     <i class="bi bi-gear me-1"></i>Policy
                 </a>
+                --}}
             </div>
         </div>
         <div class="card-body">
