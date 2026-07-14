@@ -66,6 +66,31 @@ class ClaimRulesServiceTest extends TestCase
         $this->assertNull(ClaimRulesService::computeAmount($cat, ['quantity' => 5]));
     }
 
+    public function test_submission_cycle_maps_around_cutoff(): void
+    {
+        $c = 20;
+        // On or before the cutoff day → stays in its own month.
+        $this->assertSame(['year' => 2026, 'month' => 7], ClaimRulesService::submissionCycle(Carbon::parse('2026-07-20 17:30'), $c));
+        $this->assertSame(['year' => 2026, 'month' => 7], ClaimRulesService::submissionCycle(Carbon::parse('2026-07-05'), $c));
+        // Day after the cutoff (the 21st) → next month's cycle.
+        $this->assertSame(['year' => 2026, 'month' => 7], ClaimRulesService::submissionCycle(Carbon::parse('2026-06-21'), $c));
+        $this->assertSame(['year' => 2026, 'month' => 8], ClaimRulesService::submissionCycle(Carbon::parse('2026-07-21'), $c));
+        // Year rollover: after the December cutoff → January of the next year.
+        $this->assertSame(['year' => 2027, 'month' => 1], ClaimRulesService::submissionCycle(Carbon::parse('2026-12-25'), $c));
+    }
+
+    public function test_cycle_window_is_half_open_and_rolls_the_year(): void
+    {
+        $w = ClaimRulesService::cycleWindow(2026, 7, 20);
+        $this->assertSame('2026-06-21 00:00:00', $w['start']->toDateTimeString());
+        $this->assertSame('2026-07-21 00:00:00', $w['endExclusive']->toDateTimeString());
+
+        // The January cycle reaches back into the previous calendar year.
+        $jan = ClaimRulesService::cycleWindow(2026, 1, 20);
+        $this->assertSame('2025-12-21 00:00:00', $jan['start']->toDateTimeString());
+        $this->assertSame('2026-01-21 00:00:00', $jan['endExclusive']->toDateTimeString());
+    }
+
     public function test_category_match_score_is_word_boundary_aware(): void
     {
         $pad = fn ($s) => ' '.strtolower(preg_replace('/[^a-z0-9\s]/i', ' ', $s)).' ';

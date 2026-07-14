@@ -437,4 +437,44 @@ class ClaimRulesService
 
         return $d;
     }
+
+    // ── Submission cutoff cycle (for the approved-PDF export) ─────────────────
+    //
+    // The submission cutoff for a month is the policy day (e.g. the 20th). A "cycle"
+    // labelled (year, month) collects everything submitted from the day AFTER the previous
+    // month's cutoff through the cutoff day of `month` — e.g. with cutoff 20, the July cycle
+    // is 21 Jun → 20 Jul. This is a plain CALENDAR boundary (no weekend/holiday roll-back);
+    // the working-day roll-back only applies to the reminder deadlines above.
+
+    /**
+     * Which cutoff cycle a submission belongs to. On or before the cutoff day it stays in its
+     * own month; after the cutoff it rolls into the next month's cycle (year rolls with it).
+     */
+    public static function submissionCycle(Carbon $submittedAt, int $cutoffDay): array
+    {
+        $ref = $submittedAt->day > $cutoffDay
+            ? $submittedAt->copy()->addMonthNoOverflow()
+            : $submittedAt->copy();
+
+        return ['year' => (int) $ref->year, 'month' => (int) $ref->month];
+    }
+
+    /**
+     * Half-open [start, endExclusive) datetime window for the cutoff cycle labelled
+     * (year, month): from the day after month-1's cutoff (00:00) up to — but not including —
+     * the day after this month's cutoff. Inverse of submissionCycle(); the January cycle's
+     * start reaches back into the previous calendar year.
+     */
+    public static function cycleWindow(int $year, int $month, int $cutoffDay): array
+    {
+        $anchor = Carbon::create($year, $month, 1, 0, 0, 0);
+        $dayAfterCutoff = fn (Carbon $monthRef) => $monthRef->copy()
+            ->setDay(min(max(1, $cutoffDay), $monthRef->daysInMonth))
+            ->addDay()->startOfDay();
+
+        return [
+            'start' => $dayAfterCutoff($anchor->copy()->subMonthNoOverflow()),
+            'endExclusive' => $dayAfterCutoff($anchor),
+        ];
+    }
 }

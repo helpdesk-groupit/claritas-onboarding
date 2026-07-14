@@ -15,7 +15,7 @@ class ExpenseClaim extends Model
         'total_amount', 'total_gst', 'total_with_gst', 'item_count',
         'status', 'submitted_at', 'submission_deadline',
         'manager_id', 'manager_approved_by', 'manager_approved_at', 'manager_remarks',
-        'hr_approved_by', 'hr_approved_at', 'hr_remarks',
+        'hr_approved_by', 'hr_approved_at', 'hr_remarks', 'processed_at',
         'released_at', 'released_by', 'release_remarks', 'correction_of_id',
         'payslip_id', 'pay_run_id', 'notes',
     ];
@@ -29,6 +29,7 @@ class ExpenseClaim extends Model
         'submission_deadline' => 'date',
         'manager_approved_at' => 'datetime',
         'hr_approved_at' => 'datetime',
+        'processed_at' => 'datetime',
         'released_at' => 'datetime',
     ];
 

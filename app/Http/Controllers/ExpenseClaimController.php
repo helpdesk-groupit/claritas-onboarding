@@ -1507,20 +1507,58 @@ class ExpenseClaimController extends Controller
      * HR: download all approved claims (optionally filtered) as a single ZIP of PDFs,
      * each named like the original form — ready to bulk-upload elsewhere.
      */
+    /** Per-request cache of company name → claim submission cutoff day. */
+    private array $companyCutoffCache = [];
+
+    /** Resolve a company's claim submission cutoff day (per-company policy; default 20). */
+    private function companyCutoffDay(?string $company): int
+    {
+        $key = (string) $company;
+        if (! array_key_exists($key, $this->companyCutoffCache)) {
+            $this->companyCutoffCache[$key] = (int) (ExpenseClaimPolicy::forCompany($company)->submission_deadline_day ?? 20);
+        }
+
+        return $this->companyCutoffCache[$key];
+    }
+
+    /** The submission cutoff cycle [year, month] a claim falls in, using its company's cutoff. */
+    private function claimCycle(ExpenseClaim $claim): array
+    {
+        $when = $claim->submitted_at ?? $claim->created_at;
+
+        return ClaimRulesService::submissionCycle($when, $this->companyCutoffDay($claim->employee?->company));
+    }
+
+    /**
+     * Coarse [start, endExclusive) calendar range that safely contains a cutoff cycle, so the
+     * export fetch stays bounded before the precise per-company cycle filter. A (year, month)
+     * cycle only touches calendar months month-1 and month; a year-only request spans
+     * Dec(year-1)–Dec(year).
+     */
+    private function cycleFetchRange(?int $year, ?int $month): array
+    {
+        if (! $year) {
+            return [null, null];
+        }
+        if ($month) {
+            $anchor = Carbon::create($year, $month, 1)->startOfDay();
+
+            return [$anchor->copy()->subMonthNoOverflow(), $anchor->copy()->addMonthNoOverflow()];
+        }
+
+        return [Carbon::create($year - 1, 12, 1)->startOfDay(), Carbon::create($year + 1, 1, 1)->startOfDay()];
+    }
+
     public function downloadApprovedZip(Request $request)
     {
         $this->authorizeViewClaims();
 
-        $q = ExpenseClaim::whereIn('status', ['hr_approved', 'paid'])->with(['employee', 'items.category']);
-        // Scope by SUBMISSION date, not the claim's reporting month/year stamp: a claim
-        // stamped e.g. April but submitted in July belongs to July's export. Fall back to
-        // created_at for any legacy row with no submitted_at.
-        if ($y = $request->input('year')) {
-            $q->whereRaw('YEAR(COALESCE(submitted_at, created_at)) = ?', [$y]);
-        }
-        if ($m = $request->input('month')) {
-            $q->whereRaw('MONTH(COALESCE(submitted_at, created_at)) = ?', [$m]);
-        }
+        $year = ((int) $request->input('year')) ?: null;
+        $month = ((int) $request->input('month')) ?: null;
+
+        // Only PROCESSED claims (processed_at stamped at HR approval) are exportable.
+        $q = ExpenseClaim::whereNotNull('processed_at')->with(['employee', 'items.category']);
+
         // Employee / company accept one OR many values (employee_id[]=.. / company[]=..).
         // The (array) cast keeps old single-value links working too.
         $employeeIds = array_values(array_filter((array) $request->input('employee_id', [])));
@@ -1531,10 +1569,29 @@ class ExpenseClaimController extends Controller
         if (! empty($companies)) {
             $q->whereHas('employee', fn ($x) => $x->whereIn('company', $companies));
         }
-        $claims = $q->orderByDesc('hr_approved_at')->limit(200)->get();
+
+        // The month filter is the SUBMISSION CUTOFF CYCLE (e.g. 21 Jun–20 Jul = "July"), and the
+        // cutoff day is per-company — so it can't be one SQL month(). Pre-filter to the calendar
+        // months a cycle can touch, then keep only claims whose company-specific cycle matches.
+        [$rangeStart, $rangeEnd] = $this->cycleFetchRange($year, $month);
+        if ($rangeStart) {
+            $q->whereRaw('COALESCE(submitted_at, created_at) >= ?', [$rangeStart->toDateTimeString()]);
+        }
+        if ($rangeEnd) {
+            $q->whereRaw('COALESCE(submitted_at, created_at) < ?', [$rangeEnd->toDateTimeString()]);
+        }
+
+        $claims = $q->orderByDesc('processed_at')->get()
+            ->filter(function (ExpenseClaim $claim) use ($year, $month) {
+                $cycle = $this->claimCycle($claim);
+
+                return (! $year || $cycle['year'] === $year) && (! $month || $cycle['month'] === $month);
+            })
+            ->take(200)
+            ->values();
 
         if ($claims->isEmpty()) {
-            return back()->with('error', 'No approved claims match the current filter.');
+            return back()->with('error', 'No processed claims match the current filter.');
         }
 
         // The ZIP export needs PHP's zip extension (ZipArchive). Degrade gracefully with a
@@ -2004,25 +2061,34 @@ class ExpenseClaimController extends Controller
 
         $stats = $this->getClaimStats();
 
-        // Approved-PDF ZIP export is scoped by SUBMISSION date, not the reporting month/year
-        // stamp (see downloadApprovedZip): a claim stamped April but submitted in July belongs
-        // to July's export. Drive the modal's month options + company list from that set so the
-        // dropdown matches what the download will actually include. Fall back to created_at for
-        // legacy rows with no submitted_at.
-        $approvedForExport = ExpenseClaim::with('employee')
-            ->whereIn('status', ['hr_approved', 'paid'])
-            ->whereRaw('YEAR(COALESCE(submitted_at, created_at)) = ?', [$selectedYear])
-            ->get();
-        $exportMonths = $approvedForExport
-            ->map(fn ($c) => (int) ($c->submitted_at ?? $c->created_at)->month)
-            ->filter()->unique()->sort()->values();
-        $exportCompanies = $approvedForExport
-            ->map(fn ($c) => $c->employee?->company)
-            ->filter()->unique()->sort()->values();
+        // Approved-PDF ZIP export groups by the SUBMISSION CUTOFF CYCLE (e.g. 21 Jun–20 Jul = the
+        // "July" cycle) using each company's own cutoff day, and only includes PROCESSED claims
+        // (processed_at stamped at HR approval). Drive the modal's month/company options from the
+        // cycles so the dropdown matches exactly what the download returns. The page's $selectedYear
+        // (reporting-year, for the accordion) is reused as the cycle-year for the export.
+        [$cycleRangeStart, $cycleRangeEnd] = $this->cycleFetchRange($selectedYear, null);
+        $processed = ExpenseClaim::with('employee')->whereNotNull('processed_at')
+            ->whereRaw('COALESCE(submitted_at, created_at) >= ?', [$cycleRangeStart->toDateTimeString()])
+            ->whereRaw('COALESCE(submitted_at, created_at) < ?', [$cycleRangeEnd->toDateTimeString()])
+            ->get()
+            ->map(fn ($c) => ['claim' => $c, 'cycle' => $this->claimCycle($c), 'company' => $c->employee?->company]);
+        $inYear = $processed->filter(fn ($r) => $r['cycle']['year'] === $selectedYear);
+        $approvedForExport = $inYear->pluck('claim')->values();
+        $exportMonths = $inYear->pluck('cycle.month')->unique()->sort()->values();
+        $exportCompanies = $inYear->pluck('company')->filter()->unique()->sort()->values();
+
+        // Human labels for the month dropdown, e.g. "21 Jun – 20 Jul", using the default (null-
+        // company) cutoff as a representative window (per-company cutoffs may differ slightly).
+        $defaultCutoff = (int) (ExpenseClaimPolicy::forCompany()->submission_deadline_day ?? 20);
+        $exportMonthLabels = [];
+        foreach ($exportMonths as $m) {
+            $w = ClaimRulesService::cycleWindow($selectedYear, (int) $m, $defaultCutoff);
+            $exportMonthLabels[(int) $m] = $w['start']->format('j M').' – '.$w['endExclusive']->copy()->subDay()->format('j M');
+        }
 
         return view('hr.claims.index', compact(
             'claims', 'stats', 'availableYears', 'selectedYear',
-            'approvedForExport', 'exportMonths', 'exportCompanies'
+            'approvedForExport', 'exportMonths', 'exportCompanies', 'exportMonthLabels'
         ));
     }
 
@@ -2067,6 +2133,9 @@ class ExpenseClaimController extends Controller
             'status' => 'hr_approved',
             'hr_approved_by' => Auth::id(),
             'hr_approved_at' => now(),
+            // HR approval is the claim module's terminal state — mark it processed so it lands
+            // in the approved-PDF ZIP for its submission cutoff cycle.
+            'processed_at' => now(),
         ]);
 
         Log::info('Claim hr-approved', [
