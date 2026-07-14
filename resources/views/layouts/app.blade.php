@@ -258,13 +258,6 @@
                 @endif
             </a>
         </div>
-        <div class="nav-item">
-            <a href="{{ route('tickets.manage') }}"
-               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
-                <i class="bi bi-gear-wide-connected"></i> Ticket Management
-            </a>
-        </div>
-
         {{-- Automation (parent) › Email Workflow (sub-link) --}}
         @php $automationOpen = request()->routeIs('it.automation.*'); @endphp
         <div class="nav-item">
@@ -379,6 +372,31 @@
             </a>
         </div>
 
+        {{-- ── Management (ticket PIC and/or claim approver functions grouped together) ── --}}
+        @if(Auth::user()->canAccessTicketManagement() || Auth::user()->canViewTeamClaims())
+        <div class="sidebar-section">Management</div>
+        @if(Auth::user()->canAccessTicketManagement())
+        <div class="nav-item">
+            <a href="{{ route('tickets.manage') }}"
+               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
+                <i class="bi bi-gear-wide-connected"></i> Ticket Management
+            </a>
+        </div>
+        @endif
+        @if(Auth::user()->canViewTeamClaims())
+        <div class="nav-item">
+            <a href="{{ route('user.claims.team') }}"
+               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Team Claims
+                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
+                @if($__pendingTeamClaims > 0)
+                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
+                @endif
+            </a>
+        </div>
+        @endif
+        @endif
+
         {{-- ── Self-Service ── --}}
         <div class="sidebar-section">Self-Service</div>
         <div class="nav-item">
@@ -438,18 +456,7 @@
                 <i class="bi bi-receipt-cutoff"></i> My Claims
             </a>
         </div>
-        @if(Auth::user()->canViewTeamClaims())
-        <div class="nav-item">
-            <a href="{{ route('user.claims.team') }}"
-               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
-                <i class="bi bi-people"></i> Team Claims
-                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
-                @if($__pendingTeamClaims > 0)
-                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
-                @endif
-            </a>
-        </div>
-        @endif
+        {{-- Team Claims moved up to the Management section (approver/management function). --}}
 
         {{-- ── Settings ── --}}
         <div class="sidebar-section">Settings</div>
@@ -606,6 +613,10 @@
             </a>
         </div>
         @endif
+
+        {{-- ── Management (ticket PIC and/or claim approver functions grouped together) ── --}}
+        @if(Auth::user()->canAccessTicketManagement() || Auth::user()->canViewTeamClaims())
+        <div class="sidebar-section">Management</div>
         @if(Auth::user()->canAccessTicketManagement())
         <div class="nav-item">
             <a href="{{ route('tickets.manage') }}"
@@ -613,6 +624,19 @@
                 <i class="bi bi-gear-wide-connected"></i> Ticket Management
             </a>
         </div>
+        @endif
+        @if(Auth::user()->canViewTeamClaims())
+        <div class="nav-item">
+            <a href="{{ route('user.claims.team') }}"
+               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Team Claims
+                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
+                @if($__pendingTeamClaims > 0)
+                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
+                @endif
+            </a>
+        </div>
+        @endif
         @endif
 
         {{-- ── Self-Service ── --}}
@@ -674,18 +698,7 @@
                 <i class="bi bi-receipt-cutoff"></i> My Claims
             </a>
         </div>
-        @if(Auth::user()->canViewTeamClaims())
-        <div class="nav-item">
-            <a href="{{ route('user.claims.team') }}"
-               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
-                <i class="bi bi-people"></i> Team Claims
-                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
-                @if($__pendingTeamClaims > 0)
-                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
-                @endif
-            </a>
-        </div>
-        @endif
+        {{-- Team Claims moved up to the Management section (approver/management function). --}}
 
         {{-- 5. Profile --}}
         <div class="nav-item">
@@ -757,13 +770,6 @@
                 @endif
             </a>
         </div>
-        <div class="nav-item">
-            <a href="{{ route('tickets.manage') }}"
-               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
-                <i class="bi bi-gear-wide-connected"></i> Ticket Management
-            </a>
-        </div>
-
         {{-- Automation (parent) › Email Workflow (sub-link) --}}
         @php $automationOpenIt = request()->routeIs('it.automation.*'); @endphp
         <div class="nav-item">
@@ -789,6 +795,31 @@
                 <i class="bi bi-megaphone"></i> Announcements
             </a>
         </div>
+        @endif
+
+        {{-- ── Management (ticket PIC and/or claim approver functions grouped together) ── --}}
+        @if(Auth::user()->canAccessTicketManagement() || Auth::user()->canViewTeamClaims())
+        <div class="sidebar-section">Management</div>
+        @if(Auth::user()->canAccessTicketManagement())
+        <div class="nav-item">
+            <a href="{{ route('tickets.manage') }}"
+               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
+                <i class="bi bi-gear-wide-connected"></i> Ticket Management
+            </a>
+        </div>
+        @endif
+        @if(Auth::user()->canViewTeamClaims())
+        <div class="nav-item">
+            <a href="{{ route('user.claims.team') }}"
+               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
+                <i class="bi bi-people"></i> Team Claims
+                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
+                @if($__pendingTeamClaims > 0)
+                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
+                @endif
+            </a>
+        </div>
+        @endif
         @endif
 
         {{-- Self-Service (IT staff are also employees) --}}
@@ -850,18 +881,7 @@
                 <i class="bi bi-receipt-cutoff"></i> My Claims
             </a>
         </div>
-        @if(Auth::user()->canViewTeamClaims())
-        <div class="nav-item">
-            <a href="{{ route('user.claims.team') }}"
-               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
-                <i class="bi bi-people"></i> Team Claims
-                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
-                @if($__pendingTeamClaims > 0)
-                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
-                @endif
-            </a>
-        </div>
-        @endif
+        {{-- Team Claims moved up to the Management section (approver/management function). --}}
 
         {{-- 5. Profile --}}
         <div class="nav-item">
