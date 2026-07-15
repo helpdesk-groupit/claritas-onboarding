@@ -2,14 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\LeaveApplicationNotifyMail;
+use App\Mail\LeaveApprovalNotifyMail;
 use App\Models\Employee;
 use App\Models\LeaveApplication;
 use App\Models\LeaveBalance;
 use App\Models\LeaveEntitlement;
 use App\Models\LeaveType;
 use App\Models\PublicHoliday;
-use App\Mail\LeaveApplicationNotifyMail;
-use App\Mail\LeaveApprovalNotifyMail;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -20,7 +20,7 @@ class LeaveController extends Controller
     /** Abort 403 unless user can view leave admin pages. */
     private function authorizeLeaveAdmin(): void
     {
-        if (!Auth::user()->canViewLeaveAdmin()) {
+        if (! Auth::user()->canViewLeaveAdmin()) {
             abort(403);
         }
     }
@@ -28,7 +28,7 @@ class LeaveController extends Controller
     /** Abort 403 unless user can manage leave settings (types, entitlements, balances, holidays). */
     private function authorizeLeaveManager(): void
     {
-        if (!Auth::user()->canManageLeave()) {
+        if (! Auth::user()->canManageLeave()) {
             abort(403);
         }
     }
@@ -38,6 +38,7 @@ class LeaveController extends Controller
     {
         $this->authorizeLeaveAdmin();
         $types = LeaveType::orderBy('sort_order')->get();
+
         return view('hr.leave.types', compact('types'));
     }
 
@@ -87,11 +88,12 @@ class LeaveController extends Controller
 
         // Prevent deletion if any leave applications reference this type
         if ($leaveType->applications()->exists()) {
-            return back()->with('error', 'Cannot delete "' . $leaveType->name . '" — it has existing leave applications. Deactivate it instead.');
+            return back()->with('error', 'Cannot delete "'.$leaveType->name.'" — it has existing leave applications. Deactivate it instead.');
         }
 
         $leaveType->delete();
-        return back()->with('success', 'Leave type "' . $leaveType->name . '" deleted.');
+
+        return back()->with('success', 'Leave type "'.$leaveType->name.'" deleted.');
     }
 
     // ── HR: Entitlements ───────────────────────────────────────────────
@@ -100,6 +102,7 @@ class LeaveController extends Controller
         $this->authorizeLeaveAdmin();
         $entitlements = LeaveEntitlement::with('leaveType')->get();
         $leaveTypes = LeaveType::where('is_active', true)->get();
+
         return view('hr.leave.entitlements', compact('entitlements', 'leaveTypes'));
     }
 
@@ -150,6 +153,7 @@ class LeaveController extends Controller
     {
         $this->authorizeLeaveAdmin();
         $holidays = PublicHoliday::orderBy('date')->get();
+
         return view('hr.leave.holidays', compact('holidays'));
     }
 
@@ -193,6 +197,7 @@ class LeaveController extends Controller
     {
         $this->authorizeLeaveManager();
         $holiday->delete();
+
         return back()->with('success', 'Public holiday removed.');
     }
 
@@ -250,7 +255,7 @@ class LeaveController extends Controller
                     $application, $employee, 'approved', Auth::user()->name, 'hr'
                 ));
             } catch (\Exception $e) {
-                Log::warning('Failed to send leave approval email to employee #' . $employee->id . ': ' . $e->getMessage());
+                Log::warning('Failed to send leave approval email to employee #'.$employee->id.': '.$e->getMessage());
             }
         }
 
@@ -284,7 +289,7 @@ class LeaveController extends Controller
                     $application, $employee, 'rejected', Auth::user()->name, 'hr'
                 ));
             } catch (\Exception $e) {
-                Log::warning('Failed to send leave rejection email to employee #' . $employee->id . ': ' . $e->getMessage());
+                Log::warning('Failed to send leave rejection email to employee #'.$employee->id.': '.$e->getMessage());
             }
         }
 
@@ -298,7 +303,7 @@ class LeaveController extends Controller
         $year = $request->input('year', now()->year);
         $balances = LeaveBalance::with(['employee', 'leaveType'])
             ->where('year', $year)
-            ->whereHas('employee', fn($q) => $q->where('employment_status', 'active'))
+            ->whereHas('employee', fn ($q) => $q->where('employment_status', 'active'))
             ->orderBy('employee_id')
             ->get()
             ->groupBy('employee_id');
@@ -329,7 +334,9 @@ class LeaveController extends Controller
                     ->where('leave_type_id', $type->id)
                     ->where('year', $year)
                     ->exists();
-                if ($existing) continue;
+                if ($existing) {
+                    continue;
+                }
 
                 $entitlement = $entitlements
                     ->where('leave_type_id', $type->id)
@@ -366,14 +373,14 @@ class LeaveController extends Controller
             }
         }
 
-        return back()->with('success', $count . ' leave balances initialized for ' . $year . '.');
+        return back()->with('success', $count.' leave balances initialized for '.$year.'.');
     }
 
     // ── Employee: My Leave ─────────────────────────────────────────────
     public function myLeave()
     {
         $employee = Auth::user()->employee;
-        if (!$employee) {
+        if (! $employee) {
             return redirect()->route(Auth::user()->isHr() || Auth::user()->isSuperadmin() || Auth::user()->isSystemAdmin() ? 'hr.dashboard' : (Auth::user()->isIt() ? 'it.dashboard' : 'user.dashboard'))->with('error', 'No employee profile found.');
         }
 
@@ -434,7 +441,7 @@ class LeaveController extends Controller
      */
     private function initializeEmployeeBalances(Employee $employee, int $year): void
     {
-        $leaveTypes   = LeaveType::where('is_active', true)->get();
+        $leaveTypes = LeaveType::where('is_active', true)->get();
         $entitlements = LeaveEntitlement::all();
         $tenureMonths = $employee->start_date
             ? $employee->start_date->diffInMonths(now())
@@ -445,11 +452,13 @@ class LeaveController extends Controller
                 ->where('leave_type_id', $type->id)
                 ->where('year', $year)
                 ->exists();
-            if ($existing) continue;
+            if ($existing) {
+                continue;
+            }
 
             $entitlement = $entitlements
                 ->where('leave_type_id', $type->id)
-                ->filter(fn($e) => $tenureMonths >= $e->min_tenure_months
+                ->filter(fn ($e) => $tenureMonths >= $e->min_tenure_months
                     && ($e->max_tenure_months === null || $tenureMonths <= $e->max_tenure_months))
                 ->first();
 
@@ -468,13 +477,13 @@ class LeaveController extends Controller
             }
 
             LeaveBalance::create([
-                'employee_id'   => $employee->id,
+                'employee_id' => $employee->id,
                 'leave_type_id' => $type->id,
-                'year'          => $year,
-                'entitled'      => $entitled,
+                'year' => $year,
+                'entitled' => $entitled,
                 'carry_forward' => $carryForward,
-                'taken'         => 0,
-                'adjustment'    => 0,
+                'taken' => 0,
+                'adjustment' => 0,
             ]);
         }
     }
@@ -482,7 +491,7 @@ class LeaveController extends Controller
     public function apply(Request $request)
     {
         $employee = Auth::user()->employee;
-        if (!$employee) {
+        if (! $employee) {
             return back()->with('error', 'No employee profile found.');
         }
 
@@ -504,7 +513,7 @@ class LeaveController extends Controller
         $totalDays = 0;
         $current = $start->copy();
         while ($current->lte($end)) {
-            if (!$current->isWeekend()) {
+            if (! $current->isWeekend()) {
                 $totalDays++;
             }
             $current->addDay();
@@ -520,7 +529,7 @@ class LeaveController extends Controller
             ->first();
 
         if ($balance && $balance->available < $totalDays) {
-            return back()->with('error', 'Insufficient leave balance. Available: ' . $balance->available . ' days.');
+            return back()->with('error', 'Insufficient leave balance. Available: '.$balance->available.' days.');
         }
 
         $attachmentPath = null;
@@ -530,8 +539,9 @@ class LeaveController extends Controller
 
         $application = LeaveApplication::create([
             'employee_id' => $employee->id,
-            // Snapshot the company at apply time so the leave stays under it if the employee moves.
-            'company' => $employee->company,
+            // Stamp the company for the leave's start date from the timeline, so it
+            // stays put if the employee moves (and is correct for back-dated leave).
+            'company' => $employee->companyAsOf($data['start_date']) ?? $employee->company,
             'leave_type_id' => $data['leave_type_id'],
             'start_date' => $data['start_date'],
             'end_date' => $data['end_date'],
@@ -558,11 +568,11 @@ class LeaveController extends Controller
     public function cancel(LeaveApplication $application)
     {
         $employee = Auth::user()->employee;
-        if (!$employee || $application->employee_id !== $employee->id) {
+        if (! $employee || $application->employee_id !== $employee->id) {
             abort(403);
         }
 
-        if (!in_array($application->status, ['pending'])) {
+        if (! in_array($application->status, ['pending'])) {
             return back()->with('error', 'Only pending applications can be cancelled.');
         }
 
@@ -612,7 +622,7 @@ class LeaveController extends Controller
             return redirect()->route('user.dashboard')->with('error', 'Team Leave is currently unavailable.');
         }
         $manager = $user->employee;
-        if (!$manager) {
+        if (! $manager) {
             return redirect()->route('user.dashboard')->with('error', 'No employee profile found.');
         }
 
@@ -650,13 +660,13 @@ class LeaveController extends Controller
         }
         $manager = $user->employee;
 
-        if (!$manager) {
+        if (! $manager) {
             abort(403, 'No employee profile found.');
         }
 
         // Verify this employee reports to the current user
         $employee = $application->employee;
-        if (!$employee || $employee->manager_id !== $manager->id) {
+        if (! $employee || $employee->manager_id !== $manager->id) {
             abort(403, 'You can only approve leave for your direct reports.');
         }
 
@@ -692,11 +702,11 @@ class LeaveController extends Controller
                     $application, $employee, 'approved', $manager->full_name, 'manager'
                 ));
             } catch (\Exception $e) {
-                Log::warning('Failed to send manager leave approval email: ' . $e->getMessage());
+                Log::warning('Failed to send manager leave approval email: '.$e->getMessage());
             }
         }
 
-        return back()->with('success', 'Leave approved for ' . $employee->full_name . '.');
+        return back()->with('success', 'Leave approved for '.$employee->full_name.'.');
     }
 
     public function managerReject(Request $request, LeaveApplication $application)
@@ -708,12 +718,12 @@ class LeaveController extends Controller
         }
         $manager = $user->employee;
 
-        if (!$manager) {
+        if (! $manager) {
             abort(403, 'No employee profile found.');
         }
 
         $employee = $application->employee;
-        if (!$employee || $employee->manager_id !== $manager->id) {
+        if (! $employee || $employee->manager_id !== $manager->id) {
             abort(403, 'You can only reject leave for your direct reports.');
         }
 
@@ -733,7 +743,7 @@ class LeaveController extends Controller
             'status' => 'rejected',
             'approved_by' => $user->id,
             'approved_at' => now(),
-            'rejection_reason' => 'Rejected by Manager: ' . $data['manager_remarks'],
+            'rejection_reason' => 'Rejected by Manager: '.$data['manager_remarks'],
         ]);
 
         // Notify employee
@@ -744,11 +754,11 @@ class LeaveController extends Controller
                     $application, $employee, 'rejected', $manager->full_name, 'manager'
                 ));
             } catch (\Exception $e) {
-                Log::warning('Failed to send manager leave rejection email: ' . $e->getMessage());
+                Log::warning('Failed to send manager leave rejection email: '.$e->getMessage());
             }
         }
 
-        return back()->with('success', 'Leave rejected for ' . $employee->full_name . '.');
+        return back()->with('success', 'Leave rejected for '.$employee->full_name.'.');
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -788,13 +798,13 @@ class LeaveController extends Controller
                 return $current->between($leave->start_date, $leave->end_date);
             });
 
-            if ($dayLeaves->isNotEmpty() && !$current->isWeekend()) {
+            if ($dayLeaves->isNotEmpty() && ! $current->isWeekend()) {
                 $days[] = [
                     'date' => $current->copy(),
                     'day_name' => $current->format('l'),
                     'date_formatted' => $current->format('d/m/Y'),
                     'is_today' => $current->isToday(),
-                    'leaves' => $dayLeaves->map(fn($l) => [
+                    'leaves' => $dayLeaves->map(fn ($l) => [
                         'employee_name' => $l->employee->preferred_name ?? $l->employee->full_name,
                         'leave_type' => $l->leaveType?->name ?? 'Leave',
                         'is_half_day' => $l->is_half_day,
@@ -823,7 +833,7 @@ class LeaveController extends Controller
             $managerEmail = $managerUser?->work_email;
         }
 
-        if (!$managerEmail && $employee->reporting_manager_email) {
+        if (! $managerEmail && $employee->reporting_manager_email) {
             $managerEmail = $employee->reporting_manager_email;
         }
 
@@ -831,7 +841,7 @@ class LeaveController extends Controller
             try {
                 Mail::to($managerEmail)->send(new LeaveApplicationNotifyMail($application, $employee, 'manager'));
             } catch (\Exception $e) {
-                Log::warning('Failed to send leave notification to manager for employee #' . $employee->id . ': ' . $e->getMessage());
+                Log::warning('Failed to send leave notification to manager for employee #'.$employee->id.': '.$e->getMessage());
             }
         }
     }
@@ -848,7 +858,7 @@ class LeaveController extends Controller
                 try {
                     Mail::to($hrUser->work_email)->send(new LeaveApplicationNotifyMail($application, $employee, 'hr'));
                 } catch (\Exception $e) {
-                    Log::warning('Failed to send leave notification to HR user #' . $hrUser->id . ': ' . $e->getMessage());
+                    Log::warning('Failed to send leave notification to HR user #'.$hrUser->id.': '.$e->getMessage());
                 }
             }
         }

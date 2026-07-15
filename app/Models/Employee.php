@@ -203,7 +203,20 @@ class Employee extends Model
         $stint = $stints
             ->filter(fn ($s) => $s->started_on?->toDateString() <= $d
                 && ($s->ended_on === null || $s->ended_on->toDateString() >= $d))
-            ->sortByDesc('started_on')
+            ->sort(function ($a, $b) {
+                // Latest start wins.
+                $c = strcmp((string) $b->started_on?->toDateString(), (string) $a->started_on?->toDateString());
+                if ($c !== 0) {
+                    return $c;
+                }
+                // Same start date (e.g. a same-day move left two overlapping stints):
+                // prefer the still-open stint, then the most recently created row —
+                // so attribution never resolves to a stale, already-closed stint.
+                $ao = $a->ended_on === null ? 1 : 0;
+                $bo = $b->ended_on === null ? 1 : 0;
+
+                return $ao !== $bo ? $bo <=> $ao : $b->id <=> $a->id;
+            })
             ->first();
 
         return $stint?->company ?? $this->company;
@@ -326,6 +339,95 @@ class Employee extends Model
         ]);
 
         return true;
+    }
+
+    /**
+     * Preview (no mutation) what a company change to $newCompany effective
+     * $effectiveDate would do, so the bulk page can warn before applying:
+     *   - 'noop'    — already at that company.
+     *   - 'append'  — effective date is after the current stint's start; a normal
+     *                 forward move (no history removed).
+     *   - 'rewrite' — effective date is on/before the current stint's start; applying
+     *                 would REMOVE the stints in `removes` (those starting on/after the
+     *                 effective date) and re-seat the company from that date. This is
+     *                 the case the UI must confirm.
+     *
+     * @return array{mode:string, removes:\Illuminate\Support\Collection}
+     */
+    public function previewCompanyChange(string $newCompany, \Carbon\Carbon $effectiveDate): array
+    {
+        $this->ensureInitialCompanyStint();
+
+        if ($this->company === $newCompany) {
+            return ['mode' => 'noop', 'removes' => collect()];
+        }
+
+        $open = $this->companyHistories()->whereNull('ended_on')->orderByDesc('started_on')->first();
+        $effStr = $effectiveDate->toDateString();
+
+        if ($open && $open->started_on && $open->started_on->toDateString() >= $effStr) {
+            $removes = $this->companyHistories()
+                ->whereDate('started_on', '>=', $effStr)
+                ->orderBy('started_on')->get();
+
+            return ['mode' => 'rewrite', 'removes' => $removes];
+        }
+
+        return ['mode' => 'append', 'removes' => collect()];
+    }
+
+    /**
+     * Apply a "rewrite recent history" company change: DELETE every stint that
+     * starts on/after $effectiveDate, then re-seat $newCompany from that date. If
+     * the stint now preceding the date is already $newCompany (the common "undo an
+     * accidental move" case) it is simply reopened — merging cleanly with NO blip.
+     * Only call after the superadmin has confirmed (see previewCompanyChange).
+     *
+     * @return array{status:string, removed:array<string>, message:string}
+     */
+    public function rewriteCompanyFrom(string $newCompany, ?string $newOffice, \Carbon\Carbon $effectiveDate, ?int $changedBy = null): array
+    {
+        $this->ensureInitialCompanyStint();
+        $effStr = $effectiveDate->toDateString();
+
+        $removed = $this->companyHistories()->whereDate('started_on', '>=', $effStr)->orderBy('started_on')->get();
+        $removedLabels = $removed->map(fn ($s) => self::stintLabel($s))->all();
+        foreach ($removed as $stint) {
+            $stint->delete();
+        }
+
+        $prev = $this->companyHistories()->orderByDesc('started_on')->first();
+
+        if ($prev && $prev->company === $newCompany) {
+            // Reverting to the immediately-previous company → reopen it (merge, no blip).
+            $prev->update(['ended_on' => null]);
+            $this->update(['company' => $prev->company, 'office_location' => $prev->office_location]);
+        } else {
+            if ($prev) {
+                $prev->update(['ended_on' => $effectiveDate->copy()->subDay()->toDateString()]);
+            }
+            EmployeeCompanyHistory::create([
+                'employee_id' => $this->id,
+                'company' => $newCompany,
+                'office_location' => $newOffice,
+                'started_on' => $effStr,
+                'ended_on' => null,
+                'changed_by' => $changedBy,
+            ]);
+            $this->update(['company' => $newCompany, 'office_location' => $newOffice]);
+        }
+
+        return [
+            'status' => 'rewritten',
+            'removed' => $removedLabels,
+            'message' => 'Set '.$this->company.' effective '.$effectiveDate->format('d M Y').' — removed '.count($removedLabels).' timeline '.(count($removedLabels) === 1 ? 'entry' : 'entries').'.',
+        ];
+    }
+
+    /** Human-readable one-line label for a stint (used in change previews/messages). */
+    public static function stintLabel(EmployeeCompanyHistory $s): string
+    {
+        return $s->company.' ('.optional($s->started_on)->format('d M Y').' → '.($s->ended_on ? $s->ended_on->format('d M Y') : 'Present').')';
     }
 
     /**

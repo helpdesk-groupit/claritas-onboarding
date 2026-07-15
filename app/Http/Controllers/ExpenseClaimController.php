@@ -880,8 +880,10 @@ class ExpenseClaimController extends Controller
         }
 
         $claim->recalculateTotals();
-        // Snapshot the company at submission so the claim stays under it if the employee later moves.
-        $submitCompany = $claim->employee?->company;
+        // Stamp the company for this claim's submission cycle from the timeline, so
+        // it stays put if the employee later moves (and is correct even for a
+        // back-dated claim submitted after a move). See CompanyAttributionService.
+        $submitCompany = app(\App\Services\CompanyAttributionService::class)->companyForClaim($claim);
         DB::transaction(function () use ($claim, $approverId, $submitCompany) {
             $claim->items()->update([
                 'approver_id' => $approverId,
@@ -1726,8 +1728,9 @@ class ExpenseClaimController extends Controller
 
         $claim->recalculateTotals();
 
-        // Snapshot the company at submission so the claim stays under it if the employee later moves.
-        $submitCompany = $claim->employee?->company;
+        // Stamp the company for this claim's submission cycle from the timeline (see
+        // the first submit path above and CompanyAttributionService::companyForClaim).
+        $submitCompany = app(\App\Services\CompanyAttributionService::class)->companyForClaim($claim);
         DB::transaction(function () use ($claim, $approverId, $submitCompany) {
             $claim->items()->update([
                 'approver_id' => $approverId,

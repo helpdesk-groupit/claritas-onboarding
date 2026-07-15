@@ -1516,8 +1516,10 @@ class EmployeeController extends Controller
         // timeline. Reconciles the timeline against the now-current company/office: a company
         // change closes the open stint and opens a new one from today (returning to a previous
         // company adds a fresh stint); a same-company office move updates the stint in place.
-        if ($u->isSuperadmin()) {
-            $employee->recordCompanyStintChange($u->id);
+        if ($u->isSuperadmin() && $employee->recordCompanyStintChange($u->id)) {
+            // Company actually moved — re-attribute this employee's claims/leave/
+            // tickets to the company they were under on each record's own date.
+            app(\App\Services\CompanyAttributionService::class)->reattributeEmployee($employee);
         }
 
         // Resolve manager_id if not explicitly provided but reporting_manager was changed

@@ -9,18 +9,13 @@
         <div class="ucs-hero-icon"><i class="bi bi-building-gear"></i></div>
         <div>
             <h5 class="mb-0 fw-bold">User – Company Setting</h5>
-            <div class="text-muted small">Bulk-move employees between companies. Each change is recorded on the employee's company timeline (Employee listing &amp; profile). Past claims &amp; leave keep their original company.</div>
+            <div class="text-muted small">Bulk-move employees between companies. Each change is recorded on the employee's company timeline (Employee listing &amp; profile). User records are maintained according to company timeline.</div>
         </div>
     </div>
 
-    {{-- success / error flash is rendered globally by the layout — only the page-specific
-         skipped-date breakdown is shown here. --}}
-    @if(session('bulk_skipped_date') && count(session('bulk_skipped_date')))
-        <div class="alert alert-warning py-2 small">
-            <i class="bi bi-exclamation-triangle me-1"></i><strong>{{ count(session('bulk_skipped_date')) }} skipped</strong> — the effective date was before their current company's start date:
-            <ul class="mb-0 mt-1">@foreach(session('bulk_skipped_date') as $s)<li>{{ $s }}</li>@endforeach</ul>
-        </div>
-    @endif
+    {{-- success / error flash is rendered globally by the layout. When the effective
+         date is on/before someone's current-company start, the bulk-assign controller
+         flashes `rewrite_confirm` and the detailed confirmation modal (bottom) opens. --}}
 
     {{-- Step hint --}}
     <div class="ucs-step small text-muted mb-2">
@@ -60,7 +55,9 @@
                                 <div class="col-md-6">
                                     <label class="d-flex align-items-center gap-2 p-2 rounded ucs-row">
                                         <input class="form-check-input ucs-emp m-0" type="checkbox" name="employee_ids[]" value="{{ $e->id }}"
-                                               data-company="{{ $companyName }}" data-group-index="{{ $loop->parent->index }}">
+                                               @checked(in_array((string) $e->id, array_map('strval', (array) old('employee_ids', []))))
+                                               data-company="{{ $companyName }}" data-group-index="{{ $loop->parent->index }}"
+                                               data-current-start="{{ optional($since)->toDateString() }}">
                                         <span class="ucs-avatar">{{ strtoupper(mb_substr($e->preferred_name ?: $e->full_name, 0, 1)) }}</span>
                                         <span class="small lh-sm">
                                             <span class="fw-semibold">{{ $e->full_name }}</span>
@@ -92,20 +89,20 @@
                         <select name="company" id="ucsCompany" class="form-select form-select-sm" style="min-width:230px;" required>
                             <option value="">Select company…</option>
                             @foreach($companies as $co)
-                                <option value="{{ $co->name }}">{{ $co->name }}</option>
+                                <option value="{{ $co->name }}" @selected(old('company') === $co->name)>{{ $co->name }}</option>
                             @endforeach
                         </select>
                     </div>
                     <div>
                         <label class="form-label small fw-semibold mb-1">Effective from</label>
-                        <input type="date" name="effective_date" id="ucsDate" class="form-control form-control-sm" max="{{ now()->toDateString() }}" required>
+                        <input type="date" name="effective_date" id="ucsDate" class="form-control form-control-sm" max="{{ now()->toDateString() }}" value="{{ old('effective_date') }}" required>
                     </div>
                     <button type="button" class="btn btn-primary btn-sm px-3" id="ucsApply" disabled>
                         <i class="bi bi-arrow-left-right me-1"></i>Apply
                     </button>
                 </div>
             </div>
-            <div class="form-text small mt-1"><i class="bi bi-info-circle me-1"></i>Office Location follows the selected company. Anyone whose current company started <em>after</em> the effective date is skipped.</div>
+            <div class="form-text small mt-1"><i class="bi bi-info-circle me-1"></i>Office Location follows the selected company. If the effective date is on/before someone's current-company start, you'll be asked to confirm — it rewrites (removes) that part of their timeline.</div>
         </div>
     </form>
 </div>
@@ -140,6 +137,54 @@
         </div>
     </div>
 </div>
+
+{{-- Rewrite confirmation — shown by the server when the effective date is on/before
+     someone's current-company start (the "undo an accidental move" case). Lists the
+     exact timeline entries that will be removed, per employee. --}}
+@if(session('rewrite_confirm'))
+@php $rc = session('rewrite_confirm'); @endphp
+<div class="modal fade" id="ucsRewriteConfirm" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header border-0 pb-1">
+                <h5 class="modal-title fw-semibold"><i class="bi bi-exclamation-triangle me-2 text-warning"></i>This will remove timeline history</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">The effective date (<strong>{{ $rc['effective'] }}</strong>) is on or before the current-company start for
+                    <strong>{{ count($rc['employees']) }}</strong> of the {{ $rc['total'] }} selected employee(s). Proceeding will
+                    <strong class="text-danger">remove</strong> the timeline entries below and set them to <strong>{{ $rc['company'] }}</strong> from that date:</p>
+                <ul class="list-unstyled mb-2">
+                    @foreach($rc['employees'] as $row)
+                        <li class="mb-2 p-2 rounded" style="background:#fff7ed;border:1px solid #fed7aa;">
+                            <div class="fw-semibold small">{{ $row['name'] }}</div>
+                            <ul class="mb-0 small text-muted ps-3">
+                                @foreach($row['removes'] as $r)
+                                    <li><i class="bi bi-dash-circle me-1 text-danger"></i>Remove: {{ $r }}</li>
+                                @endforeach
+                            </ul>
+                        </li>
+                    @endforeach
+                </ul>
+                <p class="text-muted small mb-0">Their claims, leave &amp; tickets in that period are re-attributed to {{ $rc['company'] }}. Any other selected employees move normally.</p>
+            </div>
+            <div class="modal-footer border-0 pt-1">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <form method="POST" action="{{ route('superadmin.user-company-settings.bulk-assign') }}" class="d-inline">
+                    @csrf
+                    @foreach((array) old('employee_ids', []) as $eid)
+                        <input type="hidden" name="employee_ids[]" value="{{ $eid }}">
+                    @endforeach
+                    <input type="hidden" name="company" value="{{ old('company') }}">
+                    <input type="hidden" name="effective_date" value="{{ old('effective_date') }}">
+                    <input type="hidden" name="confirmed" value="1">
+                    <button type="submit" class="btn btn-warning"><i class="bi bi-check-lg me-1"></i>Proceed &amp; rewrite</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+@endif
 @endsection
 
 @push('styles')
@@ -263,6 +308,19 @@
 
     applyBtn.addEventListener('click', function () {
         if (applyBtn.disabled) return;
+        // If any selected employee's CURRENT company started on/after the effective
+        // date, this is a timeline rewrite — skip the generic confirm and submit
+        // straight to the server, which returns the detailed "these entries will be
+        // removed" warning. Avoids a redundant double confirmation.
+        const eff = dateEl.value;
+        const isRewrite = selected().some(function (c) {
+            const cs = c.dataset.currentStart;
+            return cs && cs >= eff; // ISO date strings compare lexicographically
+        });
+        if (isRewrite) {
+            form.submit();
+            return;
+        }
         document.getElementById('ucsCfCount').textContent = selected().length;
         document.getElementById('ucsCfTo').textContent = companySel.value;
         document.getElementById('ucsCfDate').textContent = dateEl.value;
@@ -274,4 +332,12 @@
     refresh();
 })();
 </script>
+@if(session('rewrite_confirm'))
+<script nonce="{{ $cspNonce ?? '' }}">
+    (function () {
+        var el = document.getElementById('ucsRewriteConfirm');
+        if (el && window.bootstrap) bootstrap.Modal.getOrCreateInstance(el).show();
+    })();
+</script>
+@endif
 @endpush

@@ -60,33 +60,76 @@ class UserCompanySettingController extends Controller
         // Office follows the company: use the target company's registered address.
         $targetCompany = Company::forName($data['company']);
         if (! $targetCompany) {
-            return back()->with('error', 'Unknown company selected.');
+            return back()->withInput()->with('error', 'Unknown company selected.');
         }
         $newCompany = $targetCompany->name;
         $newOffice = $targetCompany->address;
         $effectiveDate = Carbon::parse($data['effective_date'])->startOfDay();
         $actorId = Auth::id();
+        $confirmed = $request->boolean('confirmed');
 
+        $employees = Employee::whereIn('id', $data['employee_ids'])->get();
+
+        // ── Preview: which selected employees would REWRITE (remove) timeline history? ──
+        // That happens when the effective date is on/before their current company's
+        // start — instead of silently skipping (old behaviour) we hold the whole batch
+        // for a detailed confirmation the first time round.
+        $rewrites = [];
+        foreach ($employees as $emp) {
+            $preview = $emp->previewCompanyChange($newCompany, $effectiveDate);
+            if ($preview['mode'] === 'rewrite') {
+                $rewrites[$emp->id] = $preview['removes'];
+            }
+        }
+
+        if (! empty($rewrites) && ! $confirmed) {
+            $details = [];
+            foreach ($rewrites as $empId => $removes) {
+                $emp = $employees->firstWhere('id', $empId);
+                $details[] = [
+                    'name' => $emp->full_name ?? ('#'.$emp->id),
+                    'removes' => $removes->map(fn ($s) => Employee::stintLabel($s))->values()->all(),
+                ];
+            }
+
+            return back()->withInput()->with('rewrite_confirm', [
+                'company' => $newCompany,
+                'effective' => $effectiveDate->format('d M Y'),
+                'total' => $employees->count(),
+                'employees' => $details,
+            ]);
+        }
+
+        // ── Apply ──
         $changed = [];
+        $rewritten = [];
         $skippedSame = [];
-        $skippedDate = [];
 
-        DB::transaction(function () use ($data, $newCompany, $newOffice, $effectiveDate, $actorId, &$changed, &$skippedSame, &$skippedDate) {
-            $employees = Employee::whereIn('id', $data['employee_ids'])->get();
+        DB::transaction(function () use ($employees, $rewrites, $newCompany, $newOffice, $effectiveDate, $actorId, &$changed, &$rewritten, &$skippedSame) {
             foreach ($employees as $emp) {
-                $result = $emp->changeCompanyEffective($newCompany, $newOffice, $effectiveDate, $actorId);
+                $result = isset($rewrites[$emp->id])
+                    ? $emp->rewriteCompanyFrom($newCompany, $newOffice, $effectiveDate, $actorId)
+                    : $emp->changeCompanyEffective($newCompany, $newOffice, $effectiveDate, $actorId);
+
                 $label = $emp->full_name ?? ('#'.$emp->id);
                 match ($result['status']) {
                     'changed' => $changed[] = $label,
+                    'rewritten' => $rewritten[] = $label,
                     'skipped_same' => $skippedSame[] = $label,
-                    'skipped_date' => $skippedDate[] = $label.' — '.$result['message'],
                     default => null,
                 };
 
-                // Keep the onboarding work-detail in sync, like the single-employee edit does.
-                if ($result['status'] === 'changed' && $emp->onboarding_id) {
-                    \App\Models\Onboarding::with('workDetail')->find($emp->onboarding_id)?->workDetail
-                        ?->update(['company' => $newCompany, 'office_location' => $newOffice]);
+                if (in_array($result['status'], ['changed', 'rewritten'], true)) {
+                    // Ripple the move through the employee's already-created records:
+                    // claims/leave/tickets dated on/after the effective date follow the
+                    // new company; earlier ones stay put.
+                    app(\App\Services\CompanyAttributionService::class)->reattributeEmployee($emp);
+
+                    // Keep the onboarding work-detail in sync, like the single-employee edit does.
+                    if ($emp->onboarding_id) {
+                        \App\Models\Onboarding::with('workDetail')->find($emp->onboarding_id)?->workDetail
+                            ?->update(['company' => $emp->company, 'office_location' => $emp->office_location]);
+                    }
                 }
             }
         });
@@ -94,16 +137,18 @@ class UserCompanySettingController extends Controller
         Log::info('Bulk company assignment', [
             'actor_id' => $actorId, 'company' => $newCompany,
             'effective_date' => $effectiveDate->toDateString(),
-            'changed' => count($changed), 'skipped_same' => count($skippedSame), 'skipped_date' => count($skippedDate),
+            'changed' => count($changed), 'rewritten' => count($rewritten), 'skipped_same' => count($skippedSame),
         ]);
 
-        $summary = count($changed).' employee(s) moved to '.$newCompany.' effective '.$effectiveDate->format('d M Y').'.';
+        $done = count($changed) + count($rewritten);
+        $summary = $done.' employee(s) moved to '.$newCompany.' effective '.$effectiveDate->format('d M Y').'.';
+        if ($rewritten) {
+            $summary .= ' '.count($rewritten).' rewound over existing timeline history.';
+        }
         if ($skippedSame) {
             $summary .= ' '.count($skippedSame).' already there (skipped).';
         }
 
-        return redirect()->route('superadmin.user-company-settings.index')
-            ->with('success', $summary)
-            ->with('bulk_skipped_date', $skippedDate); // per-employee date conflicts, shown in a details panel
+        return redirect()->route('superadmin.user-company-settings.index')->with('success', $summary);
     }
 }

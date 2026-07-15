@@ -74,6 +74,22 @@ OnboardingInvite → register/set-password → Employee (active) → Offboarding
 - `Offboarding` model tracks the exit process
 - **Company groups:** `companies.company_group` (added 2026-07) pools related companies (e.g. a corporate group) so a reporting manager at one grouped company is selectable for another in the same group. `Company::groupMap()` (normalized name → lowercased group label) feeds the reporting-manager pickers in the employee create/edit forms. Use it rather than re-deriving group membership.
 
+### Employee Company Timeline & Historical Attribution (added 2026-07-15)
+An employee's company is no longer a single mutable field — it's a **dated timeline** so past records keep the company the employee was at when they were created, even after the employee moves companies.
+- `EmployeeCompanyHistory` (`employee_company_histories`) = one **stint** per row (`company`, `office_location`, `started_on`, `ended_on`, `changed_by`); `ended_on IS NULL` ⇒ the current company. Oldest-first.
+- `Employee` timeline API — **always use these, don't query stints directly:** `companyHistories()` (relation), `companyAsOf($date)` (company on a given date, falls back to current company when no stint covers it; ties on equal `started_on` prefer the still-open/newest stint), `changeCompanyEffective($newCompany, $newOffice, $effectiveDate, $changedBy)` (forward/append move — back-datable, but only when the effective date is **after** the current stint's start), `previewCompanyChange($newCompany, $effectiveDate)` (pure — returns `mode` = `noop`|`append`|`rewrite` + the `removes` collection), `rewriteCompanyFrom($newCompany, $newOffice, $effectiveDate, $changedBy)` (the "correct an accidental move" primitive — **deletes** every stint starting on/after the effective date and re-seats the company, **merging** cleanly with no blip when reverting to the immediately-previous company), `ensureInitialCompanyStint()`, `recordCompanyStintChange()`.
+- **Correcting an accidental move is done on the bulk page, not the profile.** In `UserCompanySettingController::bulkAssign()`, picking an effective date **on/before** an employee's current-company start no longer skips them — it's a two-phase flow: the first submit `previewCompanyChange`s each selected employee, and if any are `rewrite` it flashes `rewrite_confirm` and the page auto-opens a modal listing exactly which timeline entries will be removed per employee; **Proceed** re-submits with `confirmed=1` (hidden `employee_ids`/`company`/`effective_date`) and applies via `rewriteCompanyFrom` (forward moves still go through `changeCompanyEffective`). Both paths then `reattributeEmployee`. So "undo the accidental Enlinea move" = select the person, pick their previous company + a date on/before the bad stint's start, confirm → clean merge back. There is intentionally **no** undo control on the employee profile/listing pages.
+- **Company/Office Location are superadmin-only** on the employee edit form (CSP-safe office auto-fill). Superadmin bulk page: **"User – Company Setting"** at `/superadmin/user-company-settings` (`UserCompanySettingController`) — dated, back-datable bulk moves.
+- **Per-record company stamp:** `ExpenseClaim` and `LeaveApplication` each store a `company` column, read via `resolvedCompany()` (stamp ?: owner's current company for drafts/legacy). `tickets.company_id` is the raiser's employer (force-set to the raiser's current company in `store()`). These stamps are written from the timeline (`companyAsOf(anchorDate)`), not blindly from the current company — so a back-dated submission lands under the right company. Offboarding company is frozen at exit and intentionally NOT re-attributed.
+
+### Company Re-attribution (records follow a back-dated move — added 2026-07-15)
+When a superadmin makes a **back-dated** company change (e.g. on 1 Jul, move Claritas→Enlinea effective 1 May), the employee's already-created records dated **on/after the effective date follow the new company**, while earlier ones stay put. The timeline is the source of truth; each record's stored company column is a **materialised cache** recomputed from it (chosen over derive-on-read because `company`/`company_id` are live SQL filter/export keys).
+- **`CompanyAttributionService::reattributeEmployee($employee, $apply=true)`** — full idempotent recompute of the employee's claims/leave/tickets from `companyAsOf(anchorDate)`. Writes via raw DB (no model events / no timestamp churn); resolves ticket names→`company_id` and never nulls that required FK. `companyForClaim($claim)` is the shared claim-anchor helper the submit paths reuse.
+- **Anchors (v1 decision):** claims → **submission cycle** (`year`/`month` → 1st of month); leave → `start_date`; tickets → `created_at`. (`event_date` was considered and rejected for claims.)
+- **Auto-triggered** after a real dated stint change: `UserCompanySettingController::bulkAssign()` (per `changed` employee) and `EmployeeController::update()` (when `recordCompanyStintChange()` opens a new stint). Do NOT re-implement — call the service.
+- **Backfill:** `php artisan company:reattribute` (`--dry-run`, `--employee=`, `--all`). Safe/useful (fills null/stale stamps to match the timeline) but for employees who moved **before** the timeline existed (single backfilled stint) it aligns old records to their *current* company — dry-run first.
+- **Deliberately OUT OF SCOPE:** payroll/payslips (frozen actual-payment records via `pay_runs.company` — moving them would misstate the paying entity), attendance, salary, and EA forms (no company column; EA would need a per-employer split — a separate feature). Re-attribution touches **only** claims, leave, tickets.
+
 ### IT Asset Flow
 ```
 AssetInventory → AssetAssignment (to employee) → AssetProvisioning → return/DisposedAsset
@@ -143,6 +159,7 @@ Notable mail classes:
 - UI framework: **Bootstrap 5.3.2** + Bootstrap Icons 1.11.3, loaded globally from jsdelivr CDN
 - Per-page CDN libraries: **Select2 4.1.0-rc.0** (onboarding form), **Chart.js 4.4.7** (accounting & executive dashboards)
 - No JS framework; vanilla JS only. Always escape user-entered values before `innerHTML` insertion using the project-standard `escHtml(s)` / `obEsc(s)` helpers.
+- **Date display:** use the `fmt_date($date)` / `fmt_datetime($date)` helpers (in `app/helpers.php`) for all human-facing dates — the system-standard format is **MM-DD-YYYY** (`fmt_datetime` adds `, h:mma`). They accept a Carbon/string/null and return `—` for empty/invalid input. Do NOT use them for `<input type="date">` values (those stay `YYYY-MM-DD`) or machine-readable exports.
 
 ### Testing
 - PHPUnit 11 with two suites: `Unit` (`tests/Unit/`) and `Feature` (`tests/Feature/`)
@@ -210,8 +227,11 @@ Per-employee expense claims, **one claim per EVENT** (an employee can have many 
 ```
 draft → submitted → manager_approved → hr_approved (→ paid)
               ↘ manager_rejected (terminal)   ↘ hr_rejected (terminal)
+hr_approved → reversed (HR un-approve; correctable)
 ```
-Rejected claims are **terminal/frozen** (kept as history). `cancel()` recalls a `submitted` claim to draft. On submit, items lock and one approver is set on all of them.
+Rejected claims are **terminal/frozen** (kept as history). `cancel()` recalls a `submitted` claim to draft. On submit, items lock and one approver is set on all of them. The `expense_claims.status` ENUM was widened to add `reversed` by `2026_07_14_000005_add_reverse_fields_to_expense_claims` — run `php artisan migrate` before the HR Reverse UI is used.
+
+**HR Reverse (added 2026-07-15):** HR can **un-approve a fully-approved (`hr_approved`) claim** — reason required, with per-item flags — moving it to `reversed` (`isReversed()`, `statusBadge()` shows a distinct warning badge). Fields: `reversed_at` / `reversed_by` / `reverse_remarks`. The original approvals stay on the sign-off and the reversal is shown alongside. A reversed claim is **correctable** like a rejected one (`canCorrect()` includes `reversed`); its correction carries `correction_of_id` and `statusBadge`/`resubmissionNotice` label it "Resubmission of a reversed claim".
 
 **Submission & approval (whole-claim, single approver per event):** `submit` routes the whole claim to **one** approving manager chosen at submit (`submit.blade.php`, defaults to `ClaimRulesService::defaultApproverId`). Manager stage is per-approver but rolls up: `managerApprove` approves the manager's items, `finalizeManagerStage` advances to `manager_approved` once every item is approved → HR. HR approve = whole claim. The manager's Team Claims view renders the claim **as the printable report** (letterhead + form table + digital sign-offs + inline attachments via `partials/claim-signoffs` + `partials/claim-attachments`), grouped by month then staff. HR-stage gated by `User::canManageClaims()`; read-only listing by `canViewAllClaims()`.
 
@@ -310,7 +330,7 @@ Path 2 requires the `employees.department` value to **exactly match** the canoni
 
 **Attachments:** Both creation attachments (`TicketAttachment`) and chat attachments (`TicketMessageAttachment`) flow through `AttachmentProcessor::store()` into private storage. Routes are upload-throttled (`throttle:uploads`).
 
-**Department Settings UI flow** (`/superadmin/department-settings`, superadmin/system_admin only):
+**Department Settings UI flow** (`/superadmin/department-settings`, superadmin/system_admin only — the sidebar link is now labelled **"Cross Ticket Settings"** but the route/controller names are unchanged):
 - Layout is a **company-first accordion** mirroring the Ticket Management page (`.company-section` / `.company-header` / `.company-body`). Each company expands to show **only the departments that actually exist at that company** — strict, member-based definition. Departments without members at a company simply don't appear there; this page cannot fabricate or "add" a department to a company.
 - "Exists at this company" = a user/employee with the dept's role/work_role works at that company (auto-derive). Extras (cross-company assignments via the pivot) are **not** counted as existence — an Extra is just a routing rule that lives at the *source* company.
 - Each existing dept row carries an **Also serves these other companies (Extras)** chip cloud — clickable chips for every *other* registered company. Clicking a chip toggles whether this dept also handles that company's tickets. Saved as rows in `department_company_access` (`department`, `company_id`).
