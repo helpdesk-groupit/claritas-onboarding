@@ -30,3 +30,7 @@ desktop.ini
 
 # Database dumps / backups — contain real data, never commit
 *.sql
+
+# Claude Code local tooling config (personal, per-machine — not shared)
+/.claude/settings.json
+/.claude/settings.local.json
