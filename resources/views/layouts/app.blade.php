@@ -45,9 +45,17 @@
         .sidebar-brand h5 { color: #fff; font-weight: 700; margin: 0; font-size: 16px; }
         .sidebar-brand small { color: rgba(255,255,255,0.55); font-size: 11px; }
         .sidebar-section {
-            padding: 14px 18px 4px; font-size: 10px; text-transform: uppercase;
-            letter-spacing: 1.2px; color: rgba(255,255,255,0.4); font-weight: 600;
+            padding: 13px 18px 5px; font-size: 11px; text-transform: uppercase;
+            letter-spacing: 1px; color: rgba(255,255,255,0.7); font-weight: 700;
         }
+        /* Collapsible category headers (enhanced by JS into toggles). */
+        .sidebar-section-toggle { display: flex; align-items: center; cursor: pointer; user-select: none; border-radius: 8px; margin: 0 8px; padding-left: 10px; padding-right: 10px; transition: background .15s, color .15s; }
+        .sidebar-section-toggle:hover { color: #fff; background: rgba(255,255,255,0.08); }
+        .sidebar-section-toggle .sb-chev { margin-left: auto; font-size: 12px; opacity: .85; transition: transform .2s ease; }
+        .sidebar-section-toggle.collapsed .sb-chev { transform: rotate(-90deg); }
+        .sidebar-group { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .25s ease; }
+        .sidebar-group.collapsed { grid-template-rows: 0fr; }
+        .sidebar-group-inner { overflow: hidden; min-height: 0; }
         .sidebar-nav { padding: 6px 0; flex: 1; overflow-y: auto; }
         .sidebar-nav .nav-item { margin: 1px 10px; }
         .sidebar-nav .nav-link {
@@ -343,7 +351,7 @@
         <div class="nav-item">
             <a href="{{ route('tickets.index') }}"
                class="nav-link {{ request()->routeIs('tickets.index') ? 'active' : '' }}">
-                <i class="bi bi-ticket-detailed"></i> Tickets
+                <i class="bi bi-ticket-detailed"></i> My Tickets
             </a>
         </div>
         @if(Auth::user()->isSuperadmin())
@@ -354,19 +362,7 @@
             </a>
         </div>
         @endif
-        {{-- Team Leave is restricted to superadmin only (hidden from managers/approvers and all other staff). --}}
-        @if(Auth::user()->isSuperadmin())
-        <div class="nav-item">
-            <a href="{{ route('user.leave.team') }}"
-               class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
-                <i class="bi bi-people"></i> Team Leave
-                @php $__pendingTeam = Auth::user()->employee ? \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count() : 0; @endphp
-                @if($__pendingTeam > 0)
-                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
-                @endif
-            </a>
-        </div>
-        @endif
+        {{-- Team Leave moved to the Management section (see partials/sidebar-management). --}}
         @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.index') }}"
@@ -401,20 +397,7 @@
 
         @include('partials.sidebar-settings')
 
-        {{-- ── Account ── --}}
-        <div class="sidebar-section">Account</div>
-        <div class="nav-item">
-            <a href="{{ route('profile') }}"
-               class="nav-link {{ request()->routeIs('profile') ? 'active' : '' }}">
-                <i class="bi bi-person-circle"></i> Profile
-            </a>
-        </div>
-        <div class="nav-item">
-            <a href="{{ route('account') }}"
-               class="nav-link {{ request()->routeIs('account') ? 'active' : '' }}">
-                <i class="bi bi-gear"></i> Account
-            </a>
-        </div>
+        {{-- Profile & Account are rendered once in the shared Account section (before Session). --}}
 
         {{-- ══════════════════════════════════════════════════
              HR / SYSTEM ADMIN MENU
@@ -535,7 +518,7 @@
         <div class="nav-item">
             <a href="{{ route('tickets.index') }}"
                class="nav-link {{ request()->routeIs('tickets.index') ? 'active' : '' }}">
-                <i class="bi bi-ticket-detailed"></i> Tickets
+                <i class="bi bi-ticket-detailed"></i> My Tickets
             </a>
         </div>
         @if(Auth::user()->isSuperadmin())
@@ -546,19 +529,7 @@
             </a>
         </div>
         @endif
-        {{-- Team Leave is restricted to superadmin only (hidden from managers/approvers and all other staff). --}}
-        @if(Auth::user()->isSuperadmin())
-        <div class="nav-item">
-            <a href="{{ route('user.leave.team') }}"
-               class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
-                <i class="bi bi-people"></i> Team Leave
-                @php $__pendingTeam = Auth::user()->employee ? \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count() : 0; @endphp
-                @if($__pendingTeam > 0)
-                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
-                @endif
-            </a>
-        </div>
-        @endif
+        {{-- Team Leave moved to the Management section (see partials/sidebar-management). --}}
         @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.index') }}"
@@ -591,21 +562,7 @@
         </div>
         {{-- Team Claims moved up to the Management section (approver/management function). --}}
 
-        {{-- 5. Profile --}}
-        <div class="nav-item">
-            <a href="{{ route('profile') }}"
-               class="nav-link {{ request()->routeIs('profile') ? 'active' : '' }}">
-                <i class="bi bi-person-circle"></i> Profile
-            </a>
-        </div>
-
-        {{-- 6. Account --}}
-        <div class="nav-item">
-            <a href="{{ route('account') }}"
-               class="nav-link {{ request()->routeIs('account') ? 'active' : '' }}">
-                <i class="bi bi-gear"></i> Account
-            </a>
-        </div>
+        {{-- Profile & Account are rendered once in the shared Account section (before Session). --}}
 
         {{-- ══════════════════════════════════════════════════
              IT MENU
@@ -670,7 +627,7 @@
         <div class="nav-item">
             <a href="{{ route('tickets.index') }}"
                class="nav-link {{ request()->routeIs('tickets.index') ? 'active' : '' }}">
-                <i class="bi bi-ticket-detailed"></i> Tickets
+                <i class="bi bi-ticket-detailed"></i> My Tickets
             </a>
         </div>
         @if(Auth::user()->isSuperadmin())
@@ -681,19 +638,7 @@
             </a>
         </div>
         @endif
-        {{-- Team Leave is restricted to superadmin only (hidden from managers/approvers and all other staff). --}}
-        @if(Auth::user()->isSuperadmin())
-        <div class="nav-item">
-            <a href="{{ route('user.leave.team') }}"
-               class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
-                <i class="bi bi-people"></i> Team Leave
-                @php $__pendingTeam = Auth::user()->employee ? \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count() : 0; @endphp
-                @if($__pendingTeam > 0)
-                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
-                @endif
-            </a>
-        </div>
-        @endif
+        {{-- Team Leave moved to the Management section (see partials/sidebar-management). --}}
         @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.index') }}"
@@ -726,21 +671,7 @@
         </div>
         {{-- Team Claims moved up to the Management section (approver/management function). --}}
 
-        {{-- 5. Profile --}}
-        <div class="nav-item">
-            <a href="{{ route('profile') }}"
-               class="nav-link {{ request()->routeIs('profile') ? 'active' : '' }}">
-                <i class="bi bi-person-circle"></i> Profile
-            </a>
-        </div>
-
-        {{-- 6. Account --}}
-        <div class="nav-item">
-            <a href="{{ route('account') }}"
-               class="nav-link {{ request()->routeIs('account') ? 'active' : '' }}">
-                <i class="bi bi-gear"></i> Account
-            </a>
-        </div>
+        {{-- Profile & Account are rendered once in the shared Account section (before Session). --}}
 
         {{-- ══════════════════════════════════════════════════
              STANDARD USER MENU
@@ -770,7 +701,7 @@
         <div class="nav-item">
             <a href="{{ route('tickets.index') }}"
                class="nav-link {{ request()->routeIs('tickets.index') ? 'active' : '' }}">
-                <i class="bi bi-ticket-detailed"></i> Tickets
+                <i class="bi bi-ticket-detailed"></i> My Tickets
             </a>
         </div>
         @if(Auth::user()->isSuperadmin())
@@ -781,19 +712,7 @@
             </a>
         </div>
         @endif
-        {{-- Team Leave is restricted to superadmin only (hidden from managers/approvers and all other staff). --}}
-        @if(Auth::user()->isSuperadmin())
-        <div class="nav-item">
-            <a href="{{ route('user.leave.team') }}"
-               class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
-                <i class="bi bi-people"></i> Team Leave
-                @php $__pendingTeam = Auth::user()->employee ? \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', Auth::user()->employee->id)->pluck('id'))->where('status', 'pending')->count() : 0; @endphp
-                @if($__pendingTeam > 0)
-                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>
-                @endif
-            </a>
-        </div>
-        @endif
+        {{-- Team Leave moved to the Management section (see partials/sidebar-management). --}}
         @if(Auth::user()->isSuperadmin())
         <div class="nav-item">
             <a href="{{ route('user.payroll.index') }}"
@@ -826,18 +745,7 @@
         </div>
         {{-- Team Claims moved up to the Management section (approver/management function). --}}
 
-        <div class="nav-item">
-            <a href="{{ route('profile') }}"
-               class="nav-link {{ request()->routeIs('profile') ? 'active' : '' }}">
-                <i class="bi bi-person-circle"></i> Profile
-            </a>
-        </div>
-        <div class="nav-item">
-            <a href="{{ route('account') }}"
-               class="nav-link {{ request()->routeIs('account') ? 'active' : '' }}">
-                <i class="bi bi-gear"></i> Account
-            </a>
-        </div>
+        {{-- Profile & Account are rendered once in the shared Account section (before Session). --}}
         @endif
 
         {{-- Accounting Module (non-superadmin roles with finance access) --}}
@@ -929,6 +837,19 @@
         </div>
         @endif
         @endif
+
+        {{-- ── Account (shared — same for every role) ── --}}
+        <div class="sidebar-section">Account</div>
+        <div class="nav-item">
+            <a href="{{ route('profile') }}" class="nav-link {{ request()->routeIs('profile') ? 'active' : '' }}">
+                <i class="bi bi-person-circle"></i> Profile
+            </a>
+        </div>
+        <div class="nav-item">
+            <a href="{{ route('account') }}" class="nav-link {{ request()->routeIs('account') ? 'active' : '' }}">
+                <i class="bi bi-gear"></i> Account
+            </a>
+        </div>
 
         {{-- 7. Logout --}}
         <div class="sidebar-section">Session</div>
@@ -1295,6 +1216,69 @@ function setTheme(theme) {
     // Initial fetch + start polling
     fetchNotifications();
     startPolling();
+})();
+</script>
+
+{{-- Collapsible sidebar categories — each .sidebar-section header toggles the items
+     beneath it. State persists in localStorage; the group holding the active page
+     always starts expanded. CSP-safe (no inline handlers). --}}
+<script nonce="{{ $cspNonce ?? '' }}">
+(function () {
+    var nav = document.querySelector('.sidebar-nav');
+    if (!nav) return;
+    var STORE = 'sidebarSections';
+    var state = {};
+    try { state = JSON.parse(localStorage.getItem(STORE) || '{}'); } catch (e) {}
+
+    var headers = Array.prototype.slice.call(nav.querySelectorAll(':scope > .sidebar-section'));
+    headers.forEach(function (header, i) {
+        var key = (header.textContent || ('sec' + i)).trim();
+
+        // Wrap the items following this header (until the next section) in a collapsible group.
+        var wrap = document.createElement('div');
+        wrap.className = 'sidebar-group';
+        var inner = document.createElement('div');
+        inner.className = 'sidebar-group-inner';
+        wrap.appendChild(inner);
+        var sib = header.nextElementSibling;
+        while (sib && !sib.classList.contains('sidebar-section')) {
+            var next = sib.nextElementSibling;
+            inner.appendChild(sib);
+            sib = next;
+        }
+        header.after(wrap);
+
+        // Turn the header into a toggle.
+        var chev = document.createElement('i');
+        chev.className = 'bi bi-chevron-down sb-chev';
+        header.appendChild(chev);
+        header.classList.add('sidebar-section-toggle');
+        header.setAttribute('role', 'button');
+        header.setAttribute('tabindex', '0');
+        header.setAttribute('aria-expanded', 'true');
+
+        // Collapsed BY DEFAULT — only the group holding the active page (e.g. Dashboard)
+        // stays open. A section the user explicitly expanded before is remembered.
+        var hasActive = !!inner.querySelector('.nav-link.active');
+        var collapsed = hasActive ? false : (state[key] !== false);
+        if (collapsed) {
+            wrap.classList.add('collapsed');
+            header.classList.add('collapsed');
+            header.setAttribute('aria-expanded', 'false');
+        }
+
+        function toggle() {
+            var collapsed = wrap.classList.toggle('collapsed');
+            header.classList.toggle('collapsed', collapsed);
+            header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            state[key] = collapsed;
+            try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {}
+        }
+        header.addEventListener('click', toggle);
+        header.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+        });
+    });
 })();
 </script>
 @endauth

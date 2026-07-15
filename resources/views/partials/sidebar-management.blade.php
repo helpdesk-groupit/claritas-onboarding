@@ -1,15 +1,16 @@
 {{-- Unified "Management" sidebar section. Each tab keeps its OWN role gate, so the section shows
      only the tabs the current user may access. Included once per role branch (branches are mutually
      exclusive, so the single Automation collapse id below never collides). Order is fixed:
-     Task Management · Automation · Ticket Management · Team Claims · Company Registration. --}}
+     Task Management · Automation · Ticket Management · Team Leave · Team Claims · Company Registration. --}}
 @php
     $u = Auth::user();
     $mCanTask       = $u->isSuperadmin() || $u->isIt();                                   // IT work items
     $mCanAutomation = $u->isSuperadmin() || $u->isIt();                                   // Email workflow automation
     $mCanTicket     = $u->canAccessTicketManagement();
+    $mCanTeamLeave  = $u->isSuperadmin();                                                 // Team Leave (approver view)
     $mCanTeamClaims = $u->canViewTeamClaims();
     $mCanCompanyReg = $u->isSuperadmin() || $u->isHrManager() || $u->isHrExecutive();
-    $mShow = $mCanTask || $mCanAutomation || $mCanTicket || $mCanTeamClaims || $mCanCompanyReg;
+    $mShow = $mCanTask || $mCanAutomation || $mCanTicket || $mCanTeamLeave || $mCanTeamClaims || $mCanCompanyReg;
     $mAutomationOpen = request()->routeIs('it.automation.*');
 @endphp
 @if($mShow)
@@ -47,6 +48,16 @@
 <div class="nav-item">
     <a href="{{ route('tickets.manage') }}" class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
         <i class="bi bi-gear-wide-connected"></i> Ticket Management
+    </a>
+</div>
+@endif
+
+@if($mCanTeamLeave)
+<div class="nav-item">
+    <a href="{{ route('user.leave.team') }}" class="nav-link {{ request()->routeIs('user.leave.team*') ? 'active' : '' }}">
+        <i class="bi bi-people"></i> Team Leave
+        @php $__pendingTeam = $u->employee ? \App\Models\LeaveApplication::whereIn('employee_id', \App\Models\Employee::where('manager_id', $u->employee->id)->pluck('id'))->where('status', 'pending')->count() : 0; @endphp
+        @if($__pendingTeam > 0)<span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeam }}</span>@endif
     </a>
 </div>
 @endif
