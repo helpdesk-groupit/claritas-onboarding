@@ -443,7 +443,15 @@ class Ticket extends Model
             ? self::resolveCompanyId($user->employee->company)
             : null;
 
-        return $query->where(function ($outer) use ($managedDepartments, $managerCompanyId) {
+        return $query->where(function ($outer) use ($managedDepartments, $managerCompanyId, $user) {
+            // An assigned PIC always sees their own ticket, regardless of the
+            // dept/company-servicing match below. Without this, a manager who is
+            // the PIC loses sight of their ticket the moment their company no
+            // longer equals the ticket's (frozen) service_company_id — e.g. after
+            // the employee is moved to another company. Assignment is an explicit
+            // act that must survive company churn.
+            $outer->orWhere('tickets.assigned_to', $user->id);
+
             foreach ($managedDepartments as $dept) {
                 $outer->orWhere(function ($inner) use ($dept, $managerCompanyId) {
                     $inner->where('tickets.department', $dept);

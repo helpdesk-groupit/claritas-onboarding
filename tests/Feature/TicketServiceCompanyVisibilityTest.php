@@ -180,6 +180,68 @@ class TicketServiceCompanyVisibilityTest extends TestCase
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // Fix 1b — assigned PIC always sees their own ticket
+    // ─────────────────────────────────────────────────────────────────────
+
+    public function test_assigned_pic_sees_ticket_even_when_service_company_is_a_different_valid_provider(): void
+    {
+        // The "moved manager" scenario (Amos): a manager is the assigned PIC of a
+        // ticket whose service_company_id points at ANOTHER valid provider — e.g.
+        // the ticket was serviced by Alpha, then the PIC was moved to Beta. The
+        // orphan safety net can't help (Alpha is still a valid Group IT provider,
+        // so the ticket isn't stranded), and the strict match fails (Alpha != Beta).
+        // Assignment must still win.
+        $alphaManager = $this->itManagerAt($this->alpha);   // makes Alpha a provider
+        $betaManager = $this->itManagerAt($this->beta);     // makes Beta a provider
+        $raiser = $this->employeeAt($this->alpha);
+
+        $ticket = Ticket::create([
+            'user_id' => $raiser->id,
+            'company_id' => $this->alpha->id,
+            'service_company_id' => $this->alpha->id,   // Alpha: a valid provider (not orphan)
+            'department' => 'Group IT',
+            'priority' => 'High',
+            'subject' => 'Email Problem',
+            'description' => 'Cannot receive mail.',
+            'status' => 'Open',
+            'assigned_to' => $betaManager->id,          // PIC is at Beta, not Alpha
+        ]);
+
+        $this->assertTrue(
+            Ticket::visibleTo($betaManager)->pluck('id')->contains($ticket->id),
+            'The assigned PIC must see their ticket even though its service company is a different valid provider.'
+        );
+    }
+
+    public function test_assigned_pic_fallback_does_not_leak_to_unassigned_managers(): void
+    {
+        // The assignment fallback is per-user: a manager who is NOT the PIC and
+        // whose company does not service the ticket must still not see it.
+        $this->itManagerAt($this->alpha);                       // Alpha provider
+        $betaManager = $this->itManagerAt($this->beta);         // Beta provider, will be PIC
+        $gamma = Company::create(['name' => 'Gamma Sdn Bhd']);
+        $gammaManager = $this->itManagerAt($gamma);             // Gamma provider, uninvolved
+        $raiser = $this->employeeAt($this->alpha);
+
+        $ticket = Ticket::create([
+            'user_id' => $raiser->id,
+            'company_id' => $this->alpha->id,
+            'service_company_id' => $this->alpha->id,   // valid provider — not an orphan
+            'department' => 'Group IT',
+            'priority' => 'Medium',
+            'subject' => 'Account Lockout',
+            'description' => 'Locked out.',
+            'status' => 'Open',
+            'assigned_to' => $betaManager->id,
+        ]);
+
+        $this->assertFalse(
+            Ticket::visibleTo($gammaManager)->pluck('id')->contains($ticket->id),
+            'A Group IT manager who is neither the PIC nor the service company must not see the ticket.'
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // Fix 2 — updateAdmin() recomputes service_company_id on re-route
     // ─────────────────────────────────────────────────────────────────────
 
