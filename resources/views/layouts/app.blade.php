@@ -195,12 +195,6 @@
             </a>
         </div>
         <div class="nav-item">
-            <a href="{{ route('superadmin.companies.index') }}"
-               class="nav-link {{ request()->routeIs('superadmin.companies.*') ? 'active' : '' }}">
-                <i class="bi bi-building"></i> Company Registration
-            </a>
-        </div>
-        <div class="nav-item">
             <a href="{{ route('announcements.index') }}"
                class="nav-link {{ request()->routeIs('announcements.*') ? 'active' : '' }}">
                 <i class="bi bi-megaphone"></i> Announcements
@@ -248,33 +242,7 @@
                 <i class="bi bi-laptop"></i> Asset Listing
             </a>
         </div>
-        <div class="nav-item">
-            <a href="{{ route('it.tasks') }}"
-               class="nav-link {{ request()->routeIs('it.tasks') ? 'active' : '' }}">
-                <i class="bi bi-list-task"></i> Task Management
-                @php $myTasks = \App\Models\ItTask::where('assigned_to', Auth::id())->where('status','!=','done')->count(); @endphp
-                @if($myTasks > 0)
-                    <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $myTasks }}</span>
-                @endif
-            </a>
-        </div>
-        {{-- Automation (parent) › Email Workflow (sub-link) --}}
-        @php $automationOpen = request()->routeIs('it.automation.*'); @endphp
-        <div class="nav-item">
-            <a href="#automationMenuAdmin" data-bs-toggle="collapse" role="button"
-               aria-expanded="{{ $automationOpen ? 'true' : 'false' }}"
-               class="nav-link {{ $automationOpen ? 'active' : '' }}">
-                <i class="bi bi-robot"></i> Automation
-                <i class="bi bi-chevron-down ms-auto" style="font-size:12px;"></i>
-            </a>
-            <div class="collapse {{ $automationOpen ? 'show' : '' }}" id="automationMenuAdmin">
-                <a href="{{ route('it.automation.email-workflow.index') }}"
-                   class="nav-link {{ request()->routeIs('it.automation.email-workflow.*') ? 'active' : '' }}"
-                   style="padding-left:38px;">
-                    <i class="bi bi-envelope-paper"></i> Email Workflow
-                </a>
-            </div>
-        </div>
+        {{-- Task Management + Automation moved to the Management section. --}}
 
         {{-- ── Finance ── --}}
         <div class="sidebar-section">Finance</div>
@@ -365,37 +333,10 @@
                 <i class="bi bi-graph-up-arrow"></i> C-Suite Reports
             </a>
         </div>
-        <div class="nav-item">
-            <a href="{{ route('superadmin.system-overview') }}"
-               class="nav-link {{ request()->routeIs('superadmin.system-overview') ? 'active' : '' }}">
-                <i class="bi bi-diagram-3"></i> System Overview
-            </a>
-        </div>
+        {{-- System Overview moved to the Settings section. --}}
 
         {{-- ── Management (ticket PIC and/or claim approver functions grouped together) ── --}}
-        @if(Auth::user()->canAccessTicketManagement() || Auth::user()->canViewTeamClaims())
-        <div class="sidebar-section">Management</div>
-        @if(Auth::user()->canAccessTicketManagement())
-        <div class="nav-item">
-            <a href="{{ route('tickets.manage') }}"
-               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
-                <i class="bi bi-gear-wide-connected"></i> Ticket Management
-            </a>
-        </div>
-        @endif
-        @if(Auth::user()->canViewTeamClaims())
-        <div class="nav-item">
-            <a href="{{ route('user.claims.team') }}"
-               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
-                <i class="bi bi-people"></i> Team Claims
-                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
-                @if($__pendingTeamClaims > 0)
-                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
-                @endif
-            </a>
-        </div>
-        @endif
-        @endif
+        @include('partials.sidebar-management')
 
         {{-- ── Self-Service ── --}}
         <div class="sidebar-section">Self-Service</div>
@@ -458,32 +399,7 @@
         </div>
         {{-- Team Claims moved up to the Management section (approver/management function). --}}
 
-        {{-- ── Settings ── --}}
-        <div class="sidebar-section">Settings</div>
-        <div class="nav-item">
-            <a href="{{ route('superadmin.roles.index') }}"
-               class="nav-link {{ request()->routeIs('superadmin.roles.*') ? 'active' : '' }}">
-                <i class="bi bi-shield-lock"></i> Role Management
-            </a>
-        </div>
-        <div class="nav-item">
-            <a href="{{ route('superadmin.accounts.index') }}"
-               class="nav-link {{ request()->routeIs('superadmin.accounts.*') ? 'active' : '' }}">
-                <i class="bi bi-person-lock"></i> Account Management
-            </a>
-        </div>
-        <div class="nav-item">
-            <a href="{{ route('superadmin.department-settings.index') }}"
-               class="nav-link {{ request()->routeIs('superadmin.department-settings.*') ? 'active' : '' }}">
-                <i class="bi bi-diagram-2"></i> Department Settings
-            </a>
-        </div>
-        <div class="nav-item">
-            <a href="{{ route('superadmin.kb.gate') }}"
-               class="nav-link {{ request()->routeIs('superadmin.kb.*') ? 'active' : '' }}">
-                <i class="bi bi-book"></i> System Logic
-            </a>
-        </div>
+        @include('partials.sidebar-settings')
 
         {{-- ── Account ── --}}
         <div class="sidebar-section">Account</div>
@@ -539,18 +455,12 @@
             </a>
         </div>
 
-        {{-- Asset Listing + Company Registration (HR Manager + HR Executive) --}}
+        {{-- Asset Listing (HR Manager + HR Executive). Company Registration is under Management. --}}
         @if(Auth::user()->isHrManager() || Auth::user()->isHrExecutive())
         <div class="nav-item">
             <a href="{{ route('assets.index') }}"
                class="nav-link {{ request()->routeIs('assets.*') ? 'active' : '' }}">
                 <i class="bi bi-laptop"></i> Asset Listing
-            </a>
-        </div>
-        <div class="nav-item">
-            <a href="{{ route('superadmin.companies.index') }}"
-               class="nav-link {{ request()->routeIs('superadmin.companies.*') ? 'active' : '' }}">
-                <i class="bi bi-building"></i> Company Registration
             </a>
         </div>
         @endif
@@ -615,29 +525,10 @@
         @endif
 
         {{-- ── Management (ticket PIC and/or claim approver functions grouped together) ── --}}
-        @if(Auth::user()->canAccessTicketManagement() || Auth::user()->canViewTeamClaims())
-        <div class="sidebar-section">Management</div>
-        @if(Auth::user()->canAccessTicketManagement())
-        <div class="nav-item">
-            <a href="{{ route('tickets.manage') }}"
-               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
-                <i class="bi bi-gear-wide-connected"></i> Ticket Management
-            </a>
-        </div>
-        @endif
-        @if(Auth::user()->canViewTeamClaims())
-        <div class="nav-item">
-            <a href="{{ route('user.claims.team') }}"
-               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
-                <i class="bi bi-people"></i> Team Claims
-                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
-                @if($__pendingTeamClaims > 0)
-                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
-                @endif
-            </a>
-        </div>
-        @endif
-        @endif
+        @include('partials.sidebar-management')
+
+        {{-- ── Settings (System Admin sees the tabs their role allows) ── --}}
+        @include('partials.sidebar-settings')
 
         {{-- ── Self-Service ── --}}
         <div class="sidebar-section">Self-Service</div>
@@ -760,33 +651,7 @@
                 <i class="bi bi-laptop"></i> Asset Listing
             </a>
         </div>
-        <div class="nav-item">
-            <a href="{{ route('it.tasks') }}"
-               class="nav-link {{ request()->routeIs('it.tasks') ? 'active' : '' }}">
-                <i class="bi bi-list-task"></i> Task Management
-                @php $myTasks = \App\Models\ItTask::where('assigned_to', Auth::id())->where('status','!=','done')->count(); @endphp
-                @if($myTasks > 0)
-                    <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $myTasks }}</span>
-                @endif
-            </a>
-        </div>
-        {{-- Automation (parent) › Email Workflow (sub-link) --}}
-        @php $automationOpenIt = request()->routeIs('it.automation.*'); @endphp
-        <div class="nav-item">
-            <a href="#automationMenuIt" data-bs-toggle="collapse" role="button"
-               aria-expanded="{{ $automationOpenIt ? 'true' : 'false' }}"
-               class="nav-link {{ $automationOpenIt ? 'active' : '' }}">
-                <i class="bi bi-robot"></i> Automation
-                <i class="bi bi-chevron-down ms-auto" style="font-size:12px;"></i>
-            </a>
-            <div class="collapse {{ $automationOpenIt ? 'show' : '' }}" id="automationMenuIt">
-                <a href="{{ route('it.automation.email-workflow.index') }}"
-                   class="nav-link {{ request()->routeIs('it.automation.email-workflow.*') ? 'active' : '' }}"
-                   style="padding-left:38px;">
-                    <i class="bi bi-envelope-paper"></i> Email Workflow
-                </a>
-            </div>
-        </div>
+        {{-- Task Management + Automation moved to the Management section. --}}
 
         @if(Auth::user()->isItManager())
         <div class="nav-item">
@@ -798,29 +663,7 @@
         @endif
 
         {{-- ── Management (ticket PIC and/or claim approver functions grouped together) ── --}}
-        @if(Auth::user()->canAccessTicketManagement() || Auth::user()->canViewTeamClaims())
-        <div class="sidebar-section">Management</div>
-        @if(Auth::user()->canAccessTicketManagement())
-        <div class="nav-item">
-            <a href="{{ route('tickets.manage') }}"
-               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
-                <i class="bi bi-gear-wide-connected"></i> Ticket Management
-            </a>
-        </div>
-        @endif
-        @if(Auth::user()->canViewTeamClaims())
-        <div class="nav-item">
-            <a href="{{ route('user.claims.team') }}"
-               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
-                <i class="bi bi-people"></i> Team Claims
-                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
-                @if($__pendingTeamClaims > 0)
-                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
-                @endif
-            </a>
-        </div>
-        @endif
-        @endif
+        @include('partials.sidebar-management')
 
         {{-- Self-Service (IT staff are also employees) --}}
         <div class="sidebar-section">Self-Service</div>
@@ -920,29 +763,7 @@
         @endif
 
         {{-- Management (only shown if the user actually manages something — ticket PIC and/or claim approver) --}}
-        @if(Auth::user()->canAccessTicketManagement() || Auth::user()->canViewTeamClaims())
-        <div class="sidebar-section">Management</div>
-        @if(Auth::user()->canAccessTicketManagement())
-        <div class="nav-item">
-            <a href="{{ route('tickets.manage') }}"
-               class="nav-link {{ request()->routeIs('tickets.manage') ? 'active' : '' }}">
-                <i class="bi bi-gear-wide-connected"></i> Ticket Management
-            </a>
-        </div>
-        @endif
-        @if(Auth::user()->canViewTeamClaims())
-        <div class="nav-item">
-            <a href="{{ route('user.claims.team') }}"
-               class="nav-link {{ request()->routeIs('user.claims.team*') ? 'active' : '' }}">
-                <i class="bi bi-people"></i> Team Claims
-                @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', Auth::user()->employee->id))->count(); @endphp
-                @if($__pendingTeamClaims > 0)
-                <span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>
-                @endif
-            </a>
-        </div>
-        @endif
-        @endif
+        @include('partials.sidebar-management')
 
         {{-- Self-Service --}}
         <div class="sidebar-section">Self-Service</div>

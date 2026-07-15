@@ -530,6 +530,8 @@ class LeaveController extends Controller
 
         $application = LeaveApplication::create([
             'employee_id' => $employee->id,
+            // Snapshot the company at apply time so the leave stays under it if the employee moves.
+            'company' => $employee->company,
             'leave_type_id' => $data['leave_type_id'],
             'start_date' => $data['start_date'],
             'end_date' => $data['end_date'],
@@ -770,7 +772,9 @@ class LeaveController extends Controller
             });
 
         if ($companyFilter) {
-            $query->whereHas('employee', fn($q) => $q->where('company', $companyFilter));
+            // Filter by the leave's snapshot company (set at apply time), so a leave stays under
+            // the company it was applied under even after the employee moves.
+            $query->where('company', $companyFilter);
         }
 
         $leaves = $query->orderBy('start_date')->get();
@@ -795,7 +799,7 @@ class LeaveController extends Controller
                         'leave_type' => $l->leaveType?->name ?? 'Leave',
                         'is_half_day' => $l->is_half_day,
                         'half_day_period' => $l->half_day_period,
-                        'company' => $l->employee->company,
+                        'company' => $l->resolvedCompany(),
                     ])->values(),
                 ];
             }

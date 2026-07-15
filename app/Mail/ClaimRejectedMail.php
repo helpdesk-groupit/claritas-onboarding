@@ -23,6 +23,9 @@ class ClaimRejectedMail extends Mailable
     public function envelope(): Envelope
     {
         $label = $this->claim->subjectLabel();
+        if ($this->rejectorType === 'reversed') {
+            return new Envelope(subject: "Expense Claim Reversed by HR: {$label}");
+        }
         $by = $this->rejectorType === 'manager' ? 'Manager' : 'HR';
 
         return new Envelope(subject: "Expense Claim Rejected by {$by}: {$label}");

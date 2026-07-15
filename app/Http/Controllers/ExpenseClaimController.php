@@ -44,11 +44,11 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'No employee profile found.');
         }
 
-        $claims = $employee->expenseClaims()->with(['items.category', 'correctionOf:id,claim_number'])->orderByDesc('created_at')->get();
+        $claims = $employee->expenseClaims()->with(['items.category', 'correctionOf:id,claim_number,status'])->orderByDesc('created_at')->get();
         $policy = ExpenseClaimPolicy::forCompany($employee->company);
         $company = \App\Models\Company::forName($employee->company);
 
-        $drafts = $claims->whereIn('status', ['draft', 'manager_rejected', 'hr_rejected'])->values();
+        $drafts = $claims->whereIn('status', ['draft', 'manager_rejected', 'hr_rejected', 'reversed'])->values();
 
         // Draft claims (one per event). The inline editor loads a draft ONLY when it is
         // explicitly opened via ?open (e.g. "Continue editing" from the list, or right after
@@ -374,7 +374,7 @@ class ExpenseClaimController extends Controller
         $total = round($amount + $gst, 2);
 
         // Receipt + extra attachments (SHA-256 dedup like addItem; dead claims excluded).
-        $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
+        $deadStatuses = ['manager_rejected', 'hr_rejected', 'reversed', 'cancelled'];
         $warnings = [];
 
         // Same-expense guard: an identical line (same date + description + amount) already on one
@@ -609,7 +609,7 @@ class ExpenseClaimController extends Controller
         // Same-expense guard (excludes THIS item): don't let an edit turn this line into a
         // duplicate of another active-claim line with the same date + description + amount.
         // Hard block for receipts; soft warning for mileage (same route/day may be a real trip).
-        $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
+        $deadStatuses = ['manager_rejected', 'hr_rejected', 'reversed', 'cancelled'];
         $warnings = [];
         $cleanDescription = strip_tags((string) $request->input('description'));
         $dupItem = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses))
@@ -880,7 +880,9 @@ class ExpenseClaimController extends Controller
         }
 
         $claim->recalculateTotals();
-        DB::transaction(function () use ($claim, $approverId) {
+        // Snapshot the company at submission so the claim stays under it if the employee later moves.
+        $submitCompany = $claim->employee?->company;
+        DB::transaction(function () use ($claim, $approverId, $submitCompany) {
             $claim->items()->update([
                 'approver_id' => $approverId,
                 'manager_status' => 'pending',
@@ -888,7 +890,7 @@ class ExpenseClaimController extends Controller
                 'review_status' => 'approved',
                 'is_locked' => true,
             ]);
-            $claim->update(['status' => 'submitted', 'submitted_at' => now(), 'manager_id' => $approverId]);
+            $claim->update(['status' => 'submitted', 'submitted_at' => now(), 'manager_id' => $approverId, 'company' => $submitCompany]);
         });
 
         $this->logClaim($claim, 'submitted', 'Submitted to the approving Manager/PIC.');
@@ -1040,7 +1042,7 @@ class ExpenseClaimController extends Controller
         // ── Duplicate item detection (same date + description + amount across active claims) ──
         // Dead claims (rejected/cancelled) are excluded — they're void, and a
         // correction legitimately re-uses the rejected report's lines (#12a).
-        $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
+        $deadStatuses = ['manager_rejected', 'hr_rejected', 'reversed', 'cancelled'];
         $cleanDescription = strip_tags($validated['description']);
         $duplicateItem = ExpenseClaimItem::whereHas('claim', function ($q) use ($employee, $deadStatuses) {
             $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses);
@@ -1277,7 +1279,7 @@ class ExpenseClaimController extends Controller
         // Duplicate detection — same date+description+amount on another item.
         // Dead claims (rejected/cancelled) excluded so a correction can legitimately
         // re-use the rejected report's lines (#12a).
-        $deadStatuses = ['manager_rejected', 'hr_rejected', 'cancelled'];
+        $deadStatuses = ['manager_rejected', 'hr_rejected', 'reversed', 'cancelled'];
         $cleanDescription = strip_tags($validated['description']);
         $duplicateItem = ExpenseClaimItem::whereHas('claim', fn ($q) => $q->where('employee_id', $employee->id)->whereNotIn('status', $deadStatuses))
             ->where('id', '!=', $item->id)
@@ -1472,7 +1474,7 @@ class ExpenseClaimController extends Controller
         }
 
         $claim->load(['items.category', 'items.approver', 'employee']);
-        $company = \App\Models\Company::forName($claim->employee->company);
+        $company = \App\Models\Company::forName($claim->resolvedCompany());
 
         $approverId = $request->query('approver');
         $items = $approverId ? $claim->items->where('approver_id', (int) $approverId)->values() : $claim->items;
@@ -1485,7 +1487,7 @@ class ExpenseClaimController extends Controller
     private function buildClaimPdf(ExpenseClaim $claim)
     {
         $claim->loadMissing('items.category', 'employee', 'managerApprover', 'manager', 'hrApprover');
-        $company = \App\Models\Company::forName($claim->employee->company);
+        $company = \App\Models\Company::forName($claim->resolvedCompany());
         $items = $claim->items;
 
         return Pdf::loadView('user.claims.report-pdf', compact('claim', 'company', 'items'))->setPaper('a4');
@@ -1526,7 +1528,7 @@ class ExpenseClaimController extends Controller
     {
         $when = $claim->submitted_at ?? $claim->created_at;
 
-        return ClaimRulesService::submissionCycle($when, $this->companyCutoffDay($claim->employee?->company));
+        return ClaimRulesService::submissionCycle($when, $this->companyCutoffDay($claim->resolvedCompany()));
     }
 
     /**
@@ -1567,7 +1569,10 @@ class ExpenseClaimController extends Controller
         }
         $companies = array_values(array_filter((array) $request->input('company', []), fn ($v) => $v !== '' && $v !== null));
         if (! empty($companies)) {
-            $q->whereHas('employee', fn ($x) => $x->whereIn('company', $companies));
+            // Filter by the claim's snapshot company (set at submission), so a claim stays in the
+            // company it was submitted under even after the employee moves. Processed claims are
+            // always submitted, so the snapshot is populated (backfilled for pre-existing rows).
+            $q->whereIn('company', $companies);
         }
 
         // The month filter is the SUBMISSION CUTOFF CYCLE (e.g. 21 Jun–20 Jul = "July"), and the
@@ -1721,7 +1726,9 @@ class ExpenseClaimController extends Controller
 
         $claim->recalculateTotals();
 
-        DB::transaction(function () use ($claim, $approverId) {
+        // Snapshot the company at submission so the claim stays under it if the employee later moves.
+        $submitCompany = $claim->employee?->company;
+        DB::transaction(function () use ($claim, $approverId, $submitCompany) {
             $claim->items()->update([
                 'approver_id' => $approverId,
                 'manager_status' => 'pending',
@@ -1733,6 +1740,7 @@ class ExpenseClaimController extends Controller
                 'status' => 'submitted',
                 'submitted_at' => now(),
                 'manager_id' => $approverId,
+                'company' => $submitCompany,
             ]);
         });
 
@@ -1783,8 +1791,8 @@ class ExpenseClaimController extends Controller
         // Every claim routed to this manager — the single approving manager chosen at submit
         // (manager_id), NOT individual item approvers (which can be stale legacy data).
         // Superadmin gets oversight of ALL team claims, not just ones routed to them.
-        $query = ExpenseClaim::whereIn('status', ['submitted', 'manager_approved', 'manager_rejected', 'hr_approved', 'hr_rejected', 'paid'])
-            ->with(['employee', 'items.category', 'items.approver'])
+        $query = ExpenseClaim::whereIn('status', ['submitted', 'manager_approved', 'manager_rejected', 'hr_approved', 'hr_rejected', 'reversed', 'paid'])
+            ->with(['employee', 'items.category', 'items.approver', 'correctionOf'])
             ->orderByDesc('year')->orderByDesc('month')->orderByDesc('submitted_at');
         if (! $isSuper) {
             $query->where('manager_id', $employee->id);
@@ -1833,16 +1841,21 @@ class ExpenseClaimController extends Controller
             $stage = 'view';
         }
 
-        $company = \App\Models\Company::forName($claim->employee->company);
+        $company = \App\Models\Company::forName($claim->resolvedCompany());
         $items = $claim->items;
         $approver = $claim->manager ?? $claim->managerApprover;
+
+        // Reverse: HR can un-approve a FULLY-approved claim right here on the review page,
+        // reusing the reject page's per-item flag mechanism. Only for hr_approved + HR role.
+        $canReverse = $claim->status === 'hr_approved' && $user->canApproveRejectClaims();
+        $reverseUrl = route('hr.claims.reverse', $claim);
 
         // Where Approve/Reject post to, and where to return, depend on the stage.
         $approveUrl = $stage === 'hr' ? route('hr.claims.approve', $claim) : route('user.claims.team.approve', $claim);
         $rejectUrl = $stage === 'hr' ? route('hr.claims.reject', $claim) : route('user.claims.team.reject', $claim);
-        $backUrl = $stage === 'hr' ? route('hr.claims.index') : route('user.claims.team');
+        $backUrl = ($stage === 'hr' || $canReverse) ? route('hr.claims.index') : route('user.claims.team');
 
-        return view('user.claims.review', compact('claim', 'company', 'items', 'approver', 'stage', 'approveUrl', 'rejectUrl', 'backUrl'));
+        return view('user.claims.review', compact('claim', 'company', 'items', 'approver', 'stage', 'approveUrl', 'rejectUrl', 'backUrl', 'canReverse', 'reverseUrl'));
     }
 
     /** Save per-item rejection comments (reviewer flagged specific lines for the employee). */
@@ -2040,7 +2053,7 @@ class ExpenseClaimController extends Controller
         // HR only ever sees claims that have been APPROVED by the Manager/PIC (and beyond) —
         // submitted (pending manager), manager-rejected and drafts never reach HR. Filtering
         // (status pills + search by name/event/month/date) is done client-side, like Team Claims.
-        $hrStatuses = ['manager_approved', 'hr_approved', 'hr_rejected', 'paid'];
+        $hrStatuses = ['manager_approved', 'hr_approved', 'hr_rejected', 'reversed', 'paid'];
 
         // Scalability: the page renders every claim as a year→month→employee accordion and
         // filters client-side, so it needs the full set for the view it shows — but loading ALL
@@ -2053,7 +2066,7 @@ class ExpenseClaimController extends Controller
             $selectedYear = $availableYears[0]; // fall back to the most recent year that has claims
         }
 
-        $claims = ExpenseClaim::with(['employee', 'items.category'])
+        $claims = ExpenseClaim::with(['employee', 'items.category', 'correctionOf'])
             ->whereIn('status', $hrStatuses)
             ->where('year', $selectedYear)
             ->orderByDesc('year')->orderByDesc('month')->orderByDesc('submitted_at')
@@ -2071,7 +2084,7 @@ class ExpenseClaimController extends Controller
             ->whereRaw('COALESCE(submitted_at, created_at) >= ?', [$cycleRangeStart->toDateTimeString()])
             ->whereRaw('COALESCE(submitted_at, created_at) < ?', [$cycleRangeEnd->toDateTimeString()])
             ->get()
-            ->map(fn ($c) => ['claim' => $c, 'cycle' => $this->claimCycle($c), 'company' => $c->employee?->company]);
+            ->map(fn ($c) => ['claim' => $c, 'cycle' => $this->claimCycle($c), 'company' => $c->resolvedCompany()]);
         $inYear = $processed->filter(fn ($r) => $r['cycle']['year'] === $selectedYear);
         $approvedForExport = $inYear->pluck('claim')->values();
         $exportMonths = $inYear->pluck('cycle.month')->unique()->sort()->values();
@@ -2100,7 +2113,7 @@ class ExpenseClaimController extends Controller
         $this->authorizeViewClaims();
 
         $claim->load(['employee', 'items.category', 'items.approver', 'manager', 'managerApprover', 'hrApprover']);
-        $company = \App\Models\Company::forName($claim->employee->company);
+        $company = \App\Models\Company::forName($claim->resolvedCompany());
 
         // Employee spend context (#7) — this employee's claim history for the claim's year.
         $yearClaims = ExpenseClaim::where('employee_id', $claim->employee_id)
@@ -2211,6 +2224,61 @@ class ExpenseClaimController extends Controller
     }
 
     /**
+     * HR: Reverse a fully-approved claim (manager + HR approved). Used when management decides,
+     * after the fact, that an already-approved claim should not stand. Behaves like a rejection
+     * — reason + optional per-item flags, employee files a correction — but lands in the distinct
+     * terminal status `reversed`, and drops the claim out of the approved-PDF export.
+     */
+    public function hrReverse(Request $request, ExpenseClaim $claim)
+    {
+        $this->authorizeApproveRejectClaims();
+
+        $request->validate(['remarks' => 'nullable|string|max:1000']);
+
+        // Only a fully-approved claim can be reversed — HR must have approved it first.
+        if ($claim->status !== 'hr_approved') {
+            return back()->with('error', 'Only a fully-approved claim can be reversed.');
+        }
+
+        $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
+
+        // Freeze as `reversed` and clear processed_at so it leaves the approved-PDF ZIP.
+        $claim->update([
+            'status' => 'reversed',
+            'reversed_by' => Auth::id(),
+            'reversed_at' => now(),
+            'reverse_remarks' => $remarks,
+            'processed_at' => null,
+        ]);
+
+        // Per-item flags/comments the reviewer left for the employee's reference.
+        $this->saveItemRejectComments($claim, $request->input('item_comments'));
+
+        Log::info('Claim reversed', [
+            'claim_id' => $claim->id, 'claim_number' => $claim->claim_number,
+            'actor_id' => Auth::id(), 'actor_role' => Auth::user()->role, 'remarks' => $remarks,
+        ]);
+
+        $employee = $claim->employee;
+
+        // Tell the employee they can correct + resubmit straight away.
+        if ($employee->user) {
+            Mail::to($employee->user->work_email)->send(new ClaimRejectedMail($claim, $employee, 'reversed'));
+        }
+
+        // Notify the approving manager/PIC that the claim they approved was reversed — same as
+        // the HR-rejection flow (informational; the employee handles the correction).
+        $manager = $claim->managerApprover ?? $claim->manager;
+        if ($manager && $manager->user) {
+            Mail::to($manager->user->work_email)->send(new ClaimHrRejectedNoticeMail($claim, $manager, 'reversed'));
+        }
+
+        $this->logClaim($claim, 'reversed', 'HR reversed the approved claim: '.$remarks.' (employee can correct immediately; approving manager notified).');
+
+        return redirect()->route('hr.claims.index')->with('success', 'Claim reversed — '.$employee->full_name.' can correct it now; the approving manager has been notified.');
+    }
+
+    /**
      * HR: Bulk approve multiple manager-approved claims.
      */
     public function bulkApprove(Request $request)
@@ -2273,7 +2341,7 @@ class ExpenseClaimController extends Controller
             ->whereIn('status', self::FINANCE_REPORT_STATUSES)
             ->where('year', $year)
             ->when($request->query('month'), fn ($q, $m) => $q->where('month', (int) $m))
-            ->when($request->query('company'), fn ($q, $c) => $q->whereHas('employee', fn ($e) => $e->where('company', $c)))
+            ->when($request->query('company'), fn ($q, $c) => $q->where('company', $c))
             ->when($category, fn ($q, $cat) => $q->whereHas('items', fn ($i) => $i->where('expense_category_id', (int) $cat)))
             ->orderByDesc('year')->orderByDesc('month')
             ->get();
@@ -2302,7 +2370,7 @@ class ExpenseClaimController extends Controller
                 $rows->push([
                     'year' => (int) $claim->year,
                     'month' => (int) $claim->month,
-                    'company' => $claim->employee->company ?: '—',
+                    'company' => $claim->resolvedCompany() ?: '—',
                     'employee' => $claim->employee->full_name ?: '—',
                     'gl_code' => $item->category->gl_code ?: '—',
                     'category' => $item->category->name ?: '—',
@@ -2349,7 +2417,7 @@ class ExpenseClaimController extends Controller
                     fputcsv($file, [
                         $claim->year,
                         str_pad((string) $claim->month, 2, '0', STR_PAD_LEFT),
-                        $this->sanitizeForCsv($claim->employee->company ?? '-'),
+                        $this->sanitizeForCsv($claim->resolvedCompany() ?? '-'),
                         $this->sanitizeForCsv($claim->employee->full_name ?? '-'),
                         $this->sanitizeForCsv($item->category->gl_code ?? '-'),
                         $this->sanitizeForCsv($item->category->name ?? '-'),
@@ -3071,7 +3139,7 @@ class ExpenseClaimController extends Controller
         // evidence is the route/distance (often a Google Maps screenshot, which has no
         // receipt amount to read), so a "receipt amount" check would be meaningless.
         if (! $item->isMileage() && $item->receipt_path && Storage::disk('local')->exists($item->receipt_path)) {
-            $company = $claim->employee->company ?? null;
+            $company = $claim->resolvedCompany();
             if (ClaimReceiptOcrService::enabled($company)) {
                 $abs = Storage::disk('local')->path($item->receipt_path);
                 $mime = Storage::disk('local')->mimeType($item->receipt_path);
@@ -3272,7 +3340,8 @@ class ExpenseClaimController extends Controller
             'pending_hr' => ExpenseClaim::where('status', 'manager_approved')->count(),
             'hr_approved' => ExpenseClaim::whereIn('status', ['hr_approved', 'paid'])->count(),
             'hr_rejected' => ExpenseClaim::where('status', 'hr_rejected')->count(),
-            'total' => ExpenseClaim::whereIn('status', ['manager_approved', 'hr_approved', 'hr_rejected', 'paid'])->count(),
+            'reversed' => ExpenseClaim::where('status', 'reversed')->count(),
+            'total' => ExpenseClaim::whereIn('status', ['manager_approved', 'hr_approved', 'hr_rejected', 'reversed', 'paid'])->count(),
         ];
     }
 

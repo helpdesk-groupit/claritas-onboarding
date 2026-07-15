@@ -15,8 +15,8 @@
     <div class="d-flex align-items-center flex-wrap gap-2 mb-3">
         <h4 class="mb-0"><i class="bi bi-receipt me-2"></i>{{ $claim->event ?: 'Claim' }} <span class="text-muted">— {{ $claim->claim_number }}</span></h4>
         <span class="d-inline-flex flex-wrap gap-1">
-            @if($claim->correction_of_id)
-            <span class="badge bg-info text-dark" title="Resubmission of a rejected claim ({{ optional($claim->correctionOf)->claim_number ?? 'previously rejected' }})"><i class="bi bi-arrow-repeat me-1"></i>Resubmitted</span>
+            @if($rb = $claim->resubmissionBadge())
+            <span class="badge bg-{{ $rb['class'] }}" title="{{ $rb['title'] }} ({{ optional($claim->correctionOf)->claim_number ?? 'previously rejected' }})"><i class="bi {{ $rb['icon'] }} me-1"></i>{{ $rb['label'] }}</span>
             @endif
             @foreach($claim->stageBadges() as $sb)
             <span class="badge bg-{{ $sb['class'] }} {{ $sb['class'] === 'warning' ? 'text-dark' : '' }}">{{ $sb['label'] }}</span>
@@ -33,20 +33,22 @@
             'approver' => $approver,
             'padRows' => false,
             'showAttachments' => true,
-            'reviewReject' => ($stage === 'manager' || $stage === 'hr'),
+            'reviewReject' => ($stage === 'manager' || $stage === 'hr' || ($canReverse ?? false)),
         ])
     </div>
 
-    @if($stage === 'manager' || $stage === 'hr')
-    {{-- ── Decision panel ── --}}
+    @php $reverseMode = ($canReverse ?? false); @endphp
+    @if($stage === 'manager' || $stage === 'hr' || $reverseMode)
+    {{-- ── Decision panel ── (Approve/Reject while pending; Reverse once fully approved) --}}
     <div class="card shadow-sm border-0 mb-4" id="decisionPanel">
         <div class="card-header bg-white">
-            <h5 class="mb-0"><i class="bi bi-clipboard-check me-2"></i>Your decision
-                <span class="text-muted small fw-normal">— {{ $stage === 'hr' ? 'HR approval' : 'Manager / PIC approval' }}</span>
+            <h5 class="mb-0"><i class="bi {{ $reverseMode ? 'bi-arrow-counterclockwise' : 'bi-clipboard-check' }} me-2"></i>Your decision
+                <span class="text-muted small fw-normal">— {{ $reverseMode ? 'Reverse (un-approve)' : ($stage === 'hr' ? 'HR approval' : 'Manager / PIC approval') }}</span>
             </h5>
         </div>
         <div class="card-body">
-            <div class="d-flex gap-2 flex-wrap">
+            <div class="d-flex gap-2 flex-wrap align-items-center">
+                @unless($reverseMode)
                 <form action="{{ $approveUrl }}" method="POST" class="js-confirm"
                       data-confirm="Approve this claim ({{ $items->count() }} item(s), RM {{ number_format($claim->total_with_gst, 2) }})?{{ $stage === 'hr' ? ' It will be marked HR-approved for payout.' : ' It will go to HR for final approval.' }}"
                       data-confirm-title="Approve claim" data-confirm-ok="Approve" data-confirm-variant="success">
@@ -54,26 +56,31 @@
                     <button type="submit" class="btn btn-success"><i class="bi bi-check-lg me-1"></i>Approve Claim</button>
                 </form>
                 <button type="button" class="btn btn-outline-danger" id="toggleReject"><i class="bi bi-x-octagon me-1"></i>Reject Claim</button>
+                @else
+                <div class="small text-muted flex-grow-1"><i class="bi bi-info-circle me-1"></i>This claim is already fully approved. <strong>Reversing</strong> un-approves it and returns it to the employee to correct — the same as a rejection.</div>
+                <button type="button" class="btn btn-warning" id="toggleReject"><i class="bi bi-arrow-counterclockwise me-1"></i>Reverse Claim</button>
+                @endunless
             </div>
 
-            {{-- Reject form — the overall reason here; per-item comments are written directly on
-                 the report above (each flagged item's comment is gathered on submit). --}}
+            {{-- Reject/Reverse form — overall reason here; per-item comments are written directly on
+                 the report above (each flagged item's comment is gathered on submit). Reused for both
+                 modes (same IDs) — only the action URL + labels differ. --}}
             <div class="collapse mt-3" id="rejectBox">
-                <form action="{{ $rejectUrl }}" method="POST" id="rejectForm">
+                <form action="{{ $reverseMode ? $reverseUrl : $rejectUrl }}" method="POST" id="rejectForm">
                     @csrf
-                    <div class="alert alert-danger py-2 small mb-3">
-                        <i class="bi bi-exclamation-triangle me-1"></i>Rejecting returns the <strong>whole claim</strong> to {{ $claim->employee->full_name ?? 'the employee' }} to fix and resubmit.
+                    <div class="alert {{ $reverseMode ? 'alert-warning' : 'alert-danger' }} py-2 small mb-3">
+                        <i class="bi bi-exclamation-triangle me-1"></i>{{ $reverseMode ? 'Reversing un-approves the' : 'Rejecting returns the' }} <strong>whole claim</strong> to {{ $claim->employee->full_name ?? 'the employee' }} to fix and resubmit.
                         <div class="mt-1"><i class="bi bi-flag me-1"></i>Scroll up to the report and add a comment under any item that needs fixing — the employee will see those flags.</div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Overall reason <span class="text-muted small fw-normal">(optional — the employee sees this)</span></label>
                         <input type="text" name="remarks" class="form-control" maxlength="1000"
-                               placeholder="e.g., The KLCC mileage isn't a business trip — please remove it and resubmit.">
+                               placeholder="{{ $reverseMode ? 'e.g., Management advised this claim cannot be approved — please review and resubmit.' : 'e.g., The KLCC mileage isn\'t a business trip — please remove it and resubmit.' }}">
                     </div>
                     {{-- Per-item comments collected from the report are injected here on submit. --}}
                     <div id="rejectComments"></div>
                     <div class="d-flex justify-content-end mt-3">
-                        <button type="submit" class="btn btn-danger"><i class="bi bi-x-circle me-1"></i>Confirm Reject</button>
+                        <button type="submit" class="btn {{ $reverseMode ? 'btn-warning' : 'btn-danger' }}"><i class="bi {{ $reverseMode ? 'bi-arrow-counterclockwise' : 'bi-x-circle' }} me-1"></i>{{ $reverseMode ? 'Confirm Reverse' : 'Confirm Reject' }}</button>
                     </div>
                 </form>
             </div>

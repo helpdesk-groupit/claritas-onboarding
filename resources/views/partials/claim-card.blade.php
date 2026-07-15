@@ -26,8 +26,8 @@
         </span>
         <span class="cc-head-right">
             <span class="d-inline-flex flex-wrap gap-1 justify-content-end">
-                @if($claim->correction_of_id)
-                <span class="badge bg-info text-dark" title="Resubmission of a rejected claim{{ optional($claim->correctionOf)->claim_number ? ' ('.$claim->correctionOf->claim_number.')' : '' }}"><i class="bi bi-arrow-repeat me-1"></i>Resubmitted</span>
+                @if($rb = $claim->resubmissionBadge())
+                <span class="badge bg-{{ $rb['class'] }}" title="{{ $rb['title'] }}{{ optional($claim->correctionOf)->claim_number ? ' ('.$claim->correctionOf->claim_number.')' : '' }}"><i class="bi {{ $rb['icon'] }} me-1"></i>{{ $rb['label'] }}</span>
                 @endif
                 @foreach($claim->stageBadges() as $sb)
                 <span class="badge bg-{{ $sb['class'] }} {{ $sb['class'] === 'warning' ? 'text-dark' : '' }}">{{ $sb['label'] }}</span>

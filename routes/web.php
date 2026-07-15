@@ -170,6 +170,10 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::get('/superadmin/roles/{employee}/permissions', [EmployeeController::class, 'getPermissions'])->name('superadmin.permissions.get');
     Route::post('/superadmin/roles/{employee}/permissions', [EmployeeController::class, 'updatePermissions'])->name('superadmin.permissions.update');
 
+    // User – Company Setting (Superadmin only): bulk-assign employees to a company with an effective date.
+    Route::get('/superadmin/user-company-settings', [\App\Http\Controllers\UserCompanySettingController::class, 'index'])->name('superadmin.user-company-settings.index');
+    Route::post('/superadmin/user-company-settings/bulk-assign', [\App\Http\Controllers\UserCompanySettingController::class, 'bulkAssign'])->name('superadmin.user-company-settings.bulk-assign');
+
     // Account Management (Superadmin / System Admin)
     Route::get('/superadmin/account-management', [AccountManagementController::class, 'index'])->name('superadmin.accounts.index');
     Route::post('/superadmin/account-management/{user}/activate', [AccountManagementController::class, 'activate'])->name('superadmin.accounts.activate');
@@ -417,6 +421,7 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::get('/hr/claims/{claim}', [ExpenseClaimController::class, 'show'])->name('hr.claims.show');
     Route::post('/hr/claims/{claim}/approve', [ExpenseClaimController::class, 'hrApprove'])->name('hr.claims.approve');
     Route::post('/hr/claims/{claim}/reject', [ExpenseClaimController::class, 'hrReject'])->name('hr.claims.reject');
+    Route::post('/hr/claims/{claim}/reverse', [ExpenseClaimController::class, 'hrReverse'])->name('hr.claims.reverse');
 
     // Finance: Claim Reports — fully-approved claims grouped Year > Month > Company > Employee
     Route::get('/finance/claim-reports', [ExpenseClaimController::class, 'financeReports'])->name('finance.claim-reports');

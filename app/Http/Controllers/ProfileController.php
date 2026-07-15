@@ -77,7 +77,10 @@ class ProfileController extends Controller
             $l->consent_required && !$l->acknowledged_at && !$l->isTokenExpired()
         );
 
-        return view('user.profile', compact('user', 'employee', 'contracts', 'aarf', 'allAssets', 'editLogs', 'pendingConsentLog'));
+        $employee?->ensureInitialCompanyStint();
+        $companyTimeline = $employee?->companyHistories()->orderBy('started_on')->get() ?? collect();
+
+        return view('user.profile', compact('user', 'employee', 'contracts', 'aarf', 'allAssets', 'editLogs', 'pendingConsentLog', 'companyTimeline'));
     }
 
     // ── Unified update: Sections A, F, G, H, I in one request ────────────

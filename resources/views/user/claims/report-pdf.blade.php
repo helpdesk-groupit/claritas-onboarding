@@ -9,7 +9,7 @@
         } catch (\Throwable $e) { return null; }
     };
     $logo = $company && $company->logo_path ? $imgData('public', $company->logo_path) : null;
-    $deadlineDay = \App\Models\ExpenseClaimPolicy::forCompany($claim->employee->company)->submission_deadline_day ?? 20;
+    $deadlineDay = \App\Models\ExpenseClaimPolicy::forCompany($claim->resolvedCompany())->submission_deadline_day ?? 20;
     $appr = ($approver ?? null) ?? $claim->managerApprover ?? $claim->manager ?? null;
     $mgrDone = $claim->manager_approved_at && in_array($claim->status, ['manager_approved','hr_approved','paid']);
     $hrDone = $claim->hr_approved_at && in_array($claim->status, ['hr_approved','paid']);
@@ -70,7 +70,7 @@
     <table class="hdr">
         <tr>
             <td>
-                <div class="co-name">{{ $company->name ?? ($claim->employee->company ?? 'Company') }}</div>
+                <div class="co-name">{{ $company->name ?? ($claim->resolvedCompany() ?? 'Company') }}</div>
                 @if($company && $company->address)<div class="co-addr">{{ $company->address }}</div>@endif
             </td>
             <td style="text-align:right; width:160px;">

@@ -107,6 +107,7 @@
                     'manager_approved' => 'pending_hr',
                     'hr_approved', 'paid' => 'hr_approved',
                     'hr_rejected' => 'hr_rejected',
+                    'reversed' => 'reversed',
                     default => 'other',
                 };
                 $countIn = fn ($g) => $claims->filter(fn ($c) => $hrGroup($c->status) === $g)->count();
@@ -120,6 +121,7 @@
                     <button type="button" class="claim-filter-btn" data-filter="pending_hr">Pending HR <span class="cf-count">{{ $countIn('pending_hr') }}</span></button>
                     <button type="button" class="claim-filter-btn" data-filter="hr_approved">HR Approved <span class="cf-count">{{ $countIn('hr_approved') }}</span></button>
                     <button type="button" class="claim-filter-btn" data-filter="hr_rejected">HR Rejected <span class="cf-count">{{ $countIn('hr_rejected') }}</span></button>
+                    <button type="button" class="claim-filter-btn" data-filter="reversed">Reversed <span class="cf-count">{{ $countIn('reversed') }}</span></button>
                 </div>
                 <div class="row g-2 justify-content-center">
                     <div class="col-12 col-md-5">
@@ -223,8 +225,8 @@
                                                             <div class="ev-title">{{ trim((string) $claim->event) ?: 'Untitled event' }}</div>
                                                             <div class="ev-sub">{{ $claim->claim_number }} · {{ $claim->item_count }} item{{ $claim->item_count === 1 ? '' : 's' }} · Submitted {{ $claim->submitted_at?->format('d M Y') ?? '—' }}</div>
                                                             <div class="mt-1 d-inline-flex flex-wrap gap-1">
-                                                                @if($claim->correction_of_id)
-                                                                <span class="badge bg-info text-dark" title="Resubmission of a rejected claim"><i class="bi bi-arrow-repeat me-1"></i>Resubmitted</span>
+                                                                @if($rb = $claim->resubmissionBadge())
+                                                                <span class="badge bg-{{ $rb['class'] }}" title="{{ $rb['title'] }}"><i class="bi {{ $rb['icon'] }} me-1"></i>{{ $rb['label'] }}</span>
                                                                 @endif
                                                                 @foreach($claim->stageBadges() as $sb)
                                                                 <span class="badge bg-{{ $sb['class'] }} {{ $sb['class'] === 'warning' ? 'text-dark' : '' }}">{{ $sb['label'] }}</span>

@@ -24,18 +24,21 @@
 @php
     $period = \Carbon\Carbon::create($claim->year, $claim->month)->format('F Y');
     $company = $claim->employee->company ?? config('app.name');
+    $action = $action ?? 'rejected';
+    $isReversed = $action === 'reversed';
+    $reason = $isReversed ? $claim->reverse_remarks : $claim->hr_remarks;
 @endphp
 <div class="email-wrap">
 
   <div class="header">
-    <h1>Claim Rejected by HR</h1>
+    <h1>Claim {{ $isReversed ? 'Reversed' : 'Rejected' }} by HR</h1>
     <p>{{ $claim->event ?: $period }} &mdash; For your information</p>
   </div>
 
   <div class="body">
     <div class="greeting">Dear {{ $manager->preferred_name ?? $manager->full_name }},</div>
     <p style="color:#475569;font-size:15px;line-height:1.6;">
-      HR has rejected an expense claim from <strong>{{ $claim->employee->full_name }}</strong> that you previously approved.
+      HR has {{ $isReversed ? 'reversed' : 'rejected' }} an expense claim from <strong>{{ $claim->employee->full_name }}</strong> that you previously approved.
     </p>
 
     <div class="note">
@@ -51,10 +54,10 @@
       <div class="detail-row"><span class="detail-label">Total (w/ SST)</span> <span class="detail-value">RM {{ number_format($claim->total_with_gst, 2) }}</span></div>
     </div>
 
-    @if($claim->hr_remarks)
+    @if($reason)
     <div class="remarks">
       <strong>HR's reason:</strong><br>
-      {{ $claim->hr_remarks }}
+      {{ $reason }}
     </div>
     @endif
   </div>

@@ -462,9 +462,10 @@
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Company <span class="text-danger">*</span></label>
+                    @if(Auth::user()->isSuperadmin())
+                    {{-- Change handler is wired via addEventListener below (CSP blocks inline onchange). --}}
                     <select name="company" id="empCompanySelect"
-                            class="form-control" required
-                            onchange="autofillOfficeLocation(this, 'empOfficeLocation'); filterManagersByCompany(this.value, 'edit_reporting_manager')">
+                            class="form-control" required>
                         <option value="">Select company...</option>
                         @foreach($companies as $c)
                             <option value="{{ $c->name }}"
@@ -474,12 +475,24 @@
                             </option>
                         @endforeach
                     </select>
+                    @else
+                    {{-- Company is Superadmin-only — read-only for everyone else (no submittable name). --}}
+                    <input type="text" class="form-control bg-light" value="{{ $employee->company ?? '—' }}" readonly>
+                    <div class="form-text small text-muted"><i class="bi bi-lock-fill me-1"></i>Only a Superadmin can change the company.</div>
+                    @endif
+                    @include('hr.employees.partials.company-timeline', ['companyTimeline' => $companyTimeline ?? collect()])
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Office Location <span class="text-danger">*</span></label>
+                    @if(Auth::user()->isSuperadmin())
                     <input type="text" name="office_location" id="empOfficeLocation"
                            class="form-control"
                            value="{{ old('office_location', $employee->office_location) }}" required>
+                    @else
+                    {{-- Office Location is Superadmin-only — read-only for everyone else. --}}
+                    <input type="text" class="form-control bg-light" value="{{ $employee->office_location ?? '—' }}" readonly>
+                    <div class="form-text small text-muted"><i class="bi bi-lock-fill me-1"></i>Only a Superadmin can change the office location.</div>
+                    @endif
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-semibold">Reporting Manager <span class="text-danger">*</span></label>
@@ -1782,6 +1795,16 @@ document.addEventListener('DOMContentLoaded', function () {
     toggleOffboardingHint();
     var empCo = document.getElementById('empCompanySelect');
     if (empCo && empCo.value) filterManagersByCompany(empCo.value, 'edit_reporting_manager');
+    // Company change → auto-fill Office Location to the new company's address + re-filter the
+    // manager list. Wired here with addEventListener because the CSP blocks inline onchange
+    // handlers — the old inline handler silently failed, leaving office stuck on the previous
+    // company's address (a mismatched timeline). Superadmin can still type a custom office after.
+    if (empCo) {
+        empCo.addEventListener('change', function () {
+            autofillOfficeLocation(this, 'empOfficeLocation');
+            filterManagersByCompany(this.value, 'edit_reporting_manager');
+        });
+    }
 
     // Sync manager_id hidden field with selected reporting manager
     var mgrSel = document.getElementById('edit_reporting_manager');

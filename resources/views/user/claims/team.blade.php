@@ -204,8 +204,8 @@
                                                     <div class="ev-title">{{ $claim->event ?: 'Untitled event' }}</div>
                                                     <div class="ev-sub">{{ $claim->claim_number }} · {{ $claim->item_count }} item{{ $claim->item_count === 1 ? '' : 's' }} · Submitted {{ $claim->submitted_at?->format('d M Y') ?? '—' }}</div>
                                                     <div class="mt-1 d-inline-flex flex-wrap gap-1">
-                                                        @if($claim->correction_of_id)
-                                                        <span class="badge bg-info text-dark" title="Resubmission of a rejected claim"><i class="bi bi-arrow-repeat me-1"></i>Resubmitted</span>
+                                                        @if($rb = $claim->resubmissionBadge())
+                                                        <span class="badge bg-{{ $rb['class'] }}" title="{{ $rb['title'] }}"><i class="bi {{ $rb['icon'] }} me-1"></i>{{ $rb['label'] }}</span>
                                                         @endif
                                                         @foreach($claim->stageBadges() as $sb)
                                                         <span class="badge bg-{{ $sb['class'] }} {{ $sb['class'] === 'warning' ? 'text-dark' : '' }}">{{ $sb['label'] }}</span>

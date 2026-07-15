@@ -175,6 +175,159 @@ class Employee extends Model
         return $this->hasMany(\App\Models\ExpenseClaim::class)->orderByDesc('year')->orderByDesc('month');
     }
 
+    /** Company timeline — one row per stint, oldest first (open stint = current company). */
+    public function companyHistories()
+    {
+        return $this->hasMany(EmployeeCompanyHistory::class)->orderBy('started_on');
+    }
+
+    /**
+     * The company this employee was under on a given date, resolved from the company timeline.
+     * Used to attribute historical employee-linked records (claims, leave, …) to the company
+     * they were created under, rather than the employee's current company. Falls back to the
+     * current company when no stint covers the date (or there is no timeline yet).
+     */
+    public function companyAsOf($date): ?string
+    {
+        if (! $date) {
+            return $this->company;
+        }
+        $d = ($date instanceof \Carbon\Carbon ? $date->copy() : \Carbon\Carbon::parse($date))->toDateString();
+
+        // Use the already-loaded relation when available (so callers can eager-load
+        // employee.companyHistories and avoid an N+1); otherwise query the covering stint.
+        $stints = $this->relationLoaded('companyHistories')
+            ? $this->companyHistories
+            : $this->companyHistories()->get();
+
+        $stint = $stints
+            ->filter(fn ($s) => $s->started_on?->toDateString() <= $d
+                && ($s->ended_on === null || $s->ended_on->toDateString() >= $d))
+            ->sortByDesc('started_on')
+            ->first();
+
+        return $stint?->company ?? $this->company;
+    }
+
+    /**
+     * Change this employee to $newCompany effective from $effectiveDate (which may be in the
+     * past), recording it on the company timeline. Closes the current open stint at the effective
+     * date and opens a new one from it. Returns a result array {status, message}:
+     *   - 'changed'      — timeline split + company/office updated.
+     *   - 'skipped_same' — already at that company (no-op).
+     *   - 'skipped_date' — the effective date is on/before the current company's own start date
+     *                      (would corrupt the timeline), so nothing was changed.
+     */
+    public function changeCompanyEffective(string $newCompany, ?string $newOffice, \Carbon\Carbon $effectiveDate, ?int $changedBy = null): array
+    {
+        $this->ensureInitialCompanyStint();
+
+        if ($this->company === $newCompany) {
+            return ['status' => 'skipped_same', 'message' => 'Already at '.$newCompany];
+        }
+
+        $open = $this->companyHistories()->whereNull('ended_on')->orderByDesc('started_on')->first();
+        $effStr = $effectiveDate->toDateString();
+
+        // The new stint can't start on/before the current company's own start — that would make
+        // the current stint's window invalid (started_on > ended_on).
+        if ($open && $open->started_on && $open->started_on->toDateString() >= $effStr) {
+            return ['status' => 'skipped_date', 'message' => 'Effective date must be after their current company start ('.$open->started_on->format('d M Y').')'];
+        }
+
+        if ($open) {
+            // The old company's last day is the day BEFORE the new one starts — nobody is at both
+            // companies on the same day. The skip-guard above ensures this stays >= its start.
+            $open->update(['ended_on' => $effectiveDate->copy()->subDay()->toDateString()]);
+        }
+        EmployeeCompanyHistory::create([
+            'employee_id' => $this->id,
+            'company' => $newCompany,
+            'office_location' => $newOffice,
+            'started_on' => $effStr,
+            'ended_on' => null,
+            'changed_by' => $changedBy,
+        ]);
+
+        $this->update(['company' => $newCompany, 'office_location' => $newOffice]);
+
+        return ['status' => 'changed', 'message' => 'Changed to '.$newCompany.' effective '.$effectiveDate->format('d M Y')];
+    }
+
+    /**
+     * Seed the opening stint for an employee that has none yet (e.g. hired after the timeline
+     * was introduced, so they missed the backfill). Idempotent — no-op once a stint exists.
+     * Starts from the employee's start date so the timeline reflects their real tenure.
+     */
+    public function ensureInitialCompanyStint(): void
+    {
+        if (! $this->company || $this->companyHistories()->exists()) {
+            return;
+        }
+
+        EmployeeCompanyHistory::create([
+            'employee_id' => $this->id,
+            'company' => $this->company,
+            'office_location' => $this->office_location,
+            'started_on' => optional($this->start_date)->toDateString() ?? now()->toDateString(),
+            'ended_on' => null,
+            'changed_by' => null,
+        ]);
+    }
+
+    /**
+     * Reconcile the company timeline against this employee's CURRENT company/office_location
+     * (call right after the employee record is updated). A company change closes the open stint
+     * (ended_on = today) and opens a new one from today — returning to a previous company just
+     * adds a fresh stint, the old ones are preserved. A same-company office move updates the
+     * open stint's location in place. Only a superadmin can change company, so this only runs
+     * for them. Returns true when a new stint was opened.
+     */
+    public function recordCompanyStintChange(?int $changedBy = null): bool
+    {
+        $company = $this->company;
+        if (! $company) {
+            return false;
+        }
+
+        $open = $this->companyHistories()->whereNull('ended_on')->orderByDesc('started_on')->first();
+
+        // Same company — keep the stint, only refresh its office location if it moved.
+        if ($open && $open->company === $company) {
+            if ($open->office_location !== $this->office_location) {
+                $open->update(['office_location' => $this->office_location]);
+            }
+
+            return false;
+        }
+
+        $today = now()->toDateString();
+        if ($open) {
+            // Old company's last day = the day before the new one starts (they can't be at both on
+            // the same day). Clamp so a same-day change doesn't invert the stint.
+            $end = now()->subDay()->toDateString();
+            if ($open->started_on && $end < $open->started_on->toDateString()) {
+                $end = $open->started_on->toDateString();
+            }
+            $open->update(['ended_on' => $end]);
+        }
+
+        // First-ever stint (no open row — e.g. a record predating the timeline) starts from the
+        // employee's real start date; a genuine change starts from today.
+        $startedOn = $open ? $today : (optional($this->start_date)->toDateString() ?? $today);
+
+        EmployeeCompanyHistory::create([
+            'employee_id' => $this->id,
+            'company' => $company,
+            'office_location' => $this->office_location,
+            'started_on' => $startedOn,
+            'ended_on' => null,
+            'changed_by' => $changedBy,
+        ]);
+
+        return true;
+    }
+
     /**
      * Resolve manager_id from a reporting manager's name string.
      *

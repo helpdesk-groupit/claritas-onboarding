@@ -670,7 +670,10 @@ class EmployeeController extends Controller
         $aarf = $employee->onboarding?->aarf
              ?? \App\Models\Aarf::where('employee_id', $employee->id)->first();
 
-        return view('hr.employees.show', compact('employee', 'directAssets', 'availableAssets', 'aarf'));
+        $employee->ensureInitialCompanyStint();
+        $companyTimeline = $employee->companyHistories()->orderBy('started_on')->get();
+
+        return view('hr.employees.show', compact('employee', 'directAssets', 'availableAssets', 'aarf', 'companyTimeline'));
     }
 
     // ── Upload / change employee profile photo (HR Manager / SuperAdmin) ────
@@ -1142,7 +1145,10 @@ class EmployeeController extends Controller
 
         $companyGroups = Company::groupMap();
 
-        return view('hr.employees.edit', compact('employee', 'managers', 'companies', 'directAssets', 'companyGroups'));
+        $employee->ensureInitialCompanyStint();
+        $companyTimeline = $employee->companyHistories()->orderBy('started_on')->get();
+
+        return view('hr.employees.edit', compact('employee', 'managers', 'companies', 'directAssets', 'companyGroups', 'companyTimeline'));
     }
 
     // ── Helper: send consent request email for employee record edits ─────────
@@ -1374,6 +1380,11 @@ class EmployeeController extends Controller
         if (! $u->isSuperadmin()) {
             unset($data['work_role']);
         }
+        // Company + Office Location can only be changed by superadmin — enforce server-side so a
+        // hand-crafted request can't bypass the read-only UI (the form hides these for non-superadmins).
+        if (! $u->isSuperadmin()) {
+            unset($data['company'], $data['office_location']);
+        }
         // last_salary_date can only be set by HR Manager
         if (! $u->isHrManager()) {
             unset($data['last_salary_date']);
@@ -1500,6 +1511,15 @@ class EmployeeController extends Controller
 
         $employee->update($data);
 
+        // ── Company timeline ────────────────────────────────────────────────────
+        // Only a superadmin can change the company (guarded above), so only they can move the
+        // timeline. Reconciles the timeline against the now-current company/office: a company
+        // change closes the open stint and opens a new one from today (returning to a previous
+        // company adds a fresh stint); a same-company office move updates the stint in place.
+        if ($u->isSuperadmin()) {
+            $employee->recordCompanyStintChange($u->id);
+        }
+
         // Resolve manager_id if not explicitly provided but reporting_manager was changed
         if (empty($data['manager_id']) && ! empty($data['reporting_manager'])) {
             $resolvedId = Employee::resolveManagerId($data['reporting_manager']);
@@ -1575,9 +1595,11 @@ class EmployeeController extends Controller
             }
         })->first();
         if ($existingOffboarding) {
+            // NOTE: company is intentionally NOT re-synced here — an offboarding stays under the
+            // company it was raised under (the company the person is exiting from), even if the
+            // employee's company is later changed. Other display fields still sync.
             $offSyncData = [
                 'full_name' => $employee->full_name,
-                'company' => $employee->company,
                 'department' => $employee->department,
                 'designation' => $employee->designation,
                 'company_email' => $employee->company_email,

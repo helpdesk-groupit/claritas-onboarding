@@ -18,19 +18,21 @@
         : $ccDateMax;
 @endphp
 
-{{-- Rejection banner (terminal claims kept as history) --}}
-@if($claim->status === 'manager_rejected' || $claim->status === 'hr_rejected')
-<div class="alert alert-danger py-2 small mb-3">
-    <i class="bi bi-x-octagon me-1"></i>
-    <strong>Rejected by {{ $claim->status === 'manager_rejected' ? 'manager' : 'HR' }}.</strong>
-    {{ $claim->status === 'manager_rejected' ? $claim->manager_remarks : $claim->hr_remarks }}
+{{-- Rejection / reversal banner (terminal claims kept as history). A reversal (HR un-approving a
+     fully-approved claim) follows the same correction flow as a rejection. --}}
+@php $isReversed = $claim->status === 'reversed'; @endphp
+@if($claim->status === 'manager_rejected' || $claim->status === 'hr_rejected' || $isReversed)
+<div class="alert {{ $isReversed ? 'alert-warning' : 'alert-danger' }} py-2 small mb-3">
+    <i class="bi {{ $isReversed ? 'bi-arrow-counterclockwise' : 'bi-x-octagon' }} me-1"></i>
+    <strong>{{ $isReversed ? 'Reversed by HR.' : 'Rejected by '.($claim->status === 'manager_rejected' ? 'manager' : 'HR').'.' }}</strong>
+    {{ $isReversed ? $claim->reverse_remarks : ($claim->status === 'manager_rejected' ? $claim->manager_remarks : $claim->hr_remarks) }}
     @if($claim->canCorrect())
         <form action="{{ route('user.claims.correct', $claim) }}" method="POST" class="mt-2">
             @csrf
-            <button class="btn btn-sm btn-danger"><i class="bi bi-arrow-repeat me-1"></i>Make a correction</button>
+            <button class="btn btn-sm {{ $isReversed ? 'btn-warning' : 'btn-danger' }}"><i class="bi bi-arrow-repeat me-1"></i>Make a correction</button>
         </form>
     @elseif($claim->hasCorrection())
-        <div class="mt-1"><i class="bi bi-info-circle me-1"></i>A correction has already been filed for this claim — a rejected claim can be corrected only once.</div>
+        <div class="mt-1"><i class="bi bi-info-circle me-1"></i>A correction has already been filed for this claim — it can be corrected only once.</div>
     @endif
 </div>
 @endif

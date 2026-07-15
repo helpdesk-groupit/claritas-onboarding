@@ -25,17 +25,23 @@
     $period = \Carbon\Carbon::create($claim->year, $claim->month)->format('F Y');
     $company = $employee->company ?? config('app.name');
     // released = the manager released an earlier HR rejection back to the employee.
-    $remarks = $rejectorType === 'manager' ? $claim->manager_remarks : $claim->hr_remarks;
+    // reversed = HR un-approved a claim that was already fully approved.
+    $remarks = match ($rejectorType) {
+        'manager' => $claim->manager_remarks,
+        'reversed' => $claim->reverse_remarks,
+        default => $claim->hr_remarks,
+    };
     $headline = match ($rejectorType) {
         'manager' => 'Rejected by your manager',
         'released' => 'Released for correction',
+        'reversed' => 'Reversed by HR',
         default => 'Rejected by HR',
     };
 @endphp
 <div class="email-wrap">
 
   <div class="header">
-    <h1>Expense Claim {{ $rejectorType === 'released' ? 'Update' : 'Rejected' }}</h1>
+    <h1>Expense Claim {{ $rejectorType === 'released' ? 'Update' : ($rejectorType === 'reversed' ? 'Reversed' : 'Rejected') }}</h1>
     <p>{{ $claim->event ?: $period }} &mdash; {{ $headline }}</p>
   </div>
 
@@ -52,6 +58,12 @@
     <p style="color:#475569;font-size:15px;line-height:1.6;">
       Your manager has reviewed the HR rejection of <strong>{{ $claim->claim_number }}</strong>
       ({{ $claim->event ?: $period }}) and <strong>released it back to you</strong>. You can now make a correction.
+    </p>
+    @elseif($rejectorType === 'reversed')
+    <p style="color:#475569;font-size:15px;line-height:1.6;">
+      Your previously-approved claim <strong>{{ $claim->claim_number }}</strong> ({{ $claim->event ?: $period }})
+      has been <strong>reversed by HR</strong>. You can <strong>make a correction now</strong> &mdash; a new report
+      opens pre-filled so you can fix the issue and resubmit. Your approving manager has been notified.
     </p>
     @else
     <p style="color:#475569;font-size:15px;line-height:1.6;">

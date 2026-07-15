@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class LeaveApplication extends Model
 {
     protected $fillable = [
-        'employee_id', 'leave_type_id', 'start_date', 'end_date',
+        'employee_id', 'company', 'leave_type_id', 'start_date', 'end_date',
         'total_days', 'is_half_day', 'half_day_period', 'reason',
         'attachment_path', 'status', 'approved_by', 'approved_at',
         'rejection_reason',
@@ -27,6 +27,15 @@ class LeaveApplication extends Model
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class);
+    }
+
+    /**
+     * The company this leave belongs to — the snapshot taken when the employee applied
+     * (immutable), falling back to the owner's current company for legacy rows.
+     */
+    public function resolvedCompany(): ?string
+    {
+        return $this->company ?: $this->employee?->company;
     }
 
     public function leaveType(): BelongsTo

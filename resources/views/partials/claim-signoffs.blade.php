@@ -7,10 +7,10 @@
     $appr = ($approver ?? null) ?? $claim->managerApprover ?? $claim->manager ?? null;
     $apprDetails = collect([$appr?->designation, $appr?->department, $appr?->company])->filter()->implode(' · ');
 
-    // Manager stage outcome. A manager-approved claim that HR later rejects still shows the
-    // manager's approval (their sign-off stands); only a manager_rejected claim shows rejected.
+    // Manager stage outcome. A manager-approved claim that HR later rejects/reverses still shows
+    // the manager's approval (their sign-off stands); only a manager_rejected claim shows rejected.
     $mgrRejected = $claim->status === 'manager_rejected';
-    $mgrApproved = $claim->manager_approved_at && in_array($claim->status, ['manager_approved', 'hr_approved', 'hr_rejected', 'paid']);
+    $mgrApproved = $claim->manager_approved_at && in_array($claim->status, ['manager_approved', 'hr_approved', 'hr_rejected', 'reversed', 'paid']);
 
     // HR approver/rejecter: a User; pull dept/designation/company from their linked employee record.
     $hrAppr = $claim->hrApprover ?? null;
@@ -19,7 +19,10 @@
     $hrDetails = collect([$hrEmp?->designation, $hrEmp?->department, $hrEmp?->company])->filter()->implode(' · ');
 
     // HR stage outcome — show the HR person's name + details whether they approved OR rejected.
-    $hrApproved = $claim->hr_approved_at && in_array($claim->status, ['hr_approved', 'paid']);
+    // A REVERSED claim keeps its HR approval on show (it WAS fully approved) and adds a reversal
+    // line beneath it — reversing does not erase the approval sign-off.
+    $hrReversed = $claim->status === 'reversed';
+    $hrApproved = $claim->hr_approved_at && in_array($claim->status, ['hr_approved', 'paid', 'reversed']);
     $hrRejected = $claim->status === 'hr_rejected';
     $hrActed = $hrApproved || $hrRejected;
 @endphp
@@ -48,6 +51,10 @@
             <span class="text-danger"><i class="bi bi-x-circle-fill me-1"></i>Rejected digitally &mdash; {{ $claim->hr_approved_at?->format('d/m/Y, g:ia') }}</span>
             @else
             <span class="text-muted fst-italic">Pending HR</span>
+            @endif
+            {{-- Reversal stands ALONGSIDE the approval — the approval is not erased. --}}
+            @if($hrReversed)
+            <span class="d-block" style="color:#b45309;"><i class="bi bi-arrow-counterclockwise me-1"></i>Reversed &mdash; {{ $claim->reversed_at?->format('d/m/Y, g:ia') }}@if($claim->reverse_remarks) ({{ $claim->reverse_remarks }})@endif</span>
             @endif
         </div>
     </div>

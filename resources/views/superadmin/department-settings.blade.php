@@ -1,7 +1,7 @@
 @extends('layouts.app')
 
-@section('title', 'Department Settings')
-@section('page-title', 'Department Settings')
+@section('title', 'Cross Ticket Settings')
+@section('page-title', 'Cross Ticket Settings')
 
 @push('styles')
 <style nonce="{{ $cspNonce ?? '' }}">
@@ -96,7 +96,7 @@
         <div class="d-flex flex-wrap align-items-start justify-content-between mb-3 gap-2">
             <div>
                 <h5 class="mb-1 fw-semibold">
-                    <i class="bi bi-diagram-2 me-1"></i> Department Settings
+                    <i class="bi bi-diagram-2 me-1"></i> Cross Ticket Settings
                 </h5>
                 <small class="text-muted">
                     Each company expands to show the departments that <strong>actually exist there</strong>

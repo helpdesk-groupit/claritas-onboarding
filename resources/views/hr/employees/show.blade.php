@@ -202,7 +202,10 @@
                     <tr><td class="text-muted py-2">Department</td>
                         <td class="py-2">{{ $employee->department ?? '—' }}</td></tr>
                     <tr><td class="text-muted py-2">Company</td>
-                        <td class="py-2">{{ $employee->company ?? '—' }}</td></tr>
+                        <td class="py-2">
+                            {{ $employee->company ?? '—' }}
+                            @include('hr.employees.partials.company-timeline', ['companyTimeline' => $companyTimeline ?? collect()])
+                        </td></tr>
                     <tr><td class="text-muted py-2">Office Location</td>
                         <td class="py-2">{{ $employee->office_location ?? '—' }}</td></tr>
                 </table>

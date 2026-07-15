@@ -22,12 +22,15 @@ class ClaimHrRejectedNoticeMail extends Mailable
     public function __construct(
         public ExpenseClaim $claim,
         public Employee $manager,
+        public string $action = 'rejected', // 'rejected' | 'reversed'
     ) {}
 
     public function envelope(): Envelope
     {
+        $verb = $this->action === 'reversed' ? 'reversed' : 'rejected';
+
         return new Envelope(
-            subject: "HR rejected {$this->claim->claim_number} ({$this->claim->subjectLabel()})"
+            subject: "HR {$verb} {$this->claim->claim_number} ({$this->claim->subjectLabel()})"
         );
     }
 
@@ -36,6 +39,7 @@ class ClaimHrRejectedNoticeMail extends Mailable
         return new Content(view: 'emails.claim-hr-rejected-notice', with: [
             'claim' => $this->claim,
             'manager' => $this->manager,
+            'action' => $this->action,
         ]);
     }
 }

@@ -11,11 +11,12 @@ use Illuminate\Support\Facades\DB;
 class ExpenseClaim extends Model
 {
     protected $fillable = [
-        'employee_id', 'claim_number', 'title', 'event', 'event_date', 'project_client', 'year', 'month',
+        'employee_id', 'company', 'claim_number', 'title', 'event', 'event_date', 'project_client', 'year', 'month',
         'total_amount', 'total_gst', 'total_with_gst', 'item_count',
         'status', 'submitted_at', 'submission_deadline',
         'manager_id', 'manager_approved_by', 'manager_approved_at', 'manager_remarks',
         'hr_approved_by', 'hr_approved_at', 'hr_remarks', 'processed_at',
+        'reversed_at', 'reversed_by', 'reverse_remarks',
         'released_at', 'released_by', 'release_remarks', 'correction_of_id',
         'payslip_id', 'pay_run_id', 'notes',
     ];
@@ -30,6 +31,7 @@ class ExpenseClaim extends Model
         'manager_approved_at' => 'datetime',
         'hr_approved_at' => 'datetime',
         'processed_at' => 'datetime',
+        'reversed_at' => 'datetime',
         'released_at' => 'datetime',
     ];
 
@@ -222,9 +224,35 @@ class ExpenseClaim extends Model
         // rejected report, so once a correction exists this returns false. Corrections are
         // also only allowed until the END OF THE CLAIM'S YEAR — after 31 Dec of that year the
         // window is closed for good (see correctionWindowClosed()).
-        return in_array($this->status, ['manager_rejected', 'hr_rejected'], true)
+        return in_array($this->status, ['manager_rejected', 'hr_rejected', 'reversed'], true)
             && ! $this->hasCorrection()
             && ! $this->correctionWindowClosed();
+    }
+
+    /** True when this claim was reversed (un-approved after full approval). */
+    public function isReversed(): bool
+    {
+        return $this->status === 'reversed';
+    }
+
+    /**
+     * Badge for a resubmitted (correction) report, or null when this isn't a correction.
+     * A correction of a REVERSED claim gets a distinct amber badge; a correction of a plain
+     * rejection keeps the blue one. Eager-load `correctionOf` on list queries to avoid N+1.
+     */
+    public function resubmissionBadge(): ?array
+    {
+        if (! $this->correction_of_id) {
+            return null;
+        }
+
+        if ($this->correctionOf?->status === 'reversed') {
+            return ['label' => 'Resubmitted · Reversal', 'class' => 'warning text-dark',
+                'icon' => 'bi-arrow-counterclockwise', 'title' => 'Resubmission of a reversed claim'];
+        }
+
+        return ['label' => 'Resubmitted', 'class' => 'info text-dark',
+            'icon' => 'bi-arrow-repeat', 'title' => 'Resubmission of a rejected claim'];
     }
 
     /**
@@ -243,12 +271,22 @@ class ExpenseClaim extends Model
     }
 
     /**
+     * The company this claim belongs to. Prefers the snapshot taken at submission (immutable —
+     * so the claim stays under the company the employee was at when they submitted it), falling
+     * back to the owner's current company for drafts / legacy rows that were never stamped.
+     */
+    public function resolvedCompany(): ?string
+    {
+        return $this->company ?: $this->employee?->company;
+    }
+
+    /**
      * Filesystem-safe PDF filename matching the original forms, e.g.
      * "ENSB-SE-20260430-Eisya Ereena_AMD Editorial_Claim_Apr_26.pdf".
      */
     public function pdfFilename(): string
     {
-        $company = $this->employee->company ?? '';
+        $company = $this->resolvedCompany() ?? '';
         $prefix = null;
         foreach ((array) config('claims.file_prefixes', []) as $name => $px) {
             if ($name !== '' && stripos($company, $name) !== false) {
@@ -320,6 +358,7 @@ class ExpenseClaim extends Model
             'manager_rejected' => 'danger',
             'hr_approved' => 'success',
             'hr_rejected' => 'danger',
+            'reversed' => 'warning',
             'paid' => 'success',
             'cancelled' => 'dark',
             default => 'secondary',
@@ -331,6 +370,7 @@ class ExpenseClaim extends Model
             'manager_rejected' => 'Manager Rejected',
             'hr_approved' => 'HR Approved',
             'hr_rejected' => 'HR Rejected',
+            'reversed' => 'Reversed',
             'paid' => 'Paid',
             'cancelled' => 'Cancelled',
             default => ucfirst($this->status),
@@ -356,6 +396,15 @@ class ExpenseClaim extends Model
         }
         if ($this->status === 'manager_rejected') {
             return [['label' => 'Manager Rejected', 'class' => 'danger']];
+        }
+        // Reversed = a fully-approved claim that HR later un-approved. Keep BOTH approval badges
+        // (the approvals stand — they aren't erased) and add the reversal.
+        if ($this->status === 'reversed') {
+            return [
+                ['label' => 'Manager Approved', 'class' => 'success'],
+                ['label' => 'HR Approved', 'class' => 'success'],
+                ['label' => 'Reversed', 'class' => 'warning'],
+            ];
         }
 
         // Manager stage: only "submitted" is still waiting on the manager.

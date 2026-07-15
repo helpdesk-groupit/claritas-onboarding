@@ -19,6 +19,8 @@
          exactly as it prints — not a bare item list. --}}
     @php
         $canReview = $claim->status === 'manager_approved' && Auth::user()->canApproveRejectClaims();
+        // Reverse is only available on a FULLY-approved claim (manager + HR) — HR must approve first.
+        $canReverse = $claim->status === 'hr_approved' && Auth::user()->canApproveRejectClaims();
     @endphp
     <div class="card shadow-sm border-0 mb-4">
         <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -92,6 +94,38 @@
                     <button class="btn btn-danger text-nowrap">Confirm Reject (whole claim)</button>
                 </div>
             </form>
+        </div>
+        @endif
+
+        {{-- Reverse: only for a fully-approved claim (manager + HR). Un-approves it after the fact
+             (e.g. management overrules the approval); flows like a rejection — employee corrects. --}}
+        @if($canReverse)
+        <div class="card-footer bg-white d-flex gap-2 justify-content-end flex-wrap">
+            <button class="btn btn-warning btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#hrReverseForm">
+                <i class="bi bi-arrow-counterclockwise me-1"></i>Reverse Claim
+            </button>
+        </div>
+        <div class="collapse px-3 pb-3" id="hrReverseForm">
+            <form action="{{ route('hr.claims.reverse', $claim) }}" method="POST" class="js-confirm"
+                  data-confirm="Reverse this already-approved claim? It returns to the employee to correct." data-confirm-title="Reverse claim" data-confirm-ok="Reverse" data-confirm-variant="warning">
+                @csrf
+                <label class="form-label small mb-1" style="color:#b45309;">Reversing <strong>un-approves</strong> this claim and returns the <strong>entire</strong> report to the employee to correct and resubmit — reason (optional; the employee will see this)</label>
+                <div class="input-group">
+                    <input type="text" name="remarks" class="form-control" placeholder="e.g., Management advised this claim cannot be approved — please review and resubmit." maxlength="1000">
+                    <button class="btn btn-warning text-nowrap"><i class="bi bi-arrow-counterclockwise me-1"></i>Confirm Reverse</button>
+                </div>
+            </form>
+        </div>
+        @endif
+
+        {{-- Reverse reason (once reversed) --}}
+        @if($claim->status === 'reversed')
+        <div class="card-footer bg-white">
+            <div class="alert alert-warning mb-0 py-2 px-3 small">
+                <i class="bi bi-arrow-counterclockwise me-1"></i><strong>Reversed</strong>
+                @if($claim->reverse_remarks) — {{ $claim->reverse_remarks }}@endif
+                @if($claim->reversed_at)<span class="text-muted d-block mt-1">on {{ $claim->reversed_at->format('d M Y, H:i') }}</span>@endif
+            </div>
         </div>
         @endif
     </div>
