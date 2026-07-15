@@ -1,16 +1,19 @@
 {{--
     Connection picker partial.
     Props: $category ('email'|'storage'|'log'), $field (form field name),
-           $selected (current connection id), $items (collection of connections).
+           $selected (current connection id), $items (collection of connections),
+           $formId (id of the wizard step's carrier form to associate the radio with).
 
-    Lets the user pick an existing connection, add new credentials (OAuth client
-    id/secret for Gmail/Outlook, or IMAP host + app-password for Generic IMAP /
-    Yahoo), run the OAuth consent flow, and remove a connection. The owning
-    <form> is the wizard step form; the "add" form posts separately.
+    IMPORTANT: this partial renders its OWN <form> elements (add-credentials,
+    delete). It must therefore be included OUTSIDE the wizard step's <form> —
+    HTML forbids nested forms, and a nested </form> silently closes the outer
+    form, dropping every field after it. The step form is a self-closed carrier
+    form; the connection radio associates back to it via form="{{ $formId }}".
 --}}
 @php
     $enabledProviders = collect(\App\Support\Automation\ProviderRegistry::forCategory($category))
         ->where('enabled', true)->values();
+    $stepFormId = $formId ?? null;
 @endphp
 
 <div class="mb-2">
@@ -41,6 +44,7 @@
                 <div class="d-flex align-items-center gap-2">
                     <label class="form-check m-0">
                         <input class="form-check-input" type="radio" name="{{ $field }}" value="{{ $conn->id }}"
+                               @if($stepFormId) form="{{ $stepFormId }}" @endif
                                {{ (string) $selected === (string) $conn->id ? 'checked' : '' }}>
                         <span class="small">Use</span>
                     </label>

@@ -83,6 +83,31 @@ class EmailWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_update_step_3_without_filename_template_does_not_500(): void
+    {
+        // Regression: nested forms in the wizard dropped fields after the
+        // connection picker, so a step-3 submit could arrive without
+        // filename_template. The nullable rule omits an absent key from $data,
+        // and `$data['filename_template'] ?:` then threw "Undefined array key"
+        // → 500 in production. It must default gracefully instead.
+        $wf = EmailWorkflow::create([
+            'created_by' => $this->itManager->id, 'name' => 'WF', 'status' => 'draft',
+        ]);
+
+        $this->actingAs($this->itManager)
+            ->put(route('it.automation.email-workflow.update', $wf->id), [
+                'step' => 3,
+                'folder_ref' => 'folder-abc',
+                // no filename_template, no monthly_subfolders, no storage_connection_id
+            ])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $wf->refresh();
+        $this->assertSame('folder-abc', $wf->storage_config_json['folder_ref']);
+        $this->assertSame('{{date}}_{{originalName}}', $wf->storage_config_json['filename_template']);
+    }
+
     public function test_update_step_2_persists_detection_rules(): void
     {
         $wf = EmailWorkflow::create([

@@ -160,7 +160,9 @@ class EmailWorkflowController extends Controller
                 $model->storage_config_json = [
                     'folder_ref' => trim($data['folder_ref'] ?? ''),
                     'monthly_subfolders' => (bool) ($request->input('monthly_subfolders', false)),
-                    'filename_template' => $data['filename_template'] ?: '{{date}}_{{originalName}}',
+                    // ?? guards the absent key (nullable rule omits it from $data);
+                    // ?: then falls back to the default when it's present-but-empty.
+                    'filename_template' => ($data['filename_template'] ?? '') ?: '{{date}}_{{originalName}}',
                 ];
                 break;
 

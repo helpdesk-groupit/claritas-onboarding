@@ -103,7 +103,10 @@
                 </div>
             </form>
         @else
-            <form method="POST" action="{{ route('it.automation.email-workflow.update', $workflow->id) }}">
+            {{-- Carrier form holds token/method/step + name only. The provider
+                 picker (which renders its own <form>s) sits OUTSIDE it so forms
+                 never nest; its radio + the Save button associate back via form=. --}}
+            <form id="ewfStep1" method="POST" action="{{ route('it.automation.email-workflow.update', $workflow->id) }}">
                 @csrf @method('PUT')
                 <input type="hidden" name="step" value="1">
 
@@ -114,34 +117,35 @@
                            value="{{ old('name', $workflow->name) }}" required>
                     @error('name')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
                 </div>
-
-                <label class="form-label">Choose an email provider</label>
-                <div class="row g-2 mb-3">
-                    @foreach(\App\Support\Automation\ProviderRegistry::forCategory('email') as $p)
-                        <div class="col-md-6 col-lg-3">
-                            <div class="prov-card {{ $p['enabled'] ? '' : 'disabled' }}">
-                                <div class="d-flex justify-content-between align-items-start mb-1">
-                                    <i class="bi {{ $p['icon'] }}"></i>
-                                    @unless($p['enabled'])<span class="coming-soon">Soon</span>@endunless
-                                </div>
-                                <div class="pname">{{ $p['name'] }}</div>
-                                <div class="pblurb">{{ $p['blurb'] }}</div>
-                            </div>
-                        </div>
-                    @endforeach
-                </div>
-
-                @include('it.automation.email-workflow.partials.connection-picker', [
-                    'category' => 'email',
-                    'field'    => 'email_connection_id',
-                    'selected' => $workflow->email_connection_id,
-                    'items'    => $connections['email'],
-                ])
-
-                <div class="d-flex justify-content-end mt-4">
-                    <button type="submit" class="btn btn-primary">Save &amp; continue <i class="bi bi-arrow-right ms-1"></i></button>
-                </div>
             </form>
+
+            <label class="form-label">Choose an email provider</label>
+            <div class="row g-2 mb-3">
+                @foreach(\App\Support\Automation\ProviderRegistry::forCategory('email') as $p)
+                    <div class="col-md-6 col-lg-3">
+                        <div class="prov-card {{ $p['enabled'] ? '' : 'disabled' }}">
+                            <div class="d-flex justify-content-between align-items-start mb-1">
+                                <i class="bi {{ $p['icon'] }}"></i>
+                                @unless($p['enabled'])<span class="coming-soon">Soon</span>@endunless
+                            </div>
+                            <div class="pname">{{ $p['name'] }}</div>
+                            <div class="pblurb">{{ $p['blurb'] }}</div>
+                        </div>
+                    </div>
+                @endforeach
+            </div>
+
+            @include('it.automation.email-workflow.partials.connection-picker', [
+                'category' => 'email',
+                'field'    => 'email_connection_id',
+                'selected' => $workflow->email_connection_id,
+                'items'    => $connections['email'],
+                'formId'   => 'ewfStep1',
+            ])
+
+            <div class="d-flex justify-content-end mt-4">
+                <button type="submit" form="ewfStep1" class="btn btn-primary">Save &amp; continue <i class="bi bi-arrow-right ms-1"></i></button>
+            </div>
         @endif
     @endif
 
@@ -272,123 +276,129 @@
 
     {{-- ════════════════ STEP 3 — Storage ════════════════ --}}
     @if($step === 3 && $workflow->exists)
-        <form method="POST" action="{{ route('it.automation.email-workflow.update', $workflow->id) }}">
+        {{-- Carrier form (token/method/step). All inputs + Save associate via
+             form="ewfStep3"; the picker sits outside so no <form> nests. --}}
+        <form id="ewfStep3" method="POST" action="{{ route('it.automation.email-workflow.update', $workflow->id) }}">
             @csrf @method('PUT')
             <input type="hidden" name="step" value="3">
-
-            <div class="section-header"><h6>3 · Storage destination</h6></div>
-
-            <label class="form-label">Choose a storage provider</label>
-            <div class="row g-2 mb-3">
-                @foreach(\App\Support\Automation\ProviderRegistry::forCategory('storage') as $p)
-                    <div class="col-md-6 col-lg-3">
-                        <div class="prov-card {{ $p['enabled'] ? '' : 'disabled' }}">
-                            <div class="d-flex justify-content-between align-items-start mb-1">
-                                <i class="bi {{ $p['icon'] }}"></i>
-                                @unless($p['enabled'])<span class="coming-soon">Soon</span>@endunless
-                            </div>
-                            <div class="pname">{{ $p['name'] }}</div>
-                            <div class="pblurb">{{ $p['blurb'] }}</div>
-                        </div>
-                    </div>
-                @endforeach
-            </div>
-
-            @include('it.automation.email-workflow.partials.connection-picker', [
-                'category' => 'storage',
-                'field'    => 'storage_connection_id',
-                'selected' => $workflow->storage_connection_id,
-                'items'    => $connections['storage'],
-            ])
-
-            <div class="mb-3 mt-3">
-                <label class="form-label">Destination folder (paste a Google Drive folder link or ID)</label>
-                <input type="text" name="folder_ref" class="form-control"
-                       placeholder="https://drive.google.com/drive/folders/…"
-                       value="{{ old('folder_ref', data_get($storage,'folder_ref')) }}">
-            </div>
-            <div class="form-check form-switch mb-3">
-                <input class="form-check-input" type="checkbox" name="monthly_subfolders" value="1" id="monthlySub"
-                       {{ data_get($storage,'monthly_subfolders') ? 'checked' : '' }}>
-                <label class="form-check-label" for="monthlySub">Organize into sub-folders by month (YYYY-MM)</label>
-            </div>
-            <div class="mb-3">
-                <label class="form-label">Filename template</label>
-                <input type="text" name="filename_template" class="form-control" style="max-width:420px;"
-                       value="{{ $filenameTemplate }}">
-                <div class="form-text">Placeholders: <code>{{ $phDate }}</code>, <code>{{ $phName }}</code></div>
-            </div>
-
-            <div class="d-flex justify-content-end mt-4">
-                <button type="submit" class="btn btn-primary">Save &amp; continue <i class="bi bi-arrow-right ms-1"></i></button>
-            </div>
         </form>
+
+        <div class="section-header"><h6>3 · Storage destination</h6></div>
+
+        <label class="form-label">Choose a storage provider</label>
+        <div class="row g-2 mb-3">
+            @foreach(\App\Support\Automation\ProviderRegistry::forCategory('storage') as $p)
+                <div class="col-md-6 col-lg-3">
+                    <div class="prov-card {{ $p['enabled'] ? '' : 'disabled' }}">
+                        <div class="d-flex justify-content-between align-items-start mb-1">
+                            <i class="bi {{ $p['icon'] }}"></i>
+                            @unless($p['enabled'])<span class="coming-soon">Soon</span>@endunless
+                        </div>
+                        <div class="pname">{{ $p['name'] }}</div>
+                        <div class="pblurb">{{ $p['blurb'] }}</div>
+                    </div>
+                </div>
+            @endforeach
+        </div>
+
+        @include('it.automation.email-workflow.partials.connection-picker', [
+            'category' => 'storage',
+            'field'    => 'storage_connection_id',
+            'selected' => $workflow->storage_connection_id,
+            'items'    => $connections['storage'],
+            'formId'   => 'ewfStep3',
+        ])
+
+        <div class="mb-3 mt-3">
+            <label class="form-label">Destination folder (paste a Google Drive folder link or ID)</label>
+            <input type="text" name="folder_ref" form="ewfStep3" class="form-control"
+                   placeholder="https://drive.google.com/drive/folders/…"
+                   value="{{ old('folder_ref', data_get($storage,'folder_ref')) }}">
+        </div>
+        <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" name="monthly_subfolders" form="ewfStep3" value="1" id="monthlySub"
+                   {{ data_get($storage,'monthly_subfolders') ? 'checked' : '' }}>
+            <label class="form-check-label" for="monthlySub">Organize into sub-folders by month (YYYY-MM)</label>
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Filename template</label>
+            <input type="text" name="filename_template" form="ewfStep3" class="form-control" style="max-width:420px;"
+                   value="{{ $filenameTemplate }}">
+            <div class="form-text">Placeholders: <code>{{ $phDate }}</code>, <code>{{ $phName }}</code></div>
+        </div>
+
+        <div class="d-flex justify-content-end mt-4">
+            <button type="submit" form="ewfStep3" class="btn btn-primary">Save &amp; continue <i class="bi bi-arrow-right ms-1"></i></button>
+        </div>
     @endif
 
     {{-- ════════════════ STEP 4 — Log Destination ════════════════ --}}
     @if($step === 4 && $workflow->exists)
-        <form method="POST" action="{{ route('it.automation.email-workflow.update', $workflow->id) }}">
+        {{-- Carrier form (token/method/step). Inputs associate via form="ewfStep4";
+             picker sits outside so no <form> nests. --}}
+        <form id="ewfStep4" method="POST" action="{{ route('it.automation.email-workflow.update', $workflow->id) }}">
             @csrf @method('PUT')
             <input type="hidden" name="step" value="4">
-
-            <div class="section-header"><h6>4 · Log destination &amp; column mapping</h6></div>
-
-            <label class="form-label">Choose a log provider</label>
-            <div class="row g-2 mb-3">
-                @foreach(\App\Support\Automation\ProviderRegistry::forCategory('log') as $p)
-                    <div class="col-md-6 col-lg-3">
-                        <div class="prov-card {{ $p['enabled'] ? '' : 'disabled' }}">
-                            <div class="d-flex justify-content-between align-items-start mb-1">
-                                <i class="bi {{ $p['icon'] }}"></i>
-                                @unless($p['enabled'])<span class="coming-soon">Soon</span>@endunless
-                            </div>
-                            <div class="pname">{{ $p['name'] }}</div>
-                            <div class="pblurb">{{ $p['blurb'] }}</div>
-                        </div>
-                    </div>
-                @endforeach
-            </div>
-
-            @include('it.automation.email-workflow.partials.connection-picker', [
-                'category' => 'log',
-                'field'    => 'log_connection_id',
-                'selected' => $workflow->log_connection_id,
-                'items'    => $connections['log'],
-            ])
-
-            <div class="mb-3 mt-3">
-                <label class="form-label">Destination sheet (paste a Google Sheet link or ID)</label>
-                <input type="text" name="target_ref" class="form-control"
-                       placeholder="https://docs.google.com/spreadsheets/d/…"
-                       value="{{ old('target_ref', data_get($log,'target_ref')) }}">
-            </div>
-            <div class="form-check form-switch mb-3">
-                <input class="form-check-input" type="checkbox" name="partition_by_month" value="1" id="partMonth"
-                       {{ data_get($log,'partition_by_month') ? 'checked' : '' }}>
-                <label class="form-check-label" for="partMonth">One tab per month</label>
-            </div>
-
-            <label class="form-label">Columns</label>
-            <p class="text-muted small">Each captured document becomes a row. Map each column to a data source. A hidden idempotency key (Message ID + file name) prevents duplicates.</p>
-            <div id="colMapWrap">
-                @foreach((array) data_get($log,'columns', []) as $col)
-                    <div class="col-map-row">
-                        <input type="text" name="col_label[]" class="form-control form-control-sm" value="{{ $col['label'] ?? '' }}" placeholder="Column name">
-                        <select name="col_source[]" class="form-select form-select-sm" style="max-width:220px;">
-                            @foreach(['email.date'=>'Email · Date','email.from'=>'Email · From','email.subject'=>'Email · Subject','email.message_id'=>'Email · Message ID','attachment.name'=>'Attachment · File name','storage.url'=>'Storage · File link','parsed.amount'=>'Parsed · Amount','parsed.description'=>'Parsed · Description'] as $val=>$lbl)
-                                <option value="{{ $val }}" {{ ($col['source'] ?? '')===$val ? 'selected':'' }}>{{ $lbl }}</option>
-                            @endforeach
-                        </select>
-                        <button type="button" class="btn btn-sm btn-outline-danger col-remove"><i class="bi bi-x"></i></button>
-                    </div>
-                @endforeach
-            </div>
-            <button type="button" class="btn btn-sm btn-outline-secondary" id="addColBtn"><i class="bi bi-plus-lg me-1"></i>Add column</button>
-
-            <div class="d-flex justify-content-end mt-4">
-                <button type="submit" class="btn btn-primary">Save &amp; continue <i class="bi bi-arrow-right ms-1"></i></button>
-            </div>
         </form>
+
+        <div class="section-header"><h6>4 · Log destination &amp; column mapping</h6></div>
+
+        <label class="form-label">Choose a log provider</label>
+        <div class="row g-2 mb-3">
+            @foreach(\App\Support\Automation\ProviderRegistry::forCategory('log') as $p)
+                <div class="col-md-6 col-lg-3">
+                    <div class="prov-card {{ $p['enabled'] ? '' : 'disabled' }}">
+                        <div class="d-flex justify-content-between align-items-start mb-1">
+                            <i class="bi {{ $p['icon'] }}"></i>
+                            @unless($p['enabled'])<span class="coming-soon">Soon</span>@endunless
+                        </div>
+                        <div class="pname">{{ $p['name'] }}</div>
+                        <div class="pblurb">{{ $p['blurb'] }}</div>
+                    </div>
+                </div>
+            @endforeach
+        </div>
+
+        @include('it.automation.email-workflow.partials.connection-picker', [
+            'category' => 'log',
+            'field'    => 'log_connection_id',
+            'selected' => $workflow->log_connection_id,
+            'items'    => $connections['log'],
+            'formId'   => 'ewfStep4',
+        ])
+
+        <div class="mb-3 mt-3">
+            <label class="form-label">Destination sheet (paste a Google Sheet link or ID)</label>
+            <input type="text" name="target_ref" form="ewfStep4" class="form-control"
+                   placeholder="https://docs.google.com/spreadsheets/d/…"
+                   value="{{ old('target_ref', data_get($log,'target_ref')) }}">
+        </div>
+        <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" name="partition_by_month" form="ewfStep4" value="1" id="partMonth"
+                   {{ data_get($log,'partition_by_month') ? 'checked' : '' }}>
+            <label class="form-check-label" for="partMonth">One tab per month</label>
+        </div>
+
+        <label class="form-label">Columns</label>
+        <p class="text-muted small">Each captured document becomes a row. Map each column to a data source. A hidden idempotency key (Message ID + file name) prevents duplicates.</p>
+        <div id="colMapWrap">
+            @foreach((array) data_get($log,'columns', []) as $col)
+                <div class="col-map-row">
+                    <input type="text" name="col_label[]" form="ewfStep4" class="form-control form-control-sm" value="{{ $col['label'] ?? '' }}" placeholder="Column name">
+                    <select name="col_source[]" form="ewfStep4" class="form-select form-select-sm" style="max-width:220px;">
+                        @foreach(['email.date'=>'Email · Date','email.from'=>'Email · From','email.subject'=>'Email · Subject','email.message_id'=>'Email · Message ID','attachment.name'=>'Attachment · File name','storage.url'=>'Storage · File link','parsed.amount'=>'Parsed · Amount','parsed.description'=>'Parsed · Description'] as $val=>$lbl)
+                            <option value="{{ $val }}" {{ ($col['source'] ?? '')===$val ? 'selected':'' }}>{{ $lbl }}</option>
+                        @endforeach
+                    </select>
+                    <button type="button" class="btn btn-sm btn-outline-danger col-remove"><i class="bi bi-x"></i></button>
+                </div>
+            @endforeach
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="addColBtn"><i class="bi bi-plus-lg me-1"></i>Add column</button>
+
+        <div class="d-flex justify-content-end mt-4">
+            <button type="submit" form="ewfStep4" class="btn btn-primary">Save &amp; continue <i class="bi bi-arrow-right ms-1"></i></button>
+        </div>
     @endif
 
     {{-- ════════════════ STEP 5 — Schedule ════════════════ --}}
@@ -468,8 +478,10 @@
             ];
             var inp = document.createElement('input');
             inp.type='text'; inp.name='col_label[]'; inp.className='form-control form-control-sm'; inp.placeholder='Column name';
+            inp.setAttribute('form','ewfStep4');   // associate with the step-4 carrier form
             var sel = document.createElement('select');
             sel.name='col_source[]'; sel.className='form-select form-select-sm'; sel.style.maxWidth='220px';
+            sel.setAttribute('form','ewfStep4');
             sources.forEach(function (s) {
                 var o=document.createElement('option'); o.value=s[0]; o.textContent=s[1]; sel.appendChild(o);
             });
