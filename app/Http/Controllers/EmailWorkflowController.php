@@ -119,6 +119,11 @@ class EmailWorkflowController extends Controller
         $this->authorizeModule();
         $model = $this->findOwned($workflow);
 
+        // stepDone()/missingRequirements() read all three connections, and the
+        // stepper calls them once per step on every render. Load here rather than
+        // in findOwned(), which also serves paths that need no relations.
+        $model->loadMissing(['emailConnection', 'storageConnection', 'logConnection']);
+
         $step = (int) $request->query('step', $model->wizard_step ?: 1);
         $step = max(1, min(EmailWorkflow::TOTAL_STEPS, $step));
 
@@ -226,9 +231,10 @@ class EmailWorkflowController extends Controller
             return back()->with('success', "“{$model->name}” paused.");
         }
 
-        // Guard: can't activate an incompletely-configured workflow.
-        if (! $model->isReadyToActivate()) {
-            return back()->with('error', 'Complete all connections and destinations before activating this workflow.');
+        // Guard: can't activate an incompletely-configured workflow. Name the
+        // blockers — "complete all connections" left the operator to guess which.
+        if ($missing = $model->missingRequirements()) {
+            return back()->with('error', 'Cannot activate “'.$model->name.'” — '.implode('; ', $missing).'.');
         }
 
         $model->update(['status' => EmailWorkflow::STATUS_ACTIVE]);
@@ -251,9 +257,8 @@ class EmailWorkflowController extends Controller
         $this->authorizeModule();
         $model = $this->findOwned($workflow);
 
-        if (! $model->isReadyToActivate()) {
-            return back()->with('error',
-                'Finish the wizard first — this workflow still needs its connections, a destination folder and a log sheet.');
+        if ($missing = $model->missingRequirements()) {
+            return back()->with('error', 'Cannot run yet — '.implode('; ', $missing).'.');
         }
 
         // A sweep uploads files and appends rows; the default 30s won't cover it.
@@ -468,6 +473,21 @@ class EmailWorkflowController extends Controller
         $state = Str::random(40);
         $request->session()->put("ewf_oauth_state_{$conn->id}", $state);
 
+        // Remember which wizard step launched this so the callback can put the
+        // user back. Without it the callback dumps everyone on the list page,
+        // and the account they just authorized is never selected on the step
+        // they were standing on — the connection exists but the workflow keeps
+        // a null FK, which reads as "I connected it and nothing happened".
+        // Stored as ints and re-routed server-side, so this cannot become an
+        // open redirect.
+        $request->session()->forget("ewf_oauth_return_{$conn->id}");
+        if (($returnWorkflow = (int) $request->query('workflow')) > 0) {
+            $request->session()->put("ewf_oauth_return_{$conn->id}", [
+                'workflow' => $returnWorkflow,
+                'step' => max(1, min((int) $request->query('step', 1) ?: 1, EmailWorkflow::TOTAL_STEPS)),
+            ]);
+        }
+
         try {
             $url = $oauth->authorizeUrl($conn, $this->oauthRedirectUri(), $state.'.'.$conn->id);
         } catch (\RuntimeException $e) {
@@ -496,11 +516,46 @@ class EmailWorkflowController extends Controller
         }
 
         $ok = $oauth->exchangeCode($conn, (string) $request->query('code'), $this->oauthRedirectUri());
+        $return = $request->session()->pull("ewf_oauth_return_{$conn->id}");
 
-        return redirect()->route('it.automation.email-workflow.index')
-            ->with($ok ? 'success' : 'error', $ok
-                ? ProviderRegistry::name($conn->provider_id).' account connected.'
-                : 'Could not complete authorization. Check the client credentials and redirect URI.');
+        if (! $ok) {
+            return redirect()->route('it.automation.email-workflow.index')
+                ->with('error', 'Could not complete authorization. Check the client credentials and redirect URI.');
+        }
+
+        $message = ProviderRegistry::name($conn->provider_id).' account connected.';
+
+        // Straight-to-connections flow (no wizard context) — old behaviour.
+        if (! $return) {
+            return redirect()->route('it.automation.email-workflow.index')->with('success', $message);
+        }
+
+        $workflow = EmailWorkflow::visibleTo(Auth::user())->find($return['workflow']);
+        if (! $workflow) {
+            return redirect()->route('it.automation.email-workflow.index')->with('success', $message);
+        }
+
+        // Pressing Connect from a step is an unambiguous "use this account here",
+        // so fill an empty slot rather than making the user come back and tick a
+        // radio they were never returned to. Never overrides an existing choice.
+        $field = match ($conn->category) {
+            'email' => 'email_connection_id',
+            'storage' => 'storage_connection_id',
+            'log' => 'log_connection_id',
+            default => null,
+        };
+
+        if ($field && blank($workflow->{$field})) {
+            $workflow->forceFill([$field => $conn->id])->save();
+            $message .= ' Selected as this workflow’s '.$conn->category.' account.';
+        }
+
+        return redirect()
+            ->route('it.automation.email-workflow.edit', [
+                'workflow' => $workflow->id,
+                'step' => $return['step'],
+            ])
+            ->with('success', $message);
     }
 
     /** The single OAuth redirect URI this app exposes (whitelist it in the provider console). */

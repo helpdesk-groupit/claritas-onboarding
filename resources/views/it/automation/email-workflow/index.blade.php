@@ -25,6 +25,9 @@
     .ewf-switch .form-check-input:disabled { cursor:not-allowed; }
 
     .ewf-run-badge { font-size:9px; text-transform:uppercase; letter-spacing:.4px; padding:2px 6px; }
+    .ewf-missing { font-size:11px; color:#b45309; margin-top:5px; }
+    .ewf-missing .bi { margin-right:3px; }
+    [data-theme="dark"] .ewf-missing { color:#fbbf24; }
 
     .empty-state { text-align:center; padding:48px 20px; color:#64748b; }
     .empty-state .bi { font-size:46px; color:#cbd5e1; }
@@ -83,21 +86,44 @@
                                 </div>
                             </td>
                             <td>
+                                @php
+                                    // Green means the stage is genuinely usable, not merely that an
+                                    // FK is set: a connection can be selected but pending/revoked,
+                                    // and a folder/sheet can be unset with the account connected.
+                                    // Both would fail the run, so neither may read as OK here.
+                                    $stageOk = fn ($conn, $ref = true) => $conn && $conn->isConnected() && $ref;
+                                    $emailOk = $stageOk($wf->emailConnection);
+                                    $storageOk = $stageOk($wf->storageConnection, filled(data_get($wf->storage_config_json, 'folder_ref')));
+                                    $logOk = $stageOk($wf->logConnection, filled(data_get($wf->log_config_json, 'target_ref')));
+                                    $wfMissing = $wf->missingRequirements();
+                                @endphp
                                 <div class="ewf-pipeline">
-                                    <span class="stage {{ $wf->email_connection_id ? 'ok' : 'missing' }}">
+                                    <span class="stage {{ $emailOk ? 'ok' : 'missing' }}">
                                         <i class="bi bi-envelope"></i> Email
                                     </span>
                                     <i class="bi bi-arrow-right arrow"></i>
                                     <span class="stage">Rules</span>
                                     <i class="bi bi-arrow-right arrow"></i>
-                                    <span class="stage {{ $wf->storage_connection_id ? 'ok' : 'missing' }}">
+                                    <span class="stage {{ $storageOk ? 'ok' : 'missing' }}">
                                         <i class="bi bi-folder"></i> Storage
                                     </span>
                                     <i class="bi bi-arrow-right arrow"></i>
-                                    <span class="stage {{ $wf->log_connection_id ? 'ok' : 'missing' }}">
+                                    <span class="stage {{ $logOk ? 'ok' : 'missing' }}">
                                         <i class="bi bi-table"></i> Log
                                     </span>
                                 </div>
+                                @if($wfMissing)
+                                    {{-- Say WHICH requirement is unmet. "Finish setup" alone sent
+                                         the operator hunting across five wizard steps. --}}
+                                    <div class="ewf-missing">
+                                        <i class="bi bi-exclamation-triangle"></i>
+                                        To run: {{ $wfMissing[0] }}@if(count($wfMissing) > 1)
+                                            <span title="{{ implode('; ', array_slice($wfMissing, 1)) }}">
+                                                (+{{ count($wfMissing) - 1 }} more)
+                                            </span>
+                                        @endif
+                                    </div>
+                                @endif
                             </td>
                             <td>
                                 <span class="badge {{ $wf->statusBadgeClass() }} text-capitalize">{{ $wf->status }}</span>
@@ -124,18 +150,20 @@
                                             <input class="form-check-input ewf-toggle" type="checkbox"
                                                    role="switch"
                                                    {{ $wf->isActive() ? 'checked' : '' }}
-                                                   {{ (!$wf->isActive() && !$wf->isReadyToActivate()) ? 'disabled' : '' }}
+                                                   {{ (!$wf->isActive() && $wfMissing) ? 'disabled' : '' }}
                                                    aria-label="Toggle active"
-                                                   title="{{ (!$wf->isActive() && !$wf->isReadyToActivate()) ? 'Finish setup to activate' : 'Toggle active' }}">
+                                                   title="{{ (!$wf->isActive() && $wfMissing) ? 'Cannot activate — '.implode('; ', $wfMissing) : 'Toggle active' }}">
                                         </div>
                                     </form>
-                                    {{-- Run now (synchronous sweep — button disables while it works) --}}
+                                    {{-- Run now (synchronous sweep — button disables while it works).
+                                         The tooltip names the blockers: a disabled button whose only
+                                         explanation lives behind clicking it is no explanation. --}}
                                     <form method="POST" action="{{ route('it.automation.email-workflow.run', $wf->id) }}"
                                           class="m-0 ewf-run-form">
                                         @csrf
                                         <button type="submit" class="btn btn-sm btn-outline-primary ewf-run-btn"
-                                                {{ $wf->isReadyToActivate() ? '' : 'disabled' }}
-                                                title="{{ $wf->isReadyToActivate() ? 'Run this workflow now' : 'Finish setup to run' }}">
+                                                {{ $wfMissing ? 'disabled' : '' }}
+                                                title="{{ $wfMissing ? 'Cannot run — '.implode('; ', $wfMissing) : 'Run this workflow now' }}">
                                             <i class="bi bi-play-fill"></i>
                                         </button>
                                     </form>

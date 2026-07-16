@@ -68,9 +68,15 @@
     @foreach($steps as $i => $label)
         @php
             $num = $i + 1;
-            $cls = $num === $step ? 'active' : ($workflow->exists && $num < ($workflow->wizard_step) ? 'done' : '');
+            // Green means "visited AND genuinely configured" — see EmailWorkflow::stepDone().
+            // It used to mean only "navigated past", which painted steps green that
+            // were never configured and kept them green after their connection was
+            // deleted. Re-derived every render, so it can go back to grey.
+            $isDone = $workflow->stepDone($num);
+            $cls = $num === $step ? 'active' : ($isDone ? 'done' : '');
         @endphp
-        <div class="wz-step {{ $cls }}">
+        <div class="wz-step {{ $cls }}"
+             @if($workflow->exists && !$isDone && $num !== $step) title="Not finished yet" @endif>
             @if($workflow->exists)
                 <a href="{{ route('it.automation.email-workflow.edit', ['workflow' => $workflow->id, 'step' => $num]) }}">
                     <span class="n">{{ $num }}</span> {{ $label }}
@@ -447,12 +453,30 @@
                 <label class="form-check-label" for="firstSweep">Run an immediate first sweep (load history) when activated</label>
             </div>
 
-            @unless($workflow->isReadyToActivate())
+            {{-- Name the outstanding items. The old copy just said "connect an email
+                 source, storage folder and log sheet", which left the operator to
+                 guess which of the five was actually unmet. --}}
+            @php $missing = $workflow->missingRequirements(); @endphp
+            @if($missing)
                 <div class="alert alert-warning mt-3 mb-0 small">
-                    <i class="bi bi-info-circle me-1"></i>
-                    Connect an email source, storage folder and log sheet in the earlier steps before this workflow can be switched <strong>Active</strong> on the list.
+                    <div class="mb-1">
+                        <i class="bi bi-exclamation-triangle me-1"></i>
+                        <strong>{{ count($missing) }} thing{{ count($missing) === 1 ? '' : 's' }}</strong>
+                        still to do before this workflow can be switched <strong>Active</strong>:
+                    </div>
+                    <ul class="mb-0 ps-4">
+                        @foreach($missing as $item)
+                            <li>{{ ucfirst($item) }}</li>
+                        @endforeach
+                    </ul>
                 </div>
-            @endunless
+            @else
+                <div class="alert alert-success mt-3 mb-0 small">
+                    <i class="bi bi-check-circle me-1"></i>
+                    Everything is configured — save, then switch this workflow <strong>Active</strong>
+                    (or press <i class="bi bi-play-fill"></i> on the list to run it once now).
+                </div>
+            @endif
 
             <div class="d-flex justify-content-end mt-4">
                 <button type="submit" class="btn btn-success"><i class="bi bi-check-lg me-1"></i> Save &amp; finish</button>

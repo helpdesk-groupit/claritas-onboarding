@@ -168,16 +168,105 @@ class EmailWorkflow extends Model
     }
 
     /**
-     * Whether every connection + required config exists so the workflow can
-     * legitimately be switched Active. Drives the toggle's enabled state.
+     * Everything still standing between this workflow and a successful run, in
+     * plain language the operator can act on.
+     *
+     * Single source of truth: isReadyToActivate(), the toggle's tooltip, the
+     * wizard's banner and the step chips all derive from this, so they cannot
+     * drift apart and contradict each other on screen.
+     *
+     * Connections are checked for HEALTH, not merely for a non-null FK. A row
+     * selected while still `pending` (credentials saved, consent not yet given)
+     * or `needs_reconnect` (token revoked/expired) would otherwise sail past
+     * this gate and fail at run time in CaptureService::connections().
+     *
+     * @return array<int,string>
+     */
+    public function missingRequirements(): array
+    {
+        $missing = [];
+
+        foreach ([
+            ['label' => 'email source', 'step' => 1, 'conn' => $this->emailConnection],
+            ['label' => 'storage account', 'step' => 3, 'conn' => $this->storageConnection],
+            ['label' => 'log account', 'step' => 4, 'conn' => $this->logConnection],
+        ] as $slot) {
+            if (! $slot['conn']) {
+                $missing[] = "select a {$slot['label']} on step {$slot['step']}";
+            } elseif (! $slot['conn']->isConnected()) {
+                $missing[] = "reconnect the {$slot['label']} on step {$slot['step']} "
+                    ."(it is {$slot['conn']->status})";
+            }
+        }
+
+        if (blank(data_get($this->storage_config_json, 'folder_ref'))) {
+            $missing[] = 'set a destination folder on step 3';
+        }
+        if (blank(data_get($this->log_config_json, 'target_ref'))) {
+            $missing[] = 'set a log sheet on step 4';
+        }
+
+        return $missing;
+    }
+
+    /**
+     * Whether the workflow can legitimately be switched Active. Drives the
+     * toggle's enabled state and the Run-now guard.
      */
     public function isReadyToActivate(): bool
     {
-        return $this->email_connection_id
-            && $this->storage_connection_id
-            && $this->log_connection_id
-            && filled(data_get($this->storage_config_json, 'folder_ref'))
-            && filled(data_get($this->log_config_json, 'target_ref'));
+        return $this->missingRequirements() === [];
+    }
+
+    /**
+     * Is this step genuinely configured? Steps 2 and 5 are seeded with working
+     * defaults by store(), so they are complete from birth — which is exactly
+     * why completeness alone must never drive the chips (see stepDone()).
+     */
+    public function stepComplete(int $step): bool
+    {
+        $healthy = fn (?EmailWorkflowConnection $c) => $c !== null && $c->isConnected();
+
+        return match ($step) {
+            1 => filled($this->name) && $healthy($this->emailConnection),
+            2 => filled($this->rules_json),
+            3 => $healthy($this->storageConnection)
+                && filled(data_get($this->storage_config_json, 'folder_ref')),
+            4 => $healthy($this->logConnection)
+                && filled(data_get($this->log_config_json, 'target_ref')),
+            5 => filled($this->timezone) && filled($this->capture_cron) && filled($this->reconcile_cron),
+            default => false,
+        };
+    }
+
+    /**
+     * Should the stepper paint this step green?
+     *
+     * Visitation AND completeness — neither alone is honest:
+     *  - `wizard_step` alone (the old behaviour) is a navigation high-water mark
+     *    that only ever rises. It painted steps green that were never configured,
+     *    and kept them green after a connection was deleted out from under them.
+     *  - `stepComplete()` alone would paint steps 2 and 5 green on a brand-new
+     *    workflow, because store() seeds valid rules/schedule defaults.
+     *
+     * wizard_step keeps its real job (where to resume) and is necessary but not
+     * sufficient; stepComplete() is the authority. Because completeness is
+     * re-derived on every render, a step that loses its config goes grey again.
+     *
+     * The final step needs the `>= TOTAL_STEPS` arm because update() caps
+     * wizard_step at TOTAL_STEPS, so `5 < 5` is never true and step 5 could
+     * otherwise never show as done. Jumping straight to step 5 is still safe:
+     * steps 1–4 fail stepComplete() and stay grey.
+     */
+    public function stepDone(int $step): bool
+    {
+        if (! $this->exists) {
+            return false;
+        }
+
+        $visited = $step < $this->wizard_step || $this->wizard_step >= self::TOTAL_STEPS;
+
+        return $visited && $this->stepComplete($step);
     }
 
     public function statusBadgeClass(): string

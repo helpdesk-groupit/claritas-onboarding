@@ -48,11 +48,26 @@
                                {{ (string) $selected === (string) $conn->id ? 'checked' : '' }}>
                         <span class="small">Use</span>
                     </label>
-                    {{-- OAuth providers that aren't connected yet → run consent. --}}
-                    @if($conn->isOAuth() && !$conn->isConnected())
-                        <a href="{{ route('it.automation.email-workflow.connections.connect', $conn->id) }}"
-                           class="btn btn-sm btn-success" title="Authorize this account">
-                            <i class="bi bi-box-arrow-up-right me-1"></i>{{ $conn->status === 'needs_reconnect' ? 'Reconnect' : 'Connect' }}
+                    {{-- OAuth providers → run consent.
+                         `workflow`/`step` tell the callback where to send the user back
+                         to; without them it dumps everyone on the list page and the
+                         connection they just authorized never gets selected here.
+                         Shown for already-connected accounts too: a scope change in the
+                         ProviderRegistry only takes effect on re-consent, and the old
+                         token keeps working (badly) until then. --}}
+                    @if($conn->isOAuth())
+                        @php
+                            $connectParams = ['connection' => $conn->id];
+                            if (isset($workflow) && $workflow->exists) {
+                                $connectParams['workflow'] = $workflow->id;
+                                $connectParams['step'] = $step ?? 1;
+                            }
+                            $needsAuth = ! $conn->isConnected();
+                        @endphp
+                        <a href="{{ route('it.automation.email-workflow.connections.connect', $connectParams) }}"
+                           class="btn btn-sm {{ $needsAuth ? 'btn-success' : 'btn-outline-secondary' }}"
+                           title="{{ $needsAuth ? 'Authorize this account' : 'Re-authorize (needed after a permission change)' }}">
+                            <i class="bi bi-box-arrow-up-right me-1"></i>{{ $needsAuth ? ($conn->status === 'needs_reconnect' ? 'Reconnect' : 'Connect') : 'Re-connect' }}
                         </a>
                     @endif
                     <button type="submit" form="delConn_{{ $conn->id }}" class="btn btn-sm btn-outline-danger" title="Remove">
