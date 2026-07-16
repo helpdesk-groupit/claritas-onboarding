@@ -32,7 +32,7 @@ class EmailWorkflowRun extends Model
     protected $fillable = [
         'email_workflow_id', 'trigger', 'triggered_by', 'status',
         'scanned_count', 'matched_count', 'captured_count',
-        'skipped_count', 'failed_count', 'error',
+        'skipped_count', 'failed_count', 'error', 'coverage_warning',
         'started_at', 'finished_at',
     ];
 

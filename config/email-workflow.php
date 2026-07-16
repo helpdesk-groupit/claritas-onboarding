@@ -13,27 +13,33 @@ return [
     | controls note in CLAUDE.md — the wizard's "load history" toggle is not
     | wired to anything).
     |
-    | `message_limit` is **0 = unlimited** by default: a sweep reads every
-    | message in the window, bounded only by `since_days`. Set a positive number
-    | only to deliberately cap a sweep — and know that hitting the cap skips the
-    | oldest mail in the window permanently, because the window slides forward.
-    | CaptureService logs a warning and says so in the run summary rather than
-    | truncating silently.
+    | `message_limit` caps ONE SWEEP (0 = unlimited). 500 is chosen so each
+    | sweep re-reads the newest 500, the captures table skips what it already
+    | has, and the window slides forward with the mailbox. While a day's volume
+    | stays well under the cap, every arriving message lands in at least one
+    | sweep before sliding past it — so nothing NEW is missed, and the cap costs
+    | only the old backlog, which is a deliberate choice. At the observed ~35
+    | messages/day that is roughly a fortnight of catch-up slack, so a few missed
+    | sweeps are harmless.
     |
-    | Unlimited is safe here because every adapter paginates and releases each
-    | page (see EmailSourceAdapter::search) — peak memory tracks one page, not
-    | the sweep. It costs nothing on a small mailbox: paging stops as soon as a
-    | page comes back empty. What it does cost is TIME (~2 min per 100 IMAP
-    | messages), which matters for the synchronous "Run now" button: the browser
-    | will give up long before a large sweep finishes, though the run itself
-    | completes server-side and lands in the run history. The scheduled sweep has
-    | no such limit — PHP CLI max_execution_time is 0.
+    | It only goes wrong if daily volume ever approaches the cap. CaptureService
+    | detects exactly that (comparing how far back a sweep reached against the
+    | previous sweep) and records a coverage_warning on the run. It does NOT warn
+    | merely for filling the cap — that is the design working, and warning every
+    | run would be noise nobody reads.
+    |
+    | Why not unlimited: measured on the real mailbox, an unbounded sweep ran 25+
+    | minutes and accumulated 180MB+ before failing — the engine holds every
+    | normalized message for the run, so memory and time grow with the mailbox,
+    | not with the page. Unlimited would need a streaming redesign of
+    | EmailSourceAdapter::search (yield per message instead of returning an
+    | array). 500 keeps a sweep near ~10 minutes.
     |
     */
 
     'since_days' => (int) env('EWF_SINCE_DAYS', 30),
 
-    'message_limit' => (int) env('EWF_MESSAGE_LIMIT', 0),
+    'message_limit' => (int) env('EWF_MESSAGE_LIMIT', 500),
 
     /*
     |--------------------------------------------------------------------------

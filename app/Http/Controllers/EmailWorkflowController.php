@@ -288,12 +288,10 @@ class EmailWorkflowController extends Controller
             $run->captured_count, $run->skipped_count, $run->failed_count
         );
 
-        // Never let a truncated sweep pass as a clean one: the unexamined mail
-        // falls out of the window and is lost for good.
-        if ($capture->hitCeiling($run)) {
-            return back()->with('warning', $summary
-                .' NOTE: the sweep hit its '.$run->scanned_count.'-message ceiling, so older mail inside the '
-                .$capture->sinceDays().'-day window was not examined. Raise EWF_MESSAGE_LIMIT if this recurs.');
+        // Only surfaced when the cap may actually have cost NEW documents —
+        // filling the cap is by design and warning every run would be noise.
+        if ($run->coverage_warning) {
+            return back()->with('warning', $summary.' '.$run->coverage_warning);
         }
 
         // Nothing captured and nothing skipped is a legitimate result, but it
@@ -334,7 +332,9 @@ class EmailWorkflowController extends Controller
                 'captured' => $r->captured_count,
                 'skipped' => $r->skipped_count,
                 'failed' => $r->failed_count,
-                'error' => $r->error,
+                // A scheduled sweep has no flash message — the history is the
+                // only place its coverage warning can ever be read.
+                'error' => $r->error ?: $r->coverage_warning,
             ]);
 
         $captures = $model->captures()

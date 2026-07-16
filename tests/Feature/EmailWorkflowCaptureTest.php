@@ -335,24 +335,75 @@ class EmailWorkflowCaptureTest extends TestCase
         $this->assertSame(1, $this->sentCount('users/me/messages?'), 'Must not fetch a page it cannot use.');
     }
 
-    public function test_a_sweep_that_hits_a_configured_cap_says_so_instead_of_reporting_a_clean_run(): void
+    public function test_the_first_capped_sweep_says_the_backlog_was_not_read(): void
     {
-        // Reaching a cap means older mail in the window went unexamined — and the
-        // window slides forward, so it is lost for good. Reported as a bare
-        // success it is indistinguishable from "nothing to capture".
+        // With no earlier sweep, whatever sits behind the cap has been read by
+        // nobody. Worth saying once — but only once.
         config(['email-workflow.message_limit' => 1]);
         Http::fake($this->googleStack());
 
         $this->actingAs($this->itManager)
             ->post(route('it.automation.email-workflow.run', $this->workflow->id))
             ->assertRedirect()
-            ->assertSessionHas('warning', fn ($m) => str_contains($m, 'ceiling')
-                && str_contains($m, 'not examined'));
+            ->assertSessionHas('warning', fn ($m) => str_contains($m, 'first sweep')
+                && str_contains($m, 'was not read'));
     }
 
-    public function test_an_unlimited_sweep_is_never_flagged_as_truncated(): void
+    public function test_filling_the_cap_is_quiet_when_the_sweep_still_reaches_past_the_previous_run(): void
     {
-        config(['email-workflow.message_limit' => 0]);
+        // THE DESIGN: re-read the newest N daily, let the dedupe skip the
+        // overlap, leave the old backlog alone. A sweep that reaches back past
+        // the previous run has covered every message that arrived since — so
+        // nothing new was missed and there is nothing to say. Warning here would
+        // fire on every healthy run and train the operator to ignore it.
+        config(['email-workflow.message_limit' => 1]);
+
+        // Previous sweep ran AFTER the mail this sweep reaches back to (2026-07-15).
+        EmailWorkflowRun::create([
+            'email_workflow_id' => $this->workflow->id,
+            'status' => EmailWorkflowRun::STATUS_SUCCESS,
+            'started_at' => now(),
+            'finished_at' => now(),
+        ]);
+
+        Http::fake($this->googleStack());
+
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.run', $this->workflow->id))
+            ->assertRedirect()
+            ->assertSessionMissing('warning');
+
+        $this->assertNull(EmailWorkflowRun::latest('id')->first()->coverage_warning);
+    }
+
+    public function test_a_cap_that_no_longer_reaches_the_previous_run_warns_that_mail_is_being_missed(): void
+    {
+        // Volume has outgrown the cap: this sweep only reached 2026-07-15, but
+        // the last one ran before that, so mail in between was read by neither
+        // and the window will carry it away. THIS is worth interrupting for.
+        config(['email-workflow.message_limit' => 1]);
+
+        EmailWorkflowRun::create([
+            'email_workflow_id' => $this->workflow->id,
+            'status' => EmailWorkflowRun::STATUS_SUCCESS,
+            'started_at' => now()->subMonths(2),   // older than the oldest message seen
+            'finished_at' => now()->subMonths(2),
+        ]);
+
+        Http::fake($this->googleStack());
+
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.run', $this->workflow->id))
+            ->assertRedirect()
+            ->assertSessionHas('warning', fn ($m) => str_contains($m, 'outgrown')
+                && str_contains($m, 'read by neither'));
+
+        $this->assertNotNull(EmailWorkflowRun::latest('id')->first()->coverage_warning);
+    }
+
+    public function test_a_sweep_below_its_cap_is_never_flagged(): void
+    {
+        config(['email-workflow.message_limit' => 500]);
         Http::fake($this->googleStack());
 
         $this->actingAs($this->itManager)
@@ -360,6 +411,21 @@ class EmailWorkflowCaptureTest extends TestCase
             ->assertRedirect()
             ->assertSessionMissing('warning')
             ->assertSessionHas('success');
+    }
+
+    public function test_a_scheduled_sweeps_coverage_warning_is_readable_in_the_run_history(): void
+    {
+        // A scheduled run has no flash message, so the history is the only place
+        // its warning can ever be read.
+        config(['email-workflow.message_limit' => 1]);
+        Http::fake($this->googleStack());
+
+        app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        $this->actingAs($this->itManager)
+            ->getJson(route('it.automation.email-workflow.runs', $this->workflow->id))
+            ->assertOk()
+            ->assertJsonPath('runs.0.error', fn ($e) => $e !== null && str_contains($e, 'first sweep'));
     }
 
     public function test_a_run_killed_without_finishing_is_reaped_not_left_running_forever(): void

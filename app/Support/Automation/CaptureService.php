@@ -33,14 +33,12 @@ class CaptureService
     public const DEFAULT_SINCE_DAYS = 30;
 
     /**
-     * 0 = unlimited — read every message in the window. See config/email-workflow.php.
-     *
-     * A positive value is a deliberate cap, and hitting it skips the oldest mail
-     * in the window permanently (the window slides forward). So a sweep that
-     * reaches a cap says so loudly instead of quietly returning "success, 0
-     * captured" — the failure mode this module has produced over and over.
+     * Messages per sweep; 0 = unlimited. See config/email-workflow.php for the
+     * reasoning behind 500 (re-read the newest N daily, let the dedupe skip the
+     * overlap, accept the old backlog) and for why unlimited needs a streaming
+     * redesign before it is safe on a large mailbox.
      */
-    public const DEFAULT_MESSAGE_LIMIT = 0;
+    public const DEFAULT_MESSAGE_LIMIT = 500;
 
     /** Seconds a synchronous "Run now" may take before PHP kills it. */
     public const REQUEST_TIME_LIMIT = 900;
@@ -164,18 +162,26 @@ class CaptureService
 
         $run->update(['scanned_count' => count($messages)]);
 
-        // No silent caps. Reaching a configured ceiling means older mail inside
-        // the window was never looked at, and the window slides forward, so those
-        // messages are lost for good — an outcome that otherwise reports itself
-        // as a perfectly healthy "success, 0 captured". Unlimited (0) can't
-        // truncate, so it never warns.
-        if ($this->hitCeiling($run->refresh())) {
-            Log::warning('Email Workflow sweep hit its message ceiling — older mail in the window was not examined', [
+        // No silent caps — but warn about the case that actually costs documents.
+        //
+        // A cap is designed to leave the old backlog unread: each sweep re-reads
+        // the newest N, the dedupe skips what it already has, and the window
+        // slides forward with the mailbox. Nothing NEW is lost while daily volume
+        // stays below the cap, so "we hit the cap" on its own is expected and
+        // warning about it every run would be noise nobody reads.
+        //
+        // The real failure is the cap hiding mail the PREVIOUS sweep hadn't
+        // covered either — that mail is seen by no run, ever, and slides out of
+        // the window. See coverageWarning().
+        if ($warning = $this->coverageWarning($workflow, $run->refresh(), $messages)) {
+            Log::warning('Email Workflow sweep may have missed new mail — raise the message cap', [
                 'workflow_id' => $workflow->id,
                 'run_id' => $run->id,
                 'limit' => $limit,
                 'window_days' => $this->sinceDays(),
             ]);
+
+            $run->update(['coverage_warning' => $warning]);
         }
 
         $headers = $this->headers($logCfg);
@@ -452,15 +458,78 @@ class CaptureService
     }
 
     /**
-     * True when a run examined every message a configured cap allows — i.e. it
-     * may have missed older mail in the window. Always false when unlimited (0),
-     * which is the default: an unbounded sweep cannot truncate.
+     * True when a run examined exactly as many messages as its cap allows, so
+     * there was probably more behind it. Always false when unlimited (0).
+     *
+     * On its own this is NOT a problem — see coverageWarning().
      */
     public function hitCeiling(EmailWorkflowRun $run): bool
     {
         $limit = (int) config('email-workflow.message_limit', self::DEFAULT_MESSAGE_LIMIT);
 
         return $limit > 0 && $run->scanned_count >= $limit;
+    }
+
+    /**
+     * The operator-facing warning when a cap may have cost NEW documents, or
+     * null when coverage is sound.
+     *
+     * A capped sweep reads the newest N and re-reads them daily; the dedupe
+     * makes the overlap free. While each day's volume stays under the cap, every
+     * arriving message appears in at least one sweep before sliding past N, so
+     * nothing new is missed and the untouched backlog is a deliberate choice.
+     *
+     * It only goes wrong when the cap fills with mail NEWER than the previous
+     * sweep: the messages between the previous sweep and the oldest one this
+     * sweep looked at were examined by neither, and the window will carry them
+     * away. That is the condition worth interrupting someone for — and it is
+     * self-correcting information, because it means volume has outgrown the cap.
+     *
+     * @param  array<int,array<string,mixed>>  $messages  newest-first
+     */
+    public function coverageWarning(EmailWorkflow $workflow, EmailWorkflowRun $run, array $messages): ?string
+    {
+        if (! $this->hitCeiling($run) || $messages === []) {
+            return null;
+        }
+
+        // Newest-first is contractual, so the last row is the oldest we saw.
+        $oldestSeen = data_get($messages[array_key_last($messages)], 'date');
+
+        $previous = EmailWorkflowRun::where('email_workflow_id', $workflow->id)
+            ->where('id', '<', $run->id)
+            ->whereIn('status', [EmailWorkflowRun::STATUS_SUCCESS, EmailWorkflowRun::STATUS_PARTIAL])
+            ->latest('id')
+            ->first();
+
+        // No earlier sweep to have covered the remainder: the backlog beyond the
+        // cap is unread by definition. Worth saying once, on the first run.
+        if (! $previous) {
+            return 'This first sweep filled its '.$run->scanned_count.'-message cap, so older mail in the '
+                .$this->sinceDays().'-day window was not read. Ongoing runs will keep up with new mail; '
+                .'raise EWF_MESSAGE_LIMIT once if you want the existing backlog captured too.';
+        }
+
+        if (! $oldestSeen) {
+            return null; // can't date the messages — don't cry wolf
+        }
+
+        try {
+            $reachedBack = \Carbon\Carbon::parse($oldestSeen);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        // Reached back past the previous sweep ⇒ the two runs' coverage overlaps
+        // ⇒ nothing in between was skipped. This is the healthy, quiet case.
+        if ($reachedBack->lessThanOrEqualTo($previous->started_at)) {
+            return null;
+        }
+
+        return 'Mail volume has outgrown the '.$run->scanned_count.'-message cap: this sweep only reached back to '
+            .$reachedBack->format('Y-m-d H:i').', but the previous one ran at '
+            .$previous->started_at->format('Y-m-d H:i').'. Messages in between were read by neither run and will '
+            .'fall out of the '.$this->sinceDays().'-day window. Raise EWF_MESSAGE_LIMIT or sweep more often.';
     }
 
     /**
