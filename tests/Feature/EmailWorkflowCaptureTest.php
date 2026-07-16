@@ -274,24 +274,72 @@ class EmailWorkflowCaptureTest extends TestCase
         $this->assertSame(EmailWorkflowConnection::STATUS_CONNECTED, $drive->fresh()->status);
     }
 
-    public function test_the_sweep_window_and_ceiling_come_from_config(): void
+    public function test_the_sweep_window_comes_from_config(): void
     {
-        config(['email-workflow.since_days' => 45, 'email-workflow.message_limit' => 250]);
+        config(['email-workflow.since_days' => 45]);
         Http::fake($this->googleStack());
 
         app(CaptureService::class)->run($this->workflow);
 
-        // The window reaches the mailbox; the ceiling bounds the sweep.
         Http::assertSent(fn (Request $r) => str_contains($r->url(), 'gmail/v1/users/me/messages?')
-            && str_contains(urldecode($r->url()), 'newer_than:45d')
-            && str_contains($r->url(), 'maxResults=250'));
+            && str_contains(urldecode($r->url()), 'newer_than:45d'));
     }
 
-    public function test_a_sweep_that_hits_its_ceiling_says_so_instead_of_reporting_a_clean_run(): void
+    public function test_an_unlimited_sweep_follows_every_page_to_the_end(): void
     {
-        // Reaching the ceiling means older mail in the window went unexamined —
-        // and the window slides forward, so it is lost for good. Reported as a
-        // bare success it is indistinguishable from "nothing to capture".
+        // The default. maxResults caps a PAGE, not the sweep — an adapter that
+        // ignores nextPageToken truncates silently and still reports success.
+        config(['email-workflow.message_limit' => 0]);
+
+        Http::fake($this->googleStack([
+            'https://gmail.googleapis.com/gmail/v1/users/me/messages?*' => Http::sequence()
+                ->push(['messages' => [['id' => self::MESSAGE_ID]], 'nextPageToken' => 'p2'])
+                ->push(['messages' => [['id' => self::MESSAGE_ID]], 'nextPageToken' => 'p3'])
+                ->push(['messages' => [['id' => self::MESSAGE_ID]]]),   // last page: no token
+        ]));
+
+        $run = app(CaptureService::class)->run($this->workflow);
+
+        // Three pages walked, so three message stubs scanned.
+        $this->assertSame(3, $run->scanned_count);
+        $this->assertSame(3, $this->sentCount('users/me/messages?'));
+        // Unlimited cannot truncate, so it must never warn about a ceiling.
+        $this->assertFalse(app(CaptureService::class)->hitCeiling($run));
+    }
+
+    public function test_an_unlimited_sweep_stops_when_the_window_is_exhausted(): void
+    {
+        // No nextPageToken on the first page → exactly one request. A loop that
+        // keeps paging here would hammer the provider forever.
+        config(['email-workflow.message_limit' => 0]);
+        Http::fake($this->googleStack());
+
+        app(CaptureService::class)->run($this->workflow);
+
+        $this->assertSame(1, $this->sentCount('users/me/messages?'));
+    }
+
+    public function test_a_configured_cap_stops_paging_early(): void
+    {
+        config(['email-workflow.message_limit' => 2]);
+
+        Http::fake($this->googleStack([
+            'https://gmail.googleapis.com/gmail/v1/users/me/messages?*' => Http::sequence()
+                ->push(['messages' => [['id' => self::MESSAGE_ID], ['id' => self::MESSAGE_ID]], 'nextPageToken' => 'p2'])
+                ->push(['messages' => [['id' => self::MESSAGE_ID]], 'nextPageToken' => 'p3']),
+        ]));
+
+        $run = app(CaptureService::class)->run($this->workflow);
+
+        $this->assertSame(2, $run->scanned_count, 'A cap must stop the sweep, not just the page.');
+        $this->assertSame(1, $this->sentCount('users/me/messages?'), 'Must not fetch a page it cannot use.');
+    }
+
+    public function test_a_sweep_that_hits_a_configured_cap_says_so_instead_of_reporting_a_clean_run(): void
+    {
+        // Reaching a cap means older mail in the window went unexamined — and the
+        // window slides forward, so it is lost for good. Reported as a bare
+        // success it is indistinguishable from "nothing to capture".
         config(['email-workflow.message_limit' => 1]);
         Http::fake($this->googleStack());
 
@@ -302,9 +350,9 @@ class EmailWorkflowCaptureTest extends TestCase
                 && str_contains($m, 'not examined'));
     }
 
-    public function test_a_sweep_below_its_ceiling_is_not_flagged(): void
+    public function test_an_unlimited_sweep_is_never_flagged_as_truncated(): void
     {
-        config(['email-workflow.message_limit' => 1000]);
+        config(['email-workflow.message_limit' => 0]);
         Http::fake($this->googleStack());
 
         $this->actingAs($this->itManager)

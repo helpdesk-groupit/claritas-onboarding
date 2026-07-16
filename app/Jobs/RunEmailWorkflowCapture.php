@@ -25,11 +25,21 @@ class RunEmailWorkflowCapture implements ShouldBeUnique, ShouldQueue
     /** Overlapping sweeps are pointless; give up rather than pile up. */
     public int $tries = 1;
 
-    /** Long enough for a full sweep, short enough to surface a hang. */
-    public int $timeout = 900;
+    /**
+     * Generous because a sweep is unbounded by default (message_limit = 0 reads
+     * the whole window) and IMAP costs roughly 2 minutes per 100 messages.
+     *
+     * Only a real queue worker enforces this — the sync driver, which production
+     * currently uses, runs the job inline under the CLI's unlimited
+     * max_execution_time. But if a worker is ever enabled, a timeout shorter
+     * than the sweep would kill it mid-run, every run, and with tries=1 the
+     * workflow would simply never complete: a silent cap wearing a different
+     * hat. Captures resume, so a kill is not data loss — just wasted work.
+     */
+    public int $timeout = 3600;
 
     /** Stop claiming uniqueness if the job dies without releasing the lock. */
-    public int $uniqueFor = 1800;
+    public int $uniqueFor = 7200;
 
     public function __construct(
         public readonly int $workflowId,

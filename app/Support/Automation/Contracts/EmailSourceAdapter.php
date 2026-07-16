@@ -22,11 +22,21 @@ interface EmailSourceAdapter
     public function providerId(): string;
 
     /**
-     * Search the mailbox.
+     * Search the mailbox, NEWEST FIRST.
+     *
+     * Ordering is part of the contract, not an implementation detail: a capture
+     * run that reads oldest-first stops seeing new mail the moment the mailbox
+     * outgrows the limit, while still reporting success.
+     *
+     * `$paging['limit']` is a ceiling, and **0 means unlimited** — return every
+     * message in the window. Implementations MUST paginate to honour it rather
+     * than passing it to the provider as a page size; every provider here caps
+     * a single page (Gmail maxResults, Graph $top, IMAP fetch batch), so a
+     * one-shot request silently truncates the sweep.
      *
      * @param  array<string,mixed>  $query  provider-agnostic query (window, keywords)
-     * @param  array<string,mixed>  $paging  cursor/limit
-     * @return array<int, array<string,mixed>> lightweight message headers
+     * @param  array<string,mixed>  $paging  ['limit' => int]  0 = unlimited
+     * @return array<int, array<string,mixed>> normalized messages, newest first
      */
     public function search(EmailWorkflowConnection $conn, array $query, array $paging = []): array;
 

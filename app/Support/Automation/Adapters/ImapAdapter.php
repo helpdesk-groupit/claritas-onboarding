@@ -56,7 +56,9 @@ class ImapAdapter implements EmailSourceAdapter
      */
     public function search(EmailWorkflowConnection $conn, array $query, array $paging = []): array
     {
-        $limit = max(1, (int) ($paging['limit'] ?? 25));
+        // 0 = unlimited: keep paging until the window is exhausted.
+        $limit = max(0, (int) ($paging['limit'] ?? 25));
+        $unlimited = $limit === 0;
         $sinceDays = (int) ($query['since_days'] ?? 30);
         $since = now()->subDays($sinceDays);
 
@@ -68,9 +70,8 @@ class ImapAdapter implements EmailSourceAdapter
 
             $out = [];
             $perPage = max(1, (int) config('email-workflow.fetch_batch', self::FETCH_BATCH));
-            $pages = (int) ceil($limit / $perPage);
 
-            for ($page = 1; $page <= $pages; $page++) {
+            for ($page = 1; ; $page++) {
                 $batch = $inbox->messages()
                     ->since($since)
                     ->setFetchBody(true)
@@ -79,23 +80,24 @@ class ImapAdapter implements EmailSourceAdapter
                     ->get();
 
                 if ($batch->isEmpty()) {
-                    break; // mailbox exhausted inside the window
+                    break; // window exhausted — the only stop condition when unlimited
                 }
 
                 foreach ($batch as $message) {
                     $out[] = $this->normalize($message);
-                    if (count($out) >= $limit) {
+                    if (! $unlimited && count($out) >= $limit) {
                         break;
                     }
                 }
 
                 // Drop the raw messages before fetching the next page. The
                 // normalized rows we keep are small (text + attachment metadata);
-                // the raw ones are not.
+                // the raw ones are not. This is what keeps peak memory flat
+                // across an unbounded sweep.
                 unset($batch);
                 gc_collect_cycles();
 
-                if (count($out) >= $limit) {
+                if (! $unlimited && count($out) >= $limit) {
                     break;
                 }
             }

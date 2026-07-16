@@ -33,15 +33,14 @@ class CaptureService
     public const DEFAULT_SINCE_DAYS = 30;
 
     /**
-     * Runaway guard, NOT a sampling rate — see config/email-workflow.php.
+     * 0 = unlimited — read every message in the window. See config/email-workflow.php.
      *
-     * Hitting this means the oldest mail in the window went unexamined, and
-     * permanently, because the window slides forward. So it must sit well above
-     * real volume, and a sweep that reaches it says so (loudly) instead of
-     * quietly returning "success, 0 captured" — the failure mode this module
-     * has produced over and over.
+     * A positive value is a deliberate cap, and hitting it skips the oldest mail
+     * in the window permanently (the window slides forward). So a sweep that
+     * reaches a cap says so loudly instead of quietly returning "success, 0
+     * captured" — the failure mode this module has produced over and over.
      */
-    public const DEFAULT_MESSAGE_LIMIT = 1000;
+    public const DEFAULT_MESSAGE_LIMIT = 0;
 
     /** Seconds a synchronous "Run now" may take before PHP kills it. */
     public const REQUEST_TIME_LIMIT = 900;
@@ -151,11 +150,12 @@ class CaptureService
 
         $run->update(['scanned_count' => count($messages)]);
 
-        // No silent caps. Reaching the ceiling means older mail inside the
-        // window was never looked at, and the window slides forward, so those
+        // No silent caps. Reaching a configured ceiling means older mail inside
+        // the window was never looked at, and the window slides forward, so those
         // messages are lost for good — an outcome that otherwise reports itself
-        // as a perfectly healthy "success, 0 captured".
-        if (count($messages) >= $limit) {
+        // as a perfectly healthy "success, 0 captured". Unlimited (0) can't
+        // truncate, so it never warns.
+        if ($this->hitCeiling($run->refresh())) {
             Log::warning('Email Workflow sweep hit its message ceiling — older mail in the window was not examined', [
                 'workflow_id' => $workflow->id,
                 'run_id' => $run->id,
@@ -437,10 +437,16 @@ class CaptureService
         return (int) config('email-workflow.since_days', self::DEFAULT_SINCE_DAYS);
     }
 
-    /** True when a run examined every message the ceiling allows — i.e. it may have missed older mail. */
+    /**
+     * True when a run examined every message a configured cap allows — i.e. it
+     * may have missed older mail in the window. Always false when unlimited (0),
+     * which is the default: an unbounded sweep cannot truncate.
+     */
     public function hitCeiling(EmailWorkflowRun $run): bool
     {
-        return $run->scanned_count >= (int) config('email-workflow.message_limit', self::DEFAULT_MESSAGE_LIMIT);
+        $limit = (int) config('email-workflow.message_limit', self::DEFAULT_MESSAGE_LIMIT);
+
+        return $limit > 0 && $run->scanned_count >= $limit;
     }
 
     /**

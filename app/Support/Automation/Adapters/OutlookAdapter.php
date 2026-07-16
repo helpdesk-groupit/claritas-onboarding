@@ -21,6 +21,9 @@ class OutlookAdapter implements EmailSourceAdapter
 {
     private const BASE = 'https://graph.microsoft.com/v1.0';
 
+    /** Messages listed per page. Graph caps $top at 1000 for /messages. */
+    private const PAGE_SIZE = 100;
+
     public function __construct(private readonly OAuthService $oauth) {}
 
     public function providerId(): string
@@ -36,25 +39,41 @@ class OutlookAdapter implements EmailSourceAdapter
     public function search(EmailWorkflowConnection $conn, array $query, array $paging = []): array
     {
         $token = $this->oauth->freshAccessToken($conn);
-        $limit = (int) ($paging['limit'] ?? 25);
+        // 0 = unlimited: follow @odata.nextLink until the window is exhausted.
+        $limit = max(0, (int) ($paging['limit'] ?? 25));
+        $unlimited = $limit === 0;
         $sinceDays = (int) ($query['since_days'] ?? 30);
         $since = now()->subDays($sinceDays)->toIso8601ZuluString();
 
+        // $top caps ONE PAGE, not the total. Passing the sweep limit straight
+        // through and ignoring @odata.nextLink silently truncated every sweep.
+        $url = self::BASE.'/me/messages';
         $params = [
             '$filter' => "receivedDateTime ge {$since}",
-            '$top' => $limit,
-            '$orderby' => 'receivedDateTime desc',
+            '$top' => $unlimited ? self::PAGE_SIZE : min($limit, self::PAGE_SIZE),
+            '$orderby' => 'receivedDateTime desc',   // newest first — contract
             '$select' => 'id,subject,from,receivedDateTime,bodyPreview,body,hasAttachments',
         ];
 
-        $list = Http::withToken($token)
-            ->get(self::BASE.'/me/messages', $params)
-            ->throw()->json();
-
         $out = [];
-        foreach (($list['value'] ?? []) as $msg) {
-            $out[] = $this->normalize($conn, $token, $msg);
-        }
+
+        do {
+            $list = Http::withToken($token)
+                ->get($url, $params)
+                ->throw()->json();
+
+            foreach (($list['value'] ?? []) as $msg) {
+                $out[] = $this->normalize($conn, $token, $msg);
+                if (! $unlimited && count($out) >= $limit) {
+                    return $out;
+                }
+            }
+
+            // nextLink already carries every query param — re-sending ours would
+            // duplicate them and Graph rejects that.
+            $url = $list['@odata.nextLink'] ?? null;
+            $params = [];
+        } while ($url);
 
         return $out;
     }

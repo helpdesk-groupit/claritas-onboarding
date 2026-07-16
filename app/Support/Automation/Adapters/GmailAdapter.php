@@ -21,6 +21,9 @@ class GmailAdapter implements EmailSourceAdapter
 {
     private const BASE = 'https://gmail.googleapis.com/gmail/v1';
 
+    /** Messages listed per page. Gmail caps maxResults at 500. */
+    private const PAGE_SIZE = 100;
+
     public function __construct(private readonly OAuthService $oauth) {}
 
     public function providerId(): string
@@ -36,20 +39,41 @@ class GmailAdapter implements EmailSourceAdapter
     public function search(EmailWorkflowConnection $conn, array $query, array $paging = []): array
     {
         $token = $this->oauth->freshAccessToken($conn);
-        $limit = (int) ($paging['limit'] ?? 25);
+        // 0 = unlimited: follow nextPageToken until the window is exhausted.
+        $limit = max(0, (int) ($paging['limit'] ?? 25));
+        $unlimited = $limit === 0;
         $sinceDays = (int) ($query['since_days'] ?? 30);
 
         // Gmail query syntax — bound the window; has:attachment keeps it relevant.
+        // Gmail returns newest-first, which the contract requires.
         $q = trim(($query['q'] ?? '').' newer_than:'.$sinceDays.'d');
 
-        $list = Http::withToken($token)
-            ->get(self::BASE.'/users/me/messages', ['q' => $q, 'maxResults' => $limit])
-            ->throw()->json();
-
         $out = [];
-        foreach (($list['messages'] ?? []) as $stub) {
-            $out[] = $this->getMessage($conn, $stub['id']);
-        }
+        $pageToken = null;
+
+        do {
+            // maxResults caps ONE PAGE (500 max), it is not a total. Passing the
+            // sweep limit straight through and ignoring nextPageToken silently
+            // truncated every sweep — the same bug IMAP had via fetch_order.
+            $params = array_filter([
+                'q' => $q,
+                'maxResults' => $unlimited ? self::PAGE_SIZE : min($limit - count($out), self::PAGE_SIZE),
+                'pageToken' => $pageToken,
+            ]);
+
+            $list = Http::withToken($token)
+                ->get(self::BASE.'/users/me/messages', $params)
+                ->throw()->json();
+
+            foreach (($list['messages'] ?? []) as $stub) {
+                $out[] = $this->getMessage($conn, $stub['id']);
+                if (! $unlimited && count($out) >= $limit) {
+                    return $out;
+                }
+            }
+
+            $pageToken = $list['nextPageToken'] ?? null;
+        } while ($pageToken);
 
         return $out;
     }
