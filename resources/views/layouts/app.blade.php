@@ -45,13 +45,22 @@
         .sidebar-brand h5 { color: #fff; font-weight: 700; margin: 0; font-size: 16px; }
         .sidebar-brand small { color: rgba(255,255,255,0.55); font-size: 11px; }
         .sidebar-section {
-            padding: 13px 18px 5px; font-size: 11px; text-transform: uppercase;
-            letter-spacing: 1px; color: rgba(255,255,255,0.7); font-weight: 700;
+            padding: 14px 18px 4px; font-size: 10px; text-transform: uppercase;
+            letter-spacing: 1.2px; color: rgba(255,255,255,0.4); font-weight: 600;
         }
-        /* Collapsible category headers (enhanced by JS into toggles). */
-        .sidebar-section-toggle { display: flex; align-items: center; cursor: pointer; user-select: none; border-radius: 8px; margin: 0 8px; padding-left: 10px; padding-right: 10px; transition: background .15s, color .15s; }
-        .sidebar-section-toggle:hover { color: #fff; background: rgba(255,255,255,0.08); }
-        .sidebar-section-toggle .sb-chev { margin-left: auto; font-size: 12px; opacity: .85; transition: transform .2s ease; }
+        /* Collapsible category headers — SUPERADMIN ONLY. Rendered as distinct, high-visibility
+           bars so categories clearly separate. The JS adds .sidebar-section-toggle and wraps
+           items in .sidebar-group; other roles keep the plain look above. */
+        .sidebar-section-toggle {
+            display: flex; align-items: center; cursor: pointer; user-select: none;
+            margin: 6px 8px 2px; padding: 9px 12px; border-radius: 8px;
+            background: rgba(255,255,255,0.14); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+            font-size: 11px; letter-spacing: 1px; font-weight: 700; color: rgba(255,255,255,0.95);
+            transition: background .15s, color .15s;
+        }
+        .sidebar-section-toggle:hover { background: rgba(255,255,255,0.22); color: #fff; }
+        .sidebar-section-toggle.is-first { margin-top: 4px; }
+        .sidebar-section-toggle .sb-chev { margin-left: auto; font-size: 12px; opacity: .9; transition: transform .2s ease; }
         .sidebar-section-toggle.collapsed .sb-chev { transform: rotate(-90deg); }
         .sidebar-group { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .25s ease; }
         .sidebar-group.collapsed { grid-template-rows: 0fr; }
@@ -1219,20 +1228,22 @@ function setTheme(theme) {
 })();
 </script>
 
-{{-- Collapsible sidebar categories — each .sidebar-section header toggles the items
-     beneath it. State persists in localStorage; the group holding the active page
-     always starts expanded. CSP-safe (no inline handlers). --}}
+{{-- Collapsible sidebar categories — SUPERADMIN ONLY. Each .sidebar-section header
+     toggles the items beneath it; state persists in localStorage; the group holding
+     the active page always starts expanded. CSP-safe (no inline handlers). Every other
+     role keeps the plain, always-expanded sidebar (this script simply isn't emitted). --}}
+@if(Auth::user()->isSuperadmin())
 <script nonce="{{ $cspNonce ?? '' }}">
 (function () {
     var nav = document.querySelector('.sidebar-nav');
     if (!nav) return;
-    var STORE = 'sidebarSections';
-    var state = {};
-    try { state = JSON.parse(localStorage.getItem(STORE) || '{}'); } catch (e) {}
 
     var headers = Array.prototype.slice.call(nav.querySelectorAll(':scope > .sidebar-section'));
     headers.forEach(function (header, i) {
         var key = (header.textContent || ('sec' + i)).trim();
+
+        // Leave the Session section (Logout) as a plain, non-collapsible header.
+        if (key === 'Session') return;
 
         // Wrap the items following this header (until the next section) in a collapsible group.
         var wrap = document.createElement('div');
@@ -1255,32 +1266,34 @@ function setTheme(theme) {
         header.classList.add('sidebar-section-toggle');
         header.setAttribute('role', 'button');
         header.setAttribute('tabindex', '0');
-        header.setAttribute('aria-expanded', 'true');
 
-        // Collapsed BY DEFAULT — only the group holding the active page (e.g. Dashboard)
-        // stays open. A section the user explicitly expanded before is remembered.
-        var hasActive = !!inner.querySelector('.nav-link.active');
-        var collapsed = hasActive ? false : (state[key] !== false);
-        if (collapsed) {
+        // Deterministic on every load (no persistence, so no stale/leftover state across
+        // logins): the first section — where Dashboard lives — and the section of the
+        // current page stay open; every other category starts collapsed.
+        var keepOpen = (i === 0) || !!inner.querySelector('.nav-link.active');
+        header.setAttribute('aria-expanded', keepOpen ? 'true' : 'false');
+        if (!keepOpen) {
             wrap.classList.add('collapsed');
             header.classList.add('collapsed');
-            header.setAttribute('aria-expanded', 'false');
         }
 
         function toggle() {
             var collapsed = wrap.classList.toggle('collapsed');
             header.classList.toggle('collapsed', collapsed);
             header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-            state[key] = collapsed;
-            try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {}
         }
         header.addEventListener('click', toggle);
         header.addEventListener('keydown', function (e) {
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
         });
     });
+
+    // Mark the first collapsible header so CSS can drop its top divider.
+    var firstToggle = nav.querySelector('.sidebar-section-toggle');
+    if (firstToggle) { firstToggle.classList.add('is-first'); }
 })();
 </script>
+@endif
 @endauth
 @stack('scripts')
 </body>
