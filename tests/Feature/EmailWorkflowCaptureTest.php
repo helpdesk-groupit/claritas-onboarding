@@ -274,6 +274,46 @@ class EmailWorkflowCaptureTest extends TestCase
         $this->assertSame(EmailWorkflowConnection::STATUS_CONNECTED, $drive->fresh()->status);
     }
 
+    public function test_the_sweep_window_and_ceiling_come_from_config(): void
+    {
+        config(['email-workflow.since_days' => 45, 'email-workflow.message_limit' => 250]);
+        Http::fake($this->googleStack());
+
+        app(CaptureService::class)->run($this->workflow);
+
+        // The window reaches the mailbox; the ceiling bounds the sweep.
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), 'gmail/v1/users/me/messages?')
+            && str_contains(urldecode($r->url()), 'newer_than:45d')
+            && str_contains($r->url(), 'maxResults=250'));
+    }
+
+    public function test_a_sweep_that_hits_its_ceiling_says_so_instead_of_reporting_a_clean_run(): void
+    {
+        // Reaching the ceiling means older mail in the window went unexamined —
+        // and the window slides forward, so it is lost for good. Reported as a
+        // bare success it is indistinguishable from "nothing to capture".
+        config(['email-workflow.message_limit' => 1]);
+        Http::fake($this->googleStack());
+
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.run', $this->workflow->id))
+            ->assertRedirect()
+            ->assertSessionHas('warning', fn ($m) => str_contains($m, 'ceiling')
+                && str_contains($m, 'not examined'));
+    }
+
+    public function test_a_sweep_below_its_ceiling_is_not_flagged(): void
+    {
+        config(['email-workflow.message_limit' => 1000]);
+        Http::fake($this->googleStack());
+
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.run', $this->workflow->id))
+            ->assertRedirect()
+            ->assertSessionMissing('warning')
+            ->assertSessionHas('success');
+    }
+
     public function test_a_sweep_raises_a_low_memory_limit(): void
     {
         // The CLI default (128M) is what the scheduler runs under, and one fat

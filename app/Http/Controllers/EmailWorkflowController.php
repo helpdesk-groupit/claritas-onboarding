@@ -288,12 +288,20 @@ class EmailWorkflowController extends Controller
             $run->captured_count, $run->skipped_count, $run->failed_count
         );
 
+        // Never let a truncated sweep pass as a clean one: the unexamined mail
+        // falls out of the window and is lost for good.
+        if ($capture->hitCeiling($run)) {
+            return back()->with('warning', $summary
+                .' NOTE: the sweep hit its '.$run->scanned_count.'-message ceiling, so older mail inside the '
+                .$capture->sinceDays().'-day window was not examined. Raise EWF_MESSAGE_LIMIT if this recurs.');
+        }
+
         // Nothing captured and nothing skipped is a legitimate result, but it
         // reads as a silent failure — say why instead of flashing a bare success.
         if ($run->captured_count === 0 && $run->skipped_count === 0 && $run->failed_count === 0) {
             return back()->with('info', $summary
                 .' No new documents matched — widen the rules, or check the mailbox has matching mail in the last '
-                .CaptureService::DEFAULT_SINCE_DAYS.' days.');
+                .$capture->sinceDays().' days.');
         }
 
         return back()->with(

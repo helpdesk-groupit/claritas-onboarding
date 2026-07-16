@@ -32,8 +32,16 @@ class CaptureService
     /** Lookback window. Matches the "Test rules" preview so results agree. */
     public const DEFAULT_SINCE_DAYS = 30;
 
-    /** Ceiling on messages inspected per run — bounds API spend and runtime. */
-    public const DEFAULT_MESSAGE_LIMIT = 100;
+    /**
+     * Runaway guard, NOT a sampling rate — see config/email-workflow.php.
+     *
+     * Hitting this means the oldest mail in the window went unexamined, and
+     * permanently, because the window slides forward. So it must sit well above
+     * real volume, and a sweep that reaches it says so (loudly) instead of
+     * quietly returning "success, 0 captured" — the failure mode this module
+     * has produced over and over.
+     */
+    public const DEFAULT_MESSAGE_LIMIT = 1000;
 
     /** Seconds a synchronous "Run now" may take before PHP kills it. */
     public const REQUEST_TIME_LIMIT = 900;
@@ -137,11 +145,24 @@ class CaptureService
         $rootFolder = $storage->resolveFolder($storageConn, (string) ($storageCfg['folder_ref'] ?? ''));
         $target = $logger->resolveTarget($logConn, (string) ($logCfg['target_ref'] ?? ''));
 
-        $messages = $email->search($emailConn, $this->query($rules), [
-            'limit' => self::DEFAULT_MESSAGE_LIMIT,
-        ]);
+        $limit = (int) config('email-workflow.message_limit', self::DEFAULT_MESSAGE_LIMIT);
+
+        $messages = $email->search($emailConn, $this->query($rules), ['limit' => $limit]);
 
         $run->update(['scanned_count' => count($messages)]);
+
+        // No silent caps. Reaching the ceiling means older mail inside the
+        // window was never looked at, and the window slides forward, so those
+        // messages are lost for good — an outcome that otherwise reports itself
+        // as a perfectly healthy "success, 0 captured".
+        if (count($messages) >= $limit) {
+            Log::warning('Email Workflow sweep hit its message ceiling — older mail in the window was not examined', [
+                'workflow_id' => $workflow->id,
+                'run_id' => $run->id,
+                'limit' => $limit,
+                'window_days' => $this->sinceDays(),
+            ]);
+        }
 
         $headers = $this->headers($logCfg);
         $folders = [];   // partition name → folder ref  (one Drive call per month)
@@ -401,13 +422,25 @@ class CaptureService
      */
     private function query(array $rules): array
     {
-        $query = ['since_days' => self::DEFAULT_SINCE_DAYS];
+        $query = ['since_days' => $this->sinceDays()];
 
         if (! empty($rules['attachment']['required'])) {
             $query['q'] = 'has:attachment';
         }
 
         return $query;
+    }
+
+    /** The lookback window. Mail older than this is never captured. */
+    public function sinceDays(): int
+    {
+        return (int) config('email-workflow.since_days', self::DEFAULT_SINCE_DAYS);
+    }
+
+    /** True when a run examined every message the ceiling allows — i.e. it may have missed older mail. */
+    public function hitCeiling(EmailWorkflowRun $run): bool
+    {
+        return $run->scanned_count >= (int) config('email-workflow.message_limit', self::DEFAULT_MESSAGE_LIMIT);
     }
 
     /**
@@ -526,8 +559,10 @@ class CaptureService
             return;
         }
 
-        if ($this->toBytes((string) $current) < $this->toBytes(self::MEMORY_FLOOR)) {
-            @ini_set('memory_limit', self::MEMORY_FLOOR);
+        $floor = (string) config('email-workflow.memory_floor', self::MEMORY_FLOOR);
+
+        if ($this->toBytes((string) $current) < $this->toBytes($floor)) {
+            @ini_set('memory_limit', $floor);
         }
     }
 

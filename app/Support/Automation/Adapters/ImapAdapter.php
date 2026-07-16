@@ -67,14 +67,15 @@ class ImapAdapter implements EmailSourceAdapter
             $inbox = $client->getFolderByName('INBOX');
 
             $out = [];
-            $pages = (int) ceil($limit / self::FETCH_BATCH);
+            $perPage = max(1, (int) config('email-workflow.fetch_batch', self::FETCH_BATCH));
+            $pages = (int) ceil($limit / $perPage);
 
             for ($page = 1; $page <= $pages; $page++) {
                 $batch = $inbox->messages()
                     ->since($since)
                     ->setFetchBody(true)
                     ->setFetchOrderDesc()
-                    ->limit(self::FETCH_BATCH, $page)
+                    ->limit($perPage, $page)
                     ->get();
 
                 if ($batch->isEmpty()) {
