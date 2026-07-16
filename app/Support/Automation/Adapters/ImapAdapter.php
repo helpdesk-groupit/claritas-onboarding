@@ -4,6 +4,8 @@ namespace App\Support\Automation\Adapters;
 
 use App\Models\EmailWorkflowConnection;
 use App\Support\Automation\Contracts\EmailSourceAdapter;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 use Webklex\PHPIMAP\ClientManager;
 use Webklex\PHPIMAP\Message;
 
@@ -72,19 +74,29 @@ class ImapAdapter implements EmailSourceAdapter
             $perPage = max(1, (int) config('email-workflow.fetch_batch', self::FETCH_BATCH));
 
             for ($page = 1; ; $page++) {
-                $batch = $inbox->messages()
-                    ->since($since)
-                    ->setFetchBody(true)
-                    ->setFetchOrderDesc()
-                    ->limit($perPage, $page)
-                    ->get();
+                try {
+                    $batch = $this->fetchPage($inbox, $since, $perPage, $page);
+                } catch (Throwable $e) {
+                    // One unparseable message must not cost the whole sweep. webklex
+                    // raises GetMessagesFailedException for the entire page, so fall
+                    // back to fetching this page one message at a time and skip only
+                    // the offender. (A real mailbox killed a 25-minute unlimited
+                    // sweep with "Array to string conversion" from a single message.)
+                    Log::warning('Email Workflow IMAP page failed — salvaging it message by message', [
+                        'page' => $page,
+                        'per_page' => $perPage,
+                        'error' => $e->getMessage(),
+                    ]);
 
-                if ($batch->isEmpty()) {
+                    $batch = $this->salvagePage($inbox, $since, $perPage, $page);
+                }
+
+                if ($batch === []) {
                     break; // window exhausted — the only stop condition when unlimited
                 }
 
                 foreach ($batch as $message) {
-                    $out[] = $this->normalize($message);
+                    $out[] = $message;
                     if (! $unlimited && count($out) >= $limit) {
                         break;
                     }
@@ -92,8 +104,7 @@ class ImapAdapter implements EmailSourceAdapter
 
                 // Drop the raw messages before fetching the next page. The
                 // normalized rows we keep are small (text + attachment metadata);
-                // the raw ones are not. This is what keeps peak memory flat
-                // across an unbounded sweep.
+                // the raw ones are not.
                 unset($batch);
                 gc_collect_cycles();
 
@@ -165,6 +176,76 @@ class ImapAdapter implements EmailSourceAdapter
     {
         // Intentionally a no-op for generic IMAP; the captured_docs idempotency
         // key is the source of truth. A provider that supports flags can override.
+    }
+
+    /**
+     * Fetch one page of normalized messages, newest first.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function fetchPage($inbox, \Carbon\Carbon $since, int $perPage, int $page): array
+    {
+        $batch = $inbox->messages()
+            ->since($since)
+            ->setFetchBody(true)
+            ->setFetchOrderDesc()
+            ->limit($perPage, $page)
+            ->get();
+
+        $out = [];
+        foreach ($batch as $message) {
+            $out[] = $this->normalize($message);
+        }
+
+        return $out;
+    }
+
+    /**
+     * Re-fetch a failed page one message at a time, keeping what parses.
+     *
+     * webklex fails a whole page when any single message in it trips its parser,
+     * so without this a lone malformed message silently costs up to `perPage`
+     * documents — or, before the caller caught it, the entire sweep. Each skip is
+     * logged: a document dropped without a trace is exactly the silent-success
+     * failure this module keeps producing.
+     *
+     * `limit(1, $n)` selects the nth message of the ordered result, so the page's
+     * offsets map to n = (page-1)*perPage + i.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function salvagePage($inbox, \Carbon\Carbon $since, int $perPage, int $page): array
+    {
+        $out = [];
+        $base = ($page - 1) * $perPage;
+
+        for ($i = 1; $i <= $perPage; $i++) {
+            $offset = $base + $i;
+
+            try {
+                $one = $inbox->messages()
+                    ->since($since)
+                    ->setFetchBody(true)
+                    ->setFetchOrderDesc()
+                    ->limit(1, $offset)
+                    ->get();
+
+                if ($one->isEmpty()) {
+                    break; // ran off the end of the window
+                }
+
+                foreach ($one as $message) {
+                    $out[] = $this->normalize($message);
+                }
+            } catch (Throwable $e) {
+                Log::warning('Email Workflow skipped an unreadable IMAP message', [
+                    'offset' => $offset,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $out;
     }
 
     /** Build a webklex client straight from the connection's stored config. */
