@@ -370,7 +370,11 @@ class EmailWorkflowController extends Controller
         $state = Str::random(40);
         $request->session()->put("ewf_oauth_state_{$conn->id}", $state);
 
-        $url = $oauth->authorizeUrl($conn, $this->oauthRedirectUri(), $state.'.'.$conn->id);
+        try {
+            $url = $oauth->authorizeUrl($conn, $this->oauthRedirectUri(), $state.'.'.$conn->id);
+        } catch (\RuntimeException $e) {
+            return back()->with('error', 'Could not start authorization: '.$e->getMessage());
+        }
 
         return redirect()->away($url);
     }

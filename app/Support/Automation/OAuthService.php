@@ -21,8 +21,8 @@ class OAuthService
     public function authorizeUrl(EmailWorkflowConnection $conn, string $redirectUri, string $state): string
     {
         $provider = ProviderRegistry::find($conn->provider_id);
-        if (! $provider || ($provider['auth_type'] ?? '') !== 'oauth') {
-            throw new RuntimeException('Provider is not an OAuth provider.');
+        if (! $provider || ($provider['auth_type'] ?? '') !== 'oauth' || empty($provider['authorize_url'])) {
+            throw new RuntimeException('This provider is not configured for OAuth sign-in.');
         }
 
         $params = array_merge([
@@ -43,6 +43,14 @@ class OAuthService
     public function exchangeCode(EmailWorkflowConnection $conn, string $code, string $redirectUri): bool
     {
         $provider = ProviderRegistry::find($conn->provider_id);
+        if (! $provider || empty($provider['token_url'])) {
+            Log::warning('Email Workflow OAuth code exchange skipped — provider has no token endpoint', [
+                'provider' => $conn->provider_id,
+            ]);
+            $conn->update(['status' => EmailWorkflowConnection::STATUS_ERROR]);
+
+            return false;
+        }
 
         $res = Http::asForm()->post($provider['token_url'], [
             'client_id' => $conn->client_id,

@@ -97,6 +97,10 @@ class ProviderRegistry
                 'auth_type' => 'oauth',
                 // File-scoped — only files this app creates (least privilege).
                 'scopes' => ['https://www.googleapis.com/auth/drive.file'],
+                // Same Google OAuth endpoints as Gmail — offline access for a refresh token.
+                'authorize_url' => 'https://accounts.google.com/o/oauth2/v2/auth',
+                'token_url' => 'https://oauth2.googleapis.com/token',
+                'auth_params' => ['access_type' => 'offline', 'prompt' => 'consent'],
                 'enabled' => true,
                 'blurb' => 'Save attachments into a Drive folder, by month.',
             ],
@@ -139,6 +143,10 @@ class ProviderRegistry
                 'icon' => 'bi-file-earmark-spreadsheet',
                 'auth_type' => 'oauth',
                 'scopes' => ['https://www.googleapis.com/auth/spreadsheets'],
+                // Same Google OAuth endpoints as Gmail — offline access for a refresh token.
+                'authorize_url' => 'https://accounts.google.com/o/oauth2/v2/auth',
+                'token_url' => 'https://oauth2.googleapis.com/token',
+                'auth_params' => ['access_type' => 'offline', 'prompt' => 'consent'],
                 'enabled' => true,
                 'blurb' => 'Log each document to a Sheet, a tab per month.',
             ],
