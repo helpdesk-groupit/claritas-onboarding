@@ -32,7 +32,8 @@ class ExpenseCategorySeeder extends Seeder
             ['911-000', 'Accounting & Administration Fees'],
             ['912-000', 'Secretarial Fees'],
             ['913-000', 'Sales Commission'],
-            ['914(b)-000', 'Transportation'],
+            // NB: 914(b)-000 (Transportation) is intentionally NOT in this receipt-based loop.
+            // It is the Extra Hours category — created below as a per_hour, no-receipt category.
             ['915-000', 'Office & Warehouse Rental'],
             ['916-000', 'Toll, Parking & Fined'],
             ['917-000', 'Insurance'],
@@ -81,7 +82,7 @@ class ExpenseCategorySeeder extends Seeder
             '911-000' => ['accounting fee', 'administration fee', 'admin fee', 'accounting', 'administration'],
             '912-000' => ['secretarial', 'secretarial fee'],
             '913-000' => ['sales commission', 'commission'],
-            '914(b)-000' => ['transport', 'transportation', 'delivery', 'shipping'],
+            // 914(b)-000 keywords live on the Extra Hours category block below (per_hour, no receipt).
             '915-000' => ['office rental', 'warehouse rental', 'rental', 'tenancy'],
             '916-000' => ['toll', 'parking', 'car park', 'carpark', 'fine', 'smarttag', 'touch n go', 'tng'],
             '917-000' => ['insurance', 'premium', 'coverage'],
@@ -127,7 +128,7 @@ class ExpenseCategorySeeder extends Seeder
             '911-000' => 'Office administration and accounting expenses, etc.',
             '912-000' => 'Office secretarial expenses, etc.',
             '913-000' => 'Sales commission, etc.',
-            '914(b)-000' => 'Transportation, etc.',
+            // 914(b)-000 description lives on the Extra Hours category block below.
             '915-000' => 'Office rentals, etc.',
             '916-000' => 'Toll claims, parking claims, fines, etc.',
             '917-000' => 'Office insurance claims, etc.',
@@ -180,18 +181,20 @@ class ExpenseCategorySeeder extends Seeder
             );
         }
 
-        // ── Extra Hours (paid in bands, no receipt) ─────────────────────────────
-        // Posts to GL 914(b)-000 (Transportation) — Finance books overtime there.
-        // gl_code is intentionally shared with the receipt-based Transportation
-        // category; the two stay distinct by `code` (EXTRA_HOURS vs 914(b)-000).
+        // ── 914(b)-000 Transportation = Extra Hours (paid in bands, no receipt) ──
+        // Extra working hours are claimed under GL 914(b)-000 "Transportation" (Finance books
+        // overtime there), and this GL line is used ONLY for extra hours — so the category is
+        // per_hour + no-receipt and displays on the form as "914(b)-000: Transportation".
+        // Keyed by `code` = '914(b)-000' (the same record the receipt-based Transportation used
+        // to be — repurposed in place, so existing claim items keep their id/GL/name).
         DB::table('expense_categories')->updateOrInsert(
-            ['code' => 'EXTRA_HOURS'],
+            ['code' => '914(b)-000'],
             [
                 'gl_code' => '914(b)-000',
-                'name' => 'Extra Hours',
+                'name' => 'Transportation',
                 'company' => null,
-                'description' => 'Extra working hours, paid in bands: 4 hours = RM50, 8 hours = RM100. Specify the hours worked. Can be taken as cash or replacement leave.',
-                'keywords' => json_encode(['extra hours', 'extra hour', 'extended hours', 'after hours', 'ot', 'overtime']),
+                'description' => 'Extra working hours, paid in bands: 4 hours = RM50, 8 hours = RM100. Specify the hours worked. Can be taken as cash or replacement leave. No receipt required.',
+                'keywords' => json_encode(['extra hours', 'extra hour', 'extended hours', 'after hours', 'ot', 'overtime', 'transport', 'transportation']),
                 'monthly_limit' => null,
                 'rate_type' => 'per_hour',
                 'rate_amount' => null,
@@ -204,6 +207,16 @@ class ExpenseCategorySeeder extends Seeder
                 'updated_at' => now(),
             ]
         );
+
+        // Retire the old standalone "Extra Hours" category (code EXTRA_HOURS), if present:
+        // re-point its claim items onto 914(b)-000 and delete it, so only one category remains.
+        $transportId = DB::table('expense_categories')->where('code', '914(b)-000')->value('id');
+        $extraHoursId = DB::table('expense_categories')->where('code', 'EXTRA_HOURS')->value('id');
+        if ($transportId && $extraHoursId && $transportId !== $extraHoursId) {
+            DB::table('expense_claim_items')->where('expense_category_id', $extraHoursId)
+                ->update(['expense_category_id' => $transportId]);
+            DB::table('expense_categories')->where('id', $extraHoursId)->delete();
+        }
 
         // ── Event / Programme day (RM150/day, all entities, no receipt) ─────────
         DB::table('expense_categories')->updateOrInsert(

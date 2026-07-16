@@ -77,7 +77,7 @@
                 <ol class="mb-0">
                     <li>All claims are for <strong>business purposes only</strong>.</li>
                     <li>File a <strong>separate claim per event / project</strong>; state the project/client name (except Sales). Keep personal general claims separate too.</li>
-                    <li>For an <strong>Extra Hours</strong> claim, state the number of extra hours clearly on the form (e.g. <em>Parentcraft Event, 8am&ndash;6pm</em>).</li>
+                    <li>For an <strong>extra-hours</strong> claim, pick the <strong>914(b)-000: Transportation</strong> category, then state the number of extra hours worked (e.g. <em>Parentcraft Event, 8am&ndash;6pm</em>). No receipt required.</li>
                     <li>Submit to your reporting manager by the <strong>{{ ordinal($policy->submission_deadline_day ?? 20) }}</strong>. If a draft is <strong>complete</strong> (all receipts attached) but still unsubmitted on the {{ ordinal($policy->submission_deadline_day ?? 20) }}, the system <strong>auto-submits it for you</strong>.</li>
                     <li>Attach <strong>supporting receipts/proof</strong> (you can save a draft now and attach later).</li>
                     <li>Mileage: state the route (From → To); Toll/Parking are separate lines.</li>
