@@ -38,6 +38,19 @@ class CaptureService
     /** Seconds a synchronous "Run now" may take before PHP kills it. */
     public const REQUEST_TIME_LIMIT = 900;
 
+    /**
+     * Floor for a sweep's memory, raised only if the ambient limit is lower.
+     *
+     * A capture is a batch job that pulls whole messages off a mailbox, and PHP's
+     * CLI default here is 128M — which is what the SCHEDULER runs under, so it is
+     * the unattended path that dies first. Paged fetching keeps a normal sweep
+     * around 40M, but one oversized message (a fat PDF, a video) is enough to
+     * exhaust 128M inside the IMAP read loop, and a PHP OOM is a fatal error: it
+     * cannot be caught, so the run row is orphaned in `running` with no error.
+     * Headroom is the only defence available at this layer.
+     */
+    public const MEMORY_FLOOR = '512M';
+
     /** Gmail label applied to captured mail. Best-effort; never fails a run. */
     public const PROCESSED_LABEL = 'Claritas/Captured';
 
@@ -54,6 +67,8 @@ class CaptureService
      */
     public function run(EmailWorkflow $workflow, string $trigger = EmailWorkflowRun::TRIGGER_MANUAL, ?int $userId = null): EmailWorkflowRun
     {
+        $this->raiseMemoryFloor();
+
         $run = EmailWorkflowRun::create([
             'email_workflow_id' => $workflow->id,
             'trigger' => $trigger,
@@ -495,6 +510,39 @@ class CaptureService
         $ts = strtotime($iso);
 
         return $ts ? date($format, $ts) : now()->format($format);
+    }
+
+    /**
+     * Raise this process's memory ceiling to MEMORY_FLOOR — never lower it, and
+     * never touch an unlimited (-1) or already-generous limit. Applies to every
+     * caller (command, job, Run-now) because they all funnel through run().
+     */
+    private function raiseMemoryFloor(): void
+    {
+        $current = ini_get('memory_limit');
+
+        // -1 means unlimited: already better than anything we'd set.
+        if ($current === false || trim((string) $current) === '-1') {
+            return;
+        }
+
+        if ($this->toBytes((string) $current) < $this->toBytes(self::MEMORY_FLOOR)) {
+            @ini_set('memory_limit', self::MEMORY_FLOOR);
+        }
+    }
+
+    /** Parse a php.ini shorthand size ("512M", "1G", "134217728") to bytes. */
+    private function toBytes(string $value): int
+    {
+        $value = trim($value);
+        $number = (int) $value;
+
+        return match (strtolower(substr($value, -1))) {
+            'g' => $number * 1024 * 1024 * 1024,
+            'm' => $number * 1024 * 1024,
+            'k' => $number * 1024,
+            default => $number,
+        };
     }
 
     private function markProcessed(EmailSourceAdapter $email, EmailWorkflowConnection $conn, string $messageId): void

@@ -274,6 +274,57 @@ class EmailWorkflowCaptureTest extends TestCase
         $this->assertSame(EmailWorkflowConnection::STATUS_CONNECTED, $drive->fresh()->status);
     }
 
+    public function test_a_sweep_raises_a_low_memory_limit(): void
+    {
+        // The CLI default (128M) is what the scheduler runs under, and one fat
+        // attachment exhausts it inside the IMAP read loop. A PHP OOM is fatal
+        // and uncatchable, so the run row would be orphaned in `running`.
+        $original = ini_get('memory_limit');
+
+        try {
+            ini_set('memory_limit', '128M');
+            Http::fake($this->googleStack());
+
+            app(CaptureService::class)->run($this->workflow);
+
+            $this->assertSame(CaptureService::MEMORY_FLOOR, ini_get('memory_limit'));
+        } finally {
+            ini_set('memory_limit', $original);
+        }
+    }
+
+    public function test_a_sweep_never_lowers_an_already_generous_memory_limit(): void
+    {
+        $original = ini_get('memory_limit');
+
+        try {
+            ini_set('memory_limit', '1G');
+            Http::fake($this->googleStack());
+
+            app(CaptureService::class)->run($this->workflow);
+
+            $this->assertSame('1G', ini_get('memory_limit'), 'Must not shrink a bigger limit.');
+        } finally {
+            ini_set('memory_limit', $original);
+        }
+    }
+
+    public function test_a_sweep_leaves_an_unlimited_memory_limit_alone(): void
+    {
+        $original = ini_get('memory_limit');
+
+        try {
+            ini_set('memory_limit', '-1');
+            Http::fake($this->googleStack());
+
+            app(CaptureService::class)->run($this->workflow);
+
+            $this->assertSame('-1', ini_get('memory_limit'), 'Unlimited beats any floor we would set.');
+        } finally {
+            ini_set('memory_limit', $original);
+        }
+    }
+
     public function test_a_non_matching_email_is_left_alone(): void
     {
         Http::fake($this->googleStack([
