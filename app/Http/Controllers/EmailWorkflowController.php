@@ -190,10 +190,21 @@ class EmailWorkflowController extends Controller
                 break;
 
             case 5: // Schedule
+                // Validate the cron here or a dead schedule saves silently: the
+                // field is labelled "cron" but its hint reads "daily 19:00 local",
+                // and typing that back produced an Active workflow the scheduler
+                // skipped every minute forever, with nothing on screen to say so.
+                $cronRule = function (string $attribute, mixed $value, \Closure $fail) {
+                    if (! EmailWorkflow::isValidCron((string) $value)) {
+                        $fail('The '.str_replace('_', ' ', $attribute).' must be a cron expression '
+                            .'like "0 19 * * *" (7pm daily) or a macro like "@daily" — not a description.');
+                    }
+                };
+
                 $data = $request->validate([
-                    'timezone' => 'required|string|max:64',
-                    'capture_cron' => 'required|string|max:60',
-                    'reconcile_cron' => 'required|string|max:60',
+                    'timezone' => ['required', 'string', 'max:64', Rule::in(timezone_identifiers_list())],
+                    'capture_cron' => ['required', 'string', 'max:60', $cronRule],
+                    'reconcile_cron' => ['required', 'string', 'max:60', $cronRule],
                     'first_sweep_on_activate' => 'nullable|boolean',
                 ]);
                 $model->timezone = $data['timezone'];

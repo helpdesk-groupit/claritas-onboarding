@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Cron\CronExpression;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -206,7 +207,43 @@ class EmailWorkflow extends Model
             $missing[] = 'set a log sheet on step 4';
         }
 
+        // An unparseable cron is a DEAD schedule: RunEmailWorkflows skips the
+        // workflow every minute forever, and the only trace is a log line nobody
+        // reads. Without this check the list page cheerfully reports "Active,
+        // nothing missing" about an automation that will never fire again.
+        if (! self::isValidCron($this->effectiveCaptureCron())) {
+            $missing[] = 'fix the capture schedule on step 5 — “'.$this->capture_cron
+                .'” is not a cron expression (e.g. 0 19 * * * for 7pm daily)';
+        }
+
         return $missing;
+    }
+
+    /**
+     * The expression the scheduler will actually evaluate.
+     *
+     * Blank falls back to the default, so a blank cron is NOT a dead schedule —
+     * only a non-blank unparseable one is. RunEmailWorkflows reads this same
+     * method, so the readiness gate and the runtime can't disagree about what
+     * will run.
+     */
+    public function effectiveCaptureCron(): string
+    {
+        return $this->capture_cron ?: self::DEFAULT_CAPTURE_CRON;
+    }
+
+    /** Is this a cron expression the scheduler can actually evaluate? */
+    public static function isValidCron(?string $expression): bool
+    {
+        if (blank($expression)) {
+            return false;
+        }
+
+        try {
+            return CronExpression::isValidExpression($expression);
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**

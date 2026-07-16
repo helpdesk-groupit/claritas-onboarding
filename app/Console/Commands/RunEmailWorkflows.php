@@ -93,7 +93,9 @@ class RunEmailWorkflows extends Command
      */
     private function isDue(EmailWorkflow $workflow): bool
     {
-        $expression = $workflow->capture_cron ?: EmailWorkflow::DEFAULT_CAPTURE_CRON;
+        // Same accessor the readiness gate uses, so "this workflow is ready" and
+        // "this workflow will fire" can never disagree.
+        $expression = $workflow->effectiveCaptureCron();
         $timezone = $workflow->timezone ?: config('app.timezone');
 
         try {

@@ -433,17 +433,29 @@
                         @endforeach
                     </select>
                 </div>
+                {{-- Show the FORMAT, never a prose description. The hint here used
+                     to read "Default: daily 19:00 local"; typed back into a field
+                     labelled "cron" it saved a schedule the scheduler silently
+                     skipped forever. Both fields are now validated server-side. --}}
                 <div class="col-md-4">
                     <label class="form-label">Capture schedule (cron)</label>
                     <input type="text" name="capture_cron" class="form-control"
+                           placeholder="0 19 * * *" spellcheck="false"
                            value="{{ old('capture_cron', $workflow->capture_cron ?: '0 19 * * *') }}">
-                    <div class="form-text">Default: daily 19:00 local</div>
+                    <div class="form-text">
+                        Cron syntax, e.g. <code>0 19 * * *</code> = 19:00 daily. Runs in the timezone above.
+                    </div>
+                    @error('capture_cron')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
                 </div>
                 <div class="col-md-4">
                     <label class="form-label">Reconcile schedule (cron)</label>
                     <input type="text" name="reconcile_cron" class="form-control"
+                           placeholder="0 7 * * *" spellcheck="false"
                            value="{{ old('reconcile_cron', $workflow->reconcile_cron ?: '0 7 * * *') }}">
-                    <div class="form-text">Default: daily 07:00 local — the double-check sweep</div>
+                    <div class="form-text">
+                        Cron syntax, e.g. <code>0 7 * * *</code> = 07:00 daily — the double-check sweep.
+                    </div>
+                    @error('reconcile_cron')<div class="text-danger small mt-1">{{ $message }}</div>@enderror
                 </div>
             </div>
 

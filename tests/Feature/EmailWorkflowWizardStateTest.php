@@ -175,6 +175,101 @@ class EmailWorkflowWizardStateTest extends TestCase
         $this->assertSame(EmailWorkflow::STATUS_DRAFT, $workflow->fresh()->status);
     }
 
+    // ── A dead schedule must never save, and must never read as healthy ──
+
+    public function test_a_prose_schedule_is_rejected_instead_of_saved(): void
+    {
+        // The field is labelled "cron" but its hint used to read
+        // "Default: daily 19:00 local". Typing that back saved an Active
+        // workflow that RunEmailWorkflows skipped every minute, forever, with
+        // nothing on screen to say so. This happened on production.
+        $workflow = $this->makeWorkflow();
+
+        $this->actingAs($this->itManager)
+            ->put(route('it.automation.email-workflow.update', $workflow->id), [
+                'step' => 5,
+                'timezone' => 'Asia/Kuala_Lumpur',
+                'capture_cron' => 'daily 19:00 local',
+                'reconcile_cron' => '0 7 * * *',
+            ])
+            ->assertSessionHasErrors('capture_cron');
+
+        $this->assertSame(
+            EmailWorkflow::DEFAULT_CAPTURE_CRON,
+            $workflow->fresh()->capture_cron,
+            'A schedule the scheduler cannot parse must not reach the database.'
+        );
+    }
+
+    public function test_a_real_cron_expression_saves(): void
+    {
+        $workflow = $this->makeWorkflow();
+
+        $this->actingAs($this->itManager)
+            ->put(route('it.automation.email-workflow.update', $workflow->id), [
+                'step' => 5,
+                'timezone' => 'Asia/Kuala_Lumpur',
+                'capture_cron' => '30 18 * * 1-5',
+                'reconcile_cron' => '@daily',   // macros are valid cron too
+            ])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame('30 18 * * 1-5', $workflow->fresh()->capture_cron);
+        $this->assertSame('@daily', $workflow->fresh()->reconcile_cron);
+    }
+
+    public function test_an_unparseable_schedule_counts_as_missing(): void
+    {
+        // Without this the list page reports "Active, nothing missing" about an
+        // automation that will never fire again.
+        $workflow = $this->readyWorkflow();
+        $this->assertTrue($workflow->isReadyToActivate());
+
+        $workflow->forceFill(['capture_cron' => 'daily 19:00 local'])->save();
+        $workflow = $workflow->fresh();
+
+        $this->assertFalse($workflow->isReadyToActivate());
+        $this->assertStringContainsString('capture schedule', implode(' ', $workflow->missingRequirements()));
+    }
+
+    public function test_a_garbage_timezone_is_rejected(): void
+    {
+        // capture_cron is evaluated in this timezone; an unknown one throws at
+        // Carbon::now($tz) inside the scheduler.
+        $workflow = $this->makeWorkflow();
+
+        $this->actingAs($this->itManager)
+            ->put(route('it.automation.email-workflow.update', $workflow->id), [
+                'step' => 5,
+                'timezone' => 'Mars/Olympus_Mons',
+                'capture_cron' => '0 19 * * *',
+                'reconcile_cron' => '0 7 * * *',
+            ])
+            ->assertSessionHasErrors('timezone');
+    }
+
+    /** @dataProvider validCronProvider */
+    public function test_is_valid_cron_accepts_real_expressions(string $expression): void
+    {
+        $this->assertTrue(EmailWorkflow::isValidCron($expression));
+    }
+
+    public static function validCronProvider(): array
+    {
+        return [['0 19 * * *'], ['*/15 * * * *'], ['30 18 * * 1-5'], ['@daily'], ['@hourly']];
+    }
+
+    /** @dataProvider deadCronProvider */
+    public function test_is_valid_cron_rejects_dead_schedules(?string $expression): void
+    {
+        $this->assertFalse(EmailWorkflow::isValidCron($expression));
+    }
+
+    public static function deadCronProvider(): array
+    {
+        return [['daily 19:00 local'], ['every day at 7pm'], ['19:00'], [''], [null], ['not a cron']];
+    }
+
     // ── The OAuth round-trip must not lose the wizard ────────────────────
 
     public function test_oauth_callback_returns_to_the_wizard_step_and_selects_the_new_account(): void
