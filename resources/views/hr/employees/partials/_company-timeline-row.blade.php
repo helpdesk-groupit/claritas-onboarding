@@ -17,4 +17,7 @@
     @if($stint->office_location)
         <span class="d-block text-muted" style="font-size:.72rem;"><i class="bi bi-geo-alt me-1"></i>{{ $stint->office_location }}</span>
     @endif
+    @if($stint->note)
+        <span class="d-block fst-italic" style="font-size:.72rem;color:#b45309;"><i class="bi bi-info-circle me-1"></i>{{ $stint->note }}</span>
+    @endif
 </li>

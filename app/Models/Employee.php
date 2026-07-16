@@ -392,6 +392,15 @@ class Employee extends Model
 
         $removed = $this->companyHistories()->whereDate('started_on', '>=', $effStr)->orderBy('started_on')->get();
         $removedLabels = $removed->map(fn ($s) => self::stintLabel($s))->all();
+        $removedCompanies = $removed->pluck('company')->unique()->values()->all();
+
+        // A concise note explaining the overwrite, shown on the profile timeline.
+        $note = ! empty($removedCompanies)
+            ? 'Overwrote earlier record — was under '.implode(', ', $removedCompanies).', changed to '
+                .$newCompany.' effective '.$effectiveDate->format('d M Y')
+                .' (back-dated before the previous start, so that period was removed).'
+            : null;
+
         foreach ($removed as $stint) {
             $stint->delete();
         }
@@ -400,7 +409,7 @@ class Employee extends Model
 
         if ($prev && $prev->company === $newCompany) {
             // Reverting to the immediately-previous company → reopen it (merge, no blip).
-            $prev->update(['ended_on' => null]);
+            $prev->update(['ended_on' => null, 'note' => $note]);
             $this->update(['company' => $prev->company, 'office_location' => $prev->office_location]);
         } else {
             if ($prev) {
@@ -413,6 +422,7 @@ class Employee extends Model
                 'started_on' => $effStr,
                 'ended_on' => null,
                 'changed_by' => $changedBy,
+                'note' => $note,
             ]);
             $this->update(['company' => $newCompany, 'office_location' => $newOffice]);
         }

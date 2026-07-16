@@ -97,6 +97,9 @@
                         <label class="form-label small fw-semibold mb-1">Effective from</label>
                         <input type="date" name="effective_date" id="ucsDate" class="form-control form-control-sm" max="{{ now()->toDateString() }}" value="{{ old('effective_date') }}" required>
                     </div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="ucsClear">
+                        <i class="bi bi-x-lg me-1"></i>Clear
+                    </button>
                     <button type="button" class="btn btn-primary btn-sm px-3" id="ucsApply" disabled>
                         <i class="bi bi-arrow-left-right me-1"></i>Apply
                     </button>
@@ -143,7 +146,10 @@
      exact timeline entries that will be removed, per employee. --}}
 @if(session('rewrite_confirm'))
 @php $rc = session('rewrite_confirm'); @endphp
-<div class="modal fade" id="ucsRewriteConfirm" tabindex="-1" aria-hidden="true">
+{{-- No `fade`: it auto-opens on load, and a fade defers `.modal.show` past the layout's
+     on-load backdrop-cleanup, which would then strip the backdrop. Non-animated = shown
+     synchronously so the cleanup sees an open modal and leaves its backdrop intact. --}}
+<div class="modal" id="ucsRewriteConfirm" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
         <div class="modal-content border-0 shadow">
             <div class="modal-header border-0 pb-1">
@@ -287,6 +293,16 @@
         bar.classList.toggle('show', n > 0);
     }
 
+    function clearSelection() {
+        emps().forEach(c => {
+            c.checked = false;
+            const row = c.closest('.ucs-row');
+            if (row) row.classList.remove('selected');
+        });
+        document.querySelectorAll('.ucs-select-all').forEach(sa => { sa.checked = false; });
+        refresh();
+    }
+
     emps().forEach(c => c.addEventListener('change', function () {
         const row = c.closest('.ucs-row');
         if (row) row.classList.toggle('selected', c.checked);
@@ -325,9 +341,23 @@
         document.getElementById('ucsCfTo').textContent = companySel.value;
         document.getElementById('ucsCfDate').textContent = dateEl.value;
         renderChips(document.getElementById('ucsCfFrom'), 'list');
-        if (window.bootstrap) bootstrap.Modal.getOrCreateInstance(document.getElementById('ucsConfirm')).show();
+        if (window.bootstrap) {
+            var cm = document.getElementById('ucsConfirm');
+            // Move to <body> so the fixed-position dialog + full-page backdrop aren't
+            // trapped inside the .main-content wrapper.
+            if (cm.parentNode !== document.body) document.body.appendChild(cm);
+            bootstrap.Modal.getOrCreateInstance(cm).show();
+        }
     });
     document.getElementById('ucsConfirmBtn').addEventListener('click', function () { form.submit(); });
+
+    // Clear button — deselect everyone (the sticky bar hides once nothing is selected).
+    const clearBtn = document.getElementById('ucsClear');
+    if (clearBtn) clearBtn.addEventListener('click', clearSelection);
+
+    // Cancelling/dismissing the rewrite-confirm modal abandons the move → clear the selection.
+    const rewriteModalEl = document.getElementById('ucsRewriteConfirm');
+    if (rewriteModalEl) rewriteModalEl.addEventListener('hidden.bs.modal', clearSelection);
 
     refresh();
 })();
@@ -336,7 +366,13 @@
 <script nonce="{{ $cspNonce ?? '' }}">
     (function () {
         var el = document.getElementById('ucsRewriteConfirm');
-        if (el && window.bootstrap) bootstrap.Modal.getOrCreateInstance(el).show();
+        if (!el || !window.bootstrap) return;
+        // Move to <body> so it's not affected by the .main-content wrapper — guarantees a
+        // proper full-page backdrop and a viewport-centred dialog. Show synchronously (the
+        // modal has no `fade`, so Bootstrap sets `.modal.show` immediately) so the layout's
+        // on-load backdrop-cleanup sees an open modal and keeps the backdrop.
+        if (el.parentNode !== document.body) document.body.appendChild(el);
+        bootstrap.Modal.getOrCreateInstance(el).show();
     })();
 </script>
 @endif

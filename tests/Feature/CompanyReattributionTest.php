@@ -159,6 +159,8 @@ class CompanyReattributionTest extends TestCase
         $this->assertCount(1, $stints);
         $this->assertSame($this->claritas->name, $stints->first()->company);
         $this->assertNull($stints->first()->ended_on);
+        // The restored stint carries a note explaining it overwrote the Enlinea record.
+        $this->assertStringContainsString('Enlinea', (string) $stints->first()->note);
         $this->assertSame($this->claritas->name, $this->employee->fresh()->company);
         $this->assertSame($this->claritas->name, DB::table('expense_claims')->where('id', $claim)->value('company'));
     }

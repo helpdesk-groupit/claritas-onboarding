@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class EmployeeCompanyHistory extends Model
 {
     protected $fillable = [
-        'employee_id', 'company', 'office_location', 'started_on', 'ended_on', 'changed_by',
+        'employee_id', 'company', 'office_location', 'started_on', 'ended_on', 'changed_by', 'note',
     ];
 
     protected $casts = [
