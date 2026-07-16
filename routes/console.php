@@ -4,6 +4,10 @@ use Illuminate\Support\Facades\Schedule;
 
 Schedule::command('employees:activate')->everyMinute();
 Schedule::command('offboarding:notify')->everyMinute();
+// Apply future-dated company moves scheduled from "User – Company Setting" once their
+// effective date arrives. Date-granular, so daily just after midnight is enough; the
+// command is idempotent (only flips `pending` rows to `applied`).
+Schedule::command('company:apply-scheduled')->dailyAt('00:10');
 Schedule::command('security:audit-report')->hourly();
 Schedule::command('leave:remind-managers')->dailyAt('09:00');
 Schedule::command('claims:remind')->dailyAt('09:00');

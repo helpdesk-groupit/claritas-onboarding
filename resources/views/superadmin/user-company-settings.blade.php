@@ -95,19 +95,60 @@
                     </div>
                     <div>
                         <label class="form-label small fw-semibold mb-1">Effective from</label>
-                        <input type="date" name="effective_date" id="ucsDate" class="form-control form-control-sm" max="{{ now()->toDateString() }}" value="{{ old('effective_date') }}" required>
+                        <input type="date" name="effective_date" id="ucsDate" class="form-control form-control-sm" value="{{ old('effective_date') }}" required>
                     </div>
                     <button type="button" class="btn btn-outline-secondary btn-sm" id="ucsClear">
                         <i class="bi bi-x-lg me-1"></i>Clear
                     </button>
                     <button type="button" class="btn btn-primary btn-sm px-3" id="ucsApply" disabled>
-                        <i class="bi bi-arrow-left-right me-1"></i>Apply
+                        <i class="bi bi-arrow-left-right me-1"></i><span id="ucsApplyLabel">Apply</span>
                     </button>
                 </div>
             </div>
-            <div class="form-text small mt-1"><i class="bi bi-info-circle me-1"></i>Office Location follows the selected company. If the effective date is on/before someone's current-company start, you'll be asked to confirm — it rewrites (removes) that part of their timeline.</div>
+            <div class="form-text small mt-1" id="ucsHint"><i class="bi bi-info-circle me-1"></i>Office Location follows the selected company. If the effective date is on/before someone's current-company start, you'll be asked to confirm — it rewrites (removes) that part of their timeline.</div>
+            <div class="form-text small mt-1 text-primary d-none" id="ucsFutureHint"><i class="bi bi-calendar-check me-1"></i><span></span></div>
         </div>
     </form>
+
+    {{-- ── Scheduled (future-dated) changes awaiting their effective date ── --}}
+    @if($scheduled->isNotEmpty())
+        <div class="ucs-sched mt-4">
+            <div class="small fw-semibold text-muted mb-2"><i class="bi bi-calendar-event me-1"></i>Scheduled changes ({{ $scheduled->count() }})</div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0 ucs-sched-table">
+                    <thead>
+                        <tr class="text-muted small">
+                            <th>Employee</th>
+                            <th>From</th>
+                            <th></th>
+                            <th>To</th>
+                            <th>Effective</th>
+                            <th>Scheduled by</th>
+                            <th class="text-end"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach($scheduled as $sc)
+                            <tr>
+                                <td class="fw-semibold small">{{ $sc->employee->full_name ?? '#'.$sc->employee_id }}</td>
+                                <td class="small text-muted">{{ $sc->employee->company ?? '—' }}</td>
+                                <td class="text-primary"><i class="bi bi-arrow-right"></i></td>
+                                <td class="small fw-semibold">{{ $sc->company }}</td>
+                                <td class="small"><span class="badge rounded-pill bg-primary-subtle text-primary-emphasis">{{ fmt_date($sc->effective_date) }}</span></td>
+                                <td class="small text-muted">{{ $sc->scheduledBy->name ?? '—' }}</td>
+                                <td class="text-end">
+                                    <form method="POST" action="{{ route('superadmin.user-company-settings.cancel-scheduled', $sc) }}" class="d-inline ucs-cancel-form">
+                                        @csrf
+                                        <button type="submit" class="btn btn-outline-danger btn-sm py-0 px-2"><i class="bi bi-x-lg me-1"></i>Cancel</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    @endif
 </div>
 
 {{-- Confirm modal --}}
@@ -115,11 +156,11 @@
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content border-0 shadow">
             <div class="modal-header border-0 pb-1">
-                <h5 class="modal-title fw-semibold"><i class="bi bi-arrow-left-right me-2 text-primary"></i>Confirm company change</h5>
+                <h5 class="modal-title fw-semibold"><i class="bi bi-arrow-left-right me-2 text-primary"></i><span id="ucsCfTitle">Confirm company change</span></h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <p class="mb-2">Move <strong id="ucsCfCount">0</strong> employee(s), effective <strong id="ucsCfDate">—</strong>:</p>
+                <p class="mb-2"><span id="ucsCfVerb">Move</span> <strong id="ucsCfCount">0</strong> employee(s), effective <strong id="ucsCfDate">—</strong>:</p>
                 <div class="d-flex align-items-center gap-2 flex-wrap p-2 rounded" style="background:#f8fafc;border:1px solid #e2e8f0;">
                     <div class="small">
                         <div class="text-muted mb-1">From</div>
@@ -131,11 +172,11 @@
                         <div class="fw-semibold" id="ucsCfTo">—</div>
                     </div>
                 </div>
-                <p class="text-muted small mt-2 mb-0">Anyone whose current company started after that date will be skipped and listed afterwards.</p>
+                <p class="text-muted small mt-2 mb-0" id="ucsCfNote">Anyone whose current company started after that date will be skipped and listed afterwards.</p>
             </div>
             <div class="modal-footer border-0 pt-1">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" id="ucsConfirmBtn"><i class="bi bi-check-lg me-1"></i>Confirm change</button>
+                <button type="button" class="btn btn-primary" id="ucsConfirmBtn"><i class="bi bi-check-lg me-1"></i><span id="ucsConfirmBtnLabel">Confirm change</span></button>
             </div>
         </div>
     </div>
@@ -229,6 +270,11 @@
     }
     .ucs-bar.show { display: block; animation: ucsSlide .2s ease; }
     @keyframes ucsSlide { from { transform: translateY(8px); opacity:.4; } to { transform: translateY(0); opacity:1; } }
+
+    /* Scheduled-changes panel */
+    .ucs-sched { border:1px solid #e2e8f0; border-radius:14px; background:#fff; padding:.85rem 1.1rem; box-shadow:0 1px 4px rgba(15,23,42,.06); }
+    .ucs-sched-table th { font-weight:600; border-bottom:1px solid #eef2f7; }
+    .ucs-sched-table td { vertical-align:middle; }
 </style>
 @endpush
 
@@ -242,9 +288,14 @@
     const fromChips = document.getElementById('ucsFromChips');
     const companySel = document.getElementById('ucsCompany');
     const dateEl = document.getElementById('ucsDate');
+    const applyLabel = document.getElementById('ucsApplyLabel');
+    const hint = document.getElementById('ucsHint');
+    const futureHint = document.getElementById('ucsFutureHint');
+    const todayStr = @json(now()->toDateString());
 
     const emps = () => Array.from(document.querySelectorAll('.ucs-emp'));
     const selected = () => emps().filter(c => c.checked);
+    const isFuture = () => dateEl.value && dateEl.value > todayStr; // ISO dates compare lexicographically
 
     function fromCounts() {
         const map = new Map();
@@ -291,6 +342,17 @@
         updateGroupBadges();
         applyBtn.disabled = !(n > 0 && companySel.value && dateEl.value);
         bar.classList.toggle('show', n > 0);
+
+        // Future date → this is a SCHEDULED move (applied automatically on that day),
+        // not an immediate one. Relabel the button and swap the helper hint.
+        const future = isFuture();
+        applyLabel.textContent = future ? 'Schedule change' : 'Apply';
+        hint.classList.toggle('d-none', future);
+        futureHint.classList.toggle('d-none', !future);
+        if (future) {
+            futureHint.querySelector('span').textContent =
+                'This is a future date — the move will be scheduled and applied automatically on ' + dateEl.value + '. Nothing changes until then.';
+        }
     }
 
     function clearSelection() {
@@ -324,22 +386,35 @@
 
     applyBtn.addEventListener('click', function () {
         if (applyBtn.disabled) return;
-        // If any selected employee's CURRENT company started on/after the effective
-        // date, this is a timeline rewrite — skip the generic confirm and submit
-        // straight to the server, which returns the detailed "these entries will be
-        // removed" warning. Avoids a redundant double confirmation.
         const eff = dateEl.value;
-        const isRewrite = selected().some(function (c) {
-            const cs = c.dataset.currentStart;
-            return cs && cs >= eff; // ISO date strings compare lexicographically
-        });
-        if (isRewrite) {
-            form.submit();
-            return;
+        const future = isFuture();
+
+        // A future date is never a timeline rewrite (it appends forward) — go straight to
+        // the scheduling confirm. For a past/today date, if any selected employee's CURRENT
+        // company started on/after the effective date, this is a timeline rewrite — skip the
+        // generic confirm and submit straight to the server, which returns the detailed
+        // "these entries will be removed" warning. Avoids a redundant double confirmation.
+        if (!future) {
+            const isRewrite = selected().some(function (c) {
+                const cs = c.dataset.currentStart;
+                return cs && cs >= eff; // ISO date strings compare lexicographically
+            });
+            if (isRewrite) {
+                form.submit();
+                return;
+            }
         }
+
+        // Confirm modal copy adapts to schedule vs. immediate.
+        document.getElementById('ucsCfTitle').textContent = future ? 'Confirm scheduled change' : 'Confirm company change';
+        document.getElementById('ucsCfVerb').textContent = future ? 'Schedule' : 'Move';
+        document.getElementById('ucsCfNote').textContent = future
+            ? 'This will be applied automatically on ' + eff + '. Anyone already at the target company is skipped. A pending schedule for the same person is replaced.'
+            : 'Anyone whose current company started after that date will be skipped and listed afterwards.';
+        document.getElementById('ucsConfirmBtnLabel').textContent = future ? 'Schedule change' : 'Confirm change';
         document.getElementById('ucsCfCount').textContent = selected().length;
         document.getElementById('ucsCfTo').textContent = companySel.value;
-        document.getElementById('ucsCfDate').textContent = dateEl.value;
+        document.getElementById('ucsCfDate').textContent = eff;
         renderChips(document.getElementById('ucsCfFrom'), 'list');
         if (window.bootstrap) {
             var cm = document.getElementById('ucsConfirm');
@@ -358,6 +433,15 @@
     // Cancelling/dismissing the rewrite-confirm modal abandons the move → clear the selection.
     const rewriteModalEl = document.getElementById('ucsRewriteConfirm');
     if (rewriteModalEl) rewriteModalEl.addEventListener('hidden.bs.modal', clearSelection);
+
+    // Confirm before cancelling a scheduled change (irreversible for that schedule).
+    document.querySelectorAll('.ucs-cancel-form').forEach(function (f) {
+        f.addEventListener('submit', function (e) {
+            if (!window.confirm('Cancel this scheduled company change? It will not be applied.')) {
+                e.preventDefault();
+            }
+        });
+    });
 
     refresh();
 })();

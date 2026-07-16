@@ -10,6 +10,12 @@
         ? $tl->reject(fn ($s) => $s->id === $current->id)->sortBy('started_on')->values()
         : collect();
     $tlId = uniqid('coTl');
+    // Upcoming future-dated move, if one is scheduled (see "User – Company Setting"). Controllers
+    // may pass $scheduledCompanyChange; otherwise resolve it from the current stint's employee.
+    $scheduledChange = $scheduledCompanyChange
+        ?? ($current
+            ? \App\Models\ScheduledCompanyChange::pending()->where('employee_id', $current->employee_id)->orderBy('effective_date')->first()
+            : null);
 @endphp
 @if($current)
     <div class="mt-2">
@@ -35,5 +41,16 @@
         <ul class="list-unstyled small mb-0" style="border-left:2px solid #e2e8f0; padding-left:.85rem;">
             @include('hr.employees.partials._company-timeline-row', ['stint' => $current])
         </ul>
+
+        {{-- Upcoming scheduled move — dashed, below "now" (time flows down to the future) --}}
+        @if($scheduledChange)
+            <ul class="list-unstyled small mb-0" style="border-left:2px dashed #93c5fd; padding-left:.85rem;">
+                <li class="text-primary">
+                    <i class="bi bi-calendar-check me-1"></i>
+                    <span class="fw-semibold">Scheduled → {{ $scheduledChange->company }}</span>
+                    <span class="text-muted">on {{ fmt_date($scheduledChange->effective_date) }}</span>
+                </li>
+            </ul>
+        @endif
     </div>
 @endif
