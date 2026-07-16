@@ -161,7 +161,14 @@ class ImapAdapter implements EmailSourceAdapter
                 'id' => $name,                  // name is the per-message attachment handle
                 'name' => $name,
                 'mime' => (string) $att->getMimeType(),
-                'size' => strlen((string) $att->getContent()),
+                // getSize() reads the MIME part's declared byte count (webklex
+                // sets it from $part->bytes). NEVER measure with
+                // strlen($att->getContent()) — that downloads every attachment in
+                // the mailbox just to weigh it, then discards it, and
+                // downloadAttachment() re-fetches the matching ones anyway. On a
+                // real inbox it exhausted the 128M CLI limit (which is what the
+                // scheduler runs under) and made every sweep minutes slower.
+                'size' => (int) ($att->getSize() ?? 0),
             ];
         }
 
