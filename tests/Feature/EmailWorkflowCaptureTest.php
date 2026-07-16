@@ -362,6 +362,60 @@ class EmailWorkflowCaptureTest extends TestCase
             ->assertSessionHas('success');
     }
 
+    public function test_a_run_killed_without_finishing_is_reaped_not_left_running_forever(): void
+    {
+        // An OOM is fatal and uncatchable; a worker timeout or a SIGHUP kills the
+        // process outright. None of them reach CaptureService's try/catch, so the
+        // row says `running` forever and the list page shows a busy workflow that
+        // isn't. (This is not hypothetical — a dropped SSH session did it.)
+        $orphan = EmailWorkflowRun::create([
+            'email_workflow_id' => $this->workflow->id,
+            'status' => EmailWorkflowRun::STATUS_RUNNING,
+            'started_at' => now()->subMinutes(CaptureService::STALE_RUN_MINUTES + 5),
+        ]);
+
+        Http::fake($this->googleStack());
+        app(CaptureService::class)->run($this->workflow);
+
+        $orphan->refresh();
+        $this->assertSame(EmailWorkflowRun::STATUS_FAILED, $orphan->status);
+        $this->assertStringContainsString('Interrupted', $orphan->error);
+        $this->assertNotNull($orphan->finished_at);
+    }
+
+    public function test_a_long_running_sweep_is_not_declared_dead_while_it_works(): void
+    {
+        // An unlimited sweep on a large mailbox is legitimately slow. Reaping it
+        // mid-flight would be a self-inflicted version of the same lie.
+        $inFlight = EmailWorkflowRun::create([
+            'email_workflow_id' => $this->workflow->id,
+            'status' => EmailWorkflowRun::STATUS_RUNNING,
+            'started_at' => now()->subMinutes(5),
+        ]);
+
+        Http::fake($this->googleStack());
+        app(CaptureService::class)->run($this->workflow);
+
+        $this->assertSame(EmailWorkflowRun::STATUS_RUNNING, $inFlight->fresh()->status);
+    }
+
+    public function test_reaping_does_not_touch_another_workflows_runs(): void
+    {
+        $other = EmailWorkflow::create([
+            'created_by' => $this->itManager->id, 'name' => 'Other', 'status' => 'draft',
+        ]);
+        $theirs = EmailWorkflowRun::create([
+            'email_workflow_id' => $other->id,
+            'status' => EmailWorkflowRun::STATUS_RUNNING,
+            'started_at' => now()->subMinutes(CaptureService::STALE_RUN_MINUTES + 5),
+        ]);
+
+        Http::fake($this->googleStack());
+        app(CaptureService::class)->run($this->workflow);
+
+        $this->assertSame(EmailWorkflowRun::STATUS_RUNNING, $theirs->fresh()->status);
+    }
+
     public function test_a_sweep_raises_a_low_memory_limit(): void
     {
         // The CLI default (128M) is what the scheduler runs under, and one fat

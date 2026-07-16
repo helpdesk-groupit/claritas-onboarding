@@ -46,6 +46,19 @@ class CaptureService
     public const REQUEST_TIME_LIMIT = 900;
 
     /**
+     * After this long, a run still marked `running` is presumed dead.
+     *
+     * A sweep can be killed in ways its own try/catch can never see: a PHP OOM
+     * (fatal, uncatchable), a queue worker timeout, SIGHUP when the shell that
+     * launched it goes away. The row then says `running` forever and the list
+     * page shows a workflow that looks busy but isn't — the same class of lie as
+     * a green tick over a broken step. Generous, because an unlimited sweep on a
+     * large mailbox legitimately takes a long time and must never be declared
+     * dead while it is still working.
+     */
+    public const STALE_RUN_MINUTES = 180;
+
+    /**
      * Floor for a sweep's memory, raised only if the ambient limit is lower.
      *
      * A capture is a batch job that pulls whole messages off a mailbox, and PHP's
@@ -75,6 +88,7 @@ class CaptureService
     public function run(EmailWorkflow $workflow, string $trigger = EmailWorkflowRun::TRIGGER_MANUAL, ?int $userId = null): EmailWorkflowRun
     {
         $this->raiseMemoryFloor();
+        $this->reapStaleRuns($workflow);
 
         $run = EmailWorkflowRun::create([
             'email_workflow_id' => $workflow->id,
@@ -549,6 +563,44 @@ class CaptureService
         $ts = strtotime($iso);
 
         return $ts ? date($format, $ts) : now()->format($format);
+    }
+
+    /**
+     * Close out runs that were killed without getting to record why.
+     *
+     * A sweep dies invisibly more often than it fails cleanly — an OOM is a
+     * fatal error that no catch block sees, a worker timeout kills the process
+     * outright, and a shell hang-up takes a foreground run with it. Each leaves
+     * `running` on the row forever, so the list page reports a workflow that
+     * looks busy and isn't, and the operator has nothing to read.
+     *
+     * Only runs older than STALE_RUN_MINUTES are touched: a long unlimited sweep
+     * is legitimately slow and must not be declared dead while still working.
+     * The captures themselves are unaffected — they resume from their own state.
+     */
+    private function reapStaleRuns(EmailWorkflow $workflow): void
+    {
+        $cutoff = now()->subMinutes(self::STALE_RUN_MINUTES);
+
+        $stale = EmailWorkflowRun::where('email_workflow_id', $workflow->id)
+            ->where('status', EmailWorkflowRun::STATUS_RUNNING)
+            ->where('started_at', '<', $cutoff)
+            ->get();
+
+        foreach ($stale as $run) {
+            Log::warning('Email Workflow reaping a run that never finished', [
+                'workflow_id' => $workflow->id,
+                'run_id' => $run->id,
+                'started_at' => (string) $run->started_at,
+            ]);
+
+            $run->update([
+                'status' => EmailWorkflowRun::STATUS_FAILED,
+                'error' => 'Interrupted — the sweep stopped without finishing (out of memory, '
+                    .'timeout, or the process was killed). Captures resume on the next run.',
+                'finished_at' => now(),
+            ]);
+        }
     }
 
     /**
