@@ -82,10 +82,17 @@ class ImapAdapter implements EmailSourceAdapter
                     // back to fetching this page one message at a time and skip only
                     // the offender. (A real mailbox killed a 25-minute unlimited
                     // sweep with "Array to string conversion" from a single message.)
+                    // webklex rethrows everything as GetMessagesFailedException
+                    // (Query::curate_messages), so record the wrapped cause or
+                    // the log names the wrapper and hides the actual fault.
                     Log::warning('Email Workflow IMAP page failed — salvaging it message by message', [
                         'page' => $page,
                         'per_page' => $perPage,
                         'error' => $e->getMessage(),
+                        'root_cause' => $e->getPrevious()
+                            ? $e->getPrevious()::class.': '.$e->getPrevious()->getMessage()
+                                .' @ '.$e->getPrevious()->getFile().':'.$e->getPrevious()->getLine()
+                            : null,
                     ]);
 
                     $batch = $this->salvagePage($inbox, $since, $perPage, $page);

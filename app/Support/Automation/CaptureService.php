@@ -100,10 +100,22 @@ class CaptureService
             $this->execute($workflow, $run);
         } catch (Throwable $e) {
             // Fatal: auth, unreachable folder/sheet, misconfiguration.
+            //
+            // Log the origin, not just the message. Libraries wrap (webklex
+            // rethrows everything as GetMessagesFailedException in
+            // curate_messages), so the message alone names the wrapper and hides
+            // both the real fault and the line that raised it — which cost a long
+            // debugging detour on exactly that exception.
             Log::warning('Email Workflow capture run failed', [
                 'workflow_id' => $workflow->id,
                 'run_id' => $run->id,
                 'error' => $e->getMessage(),
+                'exception' => $e::class,
+                'at' => $e->getFile().':'.$e->getLine(),
+                'root_cause' => $e->getPrevious()
+                    ? $e->getPrevious()::class.': '.$e->getPrevious()->getMessage()
+                        .' @ '.$e->getPrevious()->getFile().':'.$e->getPrevious()->getLine()
+                    : null,
             ]);
 
             $run->update([
