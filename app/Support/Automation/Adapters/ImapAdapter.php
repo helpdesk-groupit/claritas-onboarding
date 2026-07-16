@@ -28,6 +28,15 @@ class ImapAdapter implements EmailSourceAdapter
      * Search the INBOX. Supports a `since_days` window (default 30) so the
      * "Test rules" preview and capture run stay bounded.
      *
+     * NEWEST FIRST — do not remove setFetchOrderDesc(). webklex defaults
+     * `fetch_order` to 'asc' (its src/config/imap.php), and no config/imap.php is
+     * published here, so `->since(30 days)->limit(100)` silently returned the
+     * OLDEST 100 messages in the window. Once a mailbox exceeds the limit inside
+     * the window, the run scans ever-older mail and never sees a new invoice —
+     * the automation looks healthy (status success) while capturing nothing.
+     * Gmail's API and OutlookAdapter's `$orderby` are both newest-first; this
+     * keeps the contract consistent across providers.
+     *
      * @param  array<string,mixed>  $query
      * @param  array<string,mixed>  $paging
      * @return array<int,array<string,mixed>>
@@ -42,7 +51,10 @@ class ImapAdapter implements EmailSourceAdapter
 
         try {
             $inbox = $client->getFolderByName('INBOX');
-            $q = $inbox->messages()->since(now()->subDays($sinceDays))->setFetchBody(true);
+            $q = $inbox->messages()
+                ->since(now()->subDays($sinceDays))
+                ->setFetchBody(true)
+                ->setFetchOrderDesc();
 
             $messages = $q->limit(max(1, $limit))->get();
 
