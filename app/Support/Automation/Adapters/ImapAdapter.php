@@ -17,6 +17,19 @@ use Webklex\PHPIMAP\Message;
  */
 class ImapAdapter implements EmailSourceAdapter
 {
+    /**
+     * Messages fetched per IMAP round-trip.
+     *
+     * `setFetchBody(true)` downloads each message in full — body AND attachment
+     * parts — so asking for the whole sweep at once holds every raw message in
+     * memory simultaneously. On a real mailbox that blew the 128M CLI limit
+     * (the limit the scheduler runs under) inside ImapProtocol's read loop.
+     * Fetching in small pages and releasing each batch keeps peak memory
+     * proportional to the batch, not to the sweep. Small enough to be safe on
+     * mailboxes with fat PDFs; large enough not to make round-trips dominate.
+     */
+    private const FETCH_BATCH = 10;
+
     public function __construct(private readonly string $providerId = 'imap') {}
 
     public function providerId(): string
@@ -43,24 +56,47 @@ class ImapAdapter implements EmailSourceAdapter
      */
     public function search(EmailWorkflowConnection $conn, array $query, array $paging = []): array
     {
-        $limit = (int) ($paging['limit'] ?? 25);
+        $limit = max(1, (int) ($paging['limit'] ?? 25));
         $sinceDays = (int) ($query['since_days'] ?? 30);
+        $since = now()->subDays($sinceDays);
 
         $client = $this->client($conn);
         $client->connect();
 
         try {
             $inbox = $client->getFolderByName('INBOX');
-            $q = $inbox->messages()
-                ->since(now()->subDays($sinceDays))
-                ->setFetchBody(true)
-                ->setFetchOrderDesc();
-
-            $messages = $q->limit(max(1, $limit))->get();
 
             $out = [];
-            foreach ($messages as $message) {
-                $out[] = $this->normalize($message);
+            $pages = (int) ceil($limit / self::FETCH_BATCH);
+
+            for ($page = 1; $page <= $pages; $page++) {
+                $batch = $inbox->messages()
+                    ->since($since)
+                    ->setFetchBody(true)
+                    ->setFetchOrderDesc()
+                    ->limit(self::FETCH_BATCH, $page)
+                    ->get();
+
+                if ($batch->isEmpty()) {
+                    break; // mailbox exhausted inside the window
+                }
+
+                foreach ($batch as $message) {
+                    $out[] = $this->normalize($message);
+                    if (count($out) >= $limit) {
+                        break;
+                    }
+                }
+
+                // Drop the raw messages before fetching the next page. The
+                // normalized rows we keep are small (text + attachment metadata);
+                // the raw ones are not.
+                unset($batch);
+                gc_collect_cycles();
+
+                if (count($out) >= $limit) {
+                    break;
+                }
             }
 
             return $out;
