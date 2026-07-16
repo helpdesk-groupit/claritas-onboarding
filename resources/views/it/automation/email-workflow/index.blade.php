@@ -24,6 +24,8 @@
     .ewf-switch .form-check-input { width:40px; height:21px; cursor:pointer; }
     .ewf-switch .form-check-input:disabled { cursor:not-allowed; }
 
+    .ewf-run-badge { font-size:9px; text-transform:uppercase; letter-spacing:.4px; padding:2px 6px; }
+
     .empty-state { text-align:center; padding:48px 20px; color:#64748b; }
     .empty-state .bi { font-size:46px; color:#cbd5e1; }
 
@@ -101,7 +103,16 @@
                                 <span class="badge {{ $wf->statusBadgeClass() }} text-capitalize">{{ $wf->status }}</span>
                             </td>
                             <td class="text-muted">
-                                {{ $wf->last_run_at ? $wf->last_run_at->diffForHumans() : '—' }}
+                                @if($wf->last_run_at)
+                                    <div>{{ $wf->last_run_at->diffForHumans() }}</div>
+                                    @if($wf->latestRun)
+                                        <span class="badge {{ $wf->latestRun->statusBadgeClass() }} ewf-run-badge">
+                                            {{ $wf->latestRun->status }}
+                                        </span>
+                                    @endif
+                                @else
+                                    —
+                                @endif
                             </td>
                             <td>{{ $wf->captured_count }}</td>
                             <td class="text-end">
@@ -118,6 +129,23 @@
                                                    title="{{ (!$wf->isActive() && !$wf->isReadyToActivate()) ? 'Finish setup to activate' : 'Toggle active' }}">
                                         </div>
                                     </form>
+                                    {{-- Run now (synchronous sweep — button disables while it works) --}}
+                                    <form method="POST" action="{{ route('it.automation.email-workflow.run', $wf->id) }}"
+                                          class="m-0 ewf-run-form">
+                                        @csrf
+                                        <button type="submit" class="btn btn-sm btn-outline-primary ewf-run-btn"
+                                                {{ $wf->isReadyToActivate() ? '' : 'disabled' }}
+                                                title="{{ $wf->isReadyToActivate() ? 'Run this workflow now' : 'Finish setup to run' }}">
+                                            <i class="bi bi-play-fill"></i>
+                                        </button>
+                                    </form>
+                                    {{-- Run history --}}
+                                    <button type="button" class="btn btn-sm btn-outline-secondary ewf-history-btn"
+                                            data-id="{{ $wf->id }}" data-name="{{ $wf->name ?: 'Untitled workflow' }}"
+                                            data-url="{{ route('it.automation.email-workflow.runs', $wf->id) }}"
+                                            title="Run history">
+                                        <i class="bi bi-clock-history"></i>
+                                    </button>
                                     {{-- Edit --}}
                                     <a href="{{ route('it.automation.email-workflow.edit', $wf->id) }}"
                                        class="btn btn-sm btn-outline-secondary" title="Edit">
@@ -143,6 +171,25 @@
 @if($workflows->hasPages())
     <div class="mt-3">{{ $workflows->links() }}</div>
 @endif
+
+{{-- Run history: recent runs + the documents they captured --}}
+<div class="modal fade" id="ewfHistoryModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-clock-history me-2"></i>Run history — <span id="ewfHistoryName"></span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="ewfHistoryBody">
+                <div class="text-center text-muted py-4">
+                    <div class="spinner-border spinner-border-sm me-2"></div>Loading…
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 {{-- Delete confirmation modal (HITL gate for the destructive action) --}}
 <div class="modal fade" id="ewfDeleteModal" tabindex="-1" aria-hidden="true">
@@ -190,6 +237,96 @@
             document.getElementById('ewfDeleteName').textContent = name;
             document.getElementById('ewfDeleteForm').setAttribute('action', baseAction + '/' + id);
             if (modal) modal.show();
+        });
+    });
+
+    // Escape everything user/provider-supplied before it reaches innerHTML.
+    function escHtml(s) {
+        return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    // Run now: the sweep is synchronous and can take a while — make that visible
+    // and block double-submits (each run spends Google API quota).
+    document.querySelectorAll('.ewf-run-form').forEach(function (form) {
+        form.addEventListener('submit', function () {
+            var btn = form.querySelector('.ewf-run-btn');
+            if (!btn) return;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        });
+    });
+
+    // Run history: fetch + render recent runs and captured documents.
+    var histEl = document.getElementById('ewfHistoryModal');
+    var histModal = histEl ? new bootstrap.Modal(histEl) : null;
+    var histBody = document.getElementById('ewfHistoryBody');
+
+    function runsTable(runs) {
+        if (!runs.length) {
+            return '<p class="text-muted mb-0">This workflow has not run yet. Press the play button to run it now.</p>';
+        }
+        var rows = runs.map(function (r) {
+            return '<tr>'
+                + '<td><span class="badge ' + escHtml(r.badge) + '">' + escHtml(r.status) + '</span></td>'
+                + '<td>' + escHtml(r.started_at) + '</td>'
+                + '<td>' + escHtml(r.by) + '<div class="text-muted" style="font-size:11px;">' + escHtml(r.trigger) + '</div></td>'
+                + '<td>' + (r.duration === null ? '—' : escHtml(r.duration) + 's') + '</td>'
+                + '<td>' + escHtml(r.scanned) + '</td>'
+                + '<td>' + escHtml(r.matched) + '</td>'
+                + '<td class="fw-semibold">' + escHtml(r.captured) + '</td>'
+                + '<td>' + escHtml(r.skipped) + '</td>'
+                + '<td>' + escHtml(r.failed) + '</td>'
+                + '<td class="text-danger" style="font-size:11px;">' + escHtml(r.error || '') + '</td>'
+                + '</tr>';
+        }).join('');
+
+        return '<h6 class="mb-2">Recent runs</h6>'
+            + '<div class="table-responsive mb-4"><table class="table table-sm align-middle mb-0">'
+            + '<thead><tr><th>Status</th><th>Started</th><th>By</th><th>Took</th>'
+            + '<th>Scanned</th><th>Matched</th><th>Captured</th><th>Skipped</th><th>Failed</th><th>Error</th></tr></thead>'
+            + '<tbody>' + rows + '</tbody></table></div>';
+    }
+
+    function capturesTable(captures) {
+        if (!captures.length) return '';
+        var rows = captures.map(function (c) {
+            var name = c.url
+                ? '<a href="' + escHtml(c.url) + '" target="_blank" rel="noopener noreferrer">' + escHtml(c.name) + '</a>'
+                : escHtml(c.name);
+            var amount = c.amount ? escHtml((c.currency || '') + ' ' + c.amount) : '<span class="text-muted">—</span>';
+            var review = c.needs_review ? ' <span class="badge bg-warning text-dark">review</span>' : '';
+            return '<tr>'
+                + '<td>' + name + review + '</td>'
+                + '<td>' + escHtml(c.status) + '</td>'
+                + '<td>' + amount + '</td>'
+                + '<td>' + escHtml(c.logged_at || '—') + '</td>'
+                + '<td class="text-danger" style="font-size:11px;">' + escHtml(c.error || '') + '</td>'
+                + '</tr>';
+        }).join('');
+
+        return '<h6 class="mb-2">Captured documents</h6>'
+            + '<div class="table-responsive"><table class="table table-sm align-middle mb-0">'
+            + '<thead><tr><th>File</th><th>Status</th><th>Amount</th><th>Logged</th><th>Error</th></tr></thead>'
+            + '<tbody>' + rows + '</tbody></table></div>';
+    }
+
+    document.querySelectorAll('.ewf-history-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            document.getElementById('ewfHistoryName').textContent = this.getAttribute('data-name');
+            histBody.innerHTML = '<div class="text-center text-muted py-4">'
+                + '<div class="spinner-border spinner-border-sm me-2"></div>Loading…</div>';
+            if (histModal) histModal.show();
+
+            fetch(this.getAttribute('data-url'), { headers: { 'Accept': 'application/json' } })
+                .then(function (res) { if (!res.ok) throw new Error(res.status); return res.json(); })
+                .then(function (data) {
+                    histBody.innerHTML = runsTable(data.runs || []) + capturesTable(data.captures || []);
+                })
+                .catch(function () {
+                    histBody.innerHTML = '<p class="text-danger mb-0">Could not load run history.</p>';
+                });
         });
     });
 })();

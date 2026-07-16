@@ -3,7 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Models\EmailWorkflow;
+use App\Models\EmailWorkflowCapture;
 use App\Models\EmailWorkflowConnection;
+use App\Models\EmailWorkflowRun;
+use App\Support\Automation\CaptureService;
 use App\Support\Automation\DetectionEngine;
 use App\Support\Automation\EmailAdapterFactory;
 use App\Support\Automation\OAuthService;
@@ -50,7 +53,7 @@ class EmailWorkflowController extends Controller
         $this->authorizeModule();
 
         $workflows = EmailWorkflow::visibleTo(Auth::user())
-            ->with(['emailConnection', 'storageConnection', 'logConnection', 'owner'])
+            ->with(['emailConnection', 'storageConnection', 'logConnection', 'owner', 'latestRun'])
             ->orderByDesc('updated_at')
             ->paginate(20);
 
@@ -231,6 +234,101 @@ class EmailWorkflowController extends Controller
         $model->update(['status' => EmailWorkflow::STATUS_ACTIVE]);
 
         return back()->with('success', "“{$model->name}” is now active.");
+    }
+
+    // ── Run now (manual capture) ─────────────────────────────────────────
+    /**
+     * Run a capture immediately and report the outcome.
+     *
+     * Deliberately synchronous rather than queued: the operator clicked this to
+     * find out whether the pipeline works, so handing back "queued" and making
+     * them poll — or silently doing nothing when no worker is running — defeats
+     * the point. Scheduled sweeps go through RunEmailWorkflowCapture instead.
+     * The route is throttled because each run spends real Google API quota.
+     */
+    public function runNow(int $workflow, CaptureService $capture)
+    {
+        $this->authorizeModule();
+        $model = $this->findOwned($workflow);
+
+        if (! $model->isReadyToActivate()) {
+            return back()->with('error',
+                'Finish the wizard first — this workflow still needs its connections, a destination folder and a log sheet.');
+        }
+
+        // A sweep uploads files and appends rows; the default 30s won't cover it.
+        @set_time_limit(CaptureService::REQUEST_TIME_LIMIT);
+
+        $run = $capture->run($model, EmailWorkflowRun::TRIGGER_MANUAL, Auth::id());
+
+        if ($run->status === EmailWorkflowRun::STATUS_FAILED) {
+            return back()->with('error', 'Run failed — '.$run->error);
+        }
+
+        $summary = sprintf(
+            'Run finished in %ds — scanned %d, matched %d, captured %d, skipped %d already-logged, failed %d.',
+            $run->durationSeconds() ?? 0,
+            $run->scanned_count, $run->matched_count,
+            $run->captured_count, $run->skipped_count, $run->failed_count
+        );
+
+        // Nothing captured and nothing skipped is a legitimate result, but it
+        // reads as a silent failure — say why instead of flashing a bare success.
+        if ($run->captured_count === 0 && $run->skipped_count === 0 && $run->failed_count === 0) {
+            return back()->with('info', $summary
+                .' No new documents matched — widen the rules, or check the mailbox has matching mail in the last '
+                .CaptureService::DEFAULT_SINCE_DAYS.' days.');
+        }
+
+        return back()->with(
+            $run->status === EmailWorkflowRun::STATUS_PARTIAL ? 'warning' : 'success',
+            $summary
+        );
+    }
+
+    /** Recent runs + their captures, for the history panel. */
+    public function runs(int $workflow)
+    {
+        $this->authorizeModule();
+        $model = $this->findOwned($workflow);
+
+        $runs = $model->runs()
+            ->with('triggeredBy:id,name')
+            ->latest('id')
+            ->limit(10)
+            ->get()
+            ->map(fn (EmailWorkflowRun $r) => [
+                'id' => $r->id,
+                'status' => $r->status,
+                'badge' => $r->statusBadgeClass(),
+                'trigger' => $r->trigger,
+                'by' => $r->triggeredBy?->name ?? 'Schedule',
+                'started_at' => fmt_datetime($r->started_at),
+                'duration' => $r->durationSeconds(),
+                'scanned' => $r->scanned_count,
+                'matched' => $r->matched_count,
+                'captured' => $r->captured_count,
+                'skipped' => $r->skipped_count,
+                'failed' => $r->failed_count,
+                'error' => $r->error,
+            ]);
+
+        $captures = $model->captures()
+            ->latest('id')
+            ->limit(25)
+            ->get()
+            ->map(fn (EmailWorkflowCapture $c) => [
+                'name' => $c->stored_file_name ?: $c->attachment_name,
+                'status' => $c->status,
+                'url' => $c->stored_file_url,
+                'amount' => $c->amount,
+                'currency' => $c->currency,
+                'needs_review' => $c->needs_review,
+                'logged_at' => $c->logged_at ? fmt_datetime($c->logged_at) : null,
+                'error' => $c->error,
+            ]);
+
+        return response()->json(['runs' => $runs, 'captures' => $captures]);
     }
 
     // ── Delete ───────────────────────────────────────────────────────────

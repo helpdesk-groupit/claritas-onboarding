@@ -314,6 +314,14 @@
             <input type="text" name="folder_ref" form="ewfStep3" class="form-control"
                    placeholder="https://drive.google.com/drive/folders/…"
                    value="{{ old('folder_ref', data_get($storage,'folder_ref')) }}">
+            <div class="form-text">
+                Paste a link to a folder the connected Google account can edit. You can also type a folder
+                <em>name</em> instead — the automation will create it in that account's Drive and reuse it.<br>
+                <i class="bi bi-info-circle"></i>
+                If a pasted link is rejected as “not accessible”, the Drive account was authorized before this
+                app requested full Drive access — press <strong>Connect</strong> on the Drive connection again to
+                re-consent.
+            </div>
         </div>
         <div class="form-check form-switch mb-3">
             <input class="form-check-input" type="checkbox" name="monthly_subfolders" form="ewfStep3" value="1" id="monthlySub"

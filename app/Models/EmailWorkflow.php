@@ -6,6 +6,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * An Email Workflow automation: Email Source → Detection Rules →
@@ -127,6 +129,22 @@ class EmailWorkflow extends Model
     public function logConnection(): BelongsTo
     {
         return $this->belongsTo(EmailWorkflowConnection::class, 'log_connection_id');
+    }
+
+    public function runs(): HasMany
+    {
+        return $this->hasMany(EmailWorkflowRun::class, 'email_workflow_id');
+    }
+
+    public function captures(): HasMany
+    {
+        return $this->hasMany(EmailWorkflowCapture::class, 'email_workflow_id');
+    }
+
+    /** The most recent run — drives "Last run" on the list page. */
+    public function latestRun(): HasOne
+    {
+        return $this->hasOne(EmailWorkflowRun::class, 'email_workflow_id')->latestOfMany();
     }
 
     // ── Scopes (app-layer tenant isolation) ──────────────────────────────

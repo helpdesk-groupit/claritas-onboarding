@@ -95,8 +95,23 @@ class ProviderRegistry
                 'category' => self::CATEGORY_STORAGE,
                 'icon' => 'bi-google',
                 'auth_type' => 'oauth',
-                // File-scoped — only files this app creates (least privilege).
-                'scopes' => ['https://www.googleapis.com/auth/drive.file'],
+                // Full Drive access — DELIBERATE, and a step down from least privilege.
+                //
+                // The tighter 'drive.file' scope reaches ONLY files this app created, so a
+                // folder the operator made in the browser is invisible to us and a pasted
+                // folder link 404s. The product requirement is "file into OUR existing
+                // invoices folder", which drive.file cannot satisfy without the Google
+                // Picker (a large frontend lift). Chosen by the operator 2026-07-16.
+                //
+                // Consequences to keep in mind:
+                //  - This is a Google RESTRICTED scope. Fine while the OAuth app is in
+                //    Testing / Internal; an External+Production app needs CASA review.
+                //  - It grants read/write across the whole Drive of the connected account,
+                //    so connect a service/finance account rather than a personal one.
+                // To revert: set this back to '…/auth/drive.file' and have operators enter a
+                // folder NAME instead of a link — GoogleDriveAdapter::resolveFolder()
+                // supports both, and find-or-creates a name-based folder the app then owns.
+                'scopes' => ['https://www.googleapis.com/auth/drive'],
                 // Same Google OAuth endpoints as Gmail — offline access for a refresh token.
                 'authorize_url' => 'https://accounts.google.com/o/oauth2/v2/auth',
                 'token_url' => 'https://oauth2.googleapis.com/token',

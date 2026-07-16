@@ -125,6 +125,13 @@ class OAuthService
         if (! empty($token['expires_in'])) {
             $attrs['token_expires_at'] = now()->addSeconds((int) $token['expires_in'] - 60);
         }
+        // Record what the provider ACTUALLY granted (space-delimited), not what the
+        // registry asked for. The two diverge whenever a registry scope changes
+        // after a connection was authorized — the old token keeps its old grant
+        // until the user re-consents, and the UI must not claim otherwise.
+        if (! empty($token['scope'])) {
+            $attrs['scopes'] = array_values(array_filter(explode(' ', (string) $token['scope'])));
+        }
 
         $conn->update($attrs);
     }

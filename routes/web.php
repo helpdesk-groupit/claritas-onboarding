@@ -105,20 +105,24 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     // ── IT: Automation › Email Workflow ─────────────────────────────────
     // Controller self-gates to IT roles + superadmin/system_admin.
     Route::prefix('it/automation/email-workflow')->name('it.automation.email-workflow.')->group(function () {
-        Route::get('/',                       [\App\Http\Controllers\EmailWorkflowController::class, 'index'])->name('index');
-        Route::get('/create',                 [\App\Http\Controllers\EmailWorkflowController::class, 'create'])->name('create');
-        Route::post('/',                      [\App\Http\Controllers\EmailWorkflowController::class, 'store'])->name('store');
-        Route::get('/{workflow}/edit',        [\App\Http\Controllers\EmailWorkflowController::class, 'edit'])->name('edit');
-        Route::put('/{workflow}',             [\App\Http\Controllers\EmailWorkflowController::class, 'update'])->name('update');
-        Route::post('/{workflow}/toggle',     [\App\Http\Controllers\EmailWorkflowController::class, 'toggleActive'])->name('toggle');
+        Route::get('/', [\App\Http\Controllers\EmailWorkflowController::class, 'index'])->name('index');
+        Route::get('/create', [\App\Http\Controllers\EmailWorkflowController::class, 'create'])->name('create');
+        Route::post('/', [\App\Http\Controllers\EmailWorkflowController::class, 'store'])->name('store');
+        Route::get('/{workflow}/edit', [\App\Http\Controllers\EmailWorkflowController::class, 'edit'])->name('edit');
+        Route::put('/{workflow}', [\App\Http\Controllers\EmailWorkflowController::class, 'update'])->name('update');
+        Route::post('/{workflow}/toggle', [\App\Http\Controllers\EmailWorkflowController::class, 'toggleActive'])->name('toggle');
         Route::post('/{workflow}/test-rules', [\App\Http\Controllers\EmailWorkflowController::class, 'testRules'])->name('test-rules');
-        Route::delete('/{workflow}',          [\App\Http\Controllers\EmailWorkflowController::class, 'destroy'])->name('destroy');
+        // Manual capture. Throttled: a sweep costs real Drive/Sheets API quota.
+        Route::post('/{workflow}/run', [\App\Http\Controllers\EmailWorkflowController::class, 'runNow'])
+            ->middleware('throttle:6,1')->name('run');
+        Route::get('/{workflow}/runs', [\App\Http\Controllers\EmailWorkflowController::class, 'runs'])->name('runs');
+        Route::delete('/{workflow}', [\App\Http\Controllers\EmailWorkflowController::class, 'destroy'])->name('destroy');
         // Connections (user-supplied OAuth client creds or IMAP host/app-password).
-        Route::post('/connections',                 [\App\Http\Controllers\EmailWorkflowController::class, 'saveConnection'])->name('connections.save');
-        Route::delete('/connections/{connection}',  [\App\Http\Controllers\EmailWorkflowController::class, 'deleteConnection'])->name('connections.delete');
+        Route::post('/connections', [\App\Http\Controllers\EmailWorkflowController::class, 'saveConnection'])->name('connections.save');
+        Route::delete('/connections/{connection}', [\App\Http\Controllers\EmailWorkflowController::class, 'deleteConnection'])->name('connections.delete');
         // OAuth consent round-trip (Gmail / Outlook).
         Route::get('/connections/{connection}/connect', [\App\Http\Controllers\EmailWorkflowController::class, 'connectStart'])->name('connections.connect');
-        Route::get('/connections/callback',             [\App\Http\Controllers\EmailWorkflowController::class, 'connectCallback'])->name('connections.callback');
+        Route::get('/connections/callback', [\App\Http\Controllers\EmailWorkflowController::class, 'connectCallback'])->name('connections.callback');
     });
 
     // Two-Factor Authentication management

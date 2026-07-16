@@ -60,3 +60,11 @@ Schedule::command('geoip:update')
     ->monthlyOn(1, '04:00')
     ->withoutOverlapping()
     ->appendOutputTo(storage_path('logs/geoip.log'));
+
+// Email Workflow: drive every active capture automation. Runs every minute and
+// self-gates — each workflow carries its own capture_cron + timezone, which the
+// static scheduler can't express, so RunEmailWorkflows evaluates them itself.
+Schedule::command('email-workflows:run')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->appendOutputTo(storage_path('logs/email-workflows.log'));
