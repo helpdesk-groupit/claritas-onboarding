@@ -83,7 +83,10 @@ class RunEmailWorkflows extends Command
             return $query->where('id', (int) $id)->get();
         }
 
-        return $query->where('status', EmailWorkflow::STATUS_ACTIVE)->get();
+        // Includes `error` — see EmailWorkflow::SWEEPABLE_STATUSES. A workflow
+        // whose last run failed is still enabled and must keep retrying, or it
+        // can never recover from a transient fault.
+        return $query->whereIn('status', EmailWorkflow::SWEEPABLE_STATUSES)->get();
     }
 
     /**

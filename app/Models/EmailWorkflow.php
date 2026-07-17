@@ -36,6 +36,30 @@ class EmailWorkflow extends Model
         self::STATUS_ERROR,
     ];
 
+    /**
+     * Statuses the scheduler sweeps.
+     *
+     * `error` is IN, and that is the whole point: this column conflates operator
+     * INTENT (draft/active/paused) with HEALTH (error), and CaptureService only
+     * ever sets `error` on a workflow that was Active. So `error` means "enabled,
+     * but the last run failed" — not "disabled". Sweeping only `active` made one
+     * failed run a trapdoor: the workflow left the schedule permanently, and could
+     * never heal because healing needs a success and a success needs a sweep. A
+     * five-minute mailbox outage retired the automation until a human noticed.
+     *
+     * Retrying a genuinely broken workflow is cheap — captures are cron-paced
+     * (daily by default), the login just fails again, and the error stays visible
+     * on the list. Whereas an automation that silently stops forever is the exact
+     * failure this module keeps producing.
+     *
+     * `paused` and `draft` stay OUT: those are intent, and a run must never
+     * override what the operator asked for.
+     */
+    public const SWEEPABLE_STATUSES = [
+        self::STATUS_ACTIVE,
+        self::STATUS_ERROR,
+    ];
+
     /** Total wizard steps (Source → Rules → Storage → Log → Schedule). */
     public const TOTAL_STEPS = 5;
 

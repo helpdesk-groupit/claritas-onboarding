@@ -149,6 +149,17 @@ class CaptureService
             'last_run_at' => now(),
             'last_error' => null,
             'captured_count' => (int) $workflow->captured_count + $run->captured_count,
+            // Clearing last_error is not enough: `error` is a STATUS, and the
+            // list badge and the scheduler both read it. A workflow that has
+            // just run green is not in error, and leaving the badge red is the
+            // same stale-status lie as a connection claiming `connected` it
+            // never earned. Safe as the exact inverse of the failure path above,
+            // which only ever sets `error` on a workflow that was Active — so a
+            // success restores Active and can never resurrect a `paused` or
+            // `draft` workflow the operator put there deliberately.
+            'status' => $workflow->status === EmailWorkflow::STATUS_ERROR
+                ? EmailWorkflow::STATUS_ACTIVE
+                : $workflow->status,
         ])->save();
 
         return $run->refresh();
