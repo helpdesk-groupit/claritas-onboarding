@@ -289,9 +289,11 @@ class EmailWorkflowController extends Controller
         }
 
         $summary = sprintf(
-            'Run finished in %ds — scanned %d, matched %d, captured %d, skipped %d already-logged, failed %d.',
+            'Quick run finished in %ds — checked the newest %d message%s, matched %d, captured %d, '
+            .'skipped %d already-logged, failed %d. Run now is a fast test of recent mail; the full mailbox is '
+            .'swept on schedule, so anything not picked up here is captured by the scheduled run.',
             $run->durationSeconds() ?? 0,
-            $run->scanned_count, $run->matched_count,
+            $run->scanned_count, $run->scanned_count === 1 ? '' : 's', $run->matched_count,
             $run->captured_count, $run->skipped_count, $run->failed_count
         );
 
@@ -305,8 +307,9 @@ class EmailWorkflowController extends Controller
         // reads as a silent failure — say why instead of flashing a bare success.
         if ($run->captured_count === 0 && $run->skipped_count === 0 && $run->failed_count === 0) {
             return back()->with('info', $summary
-                .' No new documents matched — widen the rules, or check the mailbox has matching mail in the last '
-                .$capture->sinceDays().' days.');
+                .' No new documents matched in this quick check — widen the rules, or confirm the mailbox has '
+                .'matching mail in the newest '.CaptureService::MANUAL_MESSAGE_LIMIT.' messages. The scheduled run '
+                .'looks wider.');
         }
 
         return back()->with(

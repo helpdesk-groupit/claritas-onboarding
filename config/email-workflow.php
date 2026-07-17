@@ -97,4 +97,25 @@ return [
 
     'request_timeout' => (int) env('EWF_REQUEST_TIMEOUT', 120),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Manual "Run now" bounds
+    |--------------------------------------------------------------------------
+    |
+    | A manual Run now is a synchronous browser request behind a ~100s edge
+    | proxy (Cloudflare returns a 504 while the request is still sweeping). So
+    | it does a BOUNDED sweep — newest few messages, short window — enough to
+    | prove the pipeline and return a result before the edge gives up. The full
+    | mailbox is the scheduled sweep's job (CLI, no edge timeout), and the
+    | captures-table dedupe makes the overlap free, so a manual run captures
+    | nothing the schedule won't. Raise these only if a mailbox is slow enough
+    | that even a tiny slice needs more headroom — but keep the whole request
+    | comfortably under ~90s or the edge will 504 again.
+    |
+    */
+
+    'manual_message_limit' => (int) env('EWF_MANUAL_MESSAGE_LIMIT', \App\Support\Automation\CaptureService::MANUAL_MESSAGE_LIMIT),
+
+    'manual_since_days' => (int) env('EWF_MANUAL_SINCE_DAYS', \App\Support\Automation\CaptureService::MANUAL_SINCE_DAYS),
+
 ];

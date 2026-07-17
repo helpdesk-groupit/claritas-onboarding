@@ -40,6 +40,25 @@ class CaptureService
      */
     public const DEFAULT_MESSAGE_LIMIT = 500;
 
+    /**
+     * Bounds for a MANUAL "Run now", which is a synchronous browser request.
+     *
+     * A full sweep reads the newest 500 and can take minutes on a real mailbox
+     * — fine for the scheduled CLI path, fatal for a browser request behind a
+     * proxy. Cloudflare's edge gives up at ~100s and returns a 504 while the
+     * request is still reading mail; the operator sees a gateway timeout and the
+     * run is left orphaned in `running`. So Run now does a BOUNDED sweep: newest
+     * few messages, short window, enough to prove the pipeline end-to-end and
+     * show a result inside the edge window. The full backlog is the scheduler's
+     * job (proven to run every minute over the CLI, no edge timeout), and the
+     * captures-table dedupe makes the overlap free — a manual run captures
+     * nothing the schedule won't, it just does it now and in front of the
+     * operator. Override via EWF_MANUAL_* if a mailbox is unusually slow.
+     */
+    public const MANUAL_MESSAGE_LIMIT = 30;
+
+    public const MANUAL_SINCE_DAYS = 14;
+
     /** Seconds a synchronous "Run now" may take before PHP kills it. */
     public const REQUEST_TIME_LIMIT = 900;
 
@@ -179,9 +198,20 @@ class CaptureService
         $rootFolder = $storage->resolveFolder($storageConn, (string) ($storageCfg['folder_ref'] ?? ''));
         $target = $logger->resolveTarget($logConn, (string) ($logCfg['target_ref'] ?? ''));
 
-        $limit = (int) config('email-workflow.message_limit', self::DEFAULT_MESSAGE_LIMIT);
+        // A manual Run now is a synchronous browser request behind a ~100s edge
+        // proxy, so it sweeps a bounded slice; the scheduler does the full 500.
+        // See MANUAL_MESSAGE_LIMIT.
+        $isManual = $run->trigger === EmailWorkflowRun::TRIGGER_MANUAL;
 
-        $messages = $email->search($emailConn, $this->query($rules), ['limit' => $limit]);
+        $limit = $isManual
+            ? (int) config('email-workflow.manual_message_limit', self::MANUAL_MESSAGE_LIMIT)
+            : (int) config('email-workflow.message_limit', self::DEFAULT_MESSAGE_LIMIT);
+
+        $window = $isManual
+            ? (int) config('email-workflow.manual_since_days', self::MANUAL_SINCE_DAYS)
+            : $this->sinceDays();
+
+        $messages = $email->search($emailConn, $this->query($rules, $window), ['limit' => $limit]);
 
         $run->update(['scanned_count' => count($messages)]);
 
@@ -196,7 +226,12 @@ class CaptureService
         // The real failure is the cap hiding mail the PREVIOUS sweep hadn't
         // covered either — that mail is seen by no run, ever, and slides out of
         // the window. See coverageWarning().
-        if ($warning = $this->coverageWarning($workflow, $run->refresh(), $messages)) {
+        //
+        // Skipped for a manual run: its cap is a deliberately tiny test slice,
+        // not the coverage window, so comparing it against the previous (full)
+        // sweep would always "warn" and mean nothing. Coverage is a property of
+        // the scheduled sweep, which is the one that actually has to be complete.
+        if (! $isManual && $warning = $this->coverageWarning($workflow, $run->refresh(), $messages)) {
             Log::warning('Email Workflow sweep may have missed new mail — raise the message cap', [
                 'workflow_id' => $workflow->id,
                 'run_id' => $run->id,
@@ -463,9 +498,9 @@ class CaptureService
      * @param  array<string,mixed>  $rules
      * @return array<string,mixed>
      */
-    private function query(array $rules): array
+    private function query(array $rules, ?int $sinceDays = null): array
     {
-        $query = ['since_days' => $this->sinceDays()];
+        $query = ['since_days' => $sinceDays ?? $this->sinceDays()];
 
         if (! empty($rules['attachment']['required'])) {
             $query['q'] = 'has:attachment';

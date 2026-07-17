@@ -279,7 +279,9 @@ class EmailWorkflowCaptureTest extends TestCase
         config(['email-workflow.since_days' => 45]);
         Http::fake($this->googleStack());
 
-        app(CaptureService::class)->run($this->workflow);
+        // The configured window governs the SCHEDULED sweep; a manual Run now is
+        // deliberately bounded to a shorter window (see the manual-bound test).
+        app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
 
         Http::assertSent(fn (Request $r) => str_contains($r->url(), 'gmail/v1/users/me/messages?')
             && str_contains(urldecode($r->url()), 'newer_than:45d'));
@@ -329,7 +331,7 @@ class EmailWorkflowCaptureTest extends TestCase
                 ->push(['messages' => [['id' => self::MESSAGE_ID]], 'nextPageToken' => 'p3']),
         ]));
 
-        $run = app(CaptureService::class)->run($this->workflow);
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
 
         $this->assertSame(2, $run->scanned_count, 'A cap must stop the sweep, not just the page.');
         $this->assertSame(1, $this->sentCount('users/me/messages?'), 'Must not fetch a page it cannot use.');
@@ -338,15 +340,18 @@ class EmailWorkflowCaptureTest extends TestCase
     public function test_the_first_capped_sweep_says_the_backlog_was_not_read(): void
     {
         // With no earlier sweep, whatever sits behind the cap has been read by
-        // nobody. Worth saying once — but only once.
+        // nobody. Worth saying once — but only once. Coverage is a property of
+        // the SCHEDULED sweep (the one that must be complete); a manual Run now
+        // is a bounded test and never warns, so this asserts the scheduled run
+        // records it on the run row, which is where the history reads it.
         config(['email-workflow.message_limit' => 1]);
         Http::fake($this->googleStack());
 
-        $this->actingAs($this->itManager)
-            ->post(route('it.automation.email-workflow.run', $this->workflow->id))
-            ->assertRedirect()
-            ->assertSessionHas('warning', fn ($m) => str_contains($m, 'first sweep')
-                && str_contains($m, 'was not read'));
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        $this->assertNotNull($run->coverage_warning);
+        $this->assertStringContainsString('first sweep', $run->coverage_warning);
+        $this->assertStringContainsString('was not read', $run->coverage_warning);
     }
 
     public function test_filling_the_cap_is_quiet_when_the_sweep_still_reaches_past_the_previous_run(): void
@@ -368,12 +373,9 @@ class EmailWorkflowCaptureTest extends TestCase
 
         Http::fake($this->googleStack());
 
-        $this->actingAs($this->itManager)
-            ->post(route('it.automation.email-workflow.run', $this->workflow->id))
-            ->assertRedirect()
-            ->assertSessionMissing('warning');
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
 
-        $this->assertNull(EmailWorkflowRun::latest('id')->first()->coverage_warning);
+        $this->assertNull($run->coverage_warning);
     }
 
     public function test_a_cap_that_no_longer_reaches_the_previous_run_warns_that_mail_is_being_missed(): void
@@ -392,13 +394,33 @@ class EmailWorkflowCaptureTest extends TestCase
 
         Http::fake($this->googleStack());
 
-        $this->actingAs($this->itManager)
-            ->post(route('it.automation.email-workflow.run', $this->workflow->id))
-            ->assertRedirect()
-            ->assertSessionHas('warning', fn ($m) => str_contains($m, 'outgrown')
-                && str_contains($m, 'read by neither'));
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
 
-        $this->assertNotNull(EmailWorkflowRun::latest('id')->first()->coverage_warning);
+        $this->assertNotNull($run->coverage_warning);
+        $this->assertStringContainsString('outgrown', $run->coverage_warning);
+        $this->assertStringContainsString('read by neither', $run->coverage_warning);
+    }
+
+    public function test_a_manual_run_is_bounded_and_never_warns_about_coverage(): void
+    {
+        // A manual Run now is a synchronous browser request behind a ~100s edge
+        // proxy: it sweeps a tiny recent slice so it returns before the edge
+        // times out (the 504 that prompted this). It uses the manual window/limit
+        // regardless of the full-sweep config, and coverage — a property of the
+        // full scheduled sweep — is meaningless for it, so it never warns.
+        config([
+            'email-workflow.message_limit' => 1,   // full-sweep cap: ignored by manual
+            'email-workflow.since_days' => 45,      // full-sweep window: ignored by manual
+        ]);
+        Http::fake($this->googleStack());
+
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_MANUAL);
+
+        // Bounded to the manual window + per-page limit, not the configured ones.
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), 'gmail/v1/users/me/messages?')
+            && str_contains(urldecode($r->url()), 'newer_than:'.CaptureService::MANUAL_SINCE_DAYS.'d')
+            && str_contains($r->url(), 'maxResults='.CaptureService::MANUAL_MESSAGE_LIMIT));
+        $this->assertNull($run->coverage_warning);
     }
 
     public function test_a_sweep_below_its_cap_is_never_flagged(): void
