@@ -40,18 +40,41 @@ class RunEmailWorkflows extends Command
         $dispatched = 0;
 
         foreach ($workflows as $workflow) {
-            if (! $this->option('force') && ! $this->isDue($workflow)) {
+            // A pending "Run now" marker fires regardless of cron — that is what
+            // makes the button feel immediate (the operator gets the sweep within
+            // a minute over the CLI, no browser timeout). Everything else fires on
+            // its own cron. --force still forces a cron-style run.
+            $requested = $workflow->hasPendingRunRequest();
+
+            if (! $requested && ! $this->option('force') && ! $this->isDue($workflow)) {
                 continue;
             }
 
             if (! $workflow->isReadyToActivate()) {
+                // Clear a marker on a now-unrunnable workflow so it doesn't retry
+                // every minute forever; readiness is checked when the button is
+                // pressed, but state can drift between request and this tick.
+                if ($requested) {
+                    $workflow->clearRunRequest();
+                }
                 $this->warn("#{$workflow->id} “{$workflow->name}” skipped — incomplete configuration.");
 
                 continue;
             }
 
+            // A requested run is operator-initiated: label it MANUAL and attribute
+            // it to whoever asked, so the history reads true. Clear the marker
+            // BEFORE running (at-most-once): if the sweep dies, the failed run is
+            // in the history and the operator re-requests — better than a marker
+            // that re-fires the same failing sweep every minute.
+            $trigger = $requested ? EmailWorkflowRun::TRIGGER_MANUAL : EmailWorkflowRun::TRIGGER_SCHEDULED;
+            $userId = $requested ? $workflow->run_requested_by : null;
+            if ($requested) {
+                $workflow->clearRunRequest();
+            }
+
             if ($this->option('sync')) {
-                $run = $capture->run($workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+                $run = $capture->run($workflow, $trigger, $userId);
                 $this->line(sprintf(
                     '#%d “%s” → %s (scanned %d, captured %d, skipped %d, failed %d)%s',
                     $workflow->id, $workflow->name, strtoupper($run->status),
@@ -59,7 +82,7 @@ class RunEmailWorkflows extends Command
                     $run->error ? ' — '.$run->error : ''
                 ));
             } else {
-                RunEmailWorkflowCapture::dispatch($workflow->id, EmailWorkflowRun::TRIGGER_SCHEDULED);
+                RunEmailWorkflowCapture::dispatch($workflow->id, $trigger, $userId);
                 $this->line("#{$workflow->id} “{$workflow->name}” → queued.");
             }
 
@@ -85,8 +108,14 @@ class RunEmailWorkflows extends Command
 
         // Includes `error` — see EmailWorkflow::SWEEPABLE_STATUSES. A workflow
         // whose last run failed is still enabled and must keep retrying, or it
-        // can never recover from a transient fault.
-        return $query->whereIn('status', EmailWorkflow::SWEEPABLE_STATUSES)->get();
+        // can never recover from a transient fault. A workflow with a pending
+        // "Run now" marker is included too, whatever its status — the operator
+        // asked for it explicitly (a ready draft/paused can be exercised), same
+        // intent as passing --workflow=.
+        return $query->where(function ($q) {
+            $q->whereIn('status', EmailWorkflow::SWEEPABLE_STATUSES)
+                ->orWhereNotNull('run_requested_at');
+        })->get();
     }
 
     /**

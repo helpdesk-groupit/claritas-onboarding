@@ -401,38 +401,14 @@ class EmailWorkflowCaptureTest extends TestCase
         $this->assertStringContainsString('read by neither', $run->coverage_warning);
     }
 
-    public function test_a_manual_run_is_bounded_and_never_warns_about_coverage(): void
-    {
-        // A manual Run now is a synchronous browser request behind a ~100s edge
-        // proxy: it sweeps a tiny recent slice so it returns before the edge
-        // times out (the 504 that prompted this). It uses the manual window/limit
-        // regardless of the full-sweep config, and coverage — a property of the
-        // full scheduled sweep — is meaningless for it, so it never warns.
-        config([
-            'email-workflow.message_limit' => 1,   // full-sweep cap: ignored by manual
-            'email-workflow.since_days' => 45,      // full-sweep window: ignored by manual
-        ]);
-        Http::fake($this->googleStack());
-
-        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_MANUAL);
-
-        // Bounded to the manual window + per-page limit, not the configured ones.
-        Http::assertSent(fn (Request $r) => str_contains($r->url(), 'gmail/v1/users/me/messages?')
-            && str_contains(urldecode($r->url()), 'newer_than:'.CaptureService::MANUAL_SINCE_DAYS.'d')
-            && str_contains($r->url(), 'maxResults='.CaptureService::MANUAL_MESSAGE_LIMIT));
-        $this->assertNull($run->coverage_warning);
-    }
-
     public function test_a_sweep_below_its_cap_is_never_flagged(): void
     {
         config(['email-workflow.message_limit' => 500]);
         Http::fake($this->googleStack());
 
-        $this->actingAs($this->itManager)
-            ->post(route('it.automation.email-workflow.run', $this->workflow->id))
-            ->assertRedirect()
-            ->assertSessionMissing('warning')
-            ->assertSessionHas('success');
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        $this->assertNull($run->coverage_warning);
     }
 
     public function test_a_scheduled_sweeps_coverage_warning_is_readable_in_the_run_history(): void
@@ -602,19 +578,60 @@ class EmailWorkflowCaptureTest extends TestCase
 
     // ── The button + the scheduler ───────────────────────────────────────
 
-    public function test_run_now_reports_the_outcome_to_the_operator(): void
+    public function test_run_now_requests_a_background_sweep_instead_of_running_inline(): void
     {
+        // Run now must NOT sweep in the request: a slow mailbox takes minutes and
+        // the edge proxy 504s at ~100s. It marks the workflow and returns at
+        // once; the every-minute scheduler runs the sweep out of band.
         Http::fake($this->googleStack());
 
         $this->actingAs($this->itManager)
             ->post(route('it.automation.email-workflow.run', $this->workflow->id))
             ->assertRedirect()
-            ->assertSessionHas('success', fn ($m) => str_contains($m, 'captured 1'));
+            ->assertSessionHas('info', fn ($m) => str_contains($m, 'requested'));
 
-        $this->assertSame(
-            EmailWorkflowRun::TRIGGER_MANUAL,
-            EmailWorkflowRun::sole()->trigger
-        );
+        // Nothing swept inline — no run row, no mailbox call in the request.
+        $this->assertSame(0, EmailWorkflowRun::count());
+        Http::assertNothingSent();
+
+        // The marker is set and attributed to the operator who pressed it.
+        $fresh = $this->workflow->fresh();
+        $this->assertTrue($fresh->hasPendingRunRequest());
+        $this->assertSame($this->itManager->id, $fresh->run_requested_by);
+    }
+
+    public function test_the_scheduler_runs_a_requested_sweep_and_clears_the_marker(): void
+    {
+        // The other half: the every-minute scheduler (no --force) picks up the
+        // marker regardless of cron, runs the FULL sweep (CLI, no edge timeout),
+        // labels it MANUAL + attributes it, and clears the marker so it fires
+        // once — not every minute forever.
+        Http::fake($this->googleStack());
+        $this->workflow->requestImmediateRun($this->itManager->id);
+
+        $this->artisan('email-workflows:run --sync')->assertSuccessful();
+
+        $run = EmailWorkflowRun::sole();
+        $this->assertSame(EmailWorkflowRun::STATUS_SUCCESS, $run->status, $run->error ?? '');
+        $this->assertSame(EmailWorkflowRun::TRIGGER_MANUAL, $run->trigger);
+        $this->assertSame($this->itManager->id, $run->triggered_by);
+        $this->assertSame(1, $run->captured_count);   // full sweep, not a bounded slice
+        $this->assertFalse($this->workflow->fresh()->hasPendingRunRequest());
+    }
+
+    public function test_a_requested_sweep_on_a_now_unready_workflow_clears_its_marker(): void
+    {
+        // State can drift between the click and the tick. A marker on a workflow
+        // that no longer configures must not re-fire every minute forever.
+        Http::fake();
+        $this->workflow->update(['email_connection_id' => null]);   // break readiness
+        $this->workflow->requestImmediateRun($this->itManager->id);
+
+        $this->artisan('email-workflows:run --sync')->assertSuccessful();
+
+        $this->assertSame(0, EmailWorkflowRun::count());
+        $this->assertFalse($this->workflow->fresh()->hasPendingRunRequest());
+        Http::assertNothingSent();
     }
 
     public function test_the_list_page_renders_the_run_and_history_controls(): void
@@ -664,6 +681,8 @@ class EmailWorkflowCaptureTest extends TestCase
 
         Http::assertNothingSent();
         $this->assertSame(0, EmailWorkflowRun::count());
+        // Readiness is checked before the marker is set, so nothing is queued.
+        $this->assertFalse($bare->fresh()->hasPendingRunRequest());
     }
 
     public function test_run_now_is_forbidden_for_non_it_users(): void

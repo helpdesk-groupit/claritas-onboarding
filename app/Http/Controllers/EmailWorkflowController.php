@@ -6,7 +6,6 @@ use App\Models\EmailWorkflow;
 use App\Models\EmailWorkflowCapture;
 use App\Models\EmailWorkflowConnection;
 use App\Models\EmailWorkflowRun;
-use App\Support\Automation\CaptureService;
 use App\Support\Automation\ConnectionDiagnosis;
 use App\Support\Automation\DetectionEngine;
 use App\Support\Automation\EmailAdapterFactory;
@@ -270,7 +269,7 @@ class EmailWorkflowController extends Controller
      * the point. Scheduled sweeps go through RunEmailWorkflowCapture instead.
      * The route is throttled because each run spends real Google API quota.
      */
-    public function runNow(int $workflow, CaptureService $capture)
+    public function runNow(int $workflow)
     {
         $this->authorizeModule();
         $model = $this->findOwned($workflow);
@@ -279,43 +278,18 @@ class EmailWorkflowController extends Controller
             return back()->with('error', 'Cannot run yet — '.implode('; ', $missing).'.');
         }
 
-        // A sweep uploads files and appends rows; the default 30s won't cover it.
-        @set_time_limit(CaptureService::REQUEST_TIME_LIMIT);
+        // Run now does NOT sweep inline. A slow mailbox (the real Zoho IMAP is
+        // ~2-3s per message) takes minutes, and Cloudflare's edge returns a 504
+        // at ~100s while PHP is still reading — the operator saw a Gateway
+        // Time-out. No synchronous request can beat a fixed edge timeout against
+        // a mailbox that slow, so instead we drop a marker the every-minute
+        // scheduler picks up (CLI, no edge timeout) and return at once. The full
+        // sweep runs out of band and lands in the run history.
+        $model->requestImmediateRun(Auth::id());
 
-        $run = $capture->run($model, EmailWorkflowRun::TRIGGER_MANUAL, Auth::id());
-
-        if ($run->status === EmailWorkflowRun::STATUS_FAILED) {
-            return back()->with('error', 'Run failed — '.$run->error);
-        }
-
-        $summary = sprintf(
-            'Quick run finished in %ds — checked the newest %d message%s, matched %d, captured %d, '
-            .'skipped %d already-logged, failed %d. Run now is a fast test of recent mail; the full mailbox is '
-            .'swept on schedule, so anything not picked up here is captured by the scheduled run.',
-            $run->durationSeconds() ?? 0,
-            $run->scanned_count, $run->scanned_count === 1 ? '' : 's', $run->matched_count,
-            $run->captured_count, $run->skipped_count, $run->failed_count
-        );
-
-        // Only surfaced when the cap may actually have cost NEW documents —
-        // filling the cap is by design and warning every run would be noise.
-        if ($run->coverage_warning) {
-            return back()->with('warning', $summary.' '.$run->coverage_warning);
-        }
-
-        // Nothing captured and nothing skipped is a legitimate result, but it
-        // reads as a silent failure — say why instead of flashing a bare success.
-        if ($run->captured_count === 0 && $run->skipped_count === 0 && $run->failed_count === 0) {
-            return back()->with('info', $summary
-                .' No new documents matched in this quick check — widen the rules, or confirm the mailbox has '
-                .'matching mail in the newest '.CaptureService::MANUAL_MESSAGE_LIMIT.' messages. The scheduled run '
-                .'looks wider.');
-        }
-
-        return back()->with(
-            $run->status === EmailWorkflowRun::STATUS_PARTIAL ? 'warning' : 'success',
-            $summary
-        );
+        return back()->with('info',
+            'Sweep requested — it runs within a minute and the result appears in this workflow’s run history '
+            .'(the ⏱ button). It runs in the background so a large mailbox can’t time the page out.');
     }
 
     /** Recent runs + their captures, for the history panel. */

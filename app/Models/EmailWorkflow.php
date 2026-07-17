@@ -122,6 +122,7 @@ class EmailWorkflow extends Model
         'rules_json', 'storage_config_json', 'log_config_json',
         'timezone', 'capture_cron', 'reconcile_cron', 'first_sweep_on_activate',
         'wizard_step', 'last_run_at', 'next_run_at', 'captured_count', 'last_error',
+        'run_requested_at', 'run_requested_by',
     ];
 
     protected $casts = [
@@ -133,6 +134,7 @@ class EmailWorkflow extends Model
         'captured_count' => 'integer',
         'last_run_at' => 'datetime',
         'next_run_at' => 'datetime',
+        'run_requested_at' => 'datetime',
     ];
 
     // ── Relationships ────────────────────────────────────────────────────
@@ -159,6 +161,37 @@ class EmailWorkflow extends Model
     public function runs(): HasMany
     {
         return $this->hasMany(EmailWorkflowRun::class, 'email_workflow_id');
+    }
+
+    public function runRequester(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'run_requested_by');
+    }
+
+    /**
+     * Mark this workflow for an immediate out-of-band sweep.
+     *
+     * "Run now" cannot sweep inline: a slow mailbox takes minutes and the edge
+     * proxy 504s at ~100s. So it drops a marker the every-minute scheduler picks
+     * up (CLI, no edge timeout) and returns at once. Idempotent — clicking twice
+     * before the scheduler ticks just re-stamps the same pending request.
+     */
+    public function requestImmediateRun(?int $userId = null): void
+    {
+        $this->forceFill([
+            'run_requested_at' => now(),
+            'run_requested_by' => $userId,
+        ])->save();
+    }
+
+    public function hasPendingRunRequest(): bool
+    {
+        return $this->run_requested_at !== null;
+    }
+
+    public function clearRunRequest(): void
+    {
+        $this->forceFill(['run_requested_at' => null, 'run_requested_by' => null])->save();
     }
 
     public function captures(): HasMany

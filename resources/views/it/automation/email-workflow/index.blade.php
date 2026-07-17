@@ -164,15 +164,16 @@
                                                             : 'Toggle active') }}">
                                         </div>
                                     </form>
-                                    {{-- Run now (synchronous sweep — button disables while it works).
-                                         The tooltip names the blockers: a disabled button whose only
-                                         explanation lives behind clicking it is no explanation. --}}
+                                    {{-- Run now: requests a background sweep the scheduler runs within a
+                                         minute (a slow mailbox can't be swept inline without timing the
+                                         page out). The tooltip names the blockers: a disabled button whose
+                                         only explanation lives behind clicking it is no explanation. --}}
                                     <form method="POST" action="{{ route('it.automation.email-workflow.run', $wf->id) }}"
                                           class="m-0 ewf-run-form">
                                         @csrf
                                         <button type="submit" class="btn btn-sm btn-outline-primary ewf-run-btn"
                                                 {{ $wfMissing ? 'disabled' : '' }}
-                                                title="{{ $wfMissing ? 'Cannot run — '.implode('; ', $wfMissing) : 'Run this workflow now' }}">
+                                                title="{{ $wfMissing ? 'Cannot run — '.implode('; ', $wfMissing) : 'Run now — sweeps in the background; the result appears in the run history' }}">
                                             <i class="bi bi-play-fill"></i>
                                         </button>
                                     </form>
@@ -284,8 +285,9 @@
         });
     }
 
-    // Run now: the sweep is synchronous and can take a while — make that visible
-    // and block double-submits (each run spends Google API quota).
+    // Run now: the request just drops a marker and returns immediately (the
+    // scheduler does the sweep out of band), so this only blocks a double-submit
+    // before the redirect lands — no long spinner to babysit.
     document.querySelectorAll('.ewf-run-form').forEach(function (form) {
         form.addEventListener('submit', function () {
             var btn = form.querySelector('.ewf-run-btn');
