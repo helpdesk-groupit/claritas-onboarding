@@ -32,6 +32,17 @@ class OutlookAdapter implements EmailSourceAdapter
     }
 
     /**
+     * Refresh the token and read one message header. Throws on any failure.
+     *
+     * See GmailAdapter::verify() — same reasoning: the cheapest call that
+     * proves the grant is still live and the scope still covers reads.
+     */
+    public function verify(EmailWorkflowConnection $conn): void
+    {
+        $this->search($conn, ['since_days' => 1], ['limit' => 1]);
+    }
+
+    /**
      * @param  array<string,mixed>  $query
      * @param  array<string,mixed>  $paging
      * @return array<int,array<string,mixed>>

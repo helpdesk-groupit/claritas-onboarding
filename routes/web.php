@@ -118,8 +118,14 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
         Route::get('/{workflow}/runs', [\App\Http\Controllers\EmailWorkflowController::class, 'runs'])->name('runs');
         Route::delete('/{workflow}', [\App\Http\Controllers\EmailWorkflowController::class, 'destroy'])->name('destroy');
         // Connections (user-supplied OAuth client creds or IMAP host/app-password).
-        Route::post('/connections', [\App\Http\Controllers\EmailWorkflowController::class, 'saveConnection'])->name('connections.save');
+        // Saving an IMAP account signs in to it first, so this makes a network
+        // call — throttled like any other outbound-costing action.
+        Route::post('/connections', [\App\Http\Controllers\EmailWorkflowController::class, 'saveConnection'])
+            ->middleware('throttle:12,1')->name('connections.save');
         Route::delete('/connections/{connection}', [\App\Http\Controllers\EmailWorkflowController::class, 'deleteConnection'])->name('connections.delete');
+        // Re-verify an existing email account (mailbox switched off, password rotated).
+        Route::post('/connections/{connection}/test', [\App\Http\Controllers\EmailWorkflowController::class, 'testConnection'])
+            ->middleware('throttle:12,1')->name('connections.test');
         // OAuth consent round-trip (Gmail / Outlook).
         Route::get('/connections/{connection}/connect', [\App\Http\Controllers\EmailWorkflowController::class, 'connectStart'])->name('connections.connect');
         Route::get('/connections/callback', [\App\Http\Controllers\EmailWorkflowController::class, 'connectCallback'])->name('connections.callback');

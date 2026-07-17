@@ -22,6 +22,20 @@ interface EmailSourceAdapter
     public function providerId(): string;
 
     /**
+     * Prove the connection can actually sign in. Returns cleanly or THROWS.
+     *
+     * Part of the contract because a stored `connected` must mean "we logged
+     * in", never "the operator filled the form in". IMAP takes host + username
+     * + app-password with no consent round-trip to validate them, so without
+     * this the first honest signal is a failed capture run hours later — with
+     * the workflow already Active and reporting nothing missing. That is what
+     * this method exists to prevent; see EmailWorkflowController::saveConnection.
+     *
+     * Keep it CHEAP (one round-trip) — it runs synchronously in a web request.
+     */
+    public function verify(EmailWorkflowConnection $conn): void;
+
+    /**
      * Search the mailbox, NEWEST FIRST.
      *
      * Ordering is part of the contract, not an implementation detail: a capture

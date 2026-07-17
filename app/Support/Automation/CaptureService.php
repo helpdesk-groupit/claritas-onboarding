@@ -118,15 +118,19 @@ class CaptureService
                     : null,
             ]);
 
+            // The email connection is what a run-level failure is usually about
+            // (login refused, mailbox unreachable), so let the diagnosis name it.
+            $message = $this->safeMessage($e, $workflow->emailConnection);
+
             $run->update([
                 'status' => EmailWorkflowRun::STATUS_FAILED,
-                'error' => $this->safeMessage($e),
+                'error' => $message,
                 'finished_at' => now(),
             ]);
 
             $workflow->forceFill([
                 'last_run_at' => now(),
-                'last_error' => $this->safeMessage($e),
+                'last_error' => $message,
                 // An active workflow that can't run is an error state the list must show.
                 'status' => $workflow->isActive() ? EmailWorkflow::STATUS_ERROR : $workflow->status,
             ])->save();
@@ -736,15 +740,20 @@ class CaptureService
     }
 
     /**
-     * Provider errors can echo tokens or PII — keep the operator-facing string
-     * short and bounded. Full detail goes to the log.
+     * The operator-facing failure string: explained where we recognise the
+     * signature, otherwise a bounded version of the raw message.
+     *
+     * Bounded because provider errors can echo tokens or PII, and explained
+     * because the raw text names the class that noticed the problem rather than
+     * the remedy — "ImapServerErrorException: NO [ALERT] You are yet to enable
+     * IMAP for your account (Failure)" is a true sentence that helps nobody.
+     * Full detail still goes to the log above.
+     *
+     * $conn names the mailbox in the explanation; pass it only where the error
+     * can actually be the mail account's fault.
      */
-    private function safeMessage(Throwable $e): string
+    private function safeMessage(Throwable $e, ?EmailWorkflowConnection $conn = null): string
     {
-        $message = $e instanceof RuntimeException
-            ? $e->getMessage()
-            : class_basename($e).': '.$e->getMessage();
-
-        return mb_substr(preg_replace('/\s+/', ' ', $message) ?? $message, 0, 500);
+        return ConnectionDiagnosis::explain($e, $conn);
     }
 }

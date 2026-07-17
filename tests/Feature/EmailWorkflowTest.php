@@ -5,9 +5,13 @@ namespace Tests\Feature;
 use App\Models\EmailWorkflow;
 use App\Models\EmailWorkflowConnection;
 use App\Models\User;
+use App\Support\Automation\Contracts\EmailSourceAdapter;
+use App\Support\Automation\EmailAdapterFactory;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Mockery;
 use Tests\TestCase;
+use Throwable;
 
 /**
  * Feature cover for IT > Automation > Email Workflow.
@@ -223,8 +227,47 @@ class EmailWorkflowTest extends TestCase
             ->assertNotFound();
     }
 
+    /**
+     * Stand in for the mailbox: `verify()` either returns (login accepted) or
+     * throws (refused). The adapters' own network behaviour is not what these
+     * assert — the controller's response to each outcome is.
+     */
+    private function fakeMailbox(?Throwable $refusesWith = null): void
+    {
+        $adapter = Mockery::mock(EmailSourceAdapter::class);
+        $refusesWith
+            ? $adapter->shouldReceive('verify')->andThrow($refusesWith)
+            : $adapter->shouldReceive('verify')->andReturnNull();
+
+        $factory = Mockery::mock(EmailAdapterFactory::class);
+        $factory->shouldReceive('for')->andReturn($adapter);
+        $this->app->instance(EmailAdapterFactory::class, $factory);
+    }
+
+    /** The production failure: Zoho refusing a mailbox that has IMAP switched off. */
+    private function imapDisabled(): Throwable
+    {
+        return new \Exception('NO [ALERT] You are yet to enable IMAP for your account. Please contact your administrator (Failure)');
+    }
+
+    /** @return array<string,mixed> */
+    private function imapPayload(array $overrides = []): array
+    {
+        return array_merge([
+            'category' => 'email',
+            'provider_id' => 'imap',
+            'imap_host' => 'imap.zoho.com',
+            'imap_port' => 993,
+            'imap_encryption' => 'ssl',
+            'imap_username' => 'billing@nurengroup.com',
+            'imap_password' => 'app-password',
+        ], $overrides);
+    }
+
     public function test_saving_an_imap_connection_encrypts_the_app_password_and_connects(): void
     {
+        $this->fakeMailbox();
+
         $this->actingAs($this->itManager)
             ->post(route('it.automation.email-workflow.connections.save'), [
                 'category' => 'email',
@@ -246,6 +289,139 @@ class EmailWorkflowTest extends TestCase
         $this->assertStringNotContainsString('yahoo-app-password', (string) $raw->imap_password);
         // Model decrypts transparently.
         $this->assertSame('yahoo-app-password', $conn->imap_password);
+    }
+
+    // ── Verify-then-create: a stored `connected` must have been earned ───
+
+    /**
+     * The regression that started all this. On 2026-07-17 two Zoho mailboxes on
+     * the same host were added; IMAP was enabled on one and not the other, and
+     * BOTH were stored `connected` because saving never logged in. The dead one
+     * satisfied missingRequirements(), went Active, and first told the truth as
+     * a failed run. A refused login must produce no row at all.
+     */
+    public function test_a_mailbox_that_refuses_the_login_is_not_saved(): void
+    {
+        $this->fakeMailbox($this->imapDisabled());
+
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.connections.save'), $this->imapPayload())
+            ->assertRedirect();
+
+        $this->assertDatabaseCount('email_workflow_connections', 0);
+    }
+
+    public function test_a_refused_login_explains_the_cause_rather_than_naming_an_exception(): void
+    {
+        $this->fakeMailbox($this->imapDisabled());
+
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.connections.save'), $this->imapPayload())
+            ->assertRedirect();
+
+        $error = session('error');
+        $this->assertStringContainsString('nothing was saved', $error);
+        $this->assertStringContainsString('IMAP is switched off for billing@nurengroup.com', $error);
+        $this->assertStringContainsString('Zoho Mail → Settings → Mail Accounts → IMAP Access', $error);
+        $this->assertStringNotContainsString('ImapServerErrorException', $error);
+    }
+
+    /** There is no edit screen for a connection, so the typed fields must come back. */
+    public function test_a_refused_login_returns_the_typed_fields_for_correction(): void
+    {
+        $this->fakeMailbox($this->imapDisabled());
+
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.connections.save'), $this->imapPayload())
+            ->assertSessionHasInput('imap_host', 'imap.zoho.com')
+            ->assertSessionHasInput('imap_username', 'billing@nurengroup.com');
+    }
+
+    public function test_a_mailbox_that_accepts_the_login_is_saved_as_connected(): void
+    {
+        $this->fakeMailbox();
+
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.connections.save'), $this->imapPayload())
+            ->assertRedirect();
+
+        $conn = EmailWorkflowConnection::sole();
+        $this->assertSame(EmailWorkflowConnection::STATUS_CONNECTED, $conn->status);
+        $this->assertTrue($conn->isConnected());
+    }
+
+    // ── Test button: keeping a connection honest after birth ─────────────
+
+    /**
+     * The end-to-end point of the fix: a connection proven dead must fail the
+     * readiness gate, so the workflow cannot sit Active while capturing nothing.
+     */
+    public function test_testing_a_dead_mailbox_marks_it_error_and_blocks_activation(): void
+    {
+        $conn = EmailWorkflowConnection::create([
+            'created_by' => $this->itManager->id,
+            'category' => 'email', 'provider_id' => 'imap',
+            'imap_host' => 'imap.zoho.com', 'imap_port' => 993, 'imap_encryption' => 'ssl',
+            'imap_username' => 'billing@nurengroup.com', 'imap_password' => 'app-password',
+            'status' => EmailWorkflowConnection::STATUS_CONNECTED,
+        ]);
+        $workflow = EmailWorkflow::create([
+            'created_by' => $this->itManager->id,
+            'name' => 'Supplier invoices', 'status' => 'draft',
+            'email_connection_id' => $conn->id,
+        ]);
+
+        $this->fakeMailbox($this->imapDisabled());
+
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.connections.test', $conn->id))
+            ->assertRedirect();
+
+        $this->assertSame(EmailWorkflowConnection::STATUS_ERROR, $conn->refresh()->status);
+        $this->assertFalse($conn->isConnected());
+        $this->assertStringContainsString('IMAP is switched off', session('error'));
+
+        // The readiness gate now tells the truth about this workflow.
+        $missing = $workflow->refresh()->missingRequirements();
+        $this->assertNotEmpty($missing);
+        $this->assertStringContainsString('email source', implode(' ', $missing));
+        $this->assertFalse($workflow->isReadyToActivate());
+    }
+
+    /** Fix the mailbox, press Test, get the green back — without deleting the row. */
+    public function test_testing_a_repaired_mailbox_heals_it_back_to_connected(): void
+    {
+        $conn = EmailWorkflowConnection::create([
+            'created_by' => $this->itManager->id,
+            'category' => 'email', 'provider_id' => 'imap',
+            'imap_host' => 'imap.zoho.com', 'imap_port' => 993, 'imap_encryption' => 'ssl',
+            'imap_username' => 'billing@nurengroup.com', 'imap_password' => 'app-password',
+            'status' => EmailWorkflowConnection::STATUS_ERROR,
+        ]);
+
+        $this->fakeMailbox();
+
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.connections.test', $conn->id))
+            ->assertRedirect();
+
+        $this->assertSame(EmailWorkflowConnection::STATUS_CONNECTED, $conn->refresh()->status);
+        $this->assertStringContainsString('healthy', session('success'));
+    }
+
+    public function test_a_user_cannot_test_another_users_connection(): void
+    {
+        $other = User::factory()->itExecutive()->withTwoFactor()->create();
+        $conn = EmailWorkflowConnection::create([
+            'created_by' => $other->id,
+            'category' => 'email', 'provider_id' => 'imap',
+            'imap_host' => 'imap.zoho.com', 'imap_username' => 'theirs@example.com',
+            'imap_password' => 'pw', 'status' => EmailWorkflowConnection::STATUS_CONNECTED,
+        ]);
+
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.connections.test', $conn->id))
+            ->assertNotFound();
     }
 
     public function test_imap_save_requires_host_username_password(): void

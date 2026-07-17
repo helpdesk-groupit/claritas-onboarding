@@ -70,16 +70,33 @@
                             <i class="bi bi-box-arrow-up-right me-1"></i>{{ $needsAuth ? ($conn->status === 'needs_reconnect' ? 'Reconnect' : 'Connect') : 'Re-connect' }}
                         </a>
                     @endif
+                    {{-- Email accounts can be re-verified in place. A green badge only
+                         proves the account worked when it was added — a mailbox can have
+                         IMAP switched off, or an app password revoked, at any time after.
+                         Storage/log are OAuth-consent providers with no verify() on their
+                         contracts, so the button is email-only. --}}
+                    @if($category === 'email')
+                        <button type="submit" form="testConn_{{ $conn->id }}" class="btn btn-sm btn-outline-secondary"
+                                title="Sign in to this account now and report what happens">
+                            <i class="bi bi-plug me-1"></i>Test
+                        </button>
+                    @endif
                     <button type="submit" form="delConn_{{ $conn->id }}" class="btn btn-sm btn-outline-danger" title="Remove">
                         <i class="bi bi-trash"></i>
                     </button>
                 </div>
             </div>
-            {{-- Delete form kept outside the wizard form to avoid nesting. --}}
+            {{-- Action forms kept outside the wizard form to avoid nesting. --}}
             <form id="delConn_{{ $conn->id }}" method="POST"
                   action="{{ route('it.automation.email-workflow.connections.delete', $conn->id) }}" class="d-none">
                 @csrf @method('DELETE')
             </form>
+            @if($category === 'email')
+                <form id="testConn_{{ $conn->id }}" method="POST"
+                      action="{{ route('it.automation.email-workflow.connections.test', $conn->id) }}" class="d-none">
+                    @csrf
+                </form>
+            @endif
         @endforeach
     @endif
 </div>
@@ -188,6 +205,13 @@
                 <div class="form-text mt-1">
                     <i class="bi bi-shield-lock me-1"></i>
                     Generate an <strong>app password</strong> in your mail account's security settings (regular passwords are rejected by most providers). Stored encrypted, never logged.
+                </div>
+                <div class="form-text">
+                    <i class="bi bi-check2-circle me-1"></i>
+                    We sign in to the mailbox before saving it. If the login is refused — IMAP switched off for
+                    that mailbox, wrong password, wrong port — nothing is stored and you'll be told why.
+                    <strong>IMAP is a per-mailbox setting</strong>, so one mailbox can work while another on the
+                    same host does not.
                 </div>
             </div>
         </form>

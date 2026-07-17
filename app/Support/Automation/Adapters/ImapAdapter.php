@@ -40,6 +40,28 @@ class ImapAdapter implements EmailSourceAdapter
     }
 
     /**
+     * Log in and open the INBOX, then hang up. Throws on any failure.
+     *
+     * Deliberately does NOT fetch a message: the question is only "will this
+     * host accept these credentials and let us read mail", and selecting the
+     * folder answers it in one round-trip on an empty mailbox too. This is the
+     * probe that separates a mailbox with IMAP switched off (Zoho rejects at
+     * LOGIN) from one that works — the two are otherwise indistinguishable
+     * until a capture run fails.
+     */
+    public function verify(EmailWorkflowConnection $conn): void
+    {
+        $client = $this->client($conn);
+        $client->connect();
+
+        try {
+            $client->getFolderByName('INBOX');
+        } finally {
+            $client->disconnect();
+        }
+    }
+
+    /**
      * Search the INBOX. Supports a `since_days` window (default 30) so the
      * "Test rules" preview and capture run stay bounded.
      *

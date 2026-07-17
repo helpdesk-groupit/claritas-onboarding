@@ -7,12 +7,14 @@ use App\Models\EmailWorkflowCapture;
 use App\Models\EmailWorkflowConnection;
 use App\Models\EmailWorkflowRun;
 use App\Support\Automation\CaptureService;
+use App\Support\Automation\ConnectionDiagnosis;
 use App\Support\Automation\DetectionEngine;
 use App\Support\Automation\EmailAdapterFactory;
 use App\Support\Automation\OAuthService;
 use App\Support\Automation\ProviderRegistry;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
@@ -417,7 +419,7 @@ class EmailWorkflowController extends Controller
     }
 
     // ── Connections: save user-supplied credentials (OAuth or IMAP) ──────
-    public function saveConnection(Request $request)
+    public function saveConnection(Request $request, EmailAdapterFactory $emailFactory)
     {
         $this->authorizeModule();
 
@@ -441,7 +443,15 @@ class EmailWorkflowController extends Controller
                 'imap_password' => 'required|string|max:500',
             ]);
 
-            EmailWorkflowConnection::create([
+            // Build it UNSAVED and log in first. An IMAP account has no consent
+            // round-trip to prove itself, so before this the row was born
+            // `connected` on the strength of the form alone — and a mailbox that
+            // rejects every login (Zoho with IMAP switched off for that user,
+            // a normal password where an app password is required, a wrong
+            // port) sailed through the wizard, satisfied missingRequirements(),
+            // went Active, and first told the truth as a failed run hours later.
+            // Verify-then-create means a stored `connected` has been earned.
+            $conn = new EmailWorkflowConnection([
                 'created_by' => Auth::id(),
                 'category' => $base['category'],
                 'provider_id' => $base['provider_id'],
@@ -451,11 +461,36 @@ class EmailWorkflowController extends Controller
                 'imap_encryption' => $imap['imap_encryption'] === 'none' ? null : $imap['imap_encryption'],
                 'imap_username' => $imap['imap_username'],
                 'imap_password' => $imap['imap_password'],
-                'status' => EmailWorkflowConnection::STATUS_CONNECTED, // ready to use immediately
+                'status' => EmailWorkflowConnection::STATUS_CONNECTED,
             ]);
 
+            try {
+                $emailFactory->for($conn)->verify($conn);
+            } catch (\Throwable $e) {
+                Log::warning('Email Workflow rejected an unverifiable IMAP connection', [
+                    'provider' => $conn->provider_id,
+                    'host' => $conn->imap_host,
+                    'user_id' => Auth::id(),
+                    'error' => $e->getMessage(),
+                    'exception' => $e::class,
+                ]);
+
+                // Not saved. There is no edit screen for a connection, so a
+                // stored-but-broken row could only ever be deleted and redone —
+                // while still being selectable in the wizard's picker, which is
+                // precisely the "looks configured, isn't" state being removed
+                // here. withInput() keeps the host/port/username the operator
+                // typed; only the password field comes back empty.
+                return back()->withInput()
+                    ->with('error', 'Could not connect that mailbox — nothing was saved. '
+                        .ConnectionDiagnosis::explain($e, $conn));
+            }
+
+            $conn->save();
+
             return back()->with('success', ProviderRegistry::name($base['provider_id'])
-                .' mailbox connected. You can now test rules against it.');
+                .' mailbox connected — signed in to '.$conn->imap_username.' successfully. '
+                .'You can now test rules against it.');
         }
 
         // OAuth (Gmail / Outlook): store client id/secret, then consent.
@@ -476,6 +511,56 @@ class EmailWorkflowController extends Controller
 
         return back()->with('success', ProviderRegistry::name($base['provider_id'])
             .' credentials saved. Click “Connect” to authorize the account.');
+    }
+
+    /**
+     * Re-verify an existing email connection and record what we found.
+     *
+     * saveConnection() guarantees a connection is honest at BIRTH; this keeps it
+     * honest afterwards. A mailbox can be switched off, or an app password
+     * revoked, long after the row went green — and until something re-checks,
+     * `connected` is a claim about the past.
+     *
+     * Writes the result BOTH ways: a failure marks the row `error` (so
+     * missingRequirements() blocks activation instead of letting a dead
+     * connection look ready), a success heals a row back to `connected`. A
+     * transient blip can therefore park a working connection in `error` — the
+     * trade is deliberate: this only ever runs when a human clicks Test, they
+     * are shown exactly why, and one more click heals it. Stale-green is the
+     * failure mode that costs hours; a false red costs seconds.
+     *
+     * Email only — storage/log are OAuth-consent providers whose contracts have
+     * no verify(), and Drive/Sheets already report their own re-consent errors.
+     */
+    public function testConnection(int $connection, EmailAdapterFactory $emailFactory)
+    {
+        $this->authorizeModule();
+        $conn = EmailWorkflowConnection::where('created_by', Auth::id())->findOrFail($connection);
+
+        if ($conn->category !== ProviderRegistry::CATEGORY_EMAIL) {
+            return back()->with('error', 'Only email accounts can be tested.');
+        }
+
+        try {
+            $emailFactory->for($conn)->verify($conn);
+        } catch (\Throwable $e) {
+            Log::warning('Email Workflow connection test failed', [
+                'connection_id' => $conn->id,
+                'provider' => $conn->provider_id,
+                'error' => $e->getMessage(),
+                'exception' => $e::class,
+            ]);
+
+            $conn->update(['status' => EmailWorkflowConnection::STATUS_ERROR]);
+
+            return back()->with('error', 'Test failed for '.($conn->account_label ?: $conn->provider_id)
+                .' — '.ConnectionDiagnosis::explain($e, $conn));
+        }
+
+        $conn->update(['status' => EmailWorkflowConnection::STATUS_CONNECTED]);
+
+        return back()->with('success', 'Signed in to '.($conn->account_label ?: $conn->provider_id)
+            .' successfully — the connection is healthy.');
     }
 
     // ── Connections: OAuth consent round-trip (Gmail / Outlook) ──────────

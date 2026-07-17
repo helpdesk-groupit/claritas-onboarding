@@ -32,6 +32,20 @@ class GmailAdapter implements EmailSourceAdapter
     }
 
     /**
+     * Refresh the token and read one message header. Throws on any failure.
+     *
+     * A one-message search is the cheapest call that exercises the whole chain
+     * the capture run depends on: the refresh token still being valid (a
+     * revoked grant fails here), and the granted scope still covering reads.
+     * An empty mailbox returns an empty list, not an error — no mail is not a
+     * broken connection.
+     */
+    public function verify(EmailWorkflowConnection $conn): void
+    {
+        $this->search($conn, ['since_days' => 1], ['limit' => 1]);
+    }
+
+    /**
      * @param  array<string,mixed>  $query
      * @param  array<string,mixed>  $paging
      * @return array<int,array<string,mixed>>
