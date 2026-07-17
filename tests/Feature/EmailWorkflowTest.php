@@ -491,6 +491,99 @@ class EmailWorkflowTest extends TestCase
                 && ! str_contains($m, 'state mismatch'));
     }
 
+    // ── Microsoft tenant-scoped endpoints (AADSTS50194) ──────────────────
+    //
+    // Confirmed in production 2026-07-17 from the nginx access log: every
+    // Outlook connect returned
+    //   AADSTS50194: Application '95b549f4-…' is not configured as a
+    //   multi-tenant application. Usage of the /common endpoint is not
+    //   supported for such applications created after '10/15/2018'.
+    // The registry hardcoded /common, and a single-tenant app registration —
+    // the default — can never use it. Permissions were fully granted; the
+    // module simply had no way to name a directory.
+
+    public function test_a_microsoft_connection_authorizes_against_its_own_directory(): void
+    {
+        $conn = $this->makeConnection('email', 'outlook');
+        $conn->update(['oauth_tenant' => '3f10bc0a-b3b1-4c7d-b64a-6e2f1c752ece']);
+
+        $res = $this->actingAs($this->itManager)
+            ->get(route('it.automation.email-workflow.connections.connect', $conn->id));
+
+        $location = $res->headers->get('Location');
+        $this->assertStringContainsString('/3f10bc0a-b3b1-4c7d-b64a-6e2f1c752ece/oauth2/v2.0/authorize', $location);
+        // The bug itself: /common is what Microsoft refuses for this app.
+        $this->assertStringNotContainsString('/common/', $location);
+    }
+
+    /** A multi-tenant registration sets no directory and must still work. */
+    public function test_a_microsoft_connection_without_a_directory_falls_back_to_common(): void
+    {
+        $conn = $this->makeConnection('email', 'outlook');
+
+        $res = $this->actingAs($this->itManager)
+            ->get(route('it.automation.email-workflow.connections.connect', $conn->id));
+
+        $this->assertStringContainsString('/common/oauth2/v2.0/authorize', $res->headers->get('Location'));
+    }
+
+    /**
+     * The trap worth a test of its own: Microsoft binds the code to the
+     * directory that issued it. Authorizing on /{tenant} and redeeming on
+     * /common fails at the token step — which surfaces as "consent worked but
+     * the connection didn't", the exact symptom this whole fix chased.
+     */
+    public function test_the_token_exchange_uses_the_same_directory_as_the_authorize(): void
+    {
+        $conn = $this->makeConnection('email', 'outlook');
+        $conn->update(['oauth_tenant' => 'contoso.com', 'status' => EmailWorkflowConnection::STATUS_PENDING]);
+
+        \Illuminate\Support\Facades\Http::fake([
+            '*' => \Illuminate\Support\Facades\Http::response([
+                'access_token' => 'at', 'refresh_token' => 'rt', 'expires_in' => 3600,
+            ]),
+        ]);
+
+        $this->actingAs($this->itManager)->withSession(["ewf_oauth_state_{$conn->id}" => 'st'])
+            ->get(route('it.automation.email-workflow.connections.callback', [
+                'code' => 'auth-code', 'state' => 'st.'.$conn->id,
+            ]));
+
+        \Illuminate\Support\Facades\Http::assertSent(fn ($request) => $request->url()
+            === 'https://login.microsoftonline.com/contoso.com/oauth2/v2.0/token');
+        $this->assertSame(EmailWorkflowConnection::STATUS_CONNECTED, $conn->fresh()->status);
+    }
+
+    /**
+     * The directory lands in the URL PATH, so a value containing a slash could
+     * rewrite the endpoint rather than name a tenant. Rejected at the form.
+     */
+    public function test_a_directory_id_that_could_rewrite_the_endpoint_is_rejected(): void
+    {
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.connections.save'), [
+                'category' => 'email', 'provider_id' => 'outlook',
+                'client_id' => 'cid', 'client_secret' => 'csecret',
+                'oauth_tenant' => '../../evil.com/x',
+            ])
+            ->assertSessionHasErrors('oauth_tenant');
+
+        $this->assertSame(0, EmailWorkflowConnection::where('provider_id', 'outlook')->count());
+    }
+
+    /** Gmail has no {tenant} in its endpoints — a stray value must not stick. */
+    public function test_a_directory_id_is_ignored_for_a_provider_that_has_no_tenant(): void
+    {
+        $this->actingAs($this->itManager)
+            ->post(route('it.automation.email-workflow.connections.save'), [
+                'category' => 'email', 'provider_id' => 'gmail',
+                'client_id' => 'cid', 'client_secret' => 'csecret',
+                'oauth_tenant' => 'contoso.com',
+            ]);
+
+        $this->assertNull(EmailWorkflowConnection::where('provider_id', 'gmail')->sole()->oauth_tenant);
+    }
+
     private function makeConnection(string $category, string $providerId): EmailWorkflowConnection
     {
         return EmailWorkflowConnection::create([

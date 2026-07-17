@@ -56,8 +56,20 @@ class ProviderRegistry
                 'auth_type' => 'oauth',
                 // Microsoft Graph delegated scopes. offline_access → refresh token.
                 'scopes' => ['offline_access', 'Mail.Read'],
-                'authorize_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-                'token_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+                // {tenant} is substituted per connection from `oauth_tenant`,
+                // falling back to tenant_default. It is NOT decoration:
+                // Microsoft refuses the shared /common endpoint for a
+                // single-tenant app registration created after 15/10/2018
+                // (AADSTS50194) — which is the default when you register an app
+                // in your own directory. Hardcoding /common here made every
+                // Outlook connection fail in production on 2026-07-17 with
+                // permissions fully granted, and the operator had no field to
+                // fix it with. See OAuthService::endpoint().
+                'authorize_url' => 'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize',
+                'token_url' => 'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token',
+                // Only correct for an app marked multi-tenant; a single-tenant
+                // registration must set oauth_tenant to its directory ID.
+                'tenant_default' => 'common',
                 'auth_params' => ['response_mode' => 'query'],
                 'enabled' => true,
                 'blurb' => 'Read mail from an Outlook / Microsoft 365 mailbox.',
@@ -239,6 +251,22 @@ class ProviderRegistry
     public static function isOAuth(string $id): bool
     {
         return self::authType($id) === 'oauth';
+    }
+
+    /**
+     * True when this provider's endpoints are scoped to a directory/tenant —
+     * i.e. the connection may carry an `oauth_tenant`.
+     *
+     * Derived from the URL template rather than a provider-id allow-list, so a
+     * future tenant-scoped provider works by declaring {tenant} and nothing
+     * else. Drives both the wizard field and what the controller will persist.
+     */
+    public static function isTenantScoped(string $id): bool
+    {
+        $provider = self::find($id);
+
+        return str_contains((string) ($provider['authorize_url'] ?? ''), '{tenant}')
+            || str_contains((string) ($provider['token_url'] ?? ''), '{tenant}');
     }
 
     public static function isImap(string $id): bool

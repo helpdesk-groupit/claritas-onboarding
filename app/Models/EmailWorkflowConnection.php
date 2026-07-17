@@ -33,7 +33,7 @@ class EmailWorkflowConnection extends Model
 
     protected $fillable = [
         'created_by', 'category', 'provider_id', 'account_label',
-        'client_id', 'client_secret', 'access_token', 'refresh_token',
+        'client_id', 'client_secret', 'oauth_tenant', 'access_token', 'refresh_token',
         'scopes', 'status', 'token_expires_at',
         'imap_host', 'imap_port', 'imap_encryption', 'imap_username', 'imap_password',
     ];

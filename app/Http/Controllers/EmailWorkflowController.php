@@ -499,9 +499,21 @@ class EmailWorkflowController extends Controller
         }
 
         // OAuth (Gmail / Outlook): store client id/secret, then consent.
+        //
+        // oauth_tenant is only offered for providers whose endpoints carry
+        // {tenant} (Microsoft). The charset rule is a security control, not
+        // tidiness: the value is interpolated into the URL PATH, so `/` or `..`
+        // could rewrite the endpoint. Restricting it to the shapes Microsoft
+        // actually accepts — a directory GUID, a verified domain, or
+        // common|organizations|consumers — makes traversal unrepresentable.
+        // OAuthService::endpoint() rawurlencode()s it as well; both gates stay.
         $oauth = $request->validate([
             'client_id' => 'required|string|max:500',
             'client_secret' => 'required|string|max:500',
+            'oauth_tenant' => ['nullable', 'string', 'max:100', 'regex:/^[A-Za-z0-9][A-Za-z0-9.\-]*$/'],
+        ], [
+            'oauth_tenant.regex' => 'The directory (tenant) ID must be a tenant GUID, a domain like contoso.com, '
+                .'or one of common, organizations, consumers.',
         ]);
 
         EmailWorkflowConnection::create([
@@ -510,6 +522,10 @@ class EmailWorkflowController extends Controller
             'provider_id' => $base['provider_id'],
             'client_id' => $oauth['client_id'],
             'client_secret' => $oauth['client_secret'],
+            // Ignored unless the provider's endpoints are tenant-scoped.
+            'oauth_tenant' => ProviderRegistry::isTenantScoped($base['provider_id'])
+                ? ($oauth['oauth_tenant'] ?? null)
+                : null,
             'scopes' => $provider['scopes'],
             'status' => EmailWorkflowConnection::STATUS_PENDING,
         ]);

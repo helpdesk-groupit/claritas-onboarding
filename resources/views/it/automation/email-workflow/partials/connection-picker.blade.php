@@ -115,6 +115,7 @@
                             data-scope="{{ $category }}" required>
                         @foreach($enabledProviders as $p)
                             <option value="{{ $p['id'] }}" data-auth="{{ $p['auth_type'] }}"
+                                    data-tenant="{{ \App\Support\Automation\ProviderRegistry::isTenantScoped($p['id']) ? 1 : 0 }}"
                                     data-host="{{ data_get($p, 'imap.host', '') }}"
                                     data-port="{{ data_get($p, 'imap.port', 993) }}"
                                     data-enc="{{ data_get($p, 'imap.encryption', 'ssl') }}">
@@ -142,6 +143,28 @@
                         <button type="submit" class="btn btn-sm btn-primary w-100">Save</button>
                     </div>
                 </div>
+
+                {{-- Microsoft only: which directory to sign in against. Hidden for
+                     providers whose endpoints carry no {tenant}, so Gmail/Drive/
+                     Sheets are unchanged. --}}
+                <div class="conn-tenant-field row g-2 align-items-end mt-1" style="display:none;">
+                    <div class="col-md-10">
+                        <label class="form-label small">Directory (tenant) ID <span class="text-muted">— Microsoft</span></label>
+                        <input type="text" class="form-control form-control-sm conn-oauth-input"
+                               data-name="oauth_tenant"
+                               placeholder="e.g. 3f10bc0a-b3b1-4c7d-b64a-6e2f1c752ece — or your domain, e.g. contoso.com">
+                        <div class="form-text">
+                            <i class="bi bi-info-circle me-1"></i>
+                            Required when the app registration is <strong>single-tenant</strong> (“Accounts in this
+                            organizational directory only” — the default). Microsoft refuses the shared
+                            <code>/common</code> endpoint for those, so sign-in fails with
+                            <code>AADSTS50194</code> even when every permission is granted.
+                            Copy it from Azure → App registrations → your app → <strong>Overview → Directory (tenant) ID</strong>.
+                            Leave blank only if the app is registered as multitenant.
+                        </div>
+                    </div>
+                </div>
+
                 <div class="scope-list mt-2">
                     <strong>Scopes requested</strong> (least-privilege):
                     @foreach($enabledProviders as $p)
@@ -252,6 +275,16 @@
                 if (host && !host.value) host.value = opt.getAttribute('data-host') || '';
                 if (port) port.value = opt.getAttribute('data-port') || '993';
                 if (enc)  enc.value  = opt.getAttribute('data-enc') || 'ssl';
+            }
+
+            // The directory field only applies to tenant-scoped providers
+            // (Microsoft). It stays named/enabled when hidden — harmless, since
+            // it is nullable and the controller drops it for any provider whose
+            // endpoints carry no {tenant}.
+            var tenantField = form.querySelector('.conn-tenant-field');
+            if (tenantField) {
+                var scoped = !isImap && opt.getAttribute('data-tenant') === '1';
+                tenantField.style.display = scoped ? '' : 'none';
             }
 
             // Scope list follows the OAuth provider.

@@ -33,7 +33,35 @@ class OAuthService
             'state' => $state,
         ], $provider['auth_params'] ?? []);
 
-        return $provider['authorize_url'].'?'.http_build_query($params);
+        return $this->endpoint($provider, $conn, 'authorize_url').'?'.http_build_query($params);
+    }
+
+    /**
+     * Resolve a provider endpoint for this connection, substituting {tenant}.
+     *
+     * EVERY endpoint must go through here — authorize, code exchange AND
+     * refresh. Microsoft binds the code to the directory that issued it, so an
+     * authorize on /{tenant} redeemed against /common (or the reverse) fails at
+     * the token step, which reads as "consent worked but the connection didn't"
+     * — the exact class of bug this whole path already cost a day to.
+     *
+     * The tenant is rawurlencode()d because it lands in the URL PATH: it is
+     * operator-supplied, and a value containing `/` would otherwise rewrite the
+     * endpoint rather than name a directory. Validation at the form is the first
+     * gate; this is the one that cannot be bypassed.
+     *
+     * @param  array<string,mixed>  $provider
+     */
+    private function endpoint(array $provider, EmailWorkflowConnection $conn, string $key): string
+    {
+        $url = (string) ($provider[$key] ?? '');
+        if (! str_contains($url, '{tenant}')) {
+            return $url; // Google et al — no tenant in the URL at all.
+        }
+
+        $tenant = trim((string) $conn->oauth_tenant) ?: (string) ($provider['tenant_default'] ?? 'common');
+
+        return str_replace('{tenant}', rawurlencode($tenant), $url);
     }
 
     /**
@@ -52,7 +80,7 @@ class OAuthService
             return false;
         }
 
-        $res = Http::asForm()->post($provider['token_url'], [
+        $res = Http::asForm()->post($this->endpoint($provider, $conn, 'token_url'), [
             'client_id' => $conn->client_id,
             'client_secret' => $conn->client_secret,
             'code' => $code,
@@ -91,7 +119,7 @@ class OAuthService
         }
 
         $provider = ProviderRegistry::find($conn->provider_id);
-        $res = Http::asForm()->post($provider['token_url'], [
+        $res = Http::asForm()->post($this->endpoint($provider, $conn, 'token_url'), [
             'client_id' => $conn->client_id,
             'client_secret' => $conn->client_secret,
             'refresh_token' => $conn->refresh_token,
