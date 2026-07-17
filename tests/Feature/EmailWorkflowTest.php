@@ -599,7 +599,7 @@ class EmailWorkflowTest extends TestCase
             ->get(route('it.automation.email-workflow.connections.callback', [
                 'code' => 'auth-code', 'state' => 'st.'.$conn->id,
             ]))
-            ->assertSessionHas('error', fn ($m) => str_contains($m, 'no Exchange Online mailbox'));
+            ->assertSessionHas('error', fn ($m) => str_contains($m, 'Graph cannot read that account'));
 
         $this->assertSame(EmailWorkflowConnection::STATUS_ERROR, $conn->fresh()->status);
         // The whole point: an unreadable mailbox must not reach Active.

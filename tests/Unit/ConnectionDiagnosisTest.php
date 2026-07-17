@@ -143,17 +143,24 @@ class ConnectionDiagnosisTest extends TestCase
      * fixture keeps that truncation, because matching on the prose after
      * "hosted on-" would pass here and fail on the real thing.
      */
-    public function test_it_explains_an_account_that_has_no_exchange_online_mailbox(): void
+    public function test_it_explains_an_account_whose_mailbox_graph_cannot_read(): void
     {
         $message = ConnectionDiagnosis::explain(new \Exception(
             'HTTP request returned status code 404: {"error":{"code":"MailboxNotEnabledForRESTAPI",'
             .'"message":"The mailbox is either inactive, soft-deleted, or is hosted on- (truncated...)'
         ));
 
-        $this->assertStringContainsString('no Exchange Online mailbox', $message);
-        // The non-obvious trap: delegated Graph reads whoever consented, so
-        // consenting as an admin with no mail can never work.
-        $this->assertStringContainsString('The account you consent as IS the mailbox that gets read', $message);
+        // Leads with the cause that actually bites, and is the one nobody
+        // guesses: Exchange does not finish creating a mailbox until someone
+        // signs in to it, so an admin address that is correctly licensed still
+        // 404s. Confirmed 2026-07-17 — the account had Microsoft 365 Business
+        // Basic (which DOES include Exchange Online Plan 1), so an earlier draft
+        // that led with "no licence" sent the operator to check a box that was
+        // already ticked.
+        $this->assertStringContainsString('never provisioned', $message);
+        $this->assertStringContainsString('outlook.office.com', $message);
+        // The non-obvious trap: delegated Graph reads whoever consented.
+        $this->assertStringContainsString('account you consent as IS the mailbox that gets read', $message);
         $this->assertStringNotContainsString('RequestException', $message);
     }
 

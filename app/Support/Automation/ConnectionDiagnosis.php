@@ -96,11 +96,16 @@ class ConnectionDiagnosis
             'mailboxnotenabledforrestapi',
             'is hosted on-premise',
         ])) {
-            return 'Microsoft accepted the sign-in, but the account you signed in as has no Exchange Online mailbox '
-                .'to read — so the connection can never capture anything. Usually that account has no Exchange Online '
-                .'licence, or its mailbox is still hosted on-premises (hybrid). The account you consent as IS the '
-                .'mailbox that gets read, so consenting with an admin identity that has no mail will always fail here: '
-                .'press Connect again and sign in as the mailbox that actually receives the invoices.';
+            return 'Microsoft accepted the sign-in, but Graph cannot read that account\'s mailbox. '
+                .'MOST LIKELY: the mailbox is licensed but was never provisioned — Exchange only finishes creating a '
+                .'mailbox once somebody signs in to it, and provisioning can lag a licence assignment by up to 24 '
+                .'hours. An admin address nobody ever opens therefore looks correctly licensed and still has no '
+                .'mailbox behind it. Sign in to it once at https://outlook.office.com/ , then press Connect again. '
+                .'Otherwise: the account has no Exchange Online licence (Microsoft 365 Business Basic and above '
+                .'include Exchange Online Plan 1, so check the licence is one of those), or its mailbox is still '
+                .'hosted on-premises in a hybrid setup, which Graph cannot reach at all. '
+                .'Remember the account you consent as IS the mailbox that gets read — pick the mailbox that actually '
+                .'receives the invoices at the account picker, not whichever admin you happen to be signed in as.';
         }
 
         // ── Credentials rejected ─────────────────────────────────────────
