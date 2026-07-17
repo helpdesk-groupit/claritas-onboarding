@@ -665,6 +665,30 @@ class EmailWorkflowTest extends TestCase
         $this->assertSame(EmailWorkflowConnection::STATUS_CONNECTED, $conn->fresh()->status);
     }
 
+    /**
+     * The Graph sweep must not run on Laravel's 30s interactive default — a real
+     * mailbox took longer and every sweep died on cURL error 28. The adapter's
+     * http() helper applies config('email-workflow.request_timeout') to every
+     * call; the fake can't see a Guzzle option, so read it off the PendingRequest.
+     */
+    public function test_the_api_adapters_apply_the_configured_request_timeout(): void
+    {
+        config(['email-workflow.request_timeout' => 137]); // distinctive, not the 30s default
+
+        foreach ([
+            \App\Support\Automation\Adapters\OutlookAdapter::class,
+            \App\Support\Automation\Adapters\GmailAdapter::class,
+        ] as $class) {
+            $adapter = app($class);
+            $method = new \ReflectionMethod($adapter, 'http');
+            $pending = $method->invoke($adapter, 'a-token');
+
+            $options = new \ReflectionProperty($pending, 'options');
+            $this->assertSame(137, ($options->getValue($pending))['timeout'] ?? null,
+                $class.' did not apply the configured request timeout');
+        }
+    }
+
     /** Graph's real 404, with Guzzle's 120-char body summary already applied. */
     private function mailboxNotEnabled(): Throwable
     {

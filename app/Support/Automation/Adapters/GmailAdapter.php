@@ -32,6 +32,19 @@ class GmailAdapter implements EmailSourceAdapter
     }
 
     /**
+     * A bearer-auth HTTP client with the sweep timeout applied.
+     *
+     * Laravel's 30s default is an interactive timeout; a sweep pulls full
+     * message bodies a page at a time and can exceed it on a real mailbox.
+     * Routing every call through here keeps Gmail off the default that killed
+     * the Graph sweeps as cURL error 28.
+     */
+    private function http(string $token): \Illuminate\Http\Client\PendingRequest
+    {
+        return Http::withToken($token)->timeout((int) config('email-workflow.request_timeout', 120));
+    }
+
+    /**
      * Refresh the token and read one message header. Throws on any failure.
      *
      * A one-message search is the cheapest call that exercises the whole chain
@@ -75,7 +88,7 @@ class GmailAdapter implements EmailSourceAdapter
                 'pageToken' => $pageToken,
             ]);
 
-            $list = Http::withToken($token)
+            $list = $this->http($token)
                 ->get(self::BASE.'/users/me/messages', $params)
                 ->throw()->json();
 
@@ -97,7 +110,7 @@ class GmailAdapter implements EmailSourceAdapter
     {
         $token = $this->oauth->freshAccessToken($conn);
 
-        $msg = Http::withToken($token)
+        $msg = $this->http($token)
             ->get(self::BASE."/users/me/messages/{$messageId}", ['format' => 'full'])
             ->throw()->json();
 
@@ -108,7 +121,7 @@ class GmailAdapter implements EmailSourceAdapter
     {
         $token = $this->oauth->freshAccessToken($conn);
 
-        $res = Http::withToken($token)
+        $res = $this->http($token)
             ->get(self::BASE."/users/me/messages/{$messageId}/attachments/{$attachmentId}")
             ->throw()->json();
 
@@ -125,7 +138,7 @@ class GmailAdapter implements EmailSourceAdapter
             return;
         }
 
-        Http::withToken($token)
+        $this->http($token)
             ->post(self::BASE."/users/me/messages/{$messageId}/modify", [
                 'addLabelIds' => [$labelId],
             ])->throw();
@@ -186,13 +199,13 @@ class GmailAdapter implements EmailSourceAdapter
 
     private function ensureLabel(string $token, string $label): ?string
     {
-        $labels = Http::withToken($token)->get(self::BASE.'/users/me/labels')->throw()->json();
+        $labels = $this->http($token)->get(self::BASE.'/users/me/labels')->throw()->json();
         foreach (($labels['labels'] ?? []) as $l) {
             if (($l['name'] ?? '') === $label) {
                 return $l['id'] ?? null;
             }
         }
-        $created = Http::withToken($token)->post(self::BASE.'/users/me/labels', [
+        $created = $this->http($token)->post(self::BASE.'/users/me/labels', [
             'name' => $label,
             'labelListVisibility' => 'labelShow',
             'messageListVisibility' => 'show',

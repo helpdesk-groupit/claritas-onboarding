@@ -122,7 +122,18 @@ class ConnectionDiagnosis
                 .'settings and add the account again.';
         }
 
-        // ── Never reached the server ─────────────────────────────────────
+        // ── Never got a reply ────────────────────────────────────────────
+        //
+        // These needles match ANY transport failure, and the two provider kinds
+        // need opposite remedies — so the branch must know which it is.
+        //
+        // An OAuth provider (Gmail/Graph) is reached over HTTPS and has no host,
+        // port or encryption to configure. Telling its operator to "check the
+        // host, port and encryption" is not merely unhelpful, it actively sends
+        // them to build settings that cannot exist: on 2026-07-17 this exact
+        // message was read as "Microsoft needs incoming server settings", for a
+        // connection whose adapter only ever calls graph.microsoft.com. A remedy
+        // that names fields the provider does not have is worse than no remedy.
         if (self::matches($chain, [
             'connection refused',
             'connection timed out',
@@ -136,6 +147,15 @@ class ConnectionDiagnosis
             'certificate verify failed',
             'ssl operation failed',
         ])) {
+            if (self::isApiProvider($e, $conn)) {
+                return 'The provider\'s API did not answer in time. This provider is reached over HTTPS and has no '
+                    .'host, port or encryption to configure, so this is not a mailbox setting — do not go looking for '
+                    .'incoming server settings. Either this network could not reach the provider, or the mailbox '
+                    .'query took longer than the request timeout. A big first sweep is the usual cause: try Run now '
+                    .'again, and if it keeps timing out lower EWF_SINCE_DAYS or EWF_MESSAGE_LIMIT so each sweep asks '
+                    .'for less, or raise EWF_REQUEST_TIMEOUT.';
+            }
+
             return 'Could not reach '.self::server($conn).'. Check the host, port and encryption are right for this '
                 .'provider, and that the mail server accepts connections from this network.';
         }
@@ -268,6 +288,25 @@ class ConnectionDiagnosis
         return $e instanceof \RuntimeException
             ? $e->getMessage()
             : class_basename($e).': '.$e->getMessage();
+    }
+
+    /**
+     * Is this failure against an HTTPS API rather than a mail server?
+     *
+     * The connection answers it outright when we have one. When we don't, fall
+     * back to the exception text: Guzzle/cURL name the URL they failed on
+     * ("... for https://graph.microsoft.com/v1.0/me/messages"), and no IMAP
+     * failure carries one. Erring toward IMAP on a genuinely unknown failure is
+     * the safer default — the IMAP remedy names fields the operator can at
+     * least see, whereas the API remedy would be nonsense for a mailbox.
+     */
+    private static function isApiProvider(Throwable $e, ?EmailWorkflowConnection $conn): bool
+    {
+        if ($conn) {
+            return ! $conn->isImap();
+        }
+
+        return str_contains(mb_strtolower(self::chain($e)), 'https://');
     }
 
     /** Every message in the exception chain, so wrapped causes still match. */

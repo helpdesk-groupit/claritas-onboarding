@@ -188,6 +188,45 @@ class ConnectionDiagnosisTest extends TestCase
         $this->assertStringContainsString('host, port and encryption', $message);
     }
 
+    /**
+     * A Graph timeout on an OAuth connection must NOT tell the operator to check
+     * host/port/encryption — an OAuth provider has none, and on 2026-07-17 that
+     * advice was read as "Microsoft needs incoming server settings", sending the
+     * operator to configure fields that cannot exist. Same transport error
+     * (cURL 28 / timed out), opposite remedy — the branch must split on kind.
+     */
+    public function test_a_graph_timeout_does_not_send_the_operator_hunting_for_server_settings(): void
+    {
+        $outlook = new EmailWorkflowConnection(['provider_id' => 'outlook', 'account_label' => 'admin@claritas.asia']);
+
+        $message = ConnectionDiagnosis::explain(new \Exception(
+            'cURL error 28: Operation timed out after 30001 milliseconds with 0 bytes received '
+            .'for https://graph.microsoft.com/v1.0/me/messages'
+        ), $outlook);
+
+        $this->assertStringContainsString('has no host, port or encryption to configure', $message);
+        $this->assertStringNotContainsString('Check the host, port and encryption', $message);
+    }
+
+    /** With no connection to ask, the URL in the error is what reveals it's an API. */
+    public function test_a_timeout_naming_an_https_url_is_treated_as_an_api_failure(): void
+    {
+        $message = ConnectionDiagnosis::explain(new \Exception(
+            'cURL error 28: Operation timed out ... for https://gmail.googleapis.com/gmail/v1/users/me/messages'
+        ));
+
+        $this->assertStringContainsString('no host, port or encryption to configure', $message);
+    }
+
+    /** An IMAP timeout still gets the mail-server remedy — the split must not overreach. */
+    public function test_an_imap_timeout_still_points_at_the_mail_server_settings(): void
+    {
+        $message = ConnectionDiagnosis::explain(new \Exception('Connection timed out'), $this->zohoConn());
+
+        $this->assertStringContainsString('imap.zoho.com:993 over ssl', $message);
+        $this->assertStringContainsString('host, port and encryption', $message);
+    }
+
     // ── Fallback behaviour must not regress ──────────────────────────────
 
     /**

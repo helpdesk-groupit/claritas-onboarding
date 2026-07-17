@@ -70,4 +70,31 @@ return [
 
     'memory_floor' => env('EWF_MEMORY_FLOOR', '512M'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | API request timeout (seconds)
+    |--------------------------------------------------------------------------
+    |
+    | For the HTTPS providers (Gmail, Microsoft Graph). Laravel's HTTP client
+    | defaults to 30s, which is an INTERACTIVE timeout — and a sweep is not
+    | interactive. It asks for up to `fetch_batch`-sized pages of messages WITH
+    | their bodies, filtered and sorted server-side, and a mail API can take a
+    | while to answer the first page against a real mailbox.
+    |
+    | The default bit on 2026-07-17: every Graph sweep died on
+    | `cURL error 28: Operation timed out after 30001 milliseconds with 0 bytes
+    | received for https://graph.microsoft.com/v1.0/me/messages`. Nothing was
+    | unreachable — earlier calls to the same host answered fine — Graph simply
+    | had not finished composing the response within 30s.
+    |
+    | 120s is generous but bounded. It costs nothing on a healthy call (the
+    | timeout is a ceiling, not a wait) and the scheduled sweep has no wall-clock
+    | limit of its own to blow. The synchronous "Run now" browser request may
+    | still give up on a very large mailbox — that is already true and by design;
+    | the run completes server-side and lands in the run history either way.
+    |
+    */
+
+    'request_timeout' => (int) env('EWF_REQUEST_TIMEOUT', 120),
+
 ];

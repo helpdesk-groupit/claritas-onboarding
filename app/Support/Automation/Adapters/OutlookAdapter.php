@@ -32,6 +32,20 @@ class OutlookAdapter implements EmailSourceAdapter
     }
 
     /**
+     * A bearer-auth HTTP client with the sweep timeout applied.
+     *
+     * Laravel's 30s default is an interactive timeout; a sweep asks Graph for
+     * a full page of message bodies filtered + sorted server-side, which can
+     * take longer than that against a real mailbox. Every call goes through
+     * here so none can silently fall back to the default (which is what died
+     * as cURL error 28 on 2026-07-17).
+     */
+    private function http(string $token): \Illuminate\Http\Client\PendingRequest
+    {
+        return Http::withToken($token)->timeout((int) config('email-workflow.request_timeout', 120));
+    }
+
+    /**
      * Refresh the token and read one message header. Throws on any failure.
      *
      * See GmailAdapter::verify() — same reasoning: the cheapest call that
@@ -69,7 +83,7 @@ class OutlookAdapter implements EmailSourceAdapter
         $out = [];
 
         do {
-            $list = Http::withToken($token)
+            $list = $this->http($token)
                 ->get($url, $params)
                 ->throw()->json();
 
@@ -94,7 +108,7 @@ class OutlookAdapter implements EmailSourceAdapter
     {
         $token = $this->oauth->freshAccessToken($conn);
 
-        $msg = Http::withToken($token)
+        $msg = $this->http($token)
             ->get(self::BASE."/me/messages/{$messageId}")
             ->throw()->json();
 
@@ -105,7 +119,7 @@ class OutlookAdapter implements EmailSourceAdapter
     {
         $token = $this->oauth->freshAccessToken($conn);
 
-        $att = Http::withToken($token)
+        $att = $this->http($token)
             ->get(self::BASE."/me/messages/{$messageId}/attachments/{$attachmentId}")
             ->throw()->json();
 
@@ -118,7 +132,7 @@ class OutlookAdapter implements EmailSourceAdapter
     {
         $token = $this->oauth->freshAccessToken($conn);
 
-        Http::withToken($token)
+        $this->http($token)
             ->patch(self::BASE."/me/messages/{$messageId}", [
                 'categories' => [$label],
             ])->throw();
@@ -131,7 +145,7 @@ class OutlookAdapter implements EmailSourceAdapter
     {
         $attachments = [];
         if (! empty($msg['hasAttachments'])) {
-            $list = Http::withToken($token)
+            $list = $this->http($token)
                 ->get(self::BASE."/me/messages/{$msg['id']}/attachments", [
                     '$select' => 'id,name,contentType,size',
                 ])->throw()->json();
