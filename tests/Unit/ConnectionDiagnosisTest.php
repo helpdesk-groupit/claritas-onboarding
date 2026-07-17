@@ -49,6 +49,49 @@ class ConnectionDiagnosisTest extends TestCase
     }
 
     /**
+     * An earlier draft said "or ask your mail administrator to", and the
+     * operator went to Zoho's Admin Console → Email Policy → Restrictions,
+     * which reported "IMAP Access: Enabled" while every login stayed refused.
+     * That screen governs whether users are ALLOWED to switch IMAP on; it does
+     * not switch it on. The message must send them to the mailbox, and must say
+     * why the admin screen's "Enabled" is not the answer.
+     */
+    public function test_it_distinguishes_the_org_wide_permission_from_the_per_mailbox_switch(): void
+    {
+        $message = ConnectionDiagnosis::explain(
+            new \Exception('NO [ALERT] You are yet to enable IMAP for your account. Please contact your administrator'),
+            $this->zohoConn()
+        );
+
+        $this->assertStringContainsString('Sign in as that mailbox and switch it on', $message);
+        $this->assertStringContainsString('only PERMITS IMAP', $message);
+        $this->assertStringContainsString('not enough on its own', $message);
+        // Must not send the operator back to the admin console as the remedy.
+        $this->assertStringNotContainsString('ask your mail administrator', $message);
+    }
+
+    /**
+     * The bound exists for untrusted provider text; truncating our own remedy
+     * mid-sentence would cut off the very part the operator needs.
+     *
+     * A long (but valid — the column allows 255) mailbox pushes the explanation
+     * past MAX_LENGTH, which is what proves the curated path is not capped.
+     */
+    public function test_our_own_explanation_is_never_truncated_by_the_raw_text_bound(): void
+    {
+        $longMailbox = str_repeat('a', 200).'@nurengroup.com';
+
+        $message = ConnectionDiagnosis::explain(
+            new \Exception('NO [ALERT] You are yet to enable IMAP for your account'),
+            $this->zohoConn($longMailbox)
+        );
+
+        $this->assertGreaterThan(ConnectionDiagnosis::MAX_LENGTH, mb_strlen($message));
+        // The closing clause survives — the remedy must reach the operator whole.
+        $this->assertStringEndsWith('while this one does not.', $message);
+    }
+
+    /**
      * webklex rethrows its causes wrapped, so an explanation that only reads
      * getMessage() would miss every real-world instance of these errors.
      */

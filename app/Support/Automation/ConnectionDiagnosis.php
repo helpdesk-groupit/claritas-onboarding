@@ -26,7 +26,15 @@ use Throwable;
  */
 class ConnectionDiagnosis
 {
-    /** Operator-facing strings stay bounded — provider errors can be huge. */
+    /**
+     * Bound for RAW provider text only — see cap().
+     *
+     * We bound what the PROVIDER wrote, never what WE wrote: provider text is
+     * untrusted, unbounded, and can echo tokens or PII. Our own explanations
+     * are literals plus our own validated columns (mailbox, host), so capping
+     * them buys no safety and only truncates the remedy mid-sentence — which is
+     * the one part of the string that has to survive.
+     */
     public const MAX_LENGTH = 500;
 
     /**
@@ -49,6 +57,14 @@ class ConnectionDiagnosis
         // reject every login while the first one works perfectly. That looks
         // like a bug in the automation and is not one, which is why the message
         // says so explicitly.
+        //
+        // The admin-console sentence is load-bearing, not padding. An earlier
+        // draft read "or ask your mail administrator to", which sent the
+        // operator to Zoho's Admin Console → Mail Settings → Email Policy →
+        // Restrictions. That screen says "IMAP Access: Enabled" and means
+        // "users are ALLOWED to switch IMAP on" — not "IMAP is on". So the
+        // remedy looked already-done while every login kept being refused. Any
+        // future edit must keep the permit-vs-enable distinction.
         if (self::matches($chain, [
             'yet to enable imap',        // Zoho
             'imap access is disabled',
@@ -57,12 +73,11 @@ class ConnectionDiagnosis
             'imap not enabled',
             'imap access disabled',
         ])) {
-            return self::cap(
-                "IMAP is switched off for {$mailbox} on the mail provider's side, so it rejects every login. "
-                .'Enable IMAP for that mailbox ('.self::settingsHint($conn).') — or ask your mail administrator to — '
-                .'then add the account again. IMAP is a per-mailbox setting, which is why another mailbox on the '
-                .'same host can work while this one does not.'
-            );
+            return "IMAP is switched off for {$mailbox}, so the mail server refuses every login. "
+                .'Sign in as that mailbox and switch it on: '.self::settingsHint($conn).'. '
+                .'An org-wide IMAP policy in the admin console only PERMITS IMAP — it does not switch it on for '
+                .'a mailbox, so "Enabled" there is not enough on its own. This is a per-mailbox setting, which is '
+                .'why another mailbox on the same host can work while this one does not.';
         }
 
         // ── Credentials rejected ─────────────────────────────────────────
@@ -74,11 +89,9 @@ class ConnectionDiagnosis
             'login failed',
             'authenticate failed',
         ])) {
-            return self::cap(
-                "{$mailbox} rejected the username or password. Most providers require an app-specific password "
+            return "{$mailbox} rejected the username or password. Most providers require an app-specific password "
                 .'for IMAP rather than the normal sign-in password — generate one in the mail account\'s security '
-                .'settings and add the account again.'
-            );
+                .'settings and add the account again.';
         }
 
         // ── Never reached the server ─────────────────────────────────────
@@ -95,10 +108,8 @@ class ConnectionDiagnosis
             'certificate verify failed',
             'ssl operation failed',
         ])) {
-            return self::cap(
-                'Could not reach '.self::server($conn).'. Check the host, port and encryption are right for this '
-                .'provider, and that the mail server accepts connections from this network.'
-            );
+            return 'Could not reach '.self::server($conn).'. Check the host, port and encryption are right for this '
+                .'provider, and that the mail server accepts connections from this network.';
         }
 
         return self::cap(self::raw($e));
@@ -172,7 +183,10 @@ class ConnectionDiagnosis
             .' over '.($conn->imap_encryption ?: 'no encryption');
     }
 
-    /** Collapse whitespace and bound the length — provider errors can echo PII. */
+    /**
+     * Collapse whitespace and bound the length. Applied to RAW provider text
+     * only — our own explanations are trusted and must not be truncated.
+     */
     private static function cap(string $message): string
     {
         return mb_substr(preg_replace('/\s+/', ' ', $message) ?? $message, 0, self::MAX_LENGTH);
