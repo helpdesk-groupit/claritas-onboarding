@@ -80,6 +80,29 @@ class ConnectionDiagnosis
                 .'why another mailbox on the same host can work while this one does not.';
         }
 
+        // ── Signed in fine, but the identity owns no mailbox ─────────────
+        //
+        // Microsoft Graph, delegated: /me/messages reads the mailbox of
+        // WHOEVER CONSENTED. That is the trap — OAuth succeeding proves an
+        // identity signed in, not that it has mail. An admin account with no
+        // Exchange Online licence consents perfectly and then 404s on every
+        // read, which reads as "the automation is broken" and is not.
+        //
+        // Guzzle summarises the response body at 120 chars and appends
+        // "(truncated...)", so Graph's own sentence arrives cut mid-word
+        // ("...is hosted on-"). The error CODE survives inside that window,
+        // which is why the match is on the code and not the prose.
+        if (self::matches($chain, [
+            'mailboxnotenabledforrestapi',
+            'is hosted on-premise',
+        ])) {
+            return 'Microsoft accepted the sign-in, but the account you signed in as has no Exchange Online mailbox '
+                .'to read — so the connection can never capture anything. Usually that account has no Exchange Online '
+                .'licence, or its mailbox is still hosted on-premises (hybrid). The account you consent as IS the '
+                .'mailbox that gets read, so consenting with an admin identity that has no mail will always fail here: '
+                .'press Connect again and sign in as the mailbox that actually receives the invoices.';
+        }
+
         // ── Credentials rejected ─────────────────────────────────────────
         if (self::matches($chain, [
             'authenticationfailed',

@@ -622,7 +622,7 @@ class EmailWorkflowController extends Controller
         return redirect()->away($url);
     }
 
-    public function connectCallback(Request $request, OAuthService $oauth)
+    public function connectCallback(Request $request, OAuthService $oauth, EmailAdapterFactory $emailFactory)
     {
         $this->authorizeModule();
 
@@ -672,6 +672,45 @@ class EmailWorkflowController extends Controller
         if (! $ok) {
             return redirect()->route('it.automation.email-workflow.index')
                 ->with('error', 'Could not complete authorization. Check the client credentials and redirect URI.');
+        }
+
+        // Consent proves an IDENTITY signed in. It does not prove that identity
+        // has a mailbox we can read — so prove it before storing `connected`.
+        //
+        // This is the same hole b6e4f77 closed for IMAP ("a mailbox is connected
+        // when it lets us in, not when the form is filled"); the OAuth path was
+        // never given the same treatment because consent *looks* like proof. It
+        // isn't: Graph is delegated, /me/messages reads whoever consented, and an
+        // admin identity with no Exchange Online licence consents flawlessly then
+        // 404s MailboxNotEnabledForRESTAPI on every read. That is exactly what
+        // happened on 2026-07-17 — the account went green, the workflow was
+        // offered for activation, and the truth arrived later as a failed run.
+        //
+        // Unlike the IMAP path this KEEPS the tokens rather than discarding them:
+        // consent is expensive to redo, the grant is genuinely valid, and the
+        // mailbox is what's wrong. Storing `error` is enough — missingRequirements()
+        // already refuses to activate on it, and the Test button can heal the row
+        // once the licence lands, with no second consent round-trip.
+        //
+        // Email only: verify() is on EmailSourceAdapter, and storage/log have no
+        // equivalent on their contracts (same reason the Test button is email-only).
+        if ($conn->category === ProviderRegistry::CATEGORY_EMAIL) {
+            try {
+                $emailFactory->for($conn)->verify($conn);
+            } catch (\Throwable $e) {
+                Log::warning('Email Workflow authorized an account whose mailbox cannot be read', [
+                    'connection_id' => $conn->id,
+                    'provider' => $conn->provider_id,
+                    'error' => $e->getMessage(),
+                    'exception' => $e::class,
+                ]);
+
+                $conn->update(['status' => EmailWorkflowConnection::STATUS_ERROR]);
+
+                return redirect()->route('it.automation.email-workflow.index')
+                    ->with('error', 'Signed in to '.ProviderRegistry::name($conn->provider_id)
+                        .', but could not read mail from that account — '.ConnectionDiagnosis::explain($e, $conn));
+            }
         }
 
         $message = ProviderRegistry::name($conn->provider_id).' account connected.';

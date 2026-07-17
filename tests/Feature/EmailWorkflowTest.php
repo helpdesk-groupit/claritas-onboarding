@@ -554,6 +554,110 @@ class EmailWorkflowTest extends TestCase
         $this->assertSame(EmailWorkflowConnection::STATUS_CONNECTED, $conn->fresh()->status);
     }
 
+    // ── Consent is not proof the mailbox is readable ─────────────────────
+
+    /**
+     * The end-to-end point: OAuth consent proves an IDENTITY signed in, not
+     * that it owns a mailbox. Graph is delegated — /me/messages reads whoever
+     * consented — so an admin account with no Exchange Online licence consents
+     * flawlessly and 404s on every read. Before this, that account went green,
+     * the workflow was offered for activation, and the truth arrived hours
+     * later as a failed run. Same hole b6e4f77 closed for IMAP.
+     */
+    public function test_consent_from_an_account_with_no_mailbox_is_stored_as_error_not_connected(): void
+    {
+        $conn = $this->makeConnection('email', 'outlook');
+        $conn->update(['status' => EmailWorkflowConnection::STATUS_PENDING]);
+        $workflow = EmailWorkflow::create([
+            'created_by' => $this->itManager->id,
+            'name' => 'Supplier invoices', 'status' => 'draft',
+            'email_connection_id' => $conn->id,
+        ]);
+
+        \Illuminate\Support\Facades\Http::fake(['*' => \Illuminate\Support\Facades\Http::response([
+            'access_token' => 'at', 'refresh_token' => 'rt', 'expires_in' => 3600,
+        ])]);
+        $this->fakeMailbox($this->mailboxNotEnabled());
+
+        $this->actingAs($this->itManager)->withSession(["ewf_oauth_state_{$conn->id}" => 'st'])
+            ->get(route('it.automation.email-workflow.connections.callback', [
+                'code' => 'auth-code', 'state' => 'st.'.$conn->id,
+            ]))
+            ->assertSessionHas('error', fn ($m) => str_contains($m, 'no Exchange Online mailbox'));
+
+        $this->assertSame(EmailWorkflowConnection::STATUS_ERROR, $conn->fresh()->status);
+        // The whole point: an unreadable mailbox must not reach Active.
+        $this->assertNotEmpty($workflow->fresh()->missingRequirements());
+    }
+
+    /** Consent is expensive to redo — a bad mailbox must not cost the grant. */
+    public function test_an_unreadable_mailbox_keeps_its_tokens_so_test_can_heal_it_later(): void
+    {
+        $conn = $this->makeConnection('email', 'outlook');
+        $conn->update(['status' => EmailWorkflowConnection::STATUS_PENDING, 'access_token' => null]);
+
+        \Illuminate\Support\Facades\Http::fake(['*' => \Illuminate\Support\Facades\Http::response([
+            'access_token' => 'granted-token', 'refresh_token' => 'rt', 'expires_in' => 3600,
+        ])]);
+        $this->fakeMailbox($this->mailboxNotEnabled());
+
+        $this->actingAs($this->itManager)->withSession(["ewf_oauth_state_{$conn->id}" => 'st'])
+            ->get(route('it.automation.email-workflow.connections.callback', [
+                'code' => 'auth-code', 'state' => 'st.'.$conn->id,
+            ]));
+
+        $this->assertSame('granted-token', $conn->fresh()->access_token);
+    }
+
+    /** A readable mailbox still connects — the guard must not block the happy path. */
+    public function test_consent_from_an_account_with_a_real_mailbox_still_connects(): void
+    {
+        $conn = $this->makeConnection('email', 'outlook');
+        $conn->update(['status' => EmailWorkflowConnection::STATUS_PENDING]);
+
+        \Illuminate\Support\Facades\Http::fake(['*' => \Illuminate\Support\Facades\Http::response([
+            'access_token' => 'at', 'refresh_token' => 'rt', 'expires_in' => 3600,
+        ])]);
+        $this->fakeMailbox();
+
+        $this->actingAs($this->itManager)->withSession(["ewf_oauth_state_{$conn->id}" => 'st'])
+            ->get(route('it.automation.email-workflow.connections.callback', [
+                'code' => 'auth-code', 'state' => 'st.'.$conn->id,
+            ]))
+            ->assertSessionHas('success');
+
+        $this->assertSame(EmailWorkflowConnection::STATUS_CONNECTED, $conn->fresh()->status);
+    }
+
+    /** Storage/log adapters have no verify() on their contracts — don't call it. */
+    public function test_a_storage_connection_is_not_mailbox_verified(): void
+    {
+        $conn = $this->makeConnection('storage', 'gdrive');
+        $conn->update(['status' => EmailWorkflowConnection::STATUS_PENDING]);
+
+        \Illuminate\Support\Facades\Http::fake(['*' => \Illuminate\Support\Facades\Http::response([
+            'access_token' => 'at', 'refresh_token' => 'rt', 'expires_in' => 3600,
+        ])]);
+        // No mailbox fake bound: resolving one for storage would blow up here.
+
+        $this->actingAs($this->itManager)->withSession(["ewf_oauth_state_{$conn->id}" => 'st'])
+            ->get(route('it.automation.email-workflow.connections.callback', [
+                'code' => 'auth-code', 'state' => 'st.'.$conn->id,
+            ]))
+            ->assertSessionHas('success');
+
+        $this->assertSame(EmailWorkflowConnection::STATUS_CONNECTED, $conn->fresh()->status);
+    }
+
+    /** Graph's real 404, with Guzzle's 120-char body summary already applied. */
+    private function mailboxNotEnabled(): Throwable
+    {
+        return new \Exception(
+            'HTTP request returned status code 404: {"error":{"code":"MailboxNotEnabledForRESTAPI",'
+            .'"message":"The mailbox is either inactive, soft-deleted, or is hosted on- (truncated...)'
+        );
+    }
+
     /**
      * The directory lands in the URL PATH, so a value containing a slash could
      * rewrite the endpoint rather than name a tenant. Rejected at the form.

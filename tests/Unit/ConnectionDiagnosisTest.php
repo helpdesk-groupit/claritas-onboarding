@@ -137,6 +137,26 @@ class ConnectionDiagnosisTest extends TestCase
         $this->assertStringContainsString("your mail provider's IMAP settings", $message);
     }
 
+    /**
+     * Microsoft Graph, verbatim from production 2026-07-17. Guzzle summarises
+     * the body at 120 chars, so Graph's sentence arrives cut mid-word — the
+     * fixture keeps that truncation, because matching on the prose after
+     * "hosted on-" would pass here and fail on the real thing.
+     */
+    public function test_it_explains_an_account_that_has_no_exchange_online_mailbox(): void
+    {
+        $message = ConnectionDiagnosis::explain(new \Exception(
+            'HTTP request returned status code 404: {"error":{"code":"MailboxNotEnabledForRESTAPI",'
+            .'"message":"The mailbox is either inactive, soft-deleted, or is hosted on- (truncated...)'
+        ));
+
+        $this->assertStringContainsString('no Exchange Online mailbox', $message);
+        // The non-obvious trap: delegated Graph reads whoever consented, so
+        // consenting as an admin with no mail can never work.
+        $this->assertStringContainsString('The account you consent as IS the mailbox that gets read', $message);
+        $this->assertStringNotContainsString('RequestException', $message);
+    }
+
     // ── The other two failures operators actually hit ────────────────────
 
     public function test_it_explains_rejected_credentials_and_points_at_app_passwords(): void
