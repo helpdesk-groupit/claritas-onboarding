@@ -70,7 +70,18 @@ class ProviderRegistry
                 // Only correct for an app marked multi-tenant; a single-tenant
                 // registration must set oauth_tenant to its directory ID.
                 'tenant_default' => 'common',
-                'auth_params' => ['response_mode' => 'query'],
+                // select_account is load-bearing, not polish. Microsoft's default
+                // is to "sign in the sole current user" — no picker — so an
+                // operator who is already signed in (they have just come from the
+                // Azure portal to copy the client id and tenant) silently
+                // authorizes THAT session. Delegated Graph reads whoever
+                // consented, so the wrong mailbox gets connected without a single
+                // prompt, and the workflow's label still says the mailbox they
+                // meant. On 2026-07-17 that surfaced as 404
+                // MailboxNotEnabledForRESTAPI: an admin identity, no Exchange
+                // Online licence, nothing to read. Forcing the picker makes the
+                // operator say WHICH mailbox out loud.
+                'auth_params' => ['response_mode' => 'query', 'prompt' => 'select_account'],
                 'enabled' => true,
                 'blurb' => 'Read mail from an Outlook / Microsoft 365 mailbox.',
             ],

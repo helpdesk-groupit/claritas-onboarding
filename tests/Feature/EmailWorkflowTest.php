@@ -516,6 +516,22 @@ class EmailWorkflowTest extends TestCase
         $this->assertStringNotContainsString('/common/', $location);
     }
 
+    /**
+     * Without a forced picker Microsoft signs in "the sole current user", so an
+     * operator arriving straight from the Azure portal silently connects their
+     * admin session instead of the mailbox they meant — and delegated Graph then
+     * reads that account. The picker is what makes them choose.
+     */
+    public function test_microsoft_forces_an_account_picker_so_the_right_mailbox_is_chosen(): void
+    {
+        $conn = $this->makeConnection('email', 'outlook');
+
+        $res = $this->actingAs($this->itManager)
+            ->get(route('it.automation.email-workflow.connections.connect', $conn->id));
+
+        $this->assertStringContainsString('prompt=select_account', $res->headers->get('Location'));
+    }
+
     /** A multi-tenant registration sets no directory and must still work. */
     public function test_a_microsoft_connection_without_a_directory_falls_back_to_common(): void
     {
