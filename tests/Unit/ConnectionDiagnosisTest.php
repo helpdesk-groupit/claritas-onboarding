@@ -208,4 +208,142 @@ class ConnectionDiagnosisTest extends TestCase
         $this->assertStringContainsString('IMAP is switched off for this mailbox', $message);
         $this->assertStringContainsString("your mail provider's IMAP settings", $message);
     }
+
+    // ── OAuth consent rejections ─────────────────────────────────────────
+    //
+    // The provider redirects back with `error` + `error_description`, and the
+    // description is the ONLY copy of why consent failed — nothing else in the
+    // request says. The callback used to drop both and flash a fixed
+    // "Authorization was cancelled or failed", which is why a Microsoft
+    // connection could fail for hours with not one line in the log.
+
+    /**
+     * The likeliest Microsoft failure, and the one that reads as "authorize
+     * worked": the user signs in fine, Microsoft accepts the credentials, then
+     * refuses to grant the scopes because the tenant reserves consent for
+     * admins. AADSTS90094 arrives dressed as a plain `access_denied`, which is
+     * indistinguishable from a cancelled sign-in unless the description is read.
+     */
+    public function test_it_explains_when_the_tenant_reserves_consent_for_an_admin(): void
+    {
+        $message = ConnectionDiagnosis::explainOAuthError(
+            'access_denied',
+            'AADSTS90094: The grant requires admin permission. Trace ID: 0000aaaa-11bb-cccc'
+        );
+
+        $this->assertStringContainsString('administrator', $message);
+        $this->assertStringContainsString('Grant admin consent', $message);
+        // The sign-in genuinely succeeded — saying "cancelled" sends the
+        // operator to retry the one step that already works.
+        $this->assertStringNotContainsString('cancelled', $message);
+    }
+
+    /** AADSTS65001 is the same remedy by a different code — nothing consented yet. */
+    public function test_it_explains_when_nothing_has_consented_to_the_app_yet(): void
+    {
+        $message = ConnectionDiagnosis::explainOAuthError(
+            'consent_required',
+            'AADSTS65001: The user or administrator has not consented to use the application with ID ...'
+        );
+
+        $this->assertStringContainsString('Grant admin consent', $message);
+        $this->assertStringContainsString('API permissions', $message);
+    }
+
+    /**
+     * The trap built into the registry: the authorize URL is hardcoded to the
+     * shared /common endpoint, which Microsoft refuses for a single-tenant app
+     * registration created after 2018 — the default when you register an app in
+     * your own tenant. Nothing about the app registration looks wrong, so the
+     * remedy has to name the setting.
+     */
+    public function test_it_explains_a_single_tenant_app_registration_on_the_common_endpoint(): void
+    {
+        $message = ConnectionDiagnosis::explainOAuthError(
+            'invalid_request',
+            "AADSTS50194: Application 'abc' is not configured as a multi-tenant application. "
+            .'Usage of the /common endpoint is not supported for such applications created after 10/15/2018.'
+        );
+
+        $this->assertStringContainsString('Supported account types', $message);
+        $this->assertStringContainsString('multitenant', $message);
+    }
+
+    /** A mailbox in another tenant, signed into a single-tenant registration. */
+    public function test_it_explains_an_account_from_a_different_tenant(): void
+    {
+        $message = ConnectionDiagnosis::explainOAuthError(
+            'invalid_request',
+            'AADSTS50020: User account from identity provider does not exist in tenant'
+        );
+
+        $this->assertStringContainsString('different Microsoft tenant', $message);
+    }
+
+    public function test_it_explains_rejected_scopes(): void
+    {
+        $message = ConnectionDiagnosis::explainOAuthError(
+            'invalid_scope',
+            "AADSTS70011: The provided value for the input parameter 'scope' is not valid."
+        );
+
+        $this->assertStringContainsString('Mail.Read', $message);
+        $this->assertStringContainsString('offline_access', $message);
+    }
+
+    /**
+     * A real cancel, with no code to disambiguate it. This one MAY say
+     * cancelled — but must still name the consent policy, because a blocked
+     * consent can arrive as a bare access_denied too.
+     */
+    public function test_a_bare_access_denied_covers_both_a_cancel_and_a_blocked_consent(): void
+    {
+        $message = ConnectionDiagnosis::explainOAuthError('access_denied', 'the user canceled the authentication');
+
+        $this->assertStringContainsString('cancelled', $message);
+        $this->assertStringContainsString('admin', $message);
+    }
+
+    public function test_it_tells_the_operator_to_retry_a_temporary_provider_fault(): void
+    {
+        $message = ConnectionDiagnosis::explainOAuthError('temporarily_unavailable', 'AADSTS50058: try again');
+
+        $this->assertStringContainsString('try again', $message);
+    }
+
+    /**
+     * An unrecognised code must still carry the provider's own words through —
+     * a fixed sentence is exactly the failure this method exists to remove.
+     */
+    public function test_an_unrecognised_oauth_error_still_surfaces_the_providers_own_words(): void
+    {
+        $message = ConnectionDiagnosis::explainOAuthError('weird_new_error', 'AADSTS99999: something novel');
+
+        $this->assertStringContainsString('weird_new_error', $message);
+        $this->assertStringContainsString('AADSTS99999: something novel', $message);
+    }
+
+    public function test_an_unrecognised_oauth_error_with_no_description_still_names_the_code(): void
+    {
+        $this->assertStringContainsString(
+            'weird_new_error',
+            ConnectionDiagnosis::explainOAuthError('weird_new_error', null)
+        );
+    }
+
+    /**
+     * Provider text is untrusted and unbounded, so it is capped — but as ONE
+     * portion, not per field: capping `error` and `error_description`
+     * separately let a 5000-char description through at 2× the bound.
+     *
+     * The assertion counts the provider's own characters rather than the whole
+     * string, because our leading sentence is trusted and sits outside the cap
+     * (same rule as explain() — see cap()).
+     */
+    public function test_it_bounds_an_unrecognised_oauth_description(): void
+    {
+        $message = ConnectionDiagnosis::explainOAuthError('weird', str_repeat('x', 5000));
+
+        $this->assertLessThanOrEqual(ConnectionDiagnosis::MAX_LENGTH, mb_substr_count($message, 'x'));
+    }
 }

@@ -193,6 +193,24 @@ class EmailWorkflow extends Model
     }
 
     /**
+     * Has the operator switched this on? — i.e. will the scheduler sweep it.
+     *
+     * Distinct from isActive(), and the distinction is the whole point: `error`
+     * is a HEALTH value stored in the same column as INTENT, so an errored
+     * workflow is switched ON and running while `isActive()` is false. Rendering
+     * the Active toggle from isActive() therefore drew it OFF next to a workflow
+     * that runs every day — the UI claiming something untrue, which is the exact
+     * failure this module keeps fighting.
+     *
+     * Definitionally the sweep set, so the switch and the scheduler cannot drift:
+     * if it is swept, the switch is on.
+     */
+    public function isEnabled(): bool
+    {
+        return in_array($this->status, self::SWEEPABLE_STATUSES, true);
+    }
+
+    /**
      * Everything still standing between this workflow and a successful run, in
      * plain language the operator can act on.
      *

@@ -131,9 +131,10 @@ class CaptureService
             $workflow->forceFill([
                 'last_run_at' => now(),
                 'last_error' => $message,
-                // An active workflow that can't run is an error state the list must show.
-                'status' => $workflow->isActive() ? EmailWorkflow::STATUS_ERROR : $workflow->status,
             ])->save();
+
+            // An active workflow that can't run is an error state the list must show.
+            $this->transitionStatus($workflow, EmailWorkflow::STATUS_ACTIVE, EmailWorkflow::STATUS_ERROR);
 
             return $run->refresh();
         }
@@ -149,18 +150,13 @@ class CaptureService
             'last_run_at' => now(),
             'last_error' => null,
             'captured_count' => (int) $workflow->captured_count + $run->captured_count,
-            // Clearing last_error is not enough: `error` is a STATUS, and the
-            // list badge and the scheduler both read it. A workflow that has
-            // just run green is not in error, and leaving the badge red is the
-            // same stale-status lie as a connection claiming `connected` it
-            // never earned. Safe as the exact inverse of the failure path above,
-            // which only ever sets `error` on a workflow that was Active — so a
-            // success restores Active and can never resurrect a `paused` or
-            // `draft` workflow the operator put there deliberately.
-            'status' => $workflow->status === EmailWorkflow::STATUS_ERROR
-                ? EmailWorkflow::STATUS_ACTIVE
-                : $workflow->status,
         ])->save();
+
+        // Clearing last_error is not enough: `error` is a STATUS, and the list
+        // badge and the scheduler both read it. A workflow that has just run
+        // green is not in error, and leaving the badge red is the same
+        // stale-status lie as a connection claiming `connected` it never earned.
+        $this->transitionStatus($workflow, EmailWorkflow::STATUS_ERROR, EmailWorkflow::STATUS_ACTIVE);
 
         return $run->refresh();
     }
@@ -748,6 +744,35 @@ class CaptureService
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Move the workflow's status $from → $to, but only if the DB still says
+     * $from. Returns whether it moved.
+     *
+     * A compare-and-swap, not a read-then-write, because `$workflow` was loaded
+     * before the sweep and a sweep can run for minutes: writing `status` back
+     * from that stale in-memory model would silently clobber whatever the
+     * operator did meanwhile. Concretely — pause a workflow while its sweep is
+     * running, and the run's own completion would resurrect it. The WHERE clause
+     * makes the operator's decision win, and makes the no-op case genuinely a
+     * no-op rather than a same-value overwrite.
+     *
+     * Deliberately raw: no model events, no timestamp churn, no reliance on the
+     * in-memory attribute the caller is holding.
+     */
+    private function transitionStatus(EmailWorkflow $workflow, string $from, string $to): bool
+    {
+        $moved = EmailWorkflow::whereKey($workflow->getKey())
+            ->where('status', $from)
+            ->update(['status' => $to]) > 0;
+
+        if ($moved) {
+            // Keep the caller's model honest about what is now in the DB.
+            $workflow->setAttribute('status', $to)->syncOriginalAttribute('status');
+        }
+
+        return $moved;
     }
 
     /**

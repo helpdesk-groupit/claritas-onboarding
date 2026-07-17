@@ -146,13 +146,22 @@
                                     {{-- Active status toggle (form POST — CSP-safe) --}}
                                     <form method="POST" action="{{ route('it.automation.email-workflow.toggle', $wf->id) }}" class="ewf-switch m-0">
                                         @csrf
+                                        {{-- Driven by isEnabled(), NOT isActive(): an `error` workflow is
+                                             switched ON and still swept every day (see SWEEPABLE_STATUSES),
+                                             so drawing the switch off would tell the operator it is disabled
+                                             while it runs. The red Error badge alongside carries the health;
+                                             the switch carries intent. --}}
                                         <div class="form-check form-switch m-0">
                                             <input class="form-check-input ewf-toggle" type="checkbox"
                                                    role="switch"
-                                                   {{ $wf->isActive() ? 'checked' : '' }}
-                                                   {{ (!$wf->isActive() && $wfMissing) ? 'disabled' : '' }}
+                                                   {{ $wf->isEnabled() ? 'checked' : '' }}
+                                                   {{ (!$wf->isEnabled() && $wfMissing) ? 'disabled' : '' }}
                                                    aria-label="Toggle active"
-                                                   title="{{ (!$wf->isActive() && $wfMissing) ? 'Cannot activate — '.implode('; ', $wfMissing) : 'Toggle active' }}">
+                                                   title="{{ (!$wf->isEnabled() && $wfMissing)
+                                                        ? 'Cannot activate — '.implode('; ', $wfMissing)
+                                                        : ($wf->status === \App\Models\EmailWorkflow::STATUS_ERROR
+                                                            ? 'On — last run failed, still retrying on schedule. Switch off to stop.'
+                                                            : 'Toggle active') }}">
                                         </div>
                                     </form>
                                     {{-- Run now (synchronous sweep — button disables while it works).

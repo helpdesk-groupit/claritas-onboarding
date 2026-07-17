@@ -452,6 +452,45 @@ class EmailWorkflowTest extends TestCase
         $this->assertStringContainsString('access_type=offline', $location);
     }
 
+    /**
+     * The Microsoft failure that prompted this: consent is refused by tenant
+     * policy, the provider says exactly that in `error_description`, and the
+     * callback used to answer with a fixed "Authorization was cancelled or
+     * failed" — which is both wrong (nothing was cancelled) and unactionable.
+     * Whatever the flash says, it must be derived from what the provider sent.
+     */
+    public function test_a_rejected_oauth_consent_reports_the_providers_reason_not_a_fixed_string(): void
+    {
+        $conn = $this->makeConnection('email', 'outlook');
+
+        $this->actingAs($this->itManager)
+            ->get(route('it.automation.email-workflow.connections.callback', [
+                'error' => 'access_denied',
+                'error_description' => 'AADSTS90094: The grant requires admin permission. Trace ID: abc',
+                'state' => 'whatever.'.$conn->id,
+            ]))
+            ->assertRedirect(route('it.automation.email-workflow.index'))
+            ->assertSessionHas('error', fn ($m) => str_contains($m, 'Grant admin consent')
+                && ! str_contains($m, 'cancelled'));
+    }
+
+    /**
+     * The error branch is read before the state check on purpose. A provider is
+     * not obliged to echo `state` on an error, and "state mismatch — try
+     * connecting again" would bury the real reason under a wrong one.
+     */
+    public function test_an_oauth_error_without_state_still_explains_itself(): void
+    {
+        $this->actingAs($this->itManager)
+            ->get(route('it.automation.email-workflow.connections.callback', [
+                'error' => 'invalid_request',
+                'error_description' => 'AADSTS50194: Application is not configured as a multi-tenant application.',
+            ]))
+            ->assertRedirect(route('it.automation.email-workflow.index'))
+            ->assertSessionHas('error', fn ($m) => str_contains($m, 'Supported account types')
+                && ! str_contains($m, 'state mismatch'));
+    }
+
     private function makeConnection(string $category, string $providerId): EmailWorkflowConnection
     {
         return EmailWorkflowConnection::create([

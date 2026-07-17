@@ -116,6 +116,119 @@ class ConnectionDiagnosis
     }
 
     /**
+     * Explain an OAuth authorization rejection — the `error` + `error_description`
+     * the provider redirects back with when consent does not complete.
+     *
+     * Same contract as explain(): name the remedy, fall back to a bounded copy
+     * of the provider's own words. Kept here rather than in the controller so
+     * the signatures are unit-tested, and so Gmail/Drive/Sheets get the generic
+     * OAuth codes for free.
+     *
+     * WHY THIS EXISTS: the callback used to answer every rejection with a fixed
+     * "Authorization was cancelled or failed" and log nothing at all. Microsoft
+     * had already sent the reason — `error_description` carries the AADSTS code
+     * and, per Microsoft's own docs, "most of the useful information about why
+     * the error occurred" — and we dropped it on the floor. A Microsoft
+     * connection could then fail every attempt for hours while the operator saw
+     * "cancelled" (it was not) and the log stayed empty. Never reduce a provider
+     * diagnosis to a fixed string: it is the only copy.
+     *
+     * Order matters — AADSTS codes are matched before the generic OAuth codes,
+     * because the interesting Microsoft failures all masquerade as a plain
+     * `access_denied` / `invalid_request` and are only separable by their code.
+     */
+    public static function explainOAuthError(string $error, ?string $description = null): string
+    {
+        $haystack = mb_strtolower($error.' '.$description);
+
+        // ── Consent withheld: the tenant reserves it for an admin ────────
+        //
+        // The signature failure of "authorize works but the connection fails":
+        // sign-in genuinely succeeds, then Microsoft refuses to hand over the
+        // scopes. Most Microsoft 365 tenants ship with user consent turned off,
+        // so a non-admin can never complete this flow no matter how many times
+        // they retry — and AADSTS90094 arrives labelled `access_denied`, which
+        // is indistinguishable from a cancel without reading the code.
+        //
+        // Both paths to the remedy are named on purpose: pressing "Grant admin
+        // consent" is the durable fix, but an admin completing the sign-in and
+        // ticking "Consent on behalf of your organization" also works, and is
+        // often the faster one when an admin is already at the keyboard.
+        if (self::matches($haystack, ['aadsts90094', 'aadsts65001', 'consent_required'])) {
+            return 'Microsoft accepted the sign-in but would not grant the permissions: this tenant requires an '
+                .'administrator to approve them, which is the default for most Microsoft 365 tenants. Retrying will '
+                .'keep failing until consent is granted once. Ask a Microsoft 365 admin to open Azure → App '
+                .'registrations → this app → API permissions and press "Grant admin consent for <your tenant>" — or '
+                .'to complete this sign-in themselves and tick "Consent on behalf of your organization".';
+        }
+
+        // ── Single-tenant registration on the shared /common endpoint ────
+        //
+        // A trap in our own registry, not operator error: the authorize URL is
+        // hardcoded to /common, and Microsoft refuses /common for a
+        // single-tenant app created after 15/10/2018 — which is the default
+        // when you register an app in your own tenant. The app registration
+        // looks perfect (permissions present, secret valid), so the remedy has
+        // to name the exact setting.
+        if (self::matches($haystack, ['aadsts50194', 'aadsts700016', 'not configured as a multi-tenant application'])) {
+            return 'This module signs in through Microsoft\'s shared /common endpoint, which only accepts an app '
+                .'registration marked multitenant — and this one is single-tenant, so Microsoft rejects the sign-in '
+                .'before it reaches us. In Azure → App registrations → this app → Authentication → Supported account '
+                .'types, choose "Accounts in any organizational directory (Any Microsoft Entra ID tenant — '
+                .'Multitenant)", then connect again.';
+        }
+
+        // ── Mailbox lives in another tenant ──────────────────────────────
+        if (self::matches($haystack, ['aadsts50020', 'does not exist in tenant', 'aadsts50128'])) {
+            return 'The mailbox that signed in belongs to a different Microsoft tenant than the one this app is '
+                .'registered in, and the registration only accepts its own tenant. Either sign in with a mailbox in '
+                .'the same tenant as the app registration, or set Authentication → Supported account types to '
+                .'multitenant.';
+        }
+
+        // ── Scopes rejected ──────────────────────────────────────────────
+        if (self::matches($haystack, ['aadsts70011', 'invalid_scope', 'invalid scope'])) {
+            return 'Microsoft rejected the permissions this module asked for. The app registration needs the '
+                .'DELEGATED Microsoft Graph permissions Mail.Read and offline_access (offline_access is what keeps '
+                .'the connection alive without a daily re-login). Add them under API permissions, grant admin '
+                .'consent, then connect again.';
+        }
+
+        // ── App not available to this account ────────────────────────────
+        if (self::matches($haystack, ['unauthorized_client', 'aadsts700016', 'aadsts50011', 'redirect uri', 'reply url'])) {
+            return 'Microsoft would not accept this app registration for the account that signed in — usually the '
+                .'client ID belongs to a different tenant, or the redirect URI on the registration does not exactly '
+                .'match this site\'s callback URL. Check both under App registrations → Authentication.';
+        }
+
+        // ── Transient ────────────────────────────────────────────────────
+        if (self::matches($haystack, ['temporarily_unavailable', 'server_error', 'aadsts50058'])) {
+            return 'The provider reported a temporary problem and did not complete the sign-in. Please try again in '
+                .'a moment; if it keeps happening, the details are in the log.';
+        }
+
+        // ── A genuine cancel — and the ambiguity that survives it ─────────
+        //
+        // Deliberately still mentions consent policy: a blocked consent can
+        // arrive as a bare access_denied with no code, and "you cancelled it"
+        // would then be a confident lie.
+        if (self::matches($haystack, ['access_denied'])) {
+            return 'The sign-in was cancelled, or consent was declined, so no account was connected. If you did not '
+                .'cancel it, this tenant most likely blocks users from consenting to apps — ask an admin to press '
+                .'"Grant admin consent" on the app registration\'s API permissions.';
+        }
+
+        // Unrecognised: the provider's own words, bounded. Never a fixed string.
+        //
+        // Capped ONCE over the whole provider portion rather than per field —
+        // two independently-capped fields can still add up past the bound, and
+        // the bound exists to hold untrusted text as a whole. The leading
+        // sentence is ours, so it sits outside the cap (see cap()).
+        return 'The provider refused the authorization. '
+            .self::cap(trim($error.(blank($description) ? '' : ': '.$description)));
+    }
+
+    /**
      * The bounded raw message — what an unrecognised failure reduces to.
      *
      * RuntimeException is ours (thrown by CaptureService with an already

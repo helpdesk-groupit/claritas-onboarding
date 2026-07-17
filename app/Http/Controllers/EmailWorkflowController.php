@@ -238,7 +238,12 @@ class EmailWorkflowController extends Controller
         $this->authorizeModule();
         $model = $this->findOwned($workflow);
 
-        if ($model->isActive()) {
+        // isEnabled(), not isActive(): an `error` workflow is switched ON and is
+        // still swept, so the off-switch has to work on it directly. Branching on
+        // isActive() left `error` with no edge to `paused` — the only way to stop
+        // a workflow that was failing loudly was to first turn it ON (error →
+        // active) and then off again.
+        if ($model->isEnabled()) {
             $model->update(['status' => EmailWorkflow::STATUS_PAUSED]);
 
             return back()->with('success', "“{$model->name}” paused.");
@@ -605,10 +610,36 @@ class EmailWorkflowController extends Controller
     {
         $this->authorizeModule();
 
-        // Provider errors (user denied consent, etc.).
+        // Provider errors (consent withheld, tenant policy, bad registration).
+        //
+        // Read BEFORE the state check, and deliberately so: the provider is not
+        // obliged to echo `state` on an error, and falling through to "state
+        // mismatch — try connecting again" would replace a real diagnosis with a
+        // wrong one and send the operator to retry a step that cannot succeed.
+        //
+        // Nothing is mutated here for the same reason — an unverified state must
+        // never move a connection's status. It doesn't need to: a rejected
+        // consent leaves the connection `pending`, which isConnected() already
+        // refuses, so missingRequirements() keeps the workflow out of Active.
         if ($request->filled('error')) {
+            $error = (string) $request->query('error');
+            $description = (string) $request->query('error_description');
+
+            // Log the provider's own words, not our summary of them. This is the
+            // only copy of why consent failed: `error_description` carries the
+            // AADSTS code, and once we redirect it is gone from the URL. Bounded
+            // because it is untrusted provider text; safe to log because it
+            // carries no code/token — the failure means none was ever issued.
+            Log::warning('Email Workflow OAuth authorization rejected by provider', [
+                'error' => $error,
+                'description' => Str::limit($description, 500),
+                // Log-only, straight off the unverified state — enough to tell
+                // which connection this was without trusting it for anything.
+                'connection' => (int) Str::afterLast((string) $request->query('state'), '.') ?: null,
+            ]);
+
             return redirect()->route('it.automation.email-workflow.index')
-                ->with('error', 'Authorization was cancelled or failed.');
+                ->with('error', ConnectionDiagnosis::explainOAuthError($error, $description));
         }
 
         [$state, $connId] = array_pad(explode('.', (string) $request->query('state')), 2, null);
