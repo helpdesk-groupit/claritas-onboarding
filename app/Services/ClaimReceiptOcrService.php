@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Accounting\AccountingSetting;
+use App\Models\ClaudeApiSetting;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -24,6 +25,32 @@ use Illuminate\Support\Facades\Log;
  */
 class ClaimReceiptOcrService
 {
+    /** Per-request memo of the Claude API setting (avoids re-querying on every call). */
+    protected static ?ClaudeApiSetting $claudeMemo = null;
+
+    protected static bool $claudeMemoLoaded = false;
+
+    /**
+     * The superadmin "Claude API" setting when it is ACTIVE (switched on + key set),
+     * else null. When active it is the source of truth for OCR and overrides the
+     * env-based CLAIMS_OCR_* config. Fails safe: if the table is missing (pre-migration)
+     * or any error occurs, returns null and OCR falls back to the env config.
+     */
+    protected static function claude(): ?ClaudeApiSetting
+    {
+        if (! self::$claudeMemoLoaded) {
+            self::$claudeMemoLoaded = true;
+            try {
+                $s = ClaudeApiSetting::current();
+                self::$claudeMemo = $s->isActive() ? $s : null;
+            } catch (\Throwable $e) {
+                self::$claudeMemo = null;
+            }
+        }
+
+        return self::$claudeMemo;
+    }
+
     protected static function settings(?string $company): ?AccountingSetting
     {
         try {
@@ -35,6 +62,11 @@ class ClaimReceiptOcrService
 
     protected static function apiKey(?string $company): ?string
     {
+        // Claude API page wins when active.
+        if ($c = self::claude()) {
+            return $c->getRawKey();
+        }
+
         return config('claims.ocr.api_key')
             ?: (self::settings($company)?->ai_api_key)
             ?: config('services.openai.api_key');
@@ -42,6 +74,11 @@ class ClaimReceiptOcrService
 
     public static function enabled(?string $company = null): bool
     {
+        // The Claude API page is a self-contained on-switch: an active key means OCR is on,
+        // regardless of the env CLAIMS_OCR_ENABLED flag.
+        if (self::claude()) {
+            return true;
+        }
         if (! config('claims.ocr.enabled')) {
             return false;
         }
@@ -52,6 +89,41 @@ class ClaimReceiptOcrService
         }
 
         return (bool) self::apiKey($company);
+    }
+
+    /**
+     * Live check for the "Claude API" settings page: does this key + model actually
+     * work against Anthropic? Returns ['ok' => bool, 'message' => string]. A cheap
+     * text-only call — enough to catch a bad key, a model the key can't access, or
+     * no billing/credit — without spending on a vision request.
+     */
+    public static function testAnthropicKey(string $key, string $model): array
+    {
+        try {
+            $resp = Http::timeout(20)
+                ->withHeaders(['x-api-key' => $key, 'anthropic-version' => '2023-06-01'])
+                ->post('https://api.anthropic.com/v1/messages', [
+                    'model' => $model,
+                    'max_tokens' => 8,
+                    'messages' => [['role' => 'user', 'content' => 'ping']],
+                ]);
+
+            if ($resp->successful()) {
+                return ['ok' => true, 'message' => 'Key works — Claude responded. OCR is ready.'];
+            }
+
+            $type = $resp->json('error.type');
+            $err = $resp->json('error.message') ?: ('HTTP '.$resp->status());
+
+            return match (true) {
+                $resp->status() === 401 || $type === 'authentication_error' => ['ok' => false, 'message' => 'Invalid API key — authentication failed.'],
+                $resp->status() === 404 || $type === 'not_found_error' => ['ok' => false, 'message' => 'This key can\'t use the selected model: '.$err],
+                $resp->status() === 429 => ['ok' => false, 'message' => 'Rate-limited or out of credit — check your Anthropic billing.'],
+                default => ['ok' => false, 'message' => $err],
+            };
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'message' => 'Could not reach Anthropic: '.$e->getMessage()];
+        }
     }
 
     /**
@@ -214,23 +286,30 @@ class ClaimReceiptOcrService
     protected static function callVision(string $prompt, string $absolutePath, string $mimeType, ?string $company, int $maxTokens = 300): ?array
     {
         $settings = self::settings($company);
-        // A claims-specific provider override lets OCR use a free provider (e.g. Gemini)
-        // regardless of what the accounting module is set to.
-        $override = config('claims.ocr.provider');
-        $provider = $override ?: ($settings?->ai_provider ?? 'openai');
-        $key = self::apiKey($company);
+        if ($claude = self::claude()) {
+            // Claude API page is active — it is the source of truth for OCR.
+            $provider = 'anthropic';
+            $model = $claude->model ?: 'claude-haiku-4-5';
+            $key = $claude->getRawKey();
+        } else {
+            // A claims-specific provider override lets OCR use a free provider (e.g. Gemini)
+            // regardless of what the accounting module is set to.
+            $override = config('claims.ocr.provider');
+            $provider = $override ?: ($settings?->ai_provider ?? 'openai');
+            $key = self::apiKey($company);
 
-        $defaultModel = match ($provider) {
-            'gemini' => 'gemini-2.5-flash',
-            'anthropic' => 'claude-3-5-sonnet-20241022',
-            'ollama' => 'llama3.2-vision',
-            'groq' => 'meta-llama/llama-4-scout-17b-16e-instruct',
-            default => 'gpt-4o',
-        };
-        // Don't borrow the accounting model when the provider was overridden
-        // (it would belong to a different provider).
-        $model = config('claims.ocr.model')
-            ?: ($override ? $defaultModel : ($settings?->ai_model ?: $defaultModel));
+            $defaultModel = match ($provider) {
+                'gemini' => 'gemini-2.5-flash',
+                'anthropic' => 'claude-haiku-4-5',
+                'ollama' => 'llama3.2-vision',
+                'groq' => 'meta-llama/llama-4-scout-17b-16e-instruct',
+                default => 'gpt-4o',
+            };
+            // Don't borrow the accounting model when the provider was overridden
+            // (it would belong to a different provider).
+            $model = config('claims.ocr.model')
+                ?: ($override ? $defaultModel : ($settings?->ai_model ?: $defaultModel));
+        }
 
         try {
             $base64 = base64_encode(file_get_contents($absolutePath));

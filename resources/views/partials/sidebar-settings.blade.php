@@ -50,6 +50,14 @@
 </div>
 @endif
 
+@if($sSuper)
+<div class="nav-item">
+    <a href="{{ route('superadmin.claude-api.index') }}" class="nav-link {{ request()->routeIs('superadmin.claude-api.*') ? 'active' : '' }}">
+        <i class="bi bi-robot"></i> Claude API
+    </a>
+</div>
+@endif
+
 @if($sSysAdm)
 <div class="nav-item">
     <a href="{{ route('superadmin.accounts.index') }}" class="nav-link {{ request()->routeIs('superadmin.accounts.*') ? 'active' : '' }}">

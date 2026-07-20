@@ -659,4 +659,9 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     // ── Department Settings (Superadmin) — assign companies to ticket depts ─
     Route::get('/superadmin/department-settings', [DepartmentSettingsController::class, 'index'])->name('superadmin.department-settings.index');
     Route::post('/superadmin/department-settings', [DepartmentSettingsController::class, 'update'])->name('superadmin.department-settings.update');
+
+    // ── Claude API (Superadmin) — Anthropic key that powers claim-receipt OCR ─
+    Route::get('/superadmin/claude-api', [\App\Http\Controllers\ClaudeApiSettingController::class, 'index'])->name('superadmin.claude-api.index');
+    Route::post('/superadmin/claude-api', [\App\Http\Controllers\ClaudeApiSettingController::class, 'update'])->name('superadmin.claude-api.update');
+    Route::post('/superadmin/claude-api/test', [\App\Http\Controllers\ClaudeApiSettingController::class, 'test'])->name('superadmin.claude-api.test')->middleware('throttle:10,1');
 });
