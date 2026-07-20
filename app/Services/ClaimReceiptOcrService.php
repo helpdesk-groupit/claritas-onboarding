@@ -109,6 +109,10 @@ class ClaimReceiptOcrService
                 ]);
 
             if ($resp->successful()) {
+                // Tiny, but it IS a billed call — leaving it out would make the report
+                // disagree with the Anthropic invoice.
+                ClaudeUsageRecorder::record('api_key_test', $model, $resp->json('usage'));
+
                 return ['ok' => true, 'message' => 'Key works — Claude responded. OCR is ready.'];
             }
 
@@ -155,7 +159,9 @@ class ClaimReceiptOcrService
             .$categoryClause
             .'. No commentary, JSON only.';
 
-        $json = self::callVision($prompt, $absolutePath, $mimeType, $company, 300);
+        // extract() serves the REVIEWER verification path — bill it to that feature,
+        // not to the employee-facing scan (scanDocument takes callVision's default).
+        $json = self::callVision($prompt, $absolutePath, $mimeType, $company, 300, 'claim_item_verify');
         if (! is_array($json)) {
             return null;
         }
@@ -285,7 +291,7 @@ class ClaimReceiptOcrService
      * JSON (associative array) or null. Encapsulates provider/model/key resolution so
      * extract() and scanDocument() share one transport.
      */
-    protected static function callVision(string $prompt, string $absolutePath, string $mimeType, ?string $company, int $maxTokens = 300): ?array
+    protected static function callVision(string $prompt, string $absolutePath, string $mimeType, ?string $company, int $maxTokens = 300, string $feature = 'claim_receipt_scan'): ?array
     {
         $settings = self::settings($company);
         if ($claude = self::claude()) {
@@ -331,6 +337,9 @@ class ClaimReceiptOcrService
                         ]],
                     ]);
                 $content = $resp->json('content.0.text');
+                // Anthropic reports token usage in the same body — record it for the
+                // Claude API page's spend report. Never throws (see the recorder).
+                ClaudeUsageRecorder::record($feature, $model, $resp->json('usage'), $company);
             } else {
                 $ollamaBase = rtrim(config('claims.ocr.ollama_url') ?: ($settings?->ollama_base_url ?: 'http://localhost:11434'), '/');
                 $endpoint = match ($provider) {

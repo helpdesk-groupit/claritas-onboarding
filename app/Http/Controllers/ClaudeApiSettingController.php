@@ -3,10 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Models\ClaudeApiSetting;
+use App\Models\ClaudeApiUsageLog;
+use App\Models\ClaudeModelRate;
 use App\Services\ClaimReceiptOcrService;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Superadmin-only "Claude API" settings page (Settings menu). Stores the Anthropic
@@ -26,16 +32,256 @@ class ClaudeApiSettingController extends Controller
         }
     }
 
-    public function index()
+    /** Rolling-window period options. A ?period= of YYYY-MM selects one calendar month instead. */
+    private const PERIODS = [
+        '3' => 'Last 3 months',
+        '6' => 'Last 6 months',
+        '12' => 'Last 12 months',
+        'all' => 'All time',
+    ];
+
+    public function index(Request $request)
     {
         $this->authorizeSuperadmin();
 
         $setting = ClaudeApiSetting::current();
+        $period = $this->resolvePeriod($request);
 
-        return view('superadmin.claude-api', [
+        return view('superadmin.claude-api', array_merge([
             'setting' => $setting,
             'models' => ClaudeApiSetting::MODELS,
+            'rates' => ClaudeModelRate::query()->orderBy('model')->get(),
+            'periods' => self::PERIODS,
+            'period' => $period,
+            'availableMonths' => $this->availableMonths(),
+        ], $this->usageReport($period, $setting)));
+    }
+
+    /**
+     * Resolve ?period= into a concrete date window. Accepts either a rolling window
+     * ('3'|'6'|'12'|'all') or a single calendar month as 'YYYY-MM' — the latter is what
+     * makes "export just July" possible. Anything unrecognised falls back to 12 months.
+     *
+     * @return array{key: string, label: string, start: ?Carbon, end: ?Carbon, isMonth: bool}
+     */
+    private function resolvePeriod(Request $request): array
+    {
+        $period = (string) $request->query('period', '12');
+
+        // A specific calendar month.
+        if (preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $period)) {
+            $start = Carbon::createFromFormat('Y-m-d', $period.'-01')->startOfMonth();
+
+            return [
+                'key' => $period,
+                'label' => $start->format('F Y'),
+                'start' => $start,
+                'end' => $start->copy()->endOfMonth(),
+                'isMonth' => true,
+            ];
+        }
+
+        if (! array_key_exists($period, self::PERIODS)) {
+            $period = '12';
+        }
+
+        return [
+            'key' => $period,
+            'label' => self::PERIODS[$period],
+            // startOfMonth so "last 3 months" means 3 whole calendar months, not 90 days —
+            // the report is presented per calendar month, so a partial edge month would
+            // show a total that doesn't match its own heading.
+            'start' => $period === 'all' ? null : now()->subMonths((int) $period - 1)->startOfMonth(),
+            'end' => null,
+            'isMonth' => false,
+        ];
+    }
+
+    /**
+     * Every month that actually has usage, newest first, as ['2026-07' => 'July 2026'].
+     * Drives the per-month options in the period picker — offering an empty month would
+     * just produce a blank report.
+     *
+     * @return array<string, string>
+     */
+    private function availableMonths(): array
+    {
+        return ClaudeApiUsageLog::query()
+            ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') as ym")
+            ->distinct()
+            ->orderByDesc('ym')
+            ->pluck('ym')
+            ->mapWithKeys(fn ($ym) => [$ym => Carbon::createFromFormat('Y-m-d', $ym.'-01')->format('F Y')])
+            ->all();
+    }
+
+    /**
+     * The usage report: token totals and USD/MYR spend, grouped by month and then by
+     * feature. Aggregated in SQL (one grouped query) rather than by hydrating rows —
+     * this table grows by one row per OCR scan and is never paginated on screen.
+     *
+     * @return array{report: \Illuminate\Support\Collection, byModule: \Illuminate\Support\Collection, totals: array, unpricedModels: array}
+     */
+    private function usageReport(array $period, ClaudeApiSetting $setting): array
+    {
+        $query = ClaudeApiUsageLog::query()
+            ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') as ym")
+            ->selectRaw('feature')
+            ->selectRaw('COUNT(*) as calls')
+            ->selectRaw('SUM(input_tokens) as in_tokens')
+            ->selectRaw('SUM(output_tokens) as out_tokens')
+            ->selectRaw('SUM(cache_creation_input_tokens + cache_read_input_tokens) as cache_tokens')
+            ->selectRaw('SUM(cost_usd) as cost_usd')
+            ->groupBy('ym', 'feature')
+            ->orderByDesc('ym')
+            ->orderByDesc('cost_usd');
+
+        if ($period['start']) {
+            $query->where('created_at', '>=', $period['start']);
+        }
+        if ($period['end']) {
+            $query->where('created_at', '<=', $period['end']);
+        }
+
+        $rows = $query->get();
+        $rate = (float) ($setting->usd_myr_rate ?: 0);
+
+        // Group into months, each with its feature rows + a month subtotal.
+        $report = $rows->groupBy('ym')->map(fn ($group, $ym) => [
+            'ym' => $ym,
+            // Parse with an explicit day-01 — 'Y-m' alone fills the day from today, which
+            // overflows into the next month when today is the 29th-31st.
+            'label' => Carbon::createFromFormat('Y-m-d', $ym.'-01')->format('F Y'),
+            'features' => $group->map(fn ($r) => [
+                'feature' => $r->feature,
+                'label' => ClaudeApiUsageLog::featureLabel($r->feature),
+                'calls' => (int) $r->calls,
+                'in_tokens' => (int) $r->in_tokens,
+                'out_tokens' => (int) $r->out_tokens,
+                'total_tokens' => (int) $r->in_tokens + (int) $r->out_tokens + (int) $r->cache_tokens,
+                'cost_usd' => (float) $r->cost_usd,
+                'cost_myr' => (float) $r->cost_usd * $rate,
+            ])->values(),
+            'calls' => (int) $group->sum('calls'),
+            'total_tokens' => (int) $group->sum(fn ($r) => (int) $r->in_tokens + (int) $r->out_tokens + (int) $r->cache_tokens),
+            'cost_usd' => (float) $group->sum('cost_usd'),
+            'cost_myr' => (float) $group->sum('cost_usd') * $rate,
+        ])->values();
+
+        $totalUsd = (float) $report->sum('cost_usd');
+
+        // Same rows, grouped the other way: module -> feature, summed across every month
+        // in the period. This is the "what does eClaim OCR cost us?" view; the monthly
+        // grouping above answers "what did July cost?". Both come off the one query.
+        $byModule = $rows
+            ->groupBy(fn ($r) => ClaudeApiUsageLog::moduleLabel($r->feature))
+            ->map(fn ($group, $module) => [
+                'module' => $module,
+                'features' => $group
+                    ->groupBy('feature')
+                    ->map(fn ($fg, $feature) => [
+                        'label' => ClaudeApiUsageLog::featureLabel($feature),
+                        'calls' => (int) $fg->sum('calls'),
+                        'in_tokens' => (int) $fg->sum('in_tokens'),
+                        'out_tokens' => (int) $fg->sum('out_tokens'),
+                        'total_tokens' => (int) $fg->sum(fn ($r) => (int) $r->in_tokens + (int) $r->out_tokens + (int) $r->cache_tokens),
+                        'cost_usd' => (float) $fg->sum('cost_usd'),
+                        'cost_myr' => (float) $fg->sum('cost_usd') * $rate,
+                    ])
+                    ->sortByDesc('cost_usd')
+                    ->values(),
+                'calls' => (int) $group->sum('calls'),
+                'total_tokens' => (int) $group->sum(fn ($r) => (int) $r->in_tokens + (int) $r->out_tokens + (int) $r->cache_tokens),
+                'cost_usd' => (float) $group->sum('cost_usd'),
+                'cost_myr' => (float) $group->sum('cost_usd') * $rate,
+                // Share of total spend, so a glance shows which module dominates.
+                'share' => $totalUsd > 0 ? ((float) $group->sum('cost_usd') / $totalUsd) * 100 : 0.0,
+            ])
+            ->sortByDesc('cost_usd')
+            ->values();
+
+        // Models that logged usage but have no rate on file price at 0 — surface them so
+        // the grand total is never quietly understated.
+        $unpriced = ClaudeApiUsageLog::query()
+            ->select('model')
+            ->distinct()
+            ->whereNotIn('model', ClaudeModelRate::query()->pluck('model'))
+            ->pluck('model')
+            ->all();
+
+        return [
+            'report' => $report,
+            'byModule' => $byModule,
+            'totals' => [
+                'calls' => (int) $report->sum('calls'),
+                'tokens' => (int) $report->sum('total_tokens'),
+                'cost_usd' => $totalUsd,
+                'cost_myr' => $totalUsd * $rate,
+                'myr_rate' => $rate,
+            ],
+            'unpricedModels' => $unpriced,
+        ];
+    }
+
+    /** Save the per-model price list and the USD→MYR conversion rate. */
+    public function updateRates(Request $request)
+    {
+        $this->authorizeSuperadmin();
+
+        $data = $request->validate([
+            'usd_myr_rate' => 'required|numeric|min:0|max:100',
+            'rates' => 'array',
+            'rates.*.model' => 'required|string|max:60',
+            'rates.*.label' => 'nullable|string|max:120',
+            'rates.*.input_per_mtok' => 'required|numeric|min:0|max:9999',
+            'rates.*.output_per_mtok' => 'required|numeric|min:0|max:9999',
         ]);
+
+        DB::transaction(function () use ($data) {
+            foreach ($data['rates'] ?? [] as $row) {
+                ClaudeModelRate::updateOrCreate(
+                    ['model' => trim($row['model'])],
+                    [
+                        'label' => $row['label'] ?? null,
+                        'input_per_mtok' => $row['input_per_mtok'],
+                        'output_per_mtok' => $row['output_per_mtok'],
+                    ]
+                );
+            }
+
+            $setting = ClaudeApiSetting::current();
+            $setting->usd_myr_rate = $data['usd_myr_rate'];
+            $setting->updated_by = Auth::id();
+            $setting->save();
+        });
+
+        ClaudeModelRate::flushMemo();
+
+        return redirect()->route('superadmin.claude-api.index')
+            ->with('success', 'Pricing saved. New calls are costed at these rates — past usage keeps the cost it was recorded at.');
+    }
+
+    /** The same report as the page, as a downloadable PDF. */
+    public function exportUsagePdf(Request $request)
+    {
+        $this->authorizeSuperadmin();
+
+        $setting = ClaudeApiSetting::current();
+        $period = $this->resolvePeriod($request);
+
+        $pdf = Pdf::loadView('superadmin.claude-api-usage-pdf', array_merge([
+            'periodLabel' => $period['label'],
+            'generatedAt' => now(),
+            'generatedBy' => Auth::user()?->employee?->full_name ?? Auth::user()?->name,
+        ], $this->usageReport($period, $setting)))->setPaper('a4');
+
+        // Name the file after what it contains: a single-month export is "…-2026-07.pdf",
+        // a rolling window is "…-last-12-months-<today>.pdf" (it depends on when it was run).
+        $suffix = $period['isMonth']
+            ? $period['key']
+            : Str::slug($period['label']).'-'.now()->format('Y-m-d');
+
+        return $pdf->download('claude-api-usage-'.$suffix.'.pdf');
     }
 
     public function update(Request $request)

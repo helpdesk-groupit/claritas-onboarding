@@ -21,12 +21,14 @@ class AiAccountingService
     private string $model;
     private string $provider;
     private string $ollamaBaseUrl;
+    private ?string $company;
 
     public function __construct(?string $company = null)
     {
         if (!$company) {
             $company = Auth::user()?->employee?->company;
         }
+        $this->company = $company;
         $settings = AccountingSetting::resolveForAi($company);
         $this->provider      = $settings?->ai_provider ?? 'openai';
         $this->apiKey        = $settings?->ai_api_key ?? config('services.openai.api_key');
@@ -325,7 +327,7 @@ EOT;
 
         $messages[] = ['role' => 'user', 'content' => $userMessage];
 
-        $response = $this->callProviderApi($messages, 1500, 0.3);
+        $response = $this->callProviderApi($messages, 1500, 0.3, 'accounting_ai_chat');
 
         if (!$response->successful()) {
             return "I'm unable to reach the AI service right now. Please try a specific query like 'show revenue this month' or 'outstanding invoices'.";
@@ -351,7 +353,7 @@ EOT;
      * Route a chat-completions request to the correct provider API.
      * All providers expose an OpenAI-compatible messages array.
      */
-    private function callProviderApi(array $messages, int $maxTokens = 1500, float $temperature = 0.3): \Illuminate\Http\Client\Response
+    private function callProviderApi(array $messages, int $maxTokens = 1500, float $temperature = 0.3, string $feature = 'accounting_invoice_scan'): \Illuminate\Http\Client\Response
     {
         $headers = ['Content-Type' => 'application/json'];
         $body    = ['model' => $this->model, 'messages' => $messages, 'max_tokens' => $maxTokens, 'temperature' => $temperature];
@@ -365,9 +367,12 @@ EOT;
                 if ($system) $payload['system'] = $system['content'];
                 unset($payload['max_tokens']);
                 $payload['max_tokens'] = $maxTokens;
-                return Http::timeout(60)
+                $response = Http::timeout(60)
                     ->withHeaders(['x-api-key' => $this->apiKey, 'anthropic-version' => '2023-06-01', 'Content-Type' => 'application/json'])
                     ->post('https://api.anthropic.com/v1/messages', $payload);
+                // Capture token spend for the Claude API page's usage report (fails open).
+                ClaudeUsageRecorder::record($feature, $this->model, $response->json('usage'), $this->company);
+                return $response;
 
             case 'gemini':
                 // Gemini uses Google AI Studio endpoint (OpenAI-compatible via v1beta)
@@ -514,6 +519,10 @@ EOT;
                     ],
                 ]],
             ]);
+
+        // Record before the success check — a partial/failed response still reports any
+        // tokens Anthropic billed for, and this path throws on failure.
+        ClaudeUsageRecorder::record('accounting_invoice_scan', $this->model, $response->json('usage'), $this->company);
 
         if (!$response->successful()) {
             throw new \RuntimeException('Anthropic PDF extraction failed: ' . $response->body());

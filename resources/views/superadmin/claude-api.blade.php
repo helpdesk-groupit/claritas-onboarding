@@ -3,7 +3,7 @@
 @section('page-title', 'Claude API')
 
 @section('content')
-<div class="container-fluid" style="max-width:760px;">
+<div class="container-fluid" style="max-width:960px;">
 
     <div class="d-flex align-items-center gap-3 mb-3">
         <div class="ca-hero"><i class="bi bi-robot"></i></div>
@@ -78,6 +78,262 @@
     <div class="text-muted small mt-3">
         <i class="bi bi-info-circle me-1"></i>This overrides any provider set in the server's <code>.env</code>. Cost is roughly a fraction of a cent per receipt on Haiku.
     </div>
+
+    {{-- ─────────── Usage & Cost ─────────── --}}
+    @php
+        $fmtTok = fn ($n) => number_format((int) $n);
+        $fmtUsd = fn ($n) => '$'.number_format((float) $n, 4);
+        $fmtMyr = fn ($n) => 'RM'.number_format((float) $n, 2);
+    @endphp
+
+    <div class="d-flex align-items-center gap-3 mt-5 mb-3">
+        <div class="ca-hero" style="background:linear-gradient(135deg,#0891b2,#0e7490);"><i class="bi bi-graph-up-arrow"></i></div>
+        <div class="flex-grow-1">
+            <h5 class="mb-0 fw-bold">Usage &amp; Cost</h5>
+            <div class="text-muted small">Tokens spent on Claude, broken down by month and by the feature that used them.</div>
+        </div>
+    </div>
+
+    {{-- Period filter + export --}}
+    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+        <form method="GET" action="{{ route('superadmin.claude-api.index') }}" class="d-flex align-items-center gap-2" id="caPeriodForm">
+            <label class="form-label mb-0 small text-muted">Period</label>
+            <select name="period" class="form-select form-select-sm" style="width:auto;" id="caPeriod">
+                <optgroup label="Rolling">
+                    @foreach($periods as $value => $label)
+                        <option value="{{ $value }}" @selected($period['key'] === (string) $value)>{{ $label }}</option>
+                    @endforeach
+                </optgroup>
+                {{-- Months are data-driven: only ones with recorded usage are offered, since
+                     picking an empty month would just render a blank report. Say so explicitly
+                     when there are none — a silently missing group reads as a broken control. --}}
+                <optgroup label="Single month">
+                    @forelse($availableMonths as $ym => $label)
+                        <option value="{{ $ym }}" @selected($period['key'] === $ym)>{{ $label }}</option>
+                    @empty
+                        <option disabled>— none recorded yet —</option>
+                    @endforelse
+                </optgroup>
+            </select>
+            <noscript><button type="submit" class="btn btn-sm btn-outline-secondary">Apply</button></noscript>
+        </form>
+        <div class="ms-auto">
+            <a href="{{ route('superadmin.claude-api.usage-pdf', ['period' => $period['key']]) }}" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-file-earmark-pdf me-1"></i>Export PDF<span class="d-none d-sm-inline"> — {{ $period['label'] }}</span>
+            </a>
+        </div>
+    </div>
+
+    {{-- Grand totals --}}
+    <div class="row g-3 mb-3">
+        <div class="col-6 col-lg-3">
+            <div class="card border-0 shadow-sm h-100"><div class="card-body py-3">
+                <div class="text-muted small">Calls</div>
+                <div class="fs-4 fw-bold">{{ $fmtTok($totals['calls']) }}</div>
+            </div></div>
+        </div>
+        <div class="col-6 col-lg-3">
+            <div class="card border-0 shadow-sm h-100"><div class="card-body py-3">
+                <div class="text-muted small">Tokens</div>
+                <div class="fs-4 fw-bold">{{ $fmtTok($totals['tokens']) }}</div>
+            </div></div>
+        </div>
+        <div class="col-6 col-lg-3">
+            <div class="card border-0 shadow-sm h-100"><div class="card-body py-3">
+                <div class="text-muted small">Spent (USD)</div>
+                <div class="fs-4 fw-bold text-success">{{ $fmtUsd($totals['cost_usd']) }}</div>
+            </div></div>
+        </div>
+        <div class="col-6 col-lg-3">
+            <div class="card border-0 shadow-sm h-100"><div class="card-body py-3">
+                <div class="text-muted small">Approx. (MYR)</div>
+                <div class="fs-4 fw-bold">{{ $fmtMyr($totals['cost_myr']) }}</div>
+                <div class="text-muted" style="font-size:.72rem;">@ {{ number_format($totals['myr_rate'], 4) }} / USD</div>
+            </div></div>
+        </div>
+    </div>
+
+    @if(!empty($unpricedModels))
+        <div class="alert alert-warning py-2 small">
+            <i class="bi bi-exclamation-triangle-fill me-1"></i>
+            <strong>Some usage isn't priced.</strong> These models have logged calls but no rate on file, so they count as
+            <strong>$0.00</strong> above:
+            @foreach($unpricedModels as $m)<code>{{ $m }}</code>@if(!$loop->last), @endif @endforeach.
+            Add them in the pricing table below to make the totals complete.
+        </div>
+    @endif
+
+    {{-- Breakdown 1: by feature (what does eClaim OCR cost us?) --}}
+    <div class="fw-semibold small text-uppercase text-muted mb-2" style="letter-spacing:.5px;">
+        <i class="bi bi-pie-chart me-1"></i>Spend by feature
+    </div>
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-0">
+            @forelse($byModule as $mod)
+                <div class="px-4 py-2 d-flex align-items-center bg-light border-bottom">
+                    <span class="fw-bold">{{ $mod['module'] }}</span>
+                    <span class="badge bg-secondary-subtle text-secondary-emphasis ms-2">{{ number_format($mod['share'], 1) }}%</span>
+                    <span class="ms-auto small text-muted me-3">{{ $fmtTok($mod['calls']) }} calls · {{ $fmtTok($mod['total_tokens']) }} tokens</span>
+                    <span class="fw-bold text-success">{{ $fmtUsd($mod['cost_usd']) }}</span>
+                    <span class="text-muted small ms-2">({{ $fmtMyr($mod['cost_myr']) }})</span>
+                </div>
+                {{-- Share bar: relative weight of this module at a glance. --}}
+                <div class="progress rounded-0" style="height:3px;">
+                    <div class="progress-bar bg-info" style="width: {{ min(100, $mod['share']) }}%;"></div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0 align-middle">
+                        <tbody>
+                        @foreach($mod['features'] as $f)
+                            <tr>
+                                <td class="ps-4" style="width:34%;">{{ $f['label'] }}</td>
+                                <td class="text-end text-muted small">{{ $fmtTok($f['calls']) }} calls</td>
+                                <td class="text-end text-muted small">{{ $fmtTok($f['in_tokens']) }} in</td>
+                                <td class="text-end text-muted small">{{ $fmtTok($f['out_tokens']) }} out</td>
+                                <td class="text-end small">{{ $fmtTok($f['total_tokens']) }} total</td>
+                                <td class="text-end fw-semibold">{{ $fmtUsd($f['cost_usd']) }}</td>
+                                <td class="text-end text-muted small pe-4">{{ $fmtMyr($f['cost_myr']) }}</td>
+                            </tr>
+                        @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            @empty
+                <div class="text-center text-muted py-5">
+                    <i class="bi bi-inbox fs-3 d-block mb-2"></i>
+                    <div class="small">
+                        No Claude usage recorded for this period.
+                        @if(!$active)
+                            {{-- Name the actual blocker: with OCR off, nothing will ever be recorded. --}}
+                            <br><span class="text-warning-emphasis">
+                                <i class="bi bi-exclamation-triangle-fill me-1"></i>OCR is switched off above, so no calls are being made yet.
+                            </span>
+                        @else
+                            <br>Scans run through Claude are recorded here automatically — the first one will appear within seconds.
+                        @endif
+                    </div>
+                </div>
+            @endforelse
+        </div>
+    </div>
+
+    {{-- Breakdown 2: by month (what did July cost?) --}}
+    <div class="fw-semibold small text-uppercase text-muted mb-2" style="letter-spacing:.5px;">
+        <i class="bi bi-calendar3 me-1"></i>Spend by month
+    </div>
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-0">
+            @forelse($report as $month)
+                <div class="px-4 py-2 d-flex align-items-center bg-light border-bottom">
+                    <span class="fw-bold">{{ $month['label'] }}</span>
+                    <span class="ms-auto small text-muted me-3">{{ $fmtTok($month['calls']) }} calls · {{ $fmtTok($month['total_tokens']) }} tokens</span>
+                    <span class="fw-bold text-success">{{ $fmtUsd($month['cost_usd']) }}</span>
+                    <span class="text-muted small ms-2 me-3">({{ $fmtMyr($month['cost_myr']) }})</span>
+                    {{-- Export just this month, without changing the period filter first. --}}
+                    <a href="{{ route('superadmin.claude-api.usage-pdf', ['period' => $month['ym']]) }}"
+                       class="btn btn-sm btn-outline-danger py-0 px-2"
+                       title="Export {{ $month['label'] }} as PDF">
+                        <i class="bi bi-file-earmark-pdf"></i>
+                    </a>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0 align-middle">
+                        <thead class="visually-hidden"><tr><th>Feature</th><th>Calls</th><th>In</th><th>Out</th><th>Total</th><th>USD</th><th>MYR</th></tr></thead>
+                        <tbody>
+                        @foreach($month['features'] as $f)
+                            <tr>
+                                <td class="ps-4" style="width:34%;">{{ $f['label'] }}</td>
+                                <td class="text-end text-muted small">{{ $fmtTok($f['calls']) }} calls</td>
+                                <td class="text-end text-muted small">{{ $fmtTok($f['in_tokens']) }} in</td>
+                                <td class="text-end text-muted small">{{ $fmtTok($f['out_tokens']) }} out</td>
+                                <td class="text-end small">{{ $fmtTok($f['total_tokens']) }} total</td>
+                                <td class="text-end fw-semibold">{{ $fmtUsd($f['cost_usd']) }}</td>
+                                <td class="text-end text-muted small pe-4">{{ $fmtMyr($f['cost_myr']) }}</td>
+                            </tr>
+                        @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            @empty
+                {{-- Terse here: the by-feature card above already explains the empty state. --}}
+                <div class="text-center text-muted small py-4">Nothing recorded for this period.</div>
+            @endforelse
+        </div>
+    </div>
+
+    {{-- ─────────── Pricing ─────────── --}}
+    <div class="card border-0 shadow-sm">
+        <div class="card-body p-4">
+            <h6 class="fw-bold mb-1">Pricing</h6>
+            <div class="text-muted small mb-3">
+                Anthropic's rates in <strong>USD per million tokens</strong>. Each call is costed when it happens,
+                so changing a rate affects future calls only — past months keep what they actually cost.
+                <strong>You only need to touch this when Anthropic changes its prices</strong> —
+                check them at <a href="https://platform.claude.com/docs/en/pricing" target="_blank" rel="noopener">the pricing page</a>.
+            </div>
+
+            {{-- The Input/Output split is not self-evident to anyone who hasn't used the API. --}}
+            <div class="bg-light rounded p-3 mb-3 small">
+                <div class="mb-1"><i class="bi bi-question-circle me-1"></i><strong>What are Input and Output?</strong></div>
+                <div class="text-muted">
+                    A call is billed in two halves, at different prices.
+                    <strong>Input</strong> is everything sent to Claude — the instructions plus the receipt image itself
+                    (an image is the bulk of it). <strong>Output</strong> is what Claude writes back — for a receipt scan,
+                    just a short line of data like the amount and date.
+                    Output costs more per token, but far more is sent than comes back, so input usually dominates.
+                    A typical receipt scan on Haiku is roughly 2,000 input + 400 output tokens ≈ <strong>$0.004</strong>.
+                </div>
+            </div>
+
+            <form method="POST" action="{{ route('superadmin.claude-api.rates') }}">
+                @csrf
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead>
+                            <tr class="small text-muted">
+                                <th>Model</th><th style="width:22%;">Input $/M</th><th style="width:22%;">Output $/M</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        @foreach($rates as $i => $rate)
+                            <tr>
+                                <td>
+                                    <input type="hidden" name="rates[{{ $i }}][model]" value="{{ $rate->model }}">
+                                    <input type="hidden" name="rates[{{ $i }}][label]" value="{{ $rate->label }}">
+                                    <div class="fw-semibold small">{{ $rate->model }}</div>
+                                    @if($rate->label)<div class="text-muted" style="font-size:.72rem;">{{ $rate->label }}</div>@endif
+                                </td>
+                                <td><input type="number" step="0.0001" min="0" class="form-control form-control-sm"
+                                           name="rates[{{ $i }}][input_per_mtok]" value="{{ (float) $rate->input_per_mtok }}"></td>
+                                <td><input type="number" step="0.0001" min="0" class="form-control form-control-sm"
+                                           name="rates[{{ $i }}][output_per_mtok]" value="{{ (float) $rate->output_per_mtok }}"></td>
+                            </tr>
+                        @endforeach
+                        {{-- One blank row so a newly-used model can be priced without a deploy. --}}
+                        <tr>
+                            <td><input type="text" class="form-control form-control-sm" name="rates[new][model]"
+                                       placeholder="add a model id, e.g. claude-haiku-4-5"></td>
+                            <td><input type="number" step="0.0001" min="0" class="form-control form-control-sm" name="rates[new][input_per_mtok]" placeholder="0.0000"></td>
+                            <td><input type="number" step="0.0001" min="0" class="form-control form-control-sm" name="rates[new][output_per_mtok]" placeholder="0.0000"></td>
+                        </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="row align-items-end g-3 mt-1">
+                    <div class="col-sm-5">
+                        <label class="form-label fw-semibold mb-1 small">USD → MYR rate</label>
+                        <input type="number" step="0.0001" min="0" class="form-control form-control-sm"
+                               name="usd_myr_rate" value="{{ (float) $setting->usd_myr_rate }}">
+                        <div class="form-text" style="font-size:.72rem;">Used only for the approximate MYR column. USD is what Anthropic bills.</div>
+                    </div>
+                    <div class="col-sm-7 text-end">
+                        <button type="submit" class="btn btn-primary px-4"><i class="bi bi-check-lg me-1"></i>Save pricing</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
 </div>
 @endsection
 
@@ -101,6 +357,14 @@
             ? 'bg-success-subtle text-success-emphasis'
             : 'bg-danger-subtle text-danger-emphasis');
         resultEl.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-x-circle-fill') + ' me-1"></i>' + message;
+    }
+
+    // Period selector auto-submits (CSP blocks inline onchange — must be addEventListener).
+    const periodEl = document.getElementById('caPeriod');
+    if (periodEl) {
+        periodEl.addEventListener('change', function () {
+            document.getElementById('caPeriodForm').submit();
+        });
     }
 
     testBtn.addEventListener('click', function () {
