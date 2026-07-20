@@ -67,9 +67,27 @@ class ClaudeApiUsageLog extends Model
         return self::FEATURES[$feature] ?? ($feature ?: 'Unknown');
     }
 
+    /**
+     * Chart colour per MODULE, keyed by the module itself — never by its position in
+     * the sorted list. A reader who learns "eClaim is blue" must keep that after a
+     * filter changes which module ranks first; colouring by rank would repaint the
+     * survivors and quietly lie. Slots 1-3 of a CVD-validated categorical palette.
+     */
+    public const MODULE_COLORS = [
+        'eClaim (Receipt OCR)' => '#2a78d6',   // slot 1 — blue
+        'Accounting (AI)' => '#008300',        // slot 2 — green
+        'System / Admin' => '#e87ba4',         // slot 3 — magenta
+        'Other' => '#898781',                  // muted grey — the catch-all, never a real slot
+    ];
+
     public static function moduleLabel(?string $feature): string
     {
         return self::MODULES[$feature] ?? 'Other';
+    }
+
+    public static function moduleColor(?string $module): string
+    {
+        return self::MODULE_COLORS[$module] ?? self::MODULE_COLORS['Other'];
     }
 
     /** Total tokens billed on this call (all four counters). */

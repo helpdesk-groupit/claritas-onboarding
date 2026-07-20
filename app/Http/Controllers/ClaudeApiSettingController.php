@@ -120,7 +120,7 @@ class ClaudeApiSettingController extends Controller
      * feature. Aggregated in SQL (one grouped query) rather than by hydrating rows —
      * this table grows by one row per OCR scan and is never paginated on screen.
      *
-     * @return array{report: \Illuminate\Support\Collection, byModule: \Illuminate\Support\Collection, totals: array, unpricedModels: array}
+     * @return array{report: \Illuminate\Support\Collection, byModule: \Illuminate\Support\Collection, chart: \Illuminate\Support\Collection, totals: array, unpricedModels: array}
      */
     private function usageReport(array $period, ClaudeApiSetting $setting): array
     {
@@ -152,6 +152,7 @@ class ClaudeApiSettingController extends Controller
             // Parse with an explicit day-01 — 'Y-m' alone fills the day from today, which
             // overflows into the next month when today is the 29th-31st.
             'label' => Carbon::createFromFormat('Y-m-d', $ym.'-01')->format('F Y'),
+            'short' => Carbon::createFromFormat('Y-m-d', $ym.'-01')->format('M'),
             'features' => $group->map(fn ($r) => [
                 'feature' => $r->feature,
                 'label' => ClaudeApiUsageLog::featureLabel($r->feature),
@@ -177,6 +178,7 @@ class ClaudeApiSettingController extends Controller
             ->groupBy(fn ($r) => ClaudeApiUsageLog::moduleLabel($r->feature))
             ->map(fn ($group, $module) => [
                 'module' => $module,
+                'color' => ClaudeApiUsageLog::moduleColor($module),
                 'features' => $group
                     ->groupBy('feature')
                     ->map(fn ($fg, $feature) => [
@@ -209,15 +211,32 @@ class ClaudeApiSettingController extends Controller
             ->pluck('model')
             ->all();
 
+        // Trend series for the column chart: oldest -> newest (time reads left to right,
+        // unlike the table, which leads with the most recent month). `peak` scales the
+        // bars; `isPeak`/`isLatest` mark the only two columns that get a direct label —
+        // a number on every column is noise nobody reads.
+        $chart = $report->reverse()->values();
+        $peak = (float) $chart->max('cost_usd') ?: 0.0;
+        $lastYm = $chart->last()['ym'] ?? null;
+        $chart = $chart->map(fn ($m) => $m + [
+            'height' => $peak > 0 ? max(2.0, ($m['cost_usd'] / $peak) * 100) : 0.0,
+            'isPeak' => $peak > 0 && $m['cost_usd'] >= $peak,
+            'isLatest' => $m['ym'] === $lastYm,
+        ]);
+
         return [
             'report' => $report,
             'byModule' => $byModule,
+            'chart' => $chart,
             'totals' => [
                 'calls' => (int) $report->sum('calls'),
                 'tokens' => (int) $report->sum('total_tokens'),
                 'cost_usd' => $totalUsd,
                 'cost_myr' => $totalUsd * $rate,
                 'myr_rate' => $rate,
+                // What one call costs on average — the number that makes the total
+                // meaningful ("is a scan cheap?"), which a bare total never answers.
+                'avg_per_call' => $report->sum('calls') > 0 ? $totalUsd / $report->sum('calls') : 0.0,
             ],
             'unpricedModels' => $unpriced,
         ];

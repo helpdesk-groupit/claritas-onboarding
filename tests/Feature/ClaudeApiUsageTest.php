@@ -167,6 +167,61 @@ class ClaudeApiUsageTest extends TestCase
         $res->assertSee('Spend by month', false);
     }
 
+    public function test_module_colour_follows_the_module_not_its_rank(): void
+    {
+        $super = $this->superadmin();
+
+        // eClaim is the top spender here...
+        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 9.0]);
+        ClaudeApiUsageLog::create(['feature' => 'accounting_invoice_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 1.0]);
+
+        $first = $this->actingAs($super)->get(route('superadmin.claude-api.index'))
+            ->viewData('byModule')->keyBy('module');
+        $this->assertSame('eClaim (Receipt OCR)', $first->keys()->first());
+        $eclaimColour = $first['eClaim (Receipt OCR)']['color'];
+        $acctColour = $first['Accounting (AI)']['color'];
+
+        // ...now flip the ranking so Accounting sorts first.
+        ClaudeApiUsageLog::create(['feature' => 'accounting_ai_chat', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 50.0]);
+
+        $second = $this->actingAs($super)->get(route('superadmin.claude-api.index'))
+            ->viewData('byModule')->keyBy('module');
+        $this->assertSame('Accounting (AI)', $second->keys()->first(), 'ranking should have flipped');
+
+        // Colours must NOT follow the new ranking — a reader who learned "eClaim is
+        // blue" would otherwise be silently misled when a filter reorders the list.
+        $this->assertSame($eclaimColour, $second['eClaim (Receipt OCR)']['color']);
+        $this->assertSame($acctColour, $second['Accounting (AI)']['color']);
+        $this->assertNotSame($eclaimColour, $acctColour);
+    }
+
+    public function test_trend_chart_is_hidden_for_a_single_month(): void
+    {
+        $super = $this->superadmin();
+
+        // One month: the hero figure already IS that number, so a lone column would be
+        // a one-bar bar chart. Two months or more, the trend renders.
+        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 1.0]);
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        $this->assertCount(1, $res->viewData('chart'));
+        // Match the MARKUP, not the bare class name — the CSS block defines .uc-chart
+        // on every render, so a substring check would always pass.
+        $res->assertDontSee('<div class="uc-chart">', false);
+
+        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 4.0])
+            ->forceFill(['created_at' => now()->subMonth()])->save();
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        $chart = $res->viewData('chart');
+        $this->assertCount(2, $chart);
+        // Oldest first, peak scaled to 100%, and only peak/latest carry a value label.
+        $this->assertSame(now()->subMonth()->format('Y-m'), $chart->first()['ym']);
+        $this->assertSame(100.0, $chart->first()['height']);
+        $this->assertTrue($chart->first()['isPeak']);
+        $this->assertTrue($chart->last()['isLatest']);
+        $res->assertSee('<div class="uc-chart">', false);
+    }
+
     public function test_period_filter_excludes_older_months(): void
     {
         $super = $this->superadmin();

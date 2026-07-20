@@ -82,8 +82,17 @@
     {{-- ─────────── Usage & Cost ─────────── --}}
     @php
         $fmtTok = fn ($n) => number_format((int) $n);
-        $fmtUsd = fn ($n) => '$'.number_format((float) $n, 4);
+        // Sub-dollar spend is the normal case here (a Haiku scan is ~$0.004), so 4dp
+        // below $1 — 2dp would render most real rows as "$0.00". Above $1, cents.
+        $fmtUsd = fn ($n) => '$'.number_format((float) $n, (float) $n >= 1 ? 2 : 4);
         $fmtMyr = fn ($n) => 'RM'.number_format((float) $n, 2);
+        // Compact form for the stat tiles only; tables keep full precision.
+        $fmtCompact = function ($n) {
+            $n = (int) $n;
+            if ($n >= 1_000_000) return number_format($n / 1_000_000, 1).'M';
+            if ($n >= 10_000) return number_format($n / 1_000, 1).'K';
+            return number_format($n);
+        };
     @endphp
 
     <div class="d-flex align-items-center gap-3 mt-5 mb-3">
@@ -124,32 +133,37 @@
         </div>
     </div>
 
-    {{-- Grand totals --}}
-    <div class="row g-3 mb-3">
-        <div class="col-6 col-lg-3">
-            <div class="card border-0 shadow-sm h-100"><div class="card-body py-3">
-                <div class="text-muted small">Calls</div>
-                <div class="fs-4 fw-bold">{{ $fmtTok($totals['calls']) }}</div>
-            </div></div>
-        </div>
-        <div class="col-6 col-lg-3">
-            <div class="card border-0 shadow-sm h-100"><div class="card-body py-3">
-                <div class="text-muted small">Tokens</div>
-                <div class="fs-4 fw-bold">{{ $fmtTok($totals['tokens']) }}</div>
-            </div></div>
-        </div>
-        <div class="col-6 col-lg-3">
-            <div class="card border-0 shadow-sm h-100"><div class="card-body py-3">
-                <div class="text-muted small">Spent (USD)</div>
-                <div class="fs-4 fw-bold text-success">{{ $fmtUsd($totals['cost_usd']) }}</div>
-            </div></div>
-        </div>
-        <div class="col-6 col-lg-3">
-            <div class="card border-0 shadow-sm h-100"><div class="card-body py-3">
-                <div class="text-muted small">Approx. (MYR)</div>
-                <div class="fs-4 fw-bold">{{ $fmtMyr($totals['cost_myr']) }}</div>
-                <div class="text-muted" style="font-size:.72rem;">@ {{ number_format($totals['myr_rate'], 4) }} / USD</div>
-            </div></div>
+    {{-- Summary — one hero figure (total spend) with supporting stats beside it.
+         Four identical tiles gave equal weight to four unequal numbers; the question
+         this page exists to answer is "what are we spending", so that number leads. --}}
+    <div class="card border-0 shadow-sm mb-3">
+        <div class="card-body p-4">
+            <div class="row g-4 align-items-center">
+                <div class="col-lg-5">
+                    <div class="uc-lbl">Total spent · {{ $period['label'] }}</div>
+                    <div class="uc-hero">{{ $fmtUsd($totals['cost_usd']) }}</div>
+                    <div class="uc-sub">
+                        ≈ {{ $fmtMyr($totals['cost_myr']) }}
+                        <span class="uc-dim">at {{ number_format($totals['myr_rate'], 4) }} / USD</span>
+                    </div>
+                </div>
+                <div class="col-lg-7">
+                    <div class="row g-0 uc-stats">
+                        <div class="col-4">
+                            <div class="uc-lbl">Calls</div>
+                            <div class="uc-stat">{{ $fmtCompact($totals['calls']) }}</div>
+                        </div>
+                        <div class="col-4">
+                            <div class="uc-lbl">Tokens</div>
+                            <div class="uc-stat">{{ $fmtCompact($totals['tokens']) }}</div>
+                        </div>
+                        <div class="col-4">
+                            <div class="uc-lbl">Avg / call</div>
+                            <div class="uc-stat">{{ $fmtUsd($totals['avg_per_call']) }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -163,36 +177,79 @@
         </div>
     @endif
 
+    {{-- Trend — a single series, so one hue and no legend; the heading names it.
+         Rendered only from two months on: one column is a one-bar bar chart, and the
+         hero figure above already is that number. --}}
+    @if($chart->count() >= 2)
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-body p-4">
+                <div class="uc-lbl mb-1">Monthly spend (USD)</div>
+                <div class="uc-chart">
+                    @foreach($chart as $c)
+                        <div class="uc-col">
+                            <div class="uc-tip">{{ $c['label'] }} · {{ $fmtUsd($c['cost_usd']) }} · {{ $fmtTok($c['calls']) }} calls</div>
+                            {{-- Label only the peak and the latest month; a value on every
+                                 column is noise the reader skips. The rest are in the table. --}}
+                            <div class="uc-track">
+                                {{-- The wrapper carries the bar's height so the value label can
+                                     anchor to the TOP OF THE BAR. Anchored to the column instead,
+                                     a full-height (peak) bar would render underneath its own label. --}}
+                                <div class="uc-barwrap" style="height:{{ number_format($c['height'], 2, '.', '') }}%;">
+                                    @if($c['isPeak'] || $c['isLatest'])
+                                        <div class="uc-colval">{{ $fmtUsd($c['cost_usd']) }}</div>
+                                    @endif
+                                    <div class="uc-bar"></div>
+                                </div>
+                            </div>
+                        </div>
+                    @endforeach
+                </div>
+                <div class="uc-axis">
+                    @foreach($chart as $c)
+                        <div class="uc-tick">{{ $c['short'] }}</div>
+                    @endforeach
+                </div>
+            </div>
+        </div>
+    @endif
+
     {{-- Breakdown 1: by feature (what does eClaim OCR cost us?) --}}
-    <div class="fw-semibold small text-uppercase text-muted mb-2" style="letter-spacing:.5px;">
-        <i class="bi bi-pie-chart me-1"></i>Spend by feature
-    </div>
+    <div class="uc-head"><i class="bi bi-pie-chart me-1"></i>Spend by feature</div>
     <div class="card border-0 shadow-sm mb-4">
-        <div class="card-body p-0">
+        <div class="card-body p-4">
+            @if($byModule->isNotEmpty())
+                {{-- Part-to-whole: one stacked bar, 2px surface gaps doing the separating
+                     (never a border). Segments are unlabelled — the legend below carries
+                     identity, so a thin segment never has to clip its own text. --}}
+                <div class="uc-stack mb-3">
+                    @foreach($byModule as $mod)
+                        <div class="uc-seg" style="width:{{ number_format(max(0.5, $mod['share']), 2, '.', '') }}%; background:{{ $mod['color'] }};"
+                             title="{{ $mod['module'] }} — {{ number_format($mod['share'], 1) }}%"></div>
+                    @endforeach
+                </div>
+            @endif
+
             @forelse($byModule as $mod)
-                <div class="px-4 py-2 d-flex align-items-center bg-light border-bottom">
-                    <span class="fw-bold">{{ $mod['module'] }}</span>
-                    <span class="badge bg-secondary-subtle text-secondary-emphasis ms-2">{{ number_format($mod['share'], 1) }}%</span>
-                    <span class="ms-auto small text-muted me-3">{{ $fmtTok($mod['calls']) }} calls · {{ $fmtTok($mod['total_tokens']) }} tokens</span>
-                    <span class="fw-bold text-success">{{ $fmtUsd($mod['cost_usd']) }}</span>
-                    <span class="text-muted small ms-2">({{ $fmtMyr($mod['cost_myr']) }})</span>
-                </div>
-                {{-- Share bar: relative weight of this module at a glance. --}}
-                <div class="progress rounded-0" style="height:3px;">
-                    <div class="progress-bar bg-info" style="width: {{ min(100, $mod['share']) }}%;"></div>
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-sm mb-0 align-middle">
+                <div class="uc-mod {{ $loop->first ? '' : 'mt-3 pt-3 border-top' }}">
+                    <div class="d-flex align-items-center flex-wrap gap-2">
+                        <span class="uc-key" style="background:{{ $mod['color'] }};"></span>
+                        <span class="fw-semibold">{{ $mod['module'] }}</span>
+                        <span class="uc-pct">{{ number_format($mod['share'], 1) }}%</span>
+                        <span class="ms-auto uc-dim small">{{ $fmtTok($mod['calls']) }} calls · {{ $fmtTok($mod['total_tokens']) }} tokens</span>
+                        <span class="uc-amt">{{ $fmtUsd($mod['cost_usd']) }}</span>
+                        <span class="uc-dim small">({{ $fmtMyr($mod['cost_myr']) }})</span>
+                    </div>
+                    <table class="table table-sm uc-tbl mb-0 mt-2">
                         <tbody>
                         @foreach($mod['features'] as $f)
                             <tr>
-                                <td class="ps-4" style="width:34%;">{{ $f['label'] }}</td>
-                                <td class="text-end text-muted small">{{ $fmtTok($f['calls']) }} calls</td>
-                                <td class="text-end text-muted small">{{ $fmtTok($f['in_tokens']) }} in</td>
-                                <td class="text-end text-muted small">{{ $fmtTok($f['out_tokens']) }} out</td>
-                                <td class="text-end small">{{ $fmtTok($f['total_tokens']) }} total</td>
+                                <td class="uc-feat">{{ $f['label'] }}</td>
+                                <td class="text-end uc-dim">{{ $fmtTok($f['calls']) }} calls</td>
+                                <td class="text-end uc-dim">{{ $fmtTok($f['in_tokens']) }} in</td>
+                                <td class="text-end uc-dim">{{ $fmtTok($f['out_tokens']) }} out</td>
+                                <td class="text-end">{{ $fmtTok($f['total_tokens']) }} total</td>
                                 <td class="text-end fw-semibold">{{ $fmtUsd($f['cost_usd']) }}</td>
-                                <td class="text-end text-muted small pe-4">{{ $fmtMyr($f['cost_myr']) }}</td>
+                                <td class="text-end uc-dim">{{ $fmtMyr($f['cost_myr']) }}</td>
                             </tr>
                         @endforeach
                         </tbody>
@@ -200,7 +257,7 @@
                 </div>
             @empty
                 <div class="text-center text-muted py-5">
-                    <i class="bi bi-inbox fs-3 d-block mb-2"></i>
+                    <i class="bi bi-inbox fs-3 d-block mb-2 uc-dim"></i>
                     <div class="small">
                         No Claude usage recorded for this period.
                         @if(!$active)
@@ -218,37 +275,35 @@
     </div>
 
     {{-- Breakdown 2: by month (what did July cost?) --}}
-    <div class="fw-semibold small text-uppercase text-muted mb-2" style="letter-spacing:.5px;">
-        <i class="bi bi-calendar3 me-1"></i>Spend by month
-    </div>
+    <div class="uc-head"><i class="bi bi-calendar3 me-1"></i>Spend by month</div>
     <div class="card border-0 shadow-sm mb-4">
-        <div class="card-body p-0">
+        <div class="card-body p-4">
             @forelse($report as $month)
-                <div class="px-4 py-2 d-flex align-items-center bg-light border-bottom">
-                    <span class="fw-bold">{{ $month['label'] }}</span>
-                    <span class="ms-auto small text-muted me-3">{{ $fmtTok($month['calls']) }} calls · {{ $fmtTok($month['total_tokens']) }} tokens</span>
-                    <span class="fw-bold text-success">{{ $fmtUsd($month['cost_usd']) }}</span>
-                    <span class="text-muted small ms-2 me-3">({{ $fmtMyr($month['cost_myr']) }})</span>
-                    {{-- Export just this month, without changing the period filter first. --}}
-                    <a href="{{ route('superadmin.claude-api.usage-pdf', ['period' => $month['ym']]) }}"
-                       class="btn btn-sm btn-outline-danger py-0 px-2"
-                       title="Export {{ $month['label'] }} as PDF">
-                        <i class="bi bi-file-earmark-pdf"></i>
-                    </a>
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-sm mb-0 align-middle">
-                        <thead class="visually-hidden"><tr><th>Feature</th><th>Calls</th><th>In</th><th>Out</th><th>Total</th><th>USD</th><th>MYR</th></tr></thead>
+                <div class="uc-mod {{ $loop->first ? '' : 'mt-3 pt-3 border-top' }}">
+                    <div class="d-flex align-items-center flex-wrap gap-2">
+                        <span class="fw-semibold">{{ $month['label'] }}</span>
+                        <span class="ms-auto uc-dim small">{{ $fmtTok($month['calls']) }} calls · {{ $fmtTok($month['total_tokens']) }} tokens</span>
+                        <span class="uc-amt">{{ $fmtUsd($month['cost_usd']) }}</span>
+                        <span class="uc-dim small">({{ $fmtMyr($month['cost_myr']) }})</span>
+                        {{-- Export just this month, without changing the period filter first. --}}
+                        <a href="{{ route('superadmin.claude-api.usage-pdf', ['period' => $month['ym']]) }}"
+                           class="btn btn-sm btn-outline-danger py-0 px-2 ms-1"
+                           title="Export {{ $month['label'] }} as PDF"><i class="bi bi-file-earmark-pdf"></i></a>
+                    </div>
+                    <table class="table table-sm uc-tbl mb-0 mt-2">
                         <tbody>
                         @foreach($month['features'] as $f)
                             <tr>
-                                <td class="ps-4" style="width:34%;">{{ $f['label'] }}</td>
-                                <td class="text-end text-muted small">{{ $fmtTok($f['calls']) }} calls</td>
-                                <td class="text-end text-muted small">{{ $fmtTok($f['in_tokens']) }} in</td>
-                                <td class="text-end text-muted small">{{ $fmtTok($f['out_tokens']) }} out</td>
-                                <td class="text-end small">{{ $fmtTok($f['total_tokens']) }} total</td>
+                                <td class="uc-feat">
+                                    <span class="uc-key" style="background:{{ \App\Models\ClaudeApiUsageLog::moduleColor(\App\Models\ClaudeApiUsageLog::moduleLabel($f['feature'])) }};"></span>
+                                    {{ $f['label'] }}
+                                </td>
+                                <td class="text-end uc-dim">{{ $fmtTok($f['calls']) }} calls</td>
+                                <td class="text-end uc-dim">{{ $fmtTok($f['in_tokens']) }} in</td>
+                                <td class="text-end uc-dim">{{ $fmtTok($f['out_tokens']) }} out</td>
+                                <td class="text-end">{{ $fmtTok($f['total_tokens']) }} total</td>
                                 <td class="text-end fw-semibold">{{ $fmtUsd($f['cost_usd']) }}</td>
-                                <td class="text-end text-muted small pe-4">{{ $fmtMyr($f['cost_myr']) }}</td>
+                                <td class="text-end uc-dim">{{ $fmtMyr($f['cost_myr']) }}</td>
                             </tr>
                         @endforeach
                         </tbody>
@@ -260,7 +315,6 @@
             @endforelse
         </div>
     </div>
-
     {{-- ─────────── Pricing ─────────── --}}
     <div class="card border-0 shadow-sm">
         <div class="card-body p-4">
@@ -340,6 +394,59 @@
 @push('styles')
 <style nonce="{{ $cspNonce ?? '' }}">
     .ca-hero { width:44px; height:44px; border-radius:12px; background:linear-gradient(135deg,#7c3aed,#4f46e5); color:#fff; display:flex; align-items:center; justify-content:center; font-size:1.3rem; flex-shrink:0; box-shadow:0 4px 10px rgba(79,70,229,.3); }
+
+    /* ── Usage & Cost ───────────────────────────────────────────────────────────
+       Ink and chrome tokens are fixed values rather than Bootstrap utilities so the
+       chart marks, the table text and the section headers stay on one scale.
+       Categorical hues live in PHP (ClaudeApiUsageLog::MODULE_COLORS) because colour
+       must follow the module, not its rank in a sorted list. */
+    .uc-lbl   { font-size:.7rem; letter-spacing:.06em; text-transform:uppercase; color:#898781; font-weight:600; }
+    .uc-dim   { color:#898781; }
+    .uc-head  { font-size:.72rem; letter-spacing:.06em; text-transform:uppercase; color:#898781; font-weight:600; margin-bottom:.5rem; }
+
+    /* Hero figure — the one number the page leads with. System sans, never a display face. */
+    .uc-hero  { font-size:3rem; line-height:1.05; font-weight:600; color:#0b0b0b; letter-spacing:-.02em; margin-top:.15rem; }
+    .uc-sub   { color:#52514e; font-size:.9rem; margin-top:.3rem; }
+    .uc-stat  { font-size:1.5rem; font-weight:600; color:#0b0b0b; line-height:1.15; margin-top:.15rem; }
+    .uc-stats > [class^="col"] { padding-left:1.1rem; border-left:1px solid #e1e0d9; }
+    .uc-stats > [class^="col"]:first-child { border-left:0; padding-left:0; }
+    @media (max-width: 991.98px) { .uc-stats > [class^="col"]:first-child { padding-left:1.1rem; border-left:1px solid #e1e0d9; } }
+
+    /* Column chart: single hue, thin marks, 4px rounded data-end square at the baseline. */
+    /* padding-top reserves room for the value label that sits above the tallest bar. */
+    .uc-chart { display:flex; align-items:flex-end; gap:10px; height:150px; padding-top:26px; }
+    .uc-col   { flex:1 1 0; height:100%; display:flex; flex-direction:column; justify-content:flex-end;
+                align-items:center; position:relative; min-width:0; }
+    .uc-track { width:100%; max-width:24px; height:100%; display:flex; align-items:flex-end; }
+    .uc-barwrap { position:relative; width:100%; display:flex; align-items:flex-end; }
+    .uc-bar   { width:100%; height:100%; background:#2a78d6; border-radius:4px 4px 0 0; transition:filter .12s ease; }
+    .uc-col:hover .uc-bar { filter:brightness(1.12); }
+    /* Anchored to the bar's top edge, not the column's, so it never sits over the mark. */
+    .uc-colval{ position:absolute; bottom:100%; left:50%; transform:translateX(-50%); margin-bottom:4px;
+                font-size:.72rem; font-weight:600; color:#52514e; white-space:nowrap; }
+    /* Axis is a solid hairline one step off the surface — never dashed. */
+    .uc-axis  { display:flex; gap:10px; border-top:1px solid #c3c2b7; padding-top:6px; }
+    .uc-tick  { flex:1 1 0; min-width:0; text-align:center; font-size:.72rem; color:#898781; font-variant-numeric:tabular-nums; }
+    /* Per-mark hover tooltip — an HTML chart should be interactive by default. */
+    .uc-tip   { position:absolute; bottom:100%; margin-bottom:8px; background:#0b0b0b; color:#fff;
+                font-size:.72rem; padding:4px 9px; border-radius:6px; white-space:nowrap;
+                opacity:0; pointer-events:none; transition:opacity .12s ease; z-index:5; }
+    .uc-col:hover .uc-tip { opacity:1; }
+
+    /* Part-to-whole bar. The 2px flex gap is the separator — never a border on a mark. */
+    .uc-stack { display:flex; gap:2px; height:10px; border-radius:5px; overflow:hidden; background:#f0efec; }
+    .uc-seg   { height:100%; }
+    .uc-key   { width:10px; height:10px; border-radius:3px; display:inline-block; flex-shrink:0; }
+    .uc-pct   { font-size:.72rem; font-weight:600; color:#52514e; background:#f0efec; border-radius:10px; padding:.05rem .45rem; }
+    .uc-amt   { font-weight:600; color:#0b0b0b; font-variant-numeric:tabular-nums; }
+
+    /* Feature tables: values in ink tokens, identity from the coloured dot beside them. */
+    .uc-tbl td { border:0; padding:.3rem .5rem; font-size:.82rem; font-variant-numeric:tabular-nums; }
+    .uc-tbl tr + tr td { border-top:1px solid #f0efec; }
+    .uc-tbl td:first-child { padding-left:0; }
+    .uc-tbl td:last-child  { padding-right:0; }
+    .uc-feat  { width:34%; font-variant-numeric:normal; color:#52514e; }
+    .uc-feat .uc-key { margin-right:.4rem; vertical-align:baseline; }
 </style>
 @endpush
 
