@@ -76,7 +76,7 @@ OnboardingInvite → register/set-password → Employee (active) → Offboarding
 
 ### Employee Company Timeline & Historical Attribution (added 2026-07-15)
 An employee's company is no longer a single mutable field — it's a **dated timeline** so past records keep the company the employee was at when they were created, even after the employee moves companies.
-- `EmployeeCompanyHistory` (`employee_company_histories`) = one **stint** per row (`company`, `office_location`, `started_on`, `ended_on`, `changed_by`); `ended_on IS NULL` ⇒ the current company. Oldest-first.
+- `EmployeeCompanyHistory` (`employee_company_histories`) = one **stint** per row (`company`, `office_location`, `started_on`, `ended_on`, `changed_by`, `note`); `ended_on IS NULL` ⇒ the current company. Oldest-first. `note` (nullable) is a short human-readable explanation set when a back-dated move **rewrites** history (i.e. removed earlier stints), so the profile timeline can explain why an entry replaced an earlier company; null for ordinary forward moves.
 - `Employee` timeline API — **always use these, don't query stints directly:** `companyHistories()` (relation), `companyAsOf($date)` (company on a given date, falls back to current company when no stint covers it; ties on equal `started_on` prefer the still-open/newest stint), `changeCompanyEffective($newCompany, $newOffice, $effectiveDate, $changedBy)` (forward/append move — back-datable, but only when the effective date is **after** the current stint's start), `previewCompanyChange($newCompany, $effectiveDate)` (pure — returns `mode` = `noop`|`append`|`rewrite` + the `removes` collection), `rewriteCompanyFrom($newCompany, $newOffice, $effectiveDate, $changedBy)` (the "correct an accidental move" primitive — **deletes** every stint starting on/after the effective date and re-seats the company, **merging** cleanly with no blip when reverting to the immediately-previous company), `ensureInitialCompanyStint()`, `recordCompanyStintChange()`.
 - **Correcting an accidental move is done on the bulk page, not the profile.** In `UserCompanySettingController::bulkAssign()`, picking an effective date **on/before** an employee's current-company start no longer skips them — it's a two-phase flow: the first submit `previewCompanyChange`s each selected employee, and if any are `rewrite` it flashes `rewrite_confirm` and the page auto-opens a modal listing exactly which timeline entries will be removed per employee; **Proceed** re-submits with `confirmed=1` (hidden `employee_ids`/`company`/`effective_date`) and applies via `rewriteCompanyFrom` (forward moves still go through `changeCompanyEffective`). Both paths then `reattributeEmployee`. So "undo the accidental Enlinea move" = select the person, pick their previous company + a date on/before the bad stint's start, confirm → clean merge back. There is intentionally **no** undo control on the employee profile/listing pages.
 - **Company/Office Location are superadmin-only** on the employee edit form (CSP-safe office auto-fill). Superadmin bulk page: **"User – Company Setting"** at `/superadmin/user-company-settings` (`UserCompanySettingController`) — dated, back-datable bulk moves.
@@ -159,7 +159,7 @@ Notable mail classes:
 - UI framework: **Bootstrap 5.3.2** + Bootstrap Icons 1.11.3, loaded globally from jsdelivr CDN
 - Per-page CDN libraries: **Select2 4.1.0-rc.0** (onboarding form), **Chart.js 4.4.7** (accounting & executive dashboards)
 - No JS framework; vanilla JS only. Always escape user-entered values before `innerHTML` insertion using the project-standard `escHtml(s)` / `obEsc(s)` helpers.
-- **Date display:** use the `fmt_date($date)` / `fmt_datetime($date)` helpers (in `app/helpers.php`) for all human-facing dates — the system-standard format is **MM-DD-YYYY** (`fmt_datetime` adds `, h:mma`). They accept a Carbon/string/null and return `—` for empty/invalid input. Do NOT use them for `<input type="date">` values (those stay `YYYY-MM-DD`) or machine-readable exports.
+- **Date display:** use the `fmt_date($date)` / `fmt_datetime($date)` helpers (in `app/helpers.php`) for all human-facing dates — the system-standard format is **DD-MM-YYYY** (`fmt_datetime` adds `, h:mma`). They accept a Carbon/string/null and return `—` for empty/invalid input. Do NOT use them for `<input type="date">` values (those stay `YYYY-MM-DD`) or machine-readable exports.
 
 ### Testing
 - PHPUnit 11 with two suites: `Unit` (`tests/Unit/`) and `Feature` (`tests/Feature/`)
@@ -168,7 +168,7 @@ Notable mail classes:
 
 ### Database
 - MySQL everywhere: `claritas_onboarding` for production/local, `claritas_onboarding_test` for the test suite
-- ~128 migrations spanning 2024-01 to 2026-07; the first 4 (prefixed `2024_01_`) define the core schema, subsequent `2026_03_` onward migrations are incremental enhancements (the bulk of the ticketing, leave/payroll, accounting, security, eClaim, and email-workflow work)
+- ~135 migrations spanning 2024-01 to 2026-07; the first 4 (prefixed `2024_01_`) define the core schema, subsequent `2026_03_` onward migrations are incremental enhancements (the bulk of the ticketing, leave/payroll, accounting, security, eClaim, and email-workflow work)
 - Timezone: `Asia/Kuala_Lumpur` (set in `config/app.php`)
 
 ### Onboarding Staging JSON (`invite_staging_json`)

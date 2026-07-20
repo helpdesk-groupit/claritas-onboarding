@@ -2,7 +2,7 @@
 
 if (!function_exists('fmt_date')) {
     /**
-     * The system-standard DISPLAY format for a full date: MM-DD-YYYY (e.g. 07-15-2026).
+     * The system-standard DISPLAY format for a full date: DD-MM-YYYY (e.g. 15-07-2026).
      * Use this for every human-facing date so the whole app reads consistently. Do NOT use it
      * for <input type="date"> values (those must stay YYYY-MM-DD) or machine-readable exports.
      *
@@ -19,12 +19,12 @@ if (!function_exists('fmt_date')) {
             return $fallback;
         }
 
-        return $c->format('m-d-Y');
+        return $c->format('d-m-Y');
     }
 }
 
 if (!function_exists('fmt_datetime')) {
-    /** System-standard date+time display: MM-DD-YYYY, h:mma (e.g. 07-15-2026, 4:26pm). */
+    /** System-standard date+time display: DD-MM-YYYY, h:mma (e.g. 15-07-2026, 4:26pm). */
     function fmt_datetime($date, string $fallback = '—'): string
     {
         if (empty($date)) {
@@ -36,7 +36,7 @@ if (!function_exists('fmt_datetime')) {
             return $fallback;
         }
 
-        return $c->format('m-d-Y, g:ia');
+        return $c->format('d-m-Y, g:ia');
     }
 }
 
