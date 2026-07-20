@@ -145,6 +145,7 @@ class ClaimReceiptOcrService
             .'navigation route screenshot. Return ONLY strict JSON with keys: '
             .'"amount" (receipt total paid as a number, no currency symbol, or null), '
             .'"date" (receipt date as YYYY-MM-DD, or null), '
+            .self::dateRule()
             .self::taxRule()
             .self::vendorRule()
             .self::itemDescRule()
@@ -218,6 +219,7 @@ class ClaimReceiptOcrService
             .'Each item object has these keys: '
             .'"amount" (the amount paid for THAT transaction as a number, no currency symbol, or null), '
             .'"date" (that transaction date as YYYY-MM-DD, or null), '
+            .self::dateRule()
             .self::taxRule()
             .self::vendorRule()
             .self::itemDescRule()
@@ -462,6 +464,25 @@ class ClaimReceiptOcrService
             .'NEVER to Printing & Stationery (the "out-of-pocket" note on the stationery category is for '
             .'printing / stationery out-of-pockets only, not for groceries or food)): '
             .implode('; ', $lines);
+    }
+
+    /**
+     * How to READ a date off the document, as opposed to how to format it back.
+     *
+     * These are Malaysian documents, so a numeric date is DAY-FIRST (DD/MM/YYYY). Without saying
+     * so the model falls back to the US MM/DD/YYYY reading and silently shifts the date — e.g. a
+     * Jaya One season-parking invoice dated 06/04/2026 (6 April) came back as 4 June, which then
+     * tripped the "receipt is dated June but this is an April claim" guard on a valid receipt.
+     */
+    protected static function dateRule(): string
+    {
+        return 'READING DATES: these are MALAYSIAN documents, so a numeric date is DAY-FIRST '
+            .'(DD/MM/YYYY or DD-MM-YYYY) — "06/04/2026" is 6 April 2026, NOT 4 June. Never assume the '
+            .'US month-first order. A component greater than 12 settles the order on its own '
+            .'("30/04/2026" can only be 30 April). A month written in words is already unambiguous — '
+            .'read "2 April 2026" as-is. When the document also shows a validity or billing RANGE such '
+            .'as "1/04/2026 - 30/04/2026", that range tells you the month the document belongs to — a '
+            .'single date on the same document must not land outside it. ';
     }
 
     /** Reusable per-receipt field-rule fragments (shared by extract + scanDocument). */
