@@ -87,6 +87,9 @@
                     </select>
                     <button type="submit" class="btn btn-sm btn-outline-secondary">View</button>
                 </form>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal" data-bs-target="#userManualHrClaimsModal">
+                    <i class="bi bi-book me-1"></i>User Manual
+                </button>
                 <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#exportZipModal">
                     <i class="bi bi-file-earmark-zip me-1"></i>Approved PDFs (ZIP)
                 </button>
@@ -312,6 +315,8 @@
         </form>
     </div>
 </div>
+
+@include('partials._user-manual-hrclaims')
 
 @push('styles')
 <style nonce="{{ $cspNonce ?? '' }}">

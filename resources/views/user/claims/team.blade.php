@@ -11,9 +11,15 @@
             <h3 class="mb-1"><i class="bi bi-people-fill me-2"></i>Team Expense Claims</h3>
             <p class="text-muted mb-0">Review and approve your team members' claims</p>
         </div>
-        <a href="{{ route('user.claims.index') }}" class="btn btn-outline-secondary btn-sm">
-            <i class="bi bi-receipt-cutoff me-1"></i>My Claims
-        </a>
+        <div class="d-flex gap-2">
+            <button type="button" class="btn btn-outline-info btn-sm"
+                    data-bs-toggle="modal" data-bs-target="#userManualTeamClaimsModal">
+                <i class="bi bi-book me-1"></i> User Manual
+            </button>
+            <a href="{{ route('user.claims.index') }}" class="btn btn-outline-secondary btn-sm">
+                <i class="bi bi-receipt-cutoff me-1"></i>My Claims
+            </a>
+        </div>
     </div>
 
     {{-- success/error flash is rendered globally by layouts/app.blade.php --}}
@@ -244,6 +250,8 @@
     @endif
 
 </div>
+
+@include('partials._user-manual-teamclaims')
 
 @push('styles')
 <style nonce="{{ $cspNonce ?? '' }}">

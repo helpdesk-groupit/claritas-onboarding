@@ -9,6 +9,12 @@
             <h3 class="mb-1"><i class="bi bi-receipt-cutoff me-2"></i>My Expense Claims</h3>
             <p class="text-muted mb-0">{{ $employee->full_name }} &mdash; {{ $employee->department ?? 'N/A' }}</p>
         </div>
+        <div class="d-flex gap-2">
+            <button type="button" class="btn btn-outline-info btn-sm"
+                    data-bs-toggle="modal" data-bs-target="#userManualClaimsModal">
+                <i class="bi bi-book me-1"></i> User Manual
+            </button>
+        </div>
     </div>
 
     {{-- ── Pipeline-stage cards (Draft → Awaiting Manager → Awaiting HR → Completed) ── --}}
@@ -253,6 +259,7 @@
 </div>
 
 @include('partials.confirm-modal')
+@include('partials._user-manual-claims')
 
 {{-- Submit-claim reminder modal (double-check event + approving manager) --}}
 <div class="modal fade" id="submitClaimModal" tabindex="-1" aria-labelledby="submitClaimModalTitle" aria-hidden="true">

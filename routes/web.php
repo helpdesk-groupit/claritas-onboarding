@@ -85,6 +85,9 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
         Route::get('/my-tickets', [\App\Http\Controllers\HelpController::class, 'tickets'])->name('tickets');
         Route::get('/ticket-management', [\App\Http\Controllers\HelpController::class, 'manage'])->name('manage');
         Route::get('/department-settings', [\App\Http\Controllers\HelpController::class, 'departmentSettings'])->name('dept-settings');
+        Route::get('/my-claims', [\App\Http\Controllers\HelpController::class, 'claims'])->name('claims');
+        Route::get('/team-claims', [\App\Http\Controllers\HelpController::class, 'teamClaims'])->name('team-claims');
+        Route::get('/hr-claims', [\App\Http\Controllers\HelpController::class, 'hrClaims'])->name('hr-claims');
     });
 
     // Secure file serving — all sensitive documents (NRIC, contracts, certs) require auth
