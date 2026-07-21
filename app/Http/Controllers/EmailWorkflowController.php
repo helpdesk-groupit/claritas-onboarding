@@ -73,7 +73,10 @@ class EmailWorkflowController extends Controller
             'storage_config_json' => EmailWorkflow::DEFAULT_STORAGE_CONFIG,
             'log_config_json' => EmailWorkflow::DEFAULT_LOG_CONFIG,
             'timezone' => 'Asia/Kuala_Lumpur',
-            'capture_cron' => EmailWorkflow::DEFAULT_CAPTURE_CRON,
+            // Auto-stagger: the next free 15-min slot, so a new workflow doesn't
+            // pile onto an existing one's minute. Only a starting default — step
+            // 5 lets the operator change it.
+            'capture_cron' => EmailWorkflow::nextStaggeredCron(),
             'reconcile_cron' => EmailWorkflow::DEFAULT_RECONCILE_CRON,
             'first_sweep_on_activate' => true,
             'wizard_step' => 1,
@@ -104,7 +107,9 @@ class EmailWorkflowController extends Controller
             'storage_config_json' => EmailWorkflow::DEFAULT_STORAGE_CONFIG,
             'log_config_json' => EmailWorkflow::DEFAULT_LOG_CONFIG,
             'timezone' => 'Asia/Kuala_Lumpur',
-            'capture_cron' => EmailWorkflow::DEFAULT_CAPTURE_CRON,
+            // Auto-stagger at persist time (recomputed here, not carried from the
+            // create() template, so concurrent creates still land on free slots).
+            'capture_cron' => EmailWorkflow::nextStaggeredCron(),
             'reconcile_cron' => EmailWorkflow::DEFAULT_RECONCILE_CRON,
             'wizard_step' => 1,
         ]);

@@ -114,6 +114,9 @@ class EmailWorkflow extends Model
 
     public const DEFAULT_CAPTURE_CRON = '0 19 * * *';   // daily 19:00 local
 
+    /** New workflows are handed the next free slot this many minutes apart. */
+    public const CAPTURE_STAGGER_STEP_MINUTES = 15;
+
     public const DEFAULT_RECONCILE_CRON = '0 7 * * *';    // daily 07:00 local
 
     protected $fillable = [
@@ -305,6 +308,61 @@ class EmailWorkflow extends Model
     public function effectiveCaptureCron(): string
     {
         return $this->capture_cron ?: self::DEFAULT_CAPTURE_CRON;
+    }
+
+    /**
+     * A non-colliding default capture cron for a NEW workflow.
+     *
+     * All workflows used to be born at DEFAULT_CAPTURE_CRON (19:00), so a fleet
+     * of them dispatched in the same minute and the single scheduler-supervised
+     * worker drained them back-to-back in one long run (see the queue-fix
+     * history). Instead, hand each new workflow the next free
+     * CAPTURE_STAGGER_STEP_MINUTES slot from the base time onward. This is only
+     * the starting default — the wizard's step 5 still lets the operator set any
+     * cron they want.
+     *
+     * Only simple "daily at HH:MM" crons (`M H * * *`) count as occupied slots;
+     * a custom expression is the operator's deliberate choice and never blocks
+     * or shifts the stagger. If every slot from the base time to 23:59 is taken,
+     * fall back to the base default — a collision at that scale is a "run more
+     * workers" problem, not a scheduling one.
+     */
+    public static function nextStaggeredCron(): string
+    {
+        $base = self::cronSlotMinutes(self::DEFAULT_CAPTURE_CRON) ?? (19 * 60);
+
+        $occupied = [];
+        foreach (self::query()->whereNotNull('capture_cron')->pluck('capture_cron') as $cron) {
+            if (($slot = self::cronSlotMinutes($cron)) !== null) {
+                $occupied[$slot] = true;
+            }
+        }
+
+        for ($slot = $base; $slot < 24 * 60; $slot += self::CAPTURE_STAGGER_STEP_MINUTES) {
+            if (! isset($occupied[$slot])) {
+                return sprintf('%d %d * * *', $slot % 60, intdiv($slot, 60));
+            }
+        }
+
+        return self::DEFAULT_CAPTURE_CRON;
+    }
+
+    /**
+     * Minute-of-day for a simple "daily at HH:MM" cron (`M H * * *`), or null if
+     * the expression is anything more complex (ranges, steps, lists, wildcards)
+     * or out of range — such expressions are left out of stagger slot accounting.
+     */
+    private static function cronSlotMinutes(?string $cron): ?int
+    {
+        if ($cron !== null && preg_match('/^\s*(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*\s*$/', $cron, $m)) {
+            $minute = (int) $m[1];
+            $hour = (int) $m[2];
+            if ($minute < 60 && $hour < 24) {
+                return $hour * 60 + $minute;
+            }
+        }
+
+        return null;
     }
 
     /** Is this a cron expression the scheduler can actually evaluate? */

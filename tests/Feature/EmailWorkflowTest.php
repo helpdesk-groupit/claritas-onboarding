@@ -87,6 +87,51 @@ class EmailWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_new_workflows_get_staggered_capture_crons(): void
+    {
+        // Three back-to-back creations must land on distinct 15-min slots from
+        // the base time, not all collide at 19:00.
+        foreach (['A', 'B', 'C'] as $name) {
+            $this->actingAs($this->itManager)
+                ->post(route('it.automation.email-workflow.store'), ['name' => $name]);
+        }
+
+        $this->assertSame(
+            ['0 19 * * *', '15 19 * * *', '30 19 * * *'],
+            EmailWorkflow::orderBy('id')->pluck('capture_cron')->all(),
+        );
+    }
+
+    public function test_stagger_defaults_to_the_base_time_when_no_workflows_exist(): void
+    {
+        $this->assertSame(EmailWorkflow::DEFAULT_CAPTURE_CRON, EmailWorkflow::nextStaggeredCron());
+    }
+
+    public function test_stagger_fills_the_first_gap_and_ignores_custom_crons(): void
+    {
+        // 19:00 and 19:30 taken; a custom expression must NOT count as a slot.
+        // The first free slot is therefore 19:15.
+        EmailWorkflow::create(['created_by' => $this->itManager->id, 'name' => 'a', 'status' => 'draft', 'capture_cron' => '0 19 * * *']);
+        EmailWorkflow::create(['created_by' => $this->itManager->id, 'name' => 'b', 'status' => 'draft', 'capture_cron' => '30 19 * * *']);
+        EmailWorkflow::create(['created_by' => $this->itManager->id, 'name' => 'c', 'status' => 'draft', 'capture_cron' => '*/30 9-18 * * *']);
+
+        $this->assertSame('15 19 * * *', EmailWorkflow::nextStaggeredCron());
+    }
+
+    public function test_stagger_falls_back_to_base_when_every_evening_slot_is_taken(): void
+    {
+        // Fill every 15-min slot from 19:00 to 23:45; the next default rolls back
+        // to the base rather than spilling into the small hours.
+        for ($slot = 19 * 60; $slot < 24 * 60; $slot += EmailWorkflow::CAPTURE_STAGGER_STEP_MINUTES) {
+            EmailWorkflow::create([
+                'created_by' => $this->itManager->id, 'name' => "s{$slot}", 'status' => 'draft',
+                'capture_cron' => sprintf('%d %d * * *', $slot % 60, intdiv($slot, 60)),
+            ]);
+        }
+
+        $this->assertSame(EmailWorkflow::DEFAULT_CAPTURE_CRON, EmailWorkflow::nextStaggeredCron());
+    }
+
     public function test_update_step_3_without_filename_template_does_not_500(): void
     {
         // Regression: nested forms in the wizard dropped fields after the
