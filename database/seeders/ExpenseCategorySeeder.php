@@ -218,27 +218,10 @@ class ExpenseCategorySeeder extends Seeder
             DB::table('expense_categories')->where('id', $extraHoursId)->delete();
         }
 
-        // ── Event / Programme day (RM150/day, all entities, no receipt) ─────────
-        DB::table('expense_categories')->updateOrInsert(
-            ['code' => 'EVENT_DAY'],
-            [
-                'gl_code' => null,
-                'name' => 'Event / Programme Day',
-                'company' => null,
-                'description' => 'Full-day events (Community/ClubMama) and Parentcraft/Superkid programmes at RM150 per day. Enter the number of days.',
-                'keywords' => json_encode(['event', 'clubmama', 'club mama', 'parentcraft', 'superkid', 'super kid', 'programme', 'program']),
-                'monthly_limit' => null,
-                'rate_type' => 'per_day',
-                'rate_amount' => 150.00,
-                'limit_period' => 'monthly',
-                'applies_to_role' => null,
-                'requires_receipt' => false,
-                'is_active' => true,
-                'sort_order' => 51,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]
-        );
+        // Event / Programme Day (code EVENT_DAY) was retired — those claims are now filed under
+        // 914(b)-000 Transportation. Existing rows are soft-deactivated by migration
+        // 2026_07_21_110000_deactivate_event_programme_day_category; not re-seeded here so it
+        // stays out of the dropdown (the deactivate-all-first step at the top handles legacy rows).
 
         // ── Season parking — posts to GL 916-000, FLAT RM80/month subsidy ───────
         // Enlinea files season parking under the SAME GL line as tolls/casual parking
