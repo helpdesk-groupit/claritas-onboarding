@@ -2,7 +2,8 @@
     // dompdf conventions: DejaVu Sans is the only unicode-safe bundled font, and all
     // styling must be inline/in-document (no external stylesheets are fetched).
     $fmtTok = fn ($n) => number_format((int) $n);
-    $fmtUsd = fn ($n) => '$'.number_format((float) $n, 4);
+    // Match the on-screen page: 4dp under $1 (a scan is fractions of a cent), 2dp above.
+    $fmtUsd = fn ($n) => '$'.number_format((float) $n, (float) $n >= 1 ? 2 : 4);
     $fmtMyr = fn ($n) => 'RM'.number_format((float) $n, 2);
 @endphp
 <!DOCTYPE html>
@@ -59,68 +60,40 @@
         </div>
     @endif
 
-    <div class="sec">Spend by feature</div>
-    @forelse($byModule as $mod)
-        <table class="usage">
-            <tr class="mrow">
-                <td colspan="2">{{ $mod['module'] }} ({{ number_format($mod['share'], 1) }}% of spend)</td>
-                <td class="r">{{ $fmtTok($mod['calls']) }}</td>
-                <td class="r">{{ $fmtTok($mod['total_tokens']) }}</td>
-                <td class="r">{{ $fmtUsd($mod['cost_usd']) }}</td>
-                <td class="r">{{ $fmtMyr($mod['cost_myr']) }}</td>
-            </tr>
-            <tr>
-                <th style="width:32%;">Feature</th>
-                <th class="r">In / Out tokens</th>
-                <th class="r">Calls</th>
-                <th class="r">Total tokens</th>
-                <th class="r">USD</th>
-                <th class="r">MYR</th>
-            </tr>
-            @foreach($mod['features'] as $f)
-                <tr>
-                    <td>{{ $f['label'] }}</td>
-                    <td class="r">{{ $fmtTok($f['in_tokens']) }} / {{ $fmtTok($f['out_tokens']) }}</td>
-                    <td class="r">{{ $fmtTok($f['calls']) }}</td>
-                    <td class="r">{{ $fmtTok($f['total_tokens']) }}</td>
-                    <td class="r">{{ $fmtUsd($f['cost_usd']) }}</td>
-                    <td class="r">{{ $fmtMyr($f['cost_myr']) }}</td>
+    {{-- Year › Month › Feature, each feature split into its input and output halves —
+         the same breakdown the on-screen accordion reveals on drop-down. --}}
+    @forelse($byYear as $year)
+        <div class="sec">{{ $year['year'] }} — {{ $fmtUsd($year['cost_usd']) }} ({{ $fmtMyr($year['cost_myr']) }})</div>
+        @foreach($year['months'] as $month)
+            <table class="usage">
+                <tr class="mrow">
+                    <td colspan="4">{{ $month['label'] }}</td>
+                    <td class="r">{{ $fmtTok($month['calls']) }} calls</td>
+                    <td class="r">{{ $fmtUsd($month['cost_usd']) }}</td>
+                    <td class="r">{{ $fmtMyr($month['cost_myr']) }}</td>
                 </tr>
-            @endforeach
-        </table>
-    @empty
-        <div class="empty">No Claude usage recorded for this period.</div>
-    @endforelse
-
-    <div class="sec">Spend by month</div>
-    @forelse($report as $month)
-        <table class="usage">
-            <tr class="mrow">
-                <td colspan="2">{{ $month['label'] }}</td>
-                <td class="r">{{ $fmtTok($month['calls']) }}</td>
-                <td class="r">{{ $fmtTok($month['total_tokens']) }}</td>
-                <td class="r">{{ $fmtUsd($month['cost_usd']) }}</td>
-                <td class="r">{{ $fmtMyr($month['cost_myr']) }}</td>
-            </tr>
-            <tr>
-                <th style="width:32%;">Feature</th>
-                <th class="r">In / Out tokens</th>
-                <th class="r">Calls</th>
-                <th class="r">Total tokens</th>
-                <th class="r">USD</th>
-                <th class="r">MYR</th>
-            </tr>
-            @foreach($month['features'] as $f)
                 <tr>
-                    <td>{{ $f['label'] }}</td>
-                    <td class="r">{{ $fmtTok($f['in_tokens']) }} / {{ $fmtTok($f['out_tokens']) }}</td>
-                    <td class="r">{{ $fmtTok($f['calls']) }}</td>
-                    <td class="r">{{ $fmtTok($f['total_tokens']) }}</td>
-                    <td class="r">{{ $fmtUsd($f['cost_usd']) }}</td>
-                    <td class="r">{{ $fmtMyr($f['cost_myr']) }}</td>
+                    <th style="width:30%;">Feature</th>
+                    <th class="r">Input tok</th>
+                    <th class="r">Input $</th>
+                    <th class="r">Output tok</th>
+                    <th class="r">Output $</th>
+                    <th class="r">Total $</th>
+                    <th class="r">MYR</th>
                 </tr>
-            @endforeach
-        </table>
+                @foreach($month['features'] as $f)
+                    <tr>
+                        <td>{{ $f['label'] }}</td>
+                        <td class="r">{{ $fmtTok($f['in_tokens']) }}</td>
+                        <td class="r">{{ $fmtUsd($f['in_cost']) }}</td>
+                        <td class="r">{{ $fmtTok($f['out_tokens']) }}</td>
+                        <td class="r">{{ $fmtUsd($f['out_cost']) }}</td>
+                        <td class="r">{{ $fmtUsd($f['cost_usd']) }}</td>
+                        <td class="r">{{ $fmtMyr($f['cost_myr']) }}</td>
+                    </tr>
+                @endforeach
+            </table>
+        @endforeach
     @empty
         <div class="empty">No Claude usage recorded for this period.</div>
     @endforelse

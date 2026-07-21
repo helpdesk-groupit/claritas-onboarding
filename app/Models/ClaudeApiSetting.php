@@ -23,12 +23,11 @@ class ClaudeApiSetting extends Model
         'claude-opus-4-8' => 'Claude Opus 4.8 — maximum accuracy',
     ];
 
-    protected $fillable = ['api_key', 'model', 'enabled', 'usd_myr_rate', 'updated_by'];
+    protected $fillable = ['api_key', 'model', 'enabled', 'updated_by'];
 
     protected $casts = [
         'api_key' => 'encrypted',
         'enabled' => 'boolean',
-        'usd_myr_rate' => 'decimal:4',
     ];
 
     protected $hidden = ['api_key'];

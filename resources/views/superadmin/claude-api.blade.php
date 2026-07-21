@@ -213,47 +213,95 @@
         </div>
     @endif
 
-    {{-- Breakdown 1: by feature (what does eClaim OCR cost us?) --}}
-    <div class="uc-head"><i class="bi bi-pie-chart me-1"></i>Spend by feature</div>
-    <div class="card border-0 shadow-sm mb-4">
-        <div class="card-body p-4">
-            @if($byModule->isNotEmpty())
-                {{-- Part-to-whole: one stacked bar, 2px surface gaps doing the separating
-                     (never a border). Segments are unlabelled — the legend below carries
-                     identity, so a thin segment never has to clip its own text. --}}
-                <div class="uc-stack mb-3">
-                    @foreach($byModule as $mod)
-                        <div class="uc-seg" style="width:{{ number_format(max(0.5, $mod['share']), 2, '.', '') }}%; background:{{ $mod['color'] }};"
-                             title="{{ $mod['module'] }} — {{ number_format($mod['share'], 1) }}%"></div>
-                    @endforeach
-                </div>
-            @endif
+    {{-- What am I looking at? — native <details>, no JS, CSP-safe. The input/output
+         split is front-and-centre in the accordion below, so the explainer stays. --}}
+    <details class="uc-explain mb-3">
+        <summary><i class="bi bi-question-circle me-1"></i>What do “input” and “output” mean?</summary>
+        <div class="uc-explain-body">
+            A call is billed in two halves, at different prices.
+            <strong>Input</strong> is everything sent to Claude — the instructions plus the receipt image itself
+            (the image is the bulk of it). <strong>Output</strong> is what Claude writes back — for a receipt scan,
+            just a short line of data like the amount and date.
+            Output costs more per token, but far more is sent than comes back, so input usually dominates.
+            A typical receipt scan on Haiku is roughly 2,000 input + 400 output tokens ≈ <strong>$0.004</strong>.
+        </div>
+    </details>
 
-            @forelse($byModule as $mod)
-                <div class="uc-mod {{ $loop->first ? '' : 'mt-3 pt-3 border-top' }}">
-                    <div class="d-flex align-items-center flex-wrap gap-2">
-                        <span class="uc-key" style="background:{{ $mod['color'] }};"></span>
-                        <span class="fw-semibold">{{ $mod['module'] }}</span>
-                        <span class="uc-pct">{{ number_format($mod['share'], 1) }}%</span>
-                        <span class="ms-auto uc-dim small">{{ $fmtTok($mod['calls']) }} calls · {{ $fmtTok($mod['total_tokens']) }} tokens</span>
-                        <span class="uc-amt">{{ $fmtUsd($mod['cost_usd']) }}</span>
-                        <span class="uc-dim small">({{ $fmtMyr($mod['cost_myr']) }})</span>
-                    </div>
-                    <table class="table table-sm uc-tbl mb-0 mt-2">
-                        <tbody>
-                        @foreach($mod['features'] as $f)
-                            <tr>
-                                <td class="uc-feat">{{ $f['label'] }}</td>
-                                <td class="text-end uc-dim">{{ $fmtTok($f['calls']) }} calls</td>
-                                <td class="text-end uc-dim">{{ $fmtTok($f['in_tokens']) }} in</td>
-                                <td class="text-end uc-dim">{{ $fmtTok($f['out_tokens']) }} out</td>
-                                <td class="text-end">{{ $fmtTok($f['total_tokens']) }} total</td>
-                                <td class="text-end fw-semibold">{{ $fmtUsd($f['cost_usd']) }}</td>
-                                <td class="text-end uc-dim">{{ $fmtMyr($f['cost_myr']) }}</td>
-                            </tr>
+    {{-- Year › Month › Feature accordion. Native Bootstrap collapse (data-bs-toggle),
+         so no inline handlers — CSP-safe. Years and the newest month open by default;
+         each feature drops down to its input / output token + cost split. --}}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-3 p-md-4">
+            @forelse($byYear as $yi => $year)
+                @php $yId = 'ucY'.$year['year']; @endphp
+                <div class="uc-year {{ $yi > 0 ? 'mt-2' : '' }}">
+                    <button class="uc-yhead" type="button" data-bs-toggle="collapse" data-bs-target="#{{ $yId }}"
+                            aria-expanded="true" aria-controls="{{ $yId }}">
+                        <i class="bi bi-chevron-right uc-chev"></i>
+                        <span class="fw-bold">{{ $year['year'] }}</span>
+                        <span class="ms-auto uc-dim small me-2">{{ $fmtTok($year['calls']) }} calls · {{ $fmtTok($year['total_tokens']) }} tokens</span>
+                        <span class="uc-amt">{{ $fmtUsd($year['cost_usd']) }}</span>
+                    </button>
+
+                    <div class="collapse show" id="{{ $yId }}">
+                        @foreach($year['months'] as $mi => $month)
+                            @php $mId = 'ucM'.str_replace('-', '', $month['ym']); @endphp
+                            <div class="uc-month">
+                                <div class="uc-mhead-row">
+                                    <button class="uc-mhead" type="button" data-bs-toggle="collapse" data-bs-target="#{{ $mId }}"
+                                            aria-expanded="{{ $mi === 0 ? 'true' : 'false' }}" aria-controls="{{ $mId }}">
+                                        <i class="bi bi-chevron-right uc-chev"></i>
+                                        <span class="fw-semibold">{{ $month['label'] }}</span>
+                                        <span class="ms-auto uc-dim small me-2 d-none d-sm-inline">{{ $fmtTok($month['calls']) }} calls · {{ $fmtTok($month['total_tokens']) }} tokens</span>
+                                        <span class="uc-amt">{{ $fmtUsd($month['cost_usd']) }}</span>
+                                        <span class="uc-dim small ms-2 d-none d-md-inline">({{ $fmtMyr($month['cost_myr']) }})</span>
+                                    </button>
+                                    {{-- Download THIS month, broken down by feature. A sibling of the
+                                         toggle (not nested in the button), so it doesn't toggle the panel. --}}
+                                    <a href="{{ route('superadmin.claude-api.usage-pdf', ['period' => $month['ym']]) }}"
+                                       class="btn btn-sm btn-outline-danger uc-dl" title="Download {{ $month['label'] }} (by feature) as PDF">
+                                        <i class="bi bi-file-earmark-pdf"></i>
+                                    </a>
+                                </div>
+
+                                <div class="collapse {{ $mi === 0 ? 'show' : '' }}" id="{{ $mId }}">
+                                    @foreach($month['features'] as $f)
+                                        @php $fId = $mId.'F'.$loop->index; @endphp
+                                        <button class="uc-fhead" type="button" data-bs-toggle="collapse" data-bs-target="#{{ $fId }}"
+                                                aria-expanded="false" aria-controls="{{ $fId }}">
+                                            <i class="bi bi-chevron-right uc-chev"></i>
+                                            <span class="uc-key" style="background:{{ $f['color'] }};"></span>
+                                            <span class="uc-feat-name">{{ $f['label'] }}</span>
+                                            <span class="ms-auto uc-dim small me-2 d-none d-sm-inline">{{ $fmtTok($f['calls']) }} calls · {{ $fmtTok($f['total_tokens']) }} tokens</span>
+                                            <span class="fw-semibold">{{ $fmtUsd($f['cost_usd']) }}</span>
+                                        </button>
+                                        <div class="collapse" id="{{ $fId }}">
+                                            <div class="uc-split">
+                                                <div class="uc-splitrow">
+                                                    <span class="uc-io-in"><i class="bi bi-box-arrow-in-down-right"></i>Input</span>
+                                                    <span class="uc-io-tok">{{ $fmtTok($f['in_tokens']) }} tokens</span>
+                                                    <span class="uc-io-amt">{{ $fmtUsd($f['in_cost']) }}</span>
+                                                    <span class="uc-dim small">({{ $fmtMyr($f['in_cost_myr']) }})</span>
+                                                </div>
+                                                <div class="uc-splitrow">
+                                                    <span class="uc-io-out"><i class="bi bi-box-arrow-up-right"></i>Output</span>
+                                                    <span class="uc-io-tok">{{ $fmtTok($f['out_tokens']) }} tokens</span>
+                                                    <span class="uc-io-amt">{{ $fmtUsd($f['out_cost']) }}</span>
+                                                    <span class="uc-dim small">({{ $fmtMyr($f['out_cost_myr']) }})</span>
+                                                </div>
+                                                <div class="uc-splitrow uc-splittot">
+                                                    <span>Total</span>
+                                                    <span class="uc-io-tok">{{ $fmtTok($f['total_tokens']) }} tokens</span>
+                                                    <span class="uc-io-amt">{{ $fmtUsd($f['cost_usd']) }}</span>
+                                                    <span class="uc-dim small">({{ $fmtMyr($f['cost_myr']) }})</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    @endforeach
+                                </div>
+                            </div>
                         @endforeach
-                        </tbody>
-                    </table>
+                    </div>
                 </div>
             @empty
                 <div class="text-center text-muted py-5">
@@ -271,121 +319,6 @@
                     </div>
                 </div>
             @endforelse
-        </div>
-    </div>
-
-    {{-- Breakdown 2: by month (what did July cost?) --}}
-    <div class="uc-head"><i class="bi bi-calendar3 me-1"></i>Spend by month</div>
-    <div class="card border-0 shadow-sm mb-4">
-        <div class="card-body p-4">
-            @forelse($report as $month)
-                <div class="uc-mod {{ $loop->first ? '' : 'mt-3 pt-3 border-top' }}">
-                    <div class="d-flex align-items-center flex-wrap gap-2">
-                        <span class="fw-semibold">{{ $month['label'] }}</span>
-                        <span class="ms-auto uc-dim small">{{ $fmtTok($month['calls']) }} calls · {{ $fmtTok($month['total_tokens']) }} tokens</span>
-                        <span class="uc-amt">{{ $fmtUsd($month['cost_usd']) }}</span>
-                        <span class="uc-dim small">({{ $fmtMyr($month['cost_myr']) }})</span>
-                        {{-- Export just this month, without changing the period filter first. --}}
-                        <a href="{{ route('superadmin.claude-api.usage-pdf', ['period' => $month['ym']]) }}"
-                           class="btn btn-sm btn-outline-danger py-0 px-2 ms-1"
-                           title="Export {{ $month['label'] }} as PDF"><i class="bi bi-file-earmark-pdf"></i></a>
-                    </div>
-                    <table class="table table-sm uc-tbl mb-0 mt-2">
-                        <tbody>
-                        @foreach($month['features'] as $f)
-                            <tr>
-                                <td class="uc-feat">
-                                    <span class="uc-key" style="background:{{ \App\Models\ClaudeApiUsageLog::moduleColor(\App\Models\ClaudeApiUsageLog::moduleLabel($f['feature'])) }};"></span>
-                                    {{ $f['label'] }}
-                                </td>
-                                <td class="text-end uc-dim">{{ $fmtTok($f['calls']) }} calls</td>
-                                <td class="text-end uc-dim">{{ $fmtTok($f['in_tokens']) }} in</td>
-                                <td class="text-end uc-dim">{{ $fmtTok($f['out_tokens']) }} out</td>
-                                <td class="text-end">{{ $fmtTok($f['total_tokens']) }} total</td>
-                                <td class="text-end fw-semibold">{{ $fmtUsd($f['cost_usd']) }}</td>
-                                <td class="text-end uc-dim">{{ $fmtMyr($f['cost_myr']) }}</td>
-                            </tr>
-                        @endforeach
-                        </tbody>
-                    </table>
-                </div>
-            @empty
-                {{-- Terse here: the by-feature card above already explains the empty state. --}}
-                <div class="text-center text-muted small py-4">Nothing recorded for this period.</div>
-            @endforelse
-        </div>
-    </div>
-    {{-- ─────────── Pricing ─────────── --}}
-    <div class="card border-0 shadow-sm">
-        <div class="card-body p-4">
-            <h6 class="fw-bold mb-1">Pricing</h6>
-            <div class="text-muted small mb-3">
-                Anthropic's rates in <strong>USD per million tokens</strong>. Each call is costed when it happens,
-                so changing a rate affects future calls only — past months keep what they actually cost.
-                <strong>You only need to touch this when Anthropic changes its prices</strong> —
-                check them at <a href="https://platform.claude.com/docs/en/pricing" target="_blank" rel="noopener">the pricing page</a>.
-            </div>
-
-            {{-- The Input/Output split is not self-evident to anyone who hasn't used the API. --}}
-            <div class="bg-light rounded p-3 mb-3 small">
-                <div class="mb-1"><i class="bi bi-question-circle me-1"></i><strong>What are Input and Output?</strong></div>
-                <div class="text-muted">
-                    A call is billed in two halves, at different prices.
-                    <strong>Input</strong> is everything sent to Claude — the instructions plus the receipt image itself
-                    (an image is the bulk of it). <strong>Output</strong> is what Claude writes back — for a receipt scan,
-                    just a short line of data like the amount and date.
-                    Output costs more per token, but far more is sent than comes back, so input usually dominates.
-                    A typical receipt scan on Haiku is roughly 2,000 input + 400 output tokens ≈ <strong>$0.004</strong>.
-                </div>
-            </div>
-
-            <form method="POST" action="{{ route('superadmin.claude-api.rates') }}">
-                @csrf
-                <div class="table-responsive">
-                    <table class="table table-sm align-middle">
-                        <thead>
-                            <tr class="small text-muted">
-                                <th>Model</th><th style="width:22%;">Input $/M</th><th style="width:22%;">Output $/M</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                        @foreach($rates as $i => $rate)
-                            <tr>
-                                <td>
-                                    <input type="hidden" name="rates[{{ $i }}][model]" value="{{ $rate->model }}">
-                                    <input type="hidden" name="rates[{{ $i }}][label]" value="{{ $rate->label }}">
-                                    <div class="fw-semibold small">{{ $rate->model }}</div>
-                                    @if($rate->label)<div class="text-muted" style="font-size:.72rem;">{{ $rate->label }}</div>@endif
-                                </td>
-                                <td><input type="number" step="0.0001" min="0" class="form-control form-control-sm"
-                                           name="rates[{{ $i }}][input_per_mtok]" value="{{ (float) $rate->input_per_mtok }}"></td>
-                                <td><input type="number" step="0.0001" min="0" class="form-control form-control-sm"
-                                           name="rates[{{ $i }}][output_per_mtok]" value="{{ (float) $rate->output_per_mtok }}"></td>
-                            </tr>
-                        @endforeach
-                        {{-- One blank row so a newly-used model can be priced without a deploy. --}}
-                        <tr>
-                            <td><input type="text" class="form-control form-control-sm" name="rates[new][model]"
-                                       placeholder="add a model id, e.g. claude-haiku-4-5"></td>
-                            <td><input type="number" step="0.0001" min="0" class="form-control form-control-sm" name="rates[new][input_per_mtok]" placeholder="0.0000"></td>
-                            <td><input type="number" step="0.0001" min="0" class="form-control form-control-sm" name="rates[new][output_per_mtok]" placeholder="0.0000"></td>
-                        </tr>
-                        </tbody>
-                    </table>
-                </div>
-
-                <div class="row align-items-end g-3 mt-1">
-                    <div class="col-sm-5">
-                        <label class="form-label fw-semibold mb-1 small">USD → MYR rate</label>
-                        <input type="number" step="0.0001" min="0" class="form-control form-control-sm"
-                               name="usd_myr_rate" value="{{ (float) $setting->usd_myr_rate }}">
-                        <div class="form-text" style="font-size:.72rem;">Used only for the approximate MYR column. USD is what Anthropic bills.</div>
-                    </div>
-                    <div class="col-sm-7 text-end">
-                        <button type="submit" class="btn btn-primary px-4"><i class="bi bi-check-lg me-1"></i>Save pricing</button>
-                    </div>
-                </div>
-            </form>
         </div>
     </div>
 </div>
@@ -433,20 +366,49 @@
                 opacity:0; pointer-events:none; transition:opacity .12s ease; z-index:5; }
     .uc-col:hover .uc-tip { opacity:1; }
 
-    /* Part-to-whole bar. The 2px flex gap is the separator — never a border on a mark. */
-    .uc-stack { display:flex; gap:2px; height:10px; border-radius:5px; overflow:hidden; background:#f0efec; }
-    .uc-seg   { height:100%; }
     .uc-key   { width:10px; height:10px; border-radius:3px; display:inline-block; flex-shrink:0; }
-    .uc-pct   { font-size:.72rem; font-weight:600; color:#52514e; background:#f0efec; border-radius:10px; padding:.05rem .45rem; }
     .uc-amt   { font-weight:600; color:#0b0b0b; font-variant-numeric:tabular-nums; }
 
-    /* Feature tables: values in ink tokens, identity from the coloured dot beside them. */
-    .uc-tbl td { border:0; padding:.3rem .5rem; font-size:.82rem; font-variant-numeric:tabular-nums; }
-    .uc-tbl tr + tr td { border-top:1px solid #f0efec; }
-    .uc-tbl td:first-child { padding-left:0; }
-    .uc-tbl td:last-child  { padding-right:0; }
-    .uc-feat  { width:34%; font-variant-numeric:normal; color:#52514e; }
-    .uc-feat .uc-key { margin-right:.4rem; vertical-align:baseline; }
+    /* "What is input/output?" — native <details>, styled to match the muted chrome. */
+    .uc-explain summary { cursor:pointer; font-size:.82rem; color:#52514e; font-weight:500; list-style:none; }
+    .uc-explain summary::-webkit-details-marker { display:none; }
+    .uc-explain[open] summary { margin-bottom:.4rem; }
+    .uc-explain-body { font-size:.82rem; color:#52514e; background:#f9f9f7; border:1px solid #e1e0d9; border-radius:8px; padding:.7rem .9rem; }
+
+    /* ── Year › Month › Feature accordion ────────────────────────────────────────
+       Three nested Bootstrap collapses. Every header is a <button> toggled by
+       data-bs-toggle (no inline JS — CSP-safe); the chevron rotates off the
+       aria-expanded state Bootstrap maintains. */
+    .uc-yhead, .uc-mhead, .uc-fhead {
+        display:flex; align-items:center; gap:.5rem; width:100%; text-align:left;
+        background:transparent; border:0; padding:.55rem .25rem; color:#0b0b0b;
+    }
+    .uc-yhead { border-bottom:1px solid #e1e0d9; font-size:1rem; }
+    .uc-month { border-top:1px solid #f0efec; }
+    .uc-month:first-child { border-top:0; }
+    .uc-mhead-row { display:flex; align-items:center; padding-left:1.4rem; }
+    .uc-mhead { padding-left:0; }
+    .uc-fhead { padding-left:2.6rem; font-size:.85rem; border-top:1px solid #f5f5f2; }
+    .uc-yhead:hover, .uc-mhead:hover, .uc-fhead:hover { background:#f9f9f7; }
+    .uc-feat-name { color:#52514e; }
+    .uc-dl { padding:.05rem .45rem; margin-left:.35rem; flex-shrink:0; }
+
+    /* Chevron: points right when collapsed, rotates down when the panel is open. */
+    .uc-chev { font-size:.7rem; color:#898781; transition:transform .15s ease; flex-shrink:0; }
+    [aria-expanded="true"] > .uc-chev { transform:rotate(90deg); }
+
+    /* The input/output/total split revealed when a feature drops down. */
+    .uc-split { padding:.4rem 1rem .8rem 3.4rem; }
+    .uc-splitrow { display:flex; align-items:center; gap:.6rem; padding:.28rem 0; font-size:.82rem; }
+    .uc-splitrow + .uc-splitrow { border-top:1px solid #f5f5f2; }
+    /* Ink, not hue — blue already means "eClaim" via the module dot on this page,
+       so input/output lean on a direction icon + label rather than a second colour. */
+    .uc-io-in, .uc-io-out { width:74px; font-weight:600; color:#0b0b0b; }
+    .uc-io-in i, .uc-io-out i { color:#898781; margin-right:.25rem; }
+    .uc-io-tok { width:130px; color:#52514e; font-variant-numeric:tabular-nums; }
+    .uc-io-amt { min-width:72px; font-weight:600; color:#0b0b0b; font-variant-numeric:tabular-nums; }
+    .uc-splittot { font-weight:600; }
+    .uc-splittot span:first-child { width:64px; color:#0b0b0b; }
 </style>
 @endpush
 

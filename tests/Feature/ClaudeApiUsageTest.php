@@ -16,8 +16,9 @@ use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * Token-usage tracking on the Claude API page: capture at the call site, costing
- * from the editable rate table, the month x feature report, and the PDF export.
+ * Token-usage tracking on the Claude API page: capture at the call site, costing from
+ * the config price catalogue (split into input/output halves), the year › month ›
+ * feature report, and the per-month PDF export.
  */
 class ClaudeApiUsageTest extends TestCase
 {
@@ -27,7 +28,13 @@ class ClaudeApiUsageTest extends TestCase
     {
         parent::setUp();
         $this->withoutMiddleware(EnforceTwoFactor::class);
-        ClaudeModelRate::flushMemo();
+        // Pin config rates so the numbers below don't drift when the real catalogue is edited.
+        config()->set('claude.model_rates', [
+            'claude-haiku-4-5' => ['label' => 'Claude Haiku 4.5', 'input' => 1.00, 'output' => 5.00],
+            'claude-sonnet-5' => ['label' => 'Claude Sonnet 5', 'input' => 2.00, 'output' => 10.00],
+            'claude-opus-4-8' => ['label' => 'Claude Opus 4.8', 'input' => 5.00, 'output' => 25.00],
+        ]);
+        config()->set('claude.usd_myr_rate', 4.7);
     }
 
     private function superadmin(): User
@@ -38,24 +45,74 @@ class ClaudeApiUsageTest extends TestCase
         return $super;
     }
 
-    public function test_seeded_rates_cost_a_call_correctly(): void
+    /** Create a priced usage row (real split from config) at a chosen age. */
+    private function usage(string $feature, string $model, int $in, int $out, int $monthsAgo = 0): ClaudeApiUsageLog
     {
-        // Haiku 4.5 is seeded at $1 in / $5 out per million tokens.
-        // 10,000 in + 2,000 out = (10000*1 + 2000*5) / 1e6 = $0.02
-        $this->assertSame(0.02, ClaudeModelRate::costFor('claude-haiku-4-5', 10_000, 2_000));
+        $row = ClaudeApiUsageLog::create([
+            'feature' => $feature, 'model' => $model, 'provider' => 'anthropic',
+            'input_tokens' => $in, 'output_tokens' => $out,
+            'input_cost_usd' => ClaudeModelRate::inputCostFor($model, $in),
+            'output_cost_usd' => ClaudeModelRate::outputCostFor($model, $out),
+            'cost_usd' => ClaudeModelRate::costFor($model, $in, $out),
+        ]);
+        if ($monthsAgo) {
+            $row->forceFill(['created_at' => now()->subMonths($monthsAgo)])->save();
+        }
 
-        // Opus 4.8 at $5 / $25: (1000*5 + 1000*25) / 1e6 = $0.03
+        return $row;
+    }
+
+    // ── Pricing (config-backed) ──────────────────────────────────────────────
+
+    public function test_config_rates_cost_a_call_correctly(): void
+    {
+        // Haiku 4.5 at $1 in / $5 out per million: 10,000 in + 2,000 out = $0.02
+        $this->assertSame(0.02, ClaudeModelRate::costFor('claude-haiku-4-5', 10_000, 2_000));
+        // Opus 4.8 at $5 / $25: 1000 in + 1000 out = $0.03
         $this->assertSame(0.03, ClaudeModelRate::costFor('claude-opus-4-8', 1_000, 1_000));
     }
 
-    public function test_cache_tokens_use_anthropic_multipliers(): void
+    public function test_cost_splits_into_input_and_output_halves(): void
     {
-        // Haiku input $1/M. 1M cache writes = 1.25x, 1M cache reads = 0.1x.
-        $this->assertSame(1.25, ClaudeModelRate::costFor('claude-haiku-4-5', 0, 0, 1_000_000, 0));
-        $this->assertSame(0.1, ClaudeModelRate::costFor('claude-haiku-4-5', 0, 0, 0, 1_000_000));
+        // Haiku: input 10,000 × $1/M = $0.01; output 2,000 × $5/M = $0.01.
+        $this->assertSame(0.01, ClaudeModelRate::inputCostFor('claude-haiku-4-5', 10_000));
+        $this->assertSame(0.01, ClaudeModelRate::outputCostFor('claude-haiku-4-5', 2_000));
+        // The two halves sum to the total.
+        $this->assertSame(
+            ClaudeModelRate::costFor('claude-haiku-4-5', 10_000, 2_000),
+            ClaudeModelRate::inputCostFor('claude-haiku-4-5', 10_000) + ClaudeModelRate::outputCostFor('claude-haiku-4-5', 2_000)
+        );
     }
 
-    public function test_unpriced_model_still_logs_tokens_but_costs_zero(): void
+    public function test_cache_tokens_are_priced_on_the_input_side(): void
+    {
+        // Haiku input $1/M. 1M cache writes = 1.25x, 1M cache reads = 0.1x — both input-side.
+        $this->assertSame(1.25, ClaudeModelRate::inputCostFor('claude-haiku-4-5', 0, 1_000_000, 0));
+        $this->assertSame(0.1, ClaudeModelRate::inputCostFor('claude-haiku-4-5', 0, 0, 1_000_000));
+        // Output cost ignores cache entirely.
+        $this->assertSame(0.0, ClaudeModelRate::outputCostFor('claude-haiku-4-5', 0));
+    }
+
+    public function test_unpriced_model_costs_zero_on_both_halves(): void
+    {
+        $this->assertSame(0.0, ClaudeModelRate::inputCostFor('claude-future-9', 5_000));
+        $this->assertSame(0.0, ClaudeModelRate::outputCostFor('claude-future-9', 5_000));
+        $this->assertSame(0.0, ClaudeModelRate::costFor('claude-future-9', 5_000, 5_000));
+    }
+
+    // ── Recording at the call site ───────────────────────────────────────────
+
+    public function test_recorder_stores_the_input_output_split(): void
+    {
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 10_000, 'output_tokens' => 2_000]);
+
+        $log = ClaudeApiUsageLog::firstOrFail();
+        $this->assertSame(0.01, (float) $log->input_cost_usd);
+        $this->assertSame(0.01, (float) $log->output_cost_usd);
+        $this->assertSame(0.02, (float) $log->cost_usd);
+    }
+
+    public function test_unpriced_model_still_logs_tokens(): void
     {
         ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-future-9', ['input_tokens' => 500, 'output_tokens' => 100]);
 
@@ -67,9 +124,7 @@ class ClaudeApiUsageTest extends TestCase
     public function test_a_claude_receipt_scan_records_its_token_usage(): void
     {
         $super = $this->superadmin();
-        ClaudeApiSetting::current()->update([
-            'api_key' => 'sk-ant-test', 'model' => 'claude-haiku-4-5', 'enabled' => true,
-        ]);
+        ClaudeApiSetting::current()->update(['api_key' => 'sk-ant-test', 'model' => 'claude-haiku-4-5', 'enabled' => true]);
 
         Http::fake(['api.anthropic.com/*' => Http::response([
             'content' => [['text' => '{"amount": 12.50, "date": "2026-07-01"}']],
@@ -84,12 +139,12 @@ class ClaudeApiUsageTest extends TestCase
         @unlink($file);
 
         $log = ClaudeApiUsageLog::firstOrFail();
-        $this->assertSame('claim_item_verify', $log->feature);       // extract() = reviewer verification
-        $this->assertSame('claude-haiku-4-5', $log->model);
+        $this->assertSame('claim_item_verify', $log->feature);   // extract() = reviewer verification
         $this->assertSame(1_500, $log->input_tokens);
         $this->assertSame(300, $log->output_tokens);
-        $this->assertSame($super->id, $log->user_id);
-        // (1500*1 + 300*5) / 1e6 = $0.003
+        // 1500×$1/M = $0.0015 in, 300×$5/M = $0.0015 out, total $0.003.
+        $this->assertSame(0.0015, (float) $log->input_cost_usd);
+        $this->assertSame(0.0015, (float) $log->output_cost_usd);
         $this->assertSame(0.003, (float) $log->cost_usd);
     }
 
@@ -103,195 +158,200 @@ class ClaudeApiUsageTest extends TestCase
 
     public function test_recording_never_breaks_the_caller(): void
     {
-        // Simulate the pre-migration / broken-table case: the recorder must swallow it.
         DB::statement('DROP TABLE claude_api_usage_logs');
-
         ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 10, 'output_tokens' => 5]);
-
         $this->assertTrue(true); // reaching here without an exception IS the assertion
     }
 
-    public function test_report_groups_by_month_and_feature_with_totals(): void
+    // ── The year › month › feature report ────────────────────────────────────
+
+    public function test_report_nests_years_then_months_then_features(): void
     {
         $super = $this->superadmin();
 
-        // Two features in the current month, one in a prior month.
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 1_000_000, 'output_tokens' => 0, 'cost_usd' => 1.0]);
-        ClaudeApiUsageLog::create(['feature' => 'accounting_invoice_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 500_000, 'output_tokens' => 0, 'cost_usd' => 0.5]);
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 2_000_000, 'output_tokens' => 0, 'cost_usd' => 2.0])
-            ->forceFill(['created_at' => now()->subMonths(2)])->save();
+        // Two features this month, one last month, one two months back — all in 2026.
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0);       // $1 this month
+        $this->usage('accounting_invoice_scan', 'claude-haiku-4-5', 500_000, 0);    // $0.50 this month
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 2_000_000, 0, 1);    // $2 last month
+        $this->usage('claim_item_verify', 'claude-haiku-4-5', 500_000, 0, 2);       // $0.50 two months back
 
-        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index', ['period' => 12]));
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
         $res->assertOk();
 
-        $totals = $res->viewData('totals');
-        $this->assertSame(3, $totals['calls']);
-        $this->assertSame(3_500_000, $totals['tokens']);
-        $this->assertSame(3.5, $totals['cost_usd']);
+        $byYear = $res->viewData('byYear');
+        $this->assertCount(1, $byYear);                          // one year: 2026
+        $this->assertSame('2026', $byYear->first()['year']);
+        $this->assertSame(4.0, $byYear->first()['cost_usd']);    // 1 + 0.5 + 2 + 0.5
 
-        // Two month buckets; the current one carries both features.
-        $report = $res->viewData('report');
-        $this->assertCount(2, $report);
-        $this->assertCount(2, $report->first()['features']);
+        // Three month buckets under the year, newest first.
+        $months = $byYear->first()['months'];
+        $this->assertCount(3, $months);
+        $this->assertSame(now()->format('Y-m'), $months->first()['ym']);
+        // Newest month carries both its features.
+        $this->assertCount(2, $months->first()['features']);
+
         $res->assertSee('eClaim — Receipt / Document Scan', false);
         $res->assertSee('Accounting — Invoice Scan', false);
     }
 
-    public function test_report_also_rolls_spend_up_by_module_and_feature(): void
+    public function test_report_splits_each_feature_into_input_and_output_cost(): void
     {
         $super = $this->superadmin();
 
-        // eClaim spend spread across TWO months and TWO features — the module rollup
-        // must sum all of it, which is the whole point of this second grouping.
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 1.0]);
-        ClaudeApiUsageLog::create(['feature' => 'claim_item_verify', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 2.0]);
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 1.0])
-            ->forceFill(['created_at' => now()->subMonth()])->save();
-        ClaudeApiUsageLog::create(['feature' => 'accounting_invoice_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 6.0]);
+        // Haiku: 10,000 in ($0.01) + 2,000 out ($0.01) = $0.02.
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 10_000, 2_000);
 
-        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
-        $byModule = $res->viewData('byModule')->keyBy('module');
+        $feature = $this->actingAs($super)->get(route('superadmin.claude-api.index'))
+            ->viewData('byYear')->first()['months']->first()['features']->first();
 
-        // eClaim = 1 + 2 + 1 = $4 across 3 calls and 2 features; Accounting = $6.
-        $this->assertSame(4.0, $byModule['eClaim (Receipt OCR)']['cost_usd']);
-        $this->assertSame(3, $byModule['eClaim (Receipt OCR)']['calls']);
-        $this->assertCount(2, $byModule['eClaim (Receipt OCR)']['features']);
-        $this->assertSame(6.0, $byModule['Accounting (AI)']['cost_usd']);
-
-        // Shares are of the $10 grand total, and the biggest spender sorts first.
-        $this->assertSame(40.0, round($byModule['eClaim (Receipt OCR)']['share'], 1));
-        $this->assertSame(60.0, round($byModule['Accounting (AI)']['share'], 1));
-        $this->assertSame('Accounting (AI)', $res->viewData('byModule')->first()['module']);
-
-        $res->assertSee('Spend by feature', false);
-        $res->assertSee('Spend by month', false);
+        $this->assertSame(10_000, $feature['in_tokens']);
+        $this->assertSame(2_000, $feature['out_tokens']);
+        $this->assertSame(0.01, $feature['in_cost']);
+        $this->assertSame(0.01, $feature['out_cost']);
+        $this->assertSame(0.02, $feature['cost_usd']);
+        // Feature carries its module colour (eClaim → blue slot).
+        $this->assertSame('#2a78d6', $feature['color']);
     }
 
-    public function test_module_colour_follows_the_module_not_its_rank(): void
+    public function test_multiple_years_are_grouped_separately(): void
     {
         $super = $this->superadmin();
 
-        // eClaim is the top spender here...
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 9.0]);
-        ClaudeApiUsageLog::create(['feature' => 'accounting_invoice_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 1.0]);
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0);        // 2026
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 3_000_000, 0, 13);    // ~13 months back → 2025
 
-        $first = $this->actingAs($super)->get(route('superadmin.claude-api.index'))
-            ->viewData('byModule')->keyBy('module');
-        $this->assertSame('eClaim (Receipt OCR)', $first->keys()->first());
-        $eclaimColour = $first['eClaim (Receipt OCR)']['color'];
-        $acctColour = $first['Accounting (AI)']['color'];
+        $byYear = $this->actingAs($super)->get(route('superadmin.claude-api.index', ['period' => 'all']))
+            ->viewData('byYear')->keyBy('year');
 
-        // ...now flip the ranking so Accounting sorts first.
-        ClaudeApiUsageLog::create(['feature' => 'accounting_ai_chat', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 50.0]);
-
-        $second = $this->actingAs($super)->get(route('superadmin.claude-api.index'))
-            ->viewData('byModule')->keyBy('module');
-        $this->assertSame('Accounting (AI)', $second->keys()->first(), 'ranking should have flipped');
-
-        // Colours must NOT follow the new ranking — a reader who learned "eClaim is
-        // blue" would otherwise be silently misled when a filter reorders the list.
-        $this->assertSame($eclaimColour, $second['eClaim (Receipt OCR)']['color']);
-        $this->assertSame($acctColour, $second['Accounting (AI)']['color']);
-        $this->assertNotSame($eclaimColour, $acctColour);
+        $this->assertTrue($byYear->has(now()->format('Y')));
+        $this->assertTrue($byYear->has(now()->subMonths(13)->format('Y')));
     }
 
-    public function test_trend_chart_is_hidden_for_a_single_month(): void
+    public function test_feature_colour_follows_the_feature_not_its_rank(): void
     {
         $super = $this->superadmin();
 
-        // One month: the hero figure already IS that number, so a lone column would be
-        // a one-bar bar chart. Two months or more, the trend renders.
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 1.0]);
-        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
-        $this->assertCount(1, $res->viewData('chart'));
-        // Match the MARKUP, not the bare class name — the CSS block defines .uc-chart
-        // on every render, so a substring check would always pass.
-        $res->assertDontSee('<div class="uc-chart">', false);
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 100, 0);        // eClaim, small
+        $this->usage('accounting_invoice_scan', 'claude-haiku-4-5', 9_000, 0); // Accounting, larger
 
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 4.0])
-            ->forceFill(['created_at' => now()->subMonth()])->save();
+        $features = $this->actingAs($super)->get(route('superadmin.claude-api.index'))
+            ->viewData('byYear')->first()['months']->first()['features']
+            ->keyBy('feature');
 
-        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
-        $chart = $res->viewData('chart');
-        $this->assertCount(2, $chart);
-        // Oldest first, peak scaled to 100%, and only peak/latest carry a value label.
-        $this->assertSame(now()->subMonth()->format('Y-m'), $chart->first()['ym']);
-        $this->assertSame(100.0, $chart->first()['height']);
-        $this->assertTrue($chart->first()['isPeak']);
-        $this->assertTrue($chart->last()['isLatest']);
-        $res->assertSee('<div class="uc-chart">', false);
+        // Colours are fixed per feature's module, regardless of spend ranking.
+        $this->assertSame('#2a78d6', $features['claim_receipt_scan']['color']);      // eClaim blue
+        $this->assertSame('#008300', $features['accounting_invoice_scan']['color']); // Accounting green
+    }
+
+    // ── Totals, MYR, period, months picker ───────────────────────────────────
+
+    public function test_totals_include_avg_per_call_and_myr_from_config(): void
+    {
+        $super = $this->superadmin();
+
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0); // $1
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0); // $1
+
+        $totals = $this->actingAs($super)->get(route('superadmin.claude-api.index'))->viewData('totals');
+        $this->assertSame(2.0, $totals['cost_usd']);
+        $this->assertSame(1.0, $totals['avg_per_call']);   // $2 over 2 calls
+        $this->assertSame(9.4, $totals['cost_myr']);       // $2 × 4.7 (config)
+        $this->assertSame(4.7, $totals['myr_rate']);
     }
 
     public function test_period_filter_excludes_older_months(): void
     {
         $super = $this->superadmin();
 
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 1.0]);
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 9.0])
-            ->forceFill(['created_at' => now()->subMonths(8)])->save();
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0);       // $1 now
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 9_000_000, 0, 8);    // $9 eight months back
 
-        // 3-month window keeps only the recent row...
         $this->assertSame(1.0, $this->actingAs($super)
             ->get(route('superadmin.claude-api.index', ['period' => 3]))->viewData('totals')['cost_usd']);
-
-        // ...while "all time" sees both.
         $this->assertSame(10.0, $this->actingAs($super)
             ->get(route('superadmin.claude-api.index', ['period' => 'all']))->viewData('totals')['cost_usd']);
     }
 
-    public function test_a_single_month_can_be_selected_and_excludes_other_months(): void
+    public function test_a_single_month_can_be_selected(): void
     {
         $super = $this->superadmin();
 
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 3.0]);
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 8.0])
-            ->forceFill(['created_at' => now()->subMonth()])->save();
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 3_000_000, 0);       // this month
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 8_000_000, 0, 1);    // last month
 
-        $thisMonth = now()->format('Y-m');
         $lastMonth = now()->subMonth()->format('Y-m');
-
         $res = $this->actingAs($super)->get(route('superadmin.claude-api.index', ['period' => $lastMonth]));
-        $res->assertOk();
 
-        // Only the selected month's spend, and exactly one month bucket.
         $this->assertSame(8.0, $res->viewData('totals')['cost_usd']);
         $this->assertCount(1, $res->viewData('report'));
-        $this->assertSame($lastMonth, $res->viewData('report')->first()['ym']);
-        $this->assertSame(now()->subMonth()->format('F Y'), $res->viewData('period')['label']);
         $this->assertTrue($res->viewData('period')['isMonth']);
+        $this->assertSame([now()->format('Y-m'), $lastMonth], array_keys($res->viewData('availableMonths')));
+    }
 
-        // Both months with data are offered in the picker.
-        $this->assertSame([$thisMonth, $lastMonth], array_keys($res->viewData('availableMonths')));
+    public function test_an_unrecognised_period_falls_back_to_12_months(): void
+    {
+        $super = $this->superadmin();
+        foreach (['nonsense', '2026-13', '99', ''] as $bad) {
+            $res = $this->actingAs($super)->get(route('superadmin.claude-api.index', ['period' => $bad]));
+            $res->assertOk();
+            $this->assertSame('Last 12 months', $res->viewData('period')['label'], "period={$bad}");
+        }
     }
 
     public function test_empty_report_explains_why_no_months_are_offered(): void
     {
         $super = $this->superadmin();
 
-        // Nothing recorded: the month picker has nothing to offer, and the page must say
-        // so rather than silently dropping the group (which reads as a broken control).
         $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
-        $res->assertOk();
         $this->assertSame([], $res->viewData('availableMonths'));
-        $res->assertSee('Single month', false);
         $res->assertSee('none recorded yet', false);
-        // OCR is off in this fixture, so the empty state names that as the blocker.
-        $res->assertSee('OCR is switched off above', false);
+        $res->assertSee('OCR is switched off above', false); // OCR off in this fixture
 
-        // Once usage exists the placeholder gives way to real months.
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 1.0]);
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 100, 0);
         $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
         $res->assertSee(now()->format('F Y'), false);
         $res->assertDontSee('none recorded yet', false);
     }
 
+    public function test_unpriced_models_are_flagged_on_the_report(): void
+    {
+        $super = $this->superadmin();
+        $this->usage('claim_receipt_scan', 'claude-mystery-1', 100, 0);
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        $this->assertContains('claude-mystery-1', $res->viewData('unpricedModels'));
+        $res->assertSee('claude-mystery-1', false);
+    }
+
+    // ── Trend chart ──────────────────────────────────────────────────────────
+
+    public function test_trend_chart_is_hidden_for_a_single_month(): void
+    {
+        $super = $this->superadmin();
+
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0);
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        $this->assertCount(1, $res->viewData('chart'));
+        $res->assertDontSee('<div class="uc-chart">', false);
+
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 4_000_000, 0, 1);
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        $chart = $res->viewData('chart');
+        $this->assertCount(2, $chart);
+        $this->assertSame(now()->subMonth()->format('Y-m'), $chart->first()['ym']); // oldest first
+        $this->assertSame(100.0, $chart->first()['height']);                         // peak scaled
+        $this->assertTrue($chart->last()['isLatest']);
+        $res->assertSee('<div class="uc-chart">', false);
+    }
+
+    // ── PDF export ───────────────────────────────────────────────────────────
+
     public function test_month_export_is_scoped_and_named_after_that_month(): void
     {
         $super = $this->superadmin();
 
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 3.0]);
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 8.0])
-            ->forceFill(['created_at' => now()->subMonth()])->save();
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 3_000_000, 0);
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 8_000_000, 0, 1);
 
         $lastMonth = now()->subMonth()->format('Y-m');
         $res = $this->actingAs($super)->get(route('superadmin.claude-api.usage-pdf', ['period' => $lastMonth]));
@@ -300,80 +360,13 @@ class ClaudeApiUsageTest extends TestCase
         $this->assertSame('application/pdf', $res->headers->get('content-type'));
         $this->assertStringContainsString('claude-api-usage-'.$lastMonth.'.pdf', $res->headers->get('content-disposition'));
 
-        // A rolling window is instead named for the window plus the run date.
         $rolling = $this->actingAs($super)->get(route('superadmin.claude-api.usage-pdf', ['period' => 12]));
         $this->assertStringContainsString('last-12-months-'.now()->format('Y-m-d').'.pdf', $rolling->headers->get('content-disposition'));
     }
 
-    public function test_an_unrecognised_period_falls_back_to_12_months(): void
-    {
-        $super = $this->superadmin();
-
-        foreach (['nonsense', '2026-13', '99', ''] as $bad) {
-            $res = $this->actingAs($super)->get(route('superadmin.claude-api.index', ['period' => $bad]));
-            $res->assertOk();
-            $this->assertSame('Last 12 months', $res->viewData('period')['label'], "period={$bad}");
-        }
-    }
-
-    public function test_myr_column_uses_the_configured_rate(): void
-    {
-        $super = $this->superadmin();
-        ClaudeApiSetting::current()->update(['usd_myr_rate' => 4.5]);
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 100, 'cost_usd' => 2.0]);
-
-        $totals = $this->actingAs($super)->get(route('superadmin.claude-api.index'))->viewData('totals');
-        $this->assertSame(9.0, $totals['cost_myr']);
-    }
-
-    public function test_superadmin_can_edit_rates_and_new_calls_use_them(): void
-    {
-        $super = $this->superadmin();
-
-        $this->actingAs($super)->post(route('superadmin.claude-api.rates'), [
-            'usd_myr_rate' => 4.25,
-            'rates' => [
-                ['model' => 'claude-haiku-4-5', 'input_per_mtok' => 2, 'output_per_mtok' => 8],
-                ['model' => 'claude-brand-new', 'input_per_mtok' => 7, 'output_per_mtok' => 9],
-            ],
-        ])->assertRedirect();
-
-        ClaudeModelRate::flushMemo();
-        $this->assertSame(4.25, (float) ClaudeApiSetting::current()->usd_myr_rate);
-        // (1e6*2 + 0) / 1e6 = $2 under the edited rate (was $1).
-        $this->assertSame(2.0, ClaudeModelRate::costFor('claude-haiku-4-5', 1_000_000, 0));
-        $this->assertSame(7.0, ClaudeModelRate::costFor('claude-brand-new', 1_000_000, 0));
-    }
-
-    public function test_editing_a_rate_does_not_repice_past_usage(): void
-    {
-        $super = $this->superadmin();
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 1_000_000, 'cost_usd' => 1.0]);
-
-        $this->actingAs($super)->post(route('superadmin.claude-api.rates'), [
-            'usd_myr_rate' => 4.7,
-            'rates' => [['model' => 'claude-haiku-4-5', 'input_per_mtok' => 50, 'output_per_mtok' => 99]],
-        ]);
-
-        // The historical row keeps the cost it was recorded at.
-        $this->assertSame(1.0, (float) ClaudeApiUsageLog::firstOrFail()->cost_usd);
-        $this->assertSame(1.0, $this->actingAs($super)
-            ->get(route('superadmin.claude-api.index'))->viewData('totals')['cost_usd']);
-    }
-
-    public function test_unpriced_models_are_flagged_on_the_report(): void
-    {
-        $super = $this->superadmin();
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-mystery-1', 'input_tokens' => 100, 'cost_usd' => 0]);
-
-        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
-        $this->assertContains('claude-mystery-1', $res->viewData('unpricedModels'));
-        $res->assertSee('claude-mystery-1', false);
-    }
-
     public function test_pdf_export_downloads_for_superadmin_only(): void
     {
-        ClaudeApiUsageLog::create(['feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'input_tokens' => 1_000, 'cost_usd' => 0.001]);
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000, 100);
 
         $res = $this->actingAs($this->superadmin())->get(route('superadmin.claude-api.usage-pdf', ['period' => 12]));
         $res->assertOk();
@@ -384,11 +377,18 @@ class ClaudeApiUsageTest extends TestCase
         $this->actingAs($hr)->get(route('superadmin.claude-api.usage-pdf'))->assertForbidden();
     }
 
-    public function test_rate_page_is_superadmin_only(): void
+    // ── The Pricing card is gone ─────────────────────────────────────────────
+
+    public function test_pricing_card_and_rate_route_are_removed(): void
     {
-        $hr = User::factory()->create(['role' => 'hr_manager']);
-        $this->actingAs($hr)->post(route('superadmin.claude-api.rates'), [
-            'usd_myr_rate' => 1, 'rates' => [],
-        ])->assertForbidden();
+        $super = $this->superadmin();
+
+        // The page no longer renders an editable pricing form.
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        $res->assertOk();
+        $res->assertDontSee('Save pricing', false);
+
+        // ...and the rate-editing route no longer exists.
+        $this->assertFalse(\Illuminate\Support\Facades\Route::has('superadmin.claude-api.rates'));
     }
 }

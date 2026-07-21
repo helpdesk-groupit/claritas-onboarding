@@ -37,6 +37,12 @@ class ClaudeUsageRecorder
                 return;
             }
 
+            // Split the cost at write time so the report can show the input and output
+            // halves separately without re-deriving them (which would drift from the
+            // stored total if a rate later changed). input half carries cache traffic.
+            $inCost = ClaudeModelRate::inputCostFor($model, $input, $cacheWrite, $cacheRead);
+            $outCost = ClaudeModelRate::outputCostFor($model, $output);
+
             ClaudeApiUsageLog::create([
                 'feature' => $feature,
                 'model' => $model,
@@ -45,7 +51,9 @@ class ClaudeUsageRecorder
                 'output_tokens' => $output,
                 'cache_creation_input_tokens' => $cacheWrite,
                 'cache_read_input_tokens' => $cacheRead,
-                'cost_usd' => ClaudeModelRate::costFor($model, $input, $output, $cacheWrite, $cacheRead),
+                'input_cost_usd' => $inCost,
+                'output_cost_usd' => $outCost,
+                'cost_usd' => round($inCost + $outCost, 6),
                 // Auth::id() is null on scheduled/CLI calls — that's a valid, nullable state.
                 'user_id' => Auth::id(),
                 'company' => $company,

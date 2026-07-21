@@ -33,7 +33,7 @@ class ClaudeApiUsageLog extends Model
         'feature', 'model', 'provider',
         'input_tokens', 'output_tokens',
         'cache_creation_input_tokens', 'cache_read_input_tokens',
-        'cost_usd', 'user_id', 'company',
+        'input_cost_usd', 'output_cost_usd', 'cost_usd', 'user_id', 'company',
     ];
 
     protected $casts = [
@@ -41,6 +41,8 @@ class ClaudeApiUsageLog extends Model
         'output_tokens' => 'integer',
         'cache_creation_input_tokens' => 'integer',
         'cache_read_input_tokens' => 'integer',
+        'input_cost_usd' => 'decimal:6',
+        'output_cost_usd' => 'decimal:6',
         'cost_usd' => 'decimal:6',
     ];
 

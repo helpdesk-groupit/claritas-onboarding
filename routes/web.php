@@ -664,7 +664,6 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::get('/superadmin/claude-api', [\App\Http\Controllers\ClaudeApiSettingController::class, 'index'])->name('superadmin.claude-api.index');
     Route::post('/superadmin/claude-api', [\App\Http\Controllers\ClaudeApiSettingController::class, 'update'])->name('superadmin.claude-api.update');
     Route::post('/superadmin/claude-api/test', [\App\Http\Controllers\ClaudeApiSettingController::class, 'test'])->name('superadmin.claude-api.test')->middleware('throttle:10,1');
-    // Token usage + spend report (by month x feature) and its PDF export.
-    Route::post('/superadmin/claude-api/rates', [\App\Http\Controllers\ClaudeApiSettingController::class, 'updateRates'])->name('superadmin.claude-api.rates');
+    // Token usage + spend report (year › month › feature) and its per-month PDF export.
     Route::get('/superadmin/claude-api/usage.pdf', [\App\Http\Controllers\ClaudeApiSettingController::class, 'exportUsagePdf'])->name('superadmin.claude-api.usage-pdf');
 });

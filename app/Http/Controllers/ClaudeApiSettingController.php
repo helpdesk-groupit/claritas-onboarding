@@ -10,7 +10,6 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -50,11 +49,10 @@ class ClaudeApiSettingController extends Controller
         return view('superadmin.claude-api', array_merge([
             'setting' => $setting,
             'models' => ClaudeApiSetting::MODELS,
-            'rates' => ClaudeModelRate::query()->orderBy('model')->get(),
             'periods' => self::PERIODS,
             'period' => $period,
             'availableMonths' => $this->availableMonths(),
-        ], $this->usageReport($period, $setting)));
+        ], $this->usageReport($period)));
     }
 
     /**
@@ -120,9 +118,9 @@ class ClaudeApiSettingController extends Controller
      * feature. Aggregated in SQL (one grouped query) rather than by hydrating rows —
      * this table grows by one row per OCR scan and is never paginated on screen.
      *
-     * @return array{report: \Illuminate\Support\Collection, byModule: \Illuminate\Support\Collection, chart: \Illuminate\Support\Collection, totals: array, unpricedModels: array}
+     * @return array{report: \Illuminate\Support\Collection, byYear: \Illuminate\Support\Collection, chart: \Illuminate\Support\Collection, totals: array, unpricedModels: array}
      */
-    private function usageReport(array $period, ClaudeApiSetting $setting): array
+    private function usageReport(array $period): array
     {
         $query = ClaudeApiUsageLog::query()
             ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') as ym")
@@ -131,6 +129,8 @@ class ClaudeApiSettingController extends Controller
             ->selectRaw('SUM(input_tokens) as in_tokens')
             ->selectRaw('SUM(output_tokens) as out_tokens')
             ->selectRaw('SUM(cache_creation_input_tokens + cache_read_input_tokens) as cache_tokens')
+            ->selectRaw('SUM(input_cost_usd) as in_cost')
+            ->selectRaw('SUM(output_cost_usd) as out_cost')
             ->selectRaw('SUM(cost_usd) as cost_usd')
             ->groupBy('ym', 'feature')
             ->orderByDesc('ym')
@@ -144,9 +144,11 @@ class ClaudeApiSettingController extends Controller
         }
 
         $rows = $query->get();
-        $rate = (float) ($setting->usd_myr_rate ?: 0);
+        // MYR is a convenience conversion off config; USD is what Anthropic bills.
+        $rate = (float) config('claude.usd_myr_rate', 0);
 
-        // Group into months, each with its feature rows + a month subtotal.
+        // Group into months, each with its feature rows + a month subtotal. Each feature
+        // carries the input/output cost split so the accordion can break it down on drop.
         $report = $rows->groupBy('ym')->map(fn ($group, $ym) => [
             'ym' => $ym,
             // Parse with an explicit day-01 — 'Y-m' alone fills the day from today, which
@@ -156,10 +158,15 @@ class ClaudeApiSettingController extends Controller
             'features' => $group->map(fn ($r) => [
                 'feature' => $r->feature,
                 'label' => ClaudeApiUsageLog::featureLabel($r->feature),
+                'color' => ClaudeApiUsageLog::moduleColor(ClaudeApiUsageLog::moduleLabel($r->feature)),
                 'calls' => (int) $r->calls,
                 'in_tokens' => (int) $r->in_tokens,
                 'out_tokens' => (int) $r->out_tokens,
                 'total_tokens' => (int) $r->in_tokens + (int) $r->out_tokens + (int) $r->cache_tokens,
+                'in_cost' => (float) $r->in_cost,
+                'out_cost' => (float) $r->out_cost,
+                'in_cost_myr' => (float) $r->in_cost * $rate,
+                'out_cost_myr' => (float) $r->out_cost * $rate,
                 'cost_usd' => (float) $r->cost_usd,
                 'cost_myr' => (float) $r->cost_usd * $rate,
             ])->values(),
@@ -171,48 +178,32 @@ class ClaudeApiSettingController extends Controller
 
         $totalUsd = (float) $report->sum('cost_usd');
 
-        // Same rows, grouped the other way: module -> feature, summed across every month
-        // in the period. This is the "what does eClaim OCR cost us?" view; the monthly
-        // grouping above answers "what did July cost?". Both come off the one query.
-        $byModule = $rows
-            ->groupBy(fn ($r) => ClaudeApiUsageLog::moduleLabel($r->feature))
-            ->map(fn ($group, $module) => [
-                'module' => $module,
-                'color' => ClaudeApiUsageLog::moduleColor($module),
-                'features' => $group
-                    ->groupBy('feature')
-                    ->map(fn ($fg, $feature) => [
-                        'label' => ClaudeApiUsageLog::featureLabel($feature),
-                        'calls' => (int) $fg->sum('calls'),
-                        'in_tokens' => (int) $fg->sum('in_tokens'),
-                        'out_tokens' => (int) $fg->sum('out_tokens'),
-                        'total_tokens' => (int) $fg->sum(fn ($r) => (int) $r->in_tokens + (int) $r->out_tokens + (int) $r->cache_tokens),
-                        'cost_usd' => (float) $fg->sum('cost_usd'),
-                        'cost_myr' => (float) $fg->sum('cost_usd') * $rate,
-                    ])
-                    ->sortByDesc('cost_usd')
-                    ->values(),
-                'calls' => (int) $group->sum('calls'),
-                'total_tokens' => (int) $group->sum(fn ($r) => (int) $r->in_tokens + (int) $r->out_tokens + (int) $r->cache_tokens),
-                'cost_usd' => (float) $group->sum('cost_usd'),
-                'cost_myr' => (float) $group->sum('cost_usd') * $rate,
-                // Share of total spend, so a glance shows which module dominates.
-                'share' => $totalUsd > 0 ? ((float) $group->sum('cost_usd') / $totalUsd) * 100 : 0.0,
-            ])
-            ->sortByDesc('cost_usd')
-            ->values();
+        // Wrap the months in years so the report reads year -> month -> feature, the same
+        // shape as the claims accordion. report is already newest-month-first, so groupBy
+        // yields the newest year first and its months stay in order.
+        $byYear = $report->groupBy(fn ($m) => substr($m['ym'], 0, 4))
+            ->map(fn ($months, $year) => [
+                // (string) — PHP coerces the numeric groupBy key to int; keep it a string
+                // so the view's element id ("ucY2026") and label render consistently.
+                'year' => (string) $year,
+                'calls' => (int) $months->sum('calls'),
+                'total_tokens' => (int) $months->sum('total_tokens'),
+                'cost_usd' => (float) $months->sum('cost_usd'),
+                'cost_myr' => (float) $months->sum('cost_myr'),
+                'months' => $months->values(),
+            ])->values();
 
-        // Models that logged usage but have no rate on file price at 0 — surface them so
+        // Models that logged usage but have no rate in config price at 0 — surface them so
         // the grand total is never quietly understated.
         $unpriced = ClaudeApiUsageLog::query()
             ->select('model')
             ->distinct()
-            ->whereNotIn('model', ClaudeModelRate::query()->pluck('model'))
+            ->whereNotIn('model', ClaudeModelRate::pricedModels())
             ->pluck('model')
             ->all();
 
         // Trend series for the column chart: oldest -> newest (time reads left to right,
-        // unlike the table, which leads with the most recent month). `peak` scales the
+        // unlike the accordion, which leads with the most recent month). `peak` scales the
         // bars; `isPeak`/`isLatest` mark the only two columns that get a direct label —
         // a number on every column is noise nobody reads.
         $chart = $report->reverse()->values();
@@ -226,7 +217,7 @@ class ClaudeApiSettingController extends Controller
 
         return [
             'report' => $report,
-            'byModule' => $byModule,
+            'byYear' => $byYear,
             'chart' => $chart,
             'totals' => [
                 'calls' => (int) $report->sum('calls'),
@@ -242,57 +233,18 @@ class ClaudeApiSettingController extends Controller
         ];
     }
 
-    /** Save the per-model price list and the USD→MYR conversion rate. */
-    public function updateRates(Request $request)
-    {
-        $this->authorizeSuperadmin();
-
-        $data = $request->validate([
-            'usd_myr_rate' => 'required|numeric|min:0|max:100',
-            'rates' => 'array',
-            'rates.*.model' => 'required|string|max:60',
-            'rates.*.label' => 'nullable|string|max:120',
-            'rates.*.input_per_mtok' => 'required|numeric|min:0|max:9999',
-            'rates.*.output_per_mtok' => 'required|numeric|min:0|max:9999',
-        ]);
-
-        DB::transaction(function () use ($data) {
-            foreach ($data['rates'] ?? [] as $row) {
-                ClaudeModelRate::updateOrCreate(
-                    ['model' => trim($row['model'])],
-                    [
-                        'label' => $row['label'] ?? null,
-                        'input_per_mtok' => $row['input_per_mtok'],
-                        'output_per_mtok' => $row['output_per_mtok'],
-                    ]
-                );
-            }
-
-            $setting = ClaudeApiSetting::current();
-            $setting->usd_myr_rate = $data['usd_myr_rate'];
-            $setting->updated_by = Auth::id();
-            $setting->save();
-        });
-
-        ClaudeModelRate::flushMemo();
-
-        return redirect()->route('superadmin.claude-api.index')
-            ->with('success', 'Pricing saved. New calls are costed at these rates — past usage keeps the cost it was recorded at.');
-    }
-
     /** The same report as the page, as a downloadable PDF. */
     public function exportUsagePdf(Request $request)
     {
         $this->authorizeSuperadmin();
 
-        $setting = ClaudeApiSetting::current();
         $period = $this->resolvePeriod($request);
 
         $pdf = Pdf::loadView('superadmin.claude-api-usage-pdf', array_merge([
             'periodLabel' => $period['label'],
             'generatedAt' => now(),
             'generatedBy' => Auth::user()?->employee?->full_name ?? Auth::user()?->name,
-        ], $this->usageReport($period, $setting)))->setPaper('a4');
+        ], $this->usageReport($period)))->setPaper('a4');
 
         // Name the file after what it contains: a single-month export is "…-2026-07.pdf",
         // a rolling window is "…-last-12-months-<today>.pdf" (it depends on when it was run).
