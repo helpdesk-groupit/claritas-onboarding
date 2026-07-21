@@ -23,6 +23,8 @@
     table.usage th, table.usage td { border: 1px solid #94a3b8; padding: 4px 6px; }
     table.usage th { background: #f1f5f9; font-size: 8.5px; text-align: left; }
     .mrow td { background: #e2e8f0; font-weight: bold; }
+    .trow td { background: #f8fafc; font-weight: bold; border-top: 2px solid #94a3b8; }
+    .myr { color: #64748b; font-size: 8px; }
     .r { text-align: right; }
     .warn { border: 1px solid #f59e0b; background: #fffbeb; padding: 6px 9px; font-size: 8.5px; margin-bottom: 12px; }
     .empty { text-align: center; color: #64748b; padding: 30px 0; }
@@ -35,6 +37,7 @@
     <div class="title">Claude API — Token Usage &amp; Cost</div>
     <div class="sub">
         Period: {{ $periodLabel }}
+        @if(!empty($featureLabel)) &nbsp;·&nbsp; Feature: {{ $featureLabel }} @endif
         &nbsp;·&nbsp; Generated {{ fmt_datetime($generatedAt) }}
         @if($generatedBy) &nbsp;·&nbsp; by {{ $generatedBy }} @endif
     </div>
@@ -65,33 +68,40 @@
     @forelse($byYear as $year)
         <div class="sec">{{ $year['year'] }} — {{ $fmtUsd($year['cost_usd']) }} ({{ $fmtMyr($year['cost_myr']) }})</div>
         @foreach($year['months'] as $month)
+            @php $feats = collect($month['features']); @endphp
             <table class="usage">
                 <tr class="mrow">
                     <td colspan="4">{{ $month['label'] }}</td>
                     <td class="r">{{ $fmtTok($month['calls']) }} calls</td>
-                    <td class="r">{{ $fmtUsd($month['cost_usd']) }}</td>
-                    <td class="r">{{ $fmtMyr($month['cost_myr']) }}</td>
+                    <td class="r">{{ $fmtUsd($month['cost_usd']) }}<br><span class="myr">{{ $fmtMyr($month['cost_myr']) }}</span></td>
                 </tr>
                 <tr>
-                    <th style="width:30%;">Feature</th>
+                    <th style="width:28%;">Feature</th>
                     <th class="r">Input tok</th>
-                    <th class="r">Input $</th>
+                    <th class="r">Input (USD / MYR)</th>
                     <th class="r">Output tok</th>
-                    <th class="r">Output $</th>
-                    <th class="r">Total $</th>
-                    <th class="r">MYR</th>
+                    <th class="r">Output (USD / MYR)</th>
+                    <th class="r">Total (USD / MYR)</th>
                 </tr>
                 @foreach($month['features'] as $f)
                     <tr>
                         <td>{{ $f['label'] }}</td>
                         <td class="r">{{ $fmtTok($f['in_tokens']) }}</td>
-                        <td class="r">{{ $fmtUsd($f['in_cost']) }}</td>
+                        {{-- USD and MYR share one column per the request — USD on top, MYR under. --}}
+                        <td class="r">{{ $fmtUsd($f['in_cost']) }}<br><span class="myr">{{ $fmtMyr($f['in_cost_myr']) }}</span></td>
                         <td class="r">{{ $fmtTok($f['out_tokens']) }}</td>
-                        <td class="r">{{ $fmtUsd($f['out_cost']) }}</td>
-                        <td class="r">{{ $fmtUsd($f['cost_usd']) }}</td>
-                        <td class="r">{{ $fmtMyr($f['cost_myr']) }}</td>
+                        <td class="r">{{ $fmtUsd($f['out_cost']) }}<br><span class="myr">{{ $fmtMyr($f['out_cost_myr']) }}</span></td>
+                        <td class="r">{{ $fmtUsd($f['cost_usd']) }}<br><span class="myr">{{ $fmtMyr($f['cost_myr']) }}</span></td>
                     </tr>
                 @endforeach
+                <tr class="trow">
+                    <td>Total</td>
+                    <td class="r">{{ $fmtTok($feats->sum('in_tokens')) }}</td>
+                    <td class="r">{{ $fmtUsd($feats->sum('in_cost')) }}<br><span class="myr">{{ $fmtMyr($feats->sum('in_cost_myr')) }}</span></td>
+                    <td class="r">{{ $fmtTok($feats->sum('out_tokens')) }}</td>
+                    <td class="r">{{ $fmtUsd($feats->sum('out_cost')) }}<br><span class="myr">{{ $fmtMyr($feats->sum('out_cost_myr')) }}</span></td>
+                    <td class="r">{{ $fmtUsd($month['cost_usd']) }}<br><span class="myr">{{ $fmtMyr($month['cost_myr']) }}</span></td>
+                </tr>
             </table>
         @endforeach
     @empty

@@ -45,14 +45,17 @@ class ClaudeApiSettingController extends Controller
 
         $setting = ClaudeApiSetting::current();
         $period = $this->resolvePeriod($request);
+        $feature = $this->resolveFeature($request);
 
         return view('superadmin.claude-api', array_merge([
             'setting' => $setting,
             'models' => ClaudeApiSetting::MODELS,
             'periods' => self::PERIODS,
             'period' => $period,
+            'feature' => $feature,
             'availableMonths' => $this->availableMonths(),
-        ], $this->usageReport($period)));
+            'availableFeatures' => $this->availableFeatures(),
+        ], $this->usageReport($period, $feature)));
     }
 
     /**
@@ -95,6 +98,14 @@ class ClaudeApiSettingController extends Controller
         ];
     }
 
+    /** The ?feature= filter — a valid feature key, or '' for all features. */
+    private function resolveFeature(Request $request): string
+    {
+        $feature = (string) $request->query('feature', '');
+
+        return array_key_exists($feature, ClaudeApiUsageLog::FEATURES) ? $feature : '';
+    }
+
     /**
      * Every month that actually has usage, newest first, as ['2026-07' => 'July 2026'].
      * Drives the per-month options in the period picker — offering an empty month would
@@ -114,13 +125,31 @@ class ClaudeApiSettingController extends Controller
     }
 
     /**
+     * Every feature that actually has usage, as ['feature_key' => 'Human Label'], for the
+     * feature filter. Only features present in the data are offered — same reasoning as
+     * availableMonths (filtering to one with no usage would just render an empty report).
+     *
+     * @return array<string, string>
+     */
+    private function availableFeatures(): array
+    {
+        return ClaudeApiUsageLog::query()
+            ->select('feature')
+            ->distinct()
+            ->orderBy('feature')
+            ->pluck('feature')
+            ->mapWithKeys(fn ($f) => [$f => ClaudeApiUsageLog::featureLabel($f)])
+            ->all();
+    }
+
+    /**
      * The usage report: token totals and USD/MYR spend, grouped by month and then by
      * feature. Aggregated in SQL (one grouped query) rather than by hydrating rows —
      * this table grows by one row per OCR scan and is never paginated on screen.
      *
      * @return array{report: \Illuminate\Support\Collection, byYear: \Illuminate\Support\Collection, chart: \Illuminate\Support\Collection, totals: array, unpricedModels: array}
      */
-    private function usageReport(array $period): array
+    private function usageReport(array $period, string $feature = ''): array
     {
         $query = ClaudeApiUsageLog::query()
             ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') as ym")
@@ -141,6 +170,9 @@ class ClaudeApiSettingController extends Controller
         }
         if ($period['end']) {
             $query->where('created_at', '<=', $period['end']);
+        }
+        if ($feature !== '') {
+            $query->where('feature', $feature);
         }
 
         $rows = $query->get();
@@ -239,12 +271,15 @@ class ClaudeApiSettingController extends Controller
         $this->authorizeSuperadmin();
 
         $period = $this->resolvePeriod($request);
+        $feature = $this->resolveFeature($request);
 
         $pdf = Pdf::loadView('superadmin.claude-api-usage-pdf', array_merge([
             'periodLabel' => $period['label'],
+            // So the header shows what was filtered when a downloaded copy is read later.
+            'featureLabel' => $feature !== '' ? ClaudeApiUsageLog::featureLabel($feature) : null,
             'generatedAt' => now(),
             'generatedBy' => Auth::user()?->employee?->full_name ?? Auth::user()?->name,
-        ], $this->usageReport($period)))->setPaper('a4');
+        ], $this->usageReport($period, $feature)))->setPaper('a4');
 
         // Name the file after what it contains: a single-month export is "…-2026-07.pdf",
         // a rolling window is "…-last-12-months-<today>.pdf" (it depends on when it was run).

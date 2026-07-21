@@ -86,6 +86,9 @@
         // below $1 — 2dp would render most real rows as "$0.00". Above $1, cents.
         $fmtUsd = fn ($n) => '$'.number_format((float) $n, (float) $n >= 1 ? 2 : 4);
         $fmtMyr = fn ($n) => 'RM'.number_format((float) $n, 2);
+        // Sub-RM1 spend is normal here, so keep 4dp below RM1 (a per-call figure would
+        // otherwise round to RM0.00); above RM1, sen. Used for precise per-call/per-half figures.
+        $fmtMyrP = fn ($n) => 'RM'.number_format((float) $n, (float) $n >= 1 ? 2 : 4);
         // Compact form for the stat tiles only; tables keep full precision.
         $fmtCompact = function ($n) {
             $n = (int) $n;
@@ -103,11 +106,13 @@
         </div>
     </div>
 
-    {{-- Period filter + export --}}
-    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-        <form method="GET" action="{{ route('superadmin.claude-api.index') }}" class="d-flex align-items-center gap-2" id="caPeriodForm">
+    {{-- Filters. Both selects submit the one form on change, so period and feature
+         narrow the report together. Export lives per-month in the accordion below —
+         there is no whole-period export button (download each month instead). --}}
+    <form method="GET" action="{{ route('superadmin.claude-api.index') }}" class="d-flex flex-wrap align-items-center gap-3 mb-3" id="caFilterForm">
+        <div class="d-flex align-items-center gap-2">
             <label class="form-label mb-0 small text-muted">Period</label>
-            <select name="period" class="form-select form-select-sm" style="width:auto;" id="caPeriod">
+            <select name="period" class="form-select form-select-sm uc-filter" style="width:auto;">
                 <optgroup label="Rolling">
                     @foreach($periods as $value => $label)
                         <option value="{{ $value }}" @selected($period['key'] === (string) $value)>{{ $label }}</option>
@@ -124,14 +129,20 @@
                     @endforelse
                 </optgroup>
             </select>
-            <noscript><button type="submit" class="btn btn-sm btn-outline-secondary">Apply</button></noscript>
-        </form>
-        <div class="ms-auto">
-            <a href="{{ route('superadmin.claude-api.usage-pdf', ['period' => $period['key']]) }}" class="btn btn-sm btn-outline-danger">
-                <i class="bi bi-file-earmark-pdf me-1"></i>Export PDF<span class="d-none d-sm-inline"> — {{ $period['label'] }}</span>
-            </a>
         </div>
-    </div>
+        <div class="d-flex align-items-center gap-2">
+            <label class="form-label mb-0 small text-muted">Feature</label>
+            <select name="feature" class="form-select form-select-sm uc-filter" style="width:auto;">
+                <option value="" @selected($feature === '')>All features</option>
+                @forelse($availableFeatures as $key => $label)
+                    <option value="{{ $key }}" @selected($feature === $key)>{{ $label }}</option>
+                @empty
+                    <option disabled>— none recorded yet —</option>
+                @endforelse
+            </select>
+        </div>
+        <noscript><button type="submit" class="btn btn-sm btn-outline-secondary">Apply</button></noscript>
+    </form>
 
     {{-- Summary — one hero figure (total spend) with supporting stats beside it.
          Four identical tiles gave equal weight to four unequal numbers; the question
@@ -140,11 +151,13 @@
         <div class="card-body p-4">
             <div class="row g-4 align-items-center">
                 <div class="col-lg-5">
+                    {{-- RM leads — this is a Malaysian finance figure; USD is shown under it
+                         as the currency Anthropic actually bills, so both are one glance apart. --}}
                     <div class="uc-lbl">Total spent · {{ $period['label'] }}</div>
-                    <div class="uc-hero">{{ $fmtUsd($totals['cost_usd']) }}</div>
+                    <div class="uc-hero">{{ $fmtMyr($totals['cost_myr']) }}</div>
                     <div class="uc-sub">
-                        ≈ {{ $fmtMyr($totals['cost_myr']) }}
-                        <span class="uc-dim">at {{ number_format($totals['myr_rate'], 4) }} / USD</span>
+                        ≈ {{ $fmtUsd($totals['cost_usd']) }} <span class="uc-dim">billed</span>
+                        <span class="uc-dim">· RM {{ number_format($totals['myr_rate'], 4) }} / USD</span>
                     </div>
                 </div>
                 <div class="col-lg-7">
@@ -159,7 +172,8 @@
                         </div>
                         <div class="col-4">
                             <div class="uc-lbl">Avg / call</div>
-                            <div class="uc-stat">{{ $fmtUsd($totals['avg_per_call']) }}</div>
+                            <div class="uc-stat">{{ $fmtMyrP($totals['avg_per_call'] * $totals['myr_rate']) }}</div>
+                            <div class="uc-dim" style="font-size:.72rem;">{{ $fmtUsd($totals['avg_per_call']) }}</div>
                         </div>
                     </div>
                 </div>
@@ -173,7 +187,7 @@
             <strong>Some usage isn't priced.</strong> These models have logged calls but no rate on file, so they count as
             <strong>$0.00</strong> above:
             @foreach($unpricedModels as $m)<code>{{ $m }}</code>@if(!$loop->last), @endif @endforeach.
-            Add them in the pricing table below to make the totals complete.
+            Add each model's rate in <code>config/claude.php</code> to make the totals complete.
         </div>
     @endif
 
@@ -257,8 +271,9 @@
                                         <span class="uc-dim small ms-2 d-none d-md-inline">({{ $fmtMyr($month['cost_myr']) }})</span>
                                     </button>
                                     {{-- Download THIS month, broken down by feature. A sibling of the
-                                         toggle (not nested in the button), so it doesn't toggle the panel. --}}
-                                    <a href="{{ route('superadmin.claude-api.usage-pdf', ['period' => $month['ym']]) }}"
+                                         toggle (not nested in the button), so it doesn't toggle the panel.
+                                         Carries the feature filter so the PDF matches what's on screen. --}}
+                                    <a href="{{ route('superadmin.claude-api.usage-pdf', array_filter(['period' => $month['ym'], 'feature' => $feature])) }}"
                                        class="btn btn-sm btn-outline-danger uc-dl" title="Download {{ $month['label'] }} (by feature) as PDF">
                                         <i class="bi bi-file-earmark-pdf"></i>
                                     </a>
@@ -428,11 +443,12 @@
         resultEl.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-x-circle-fill') + ' me-1"></i>' + message;
     }
 
-    // Period selector auto-submits (CSP blocks inline onchange — must be addEventListener).
-    const periodEl = document.getElementById('caPeriod');
-    if (periodEl) {
-        periodEl.addEventListener('change', function () {
-            document.getElementById('caPeriodForm').submit();
+    // Period + Feature selects auto-submit their form (CSP blocks inline onchange —
+    // must be addEventListener). Event delegation covers both with one listener.
+    const filterForm = document.getElementById('caFilterForm');
+    if (filterForm) {
+        filterForm.querySelectorAll('select.uc-filter').forEach(function (el) {
+            el.addEventListener('change', function () { filterForm.submit(); });
         });
     }
 

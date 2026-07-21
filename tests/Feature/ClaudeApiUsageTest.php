@@ -288,6 +288,67 @@ class ClaudeApiUsageTest extends TestCase
         $this->assertSame([now()->format('Y-m'), $lastMonth], array_keys($res->viewData('availableMonths')));
     }
 
+    public function test_feature_filter_scopes_the_whole_report(): void
+    {
+        $super = $this->superadmin();
+
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0);       // $1 eClaim
+        $this->usage('accounting_invoice_scan', 'claude-haiku-4-5', 4_000_000, 0);  // $4 Accounting
+
+        // Unfiltered: both features, $5 total.
+        $all = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        $this->assertSame(5.0, $all->viewData('totals')['cost_usd']);
+        // Both features are offered in the picker.
+        $this->assertSame(['accounting_invoice_scan', 'claim_receipt_scan'], array_keys($all->viewData('availableFeatures')));
+
+        // Filtered to eClaim: only its $1, and every rendered feature is that one.
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index', ['feature' => 'claim_receipt_scan']));
+        $this->assertSame('claim_receipt_scan', $res->viewData('feature'));
+        $this->assertSame(1.0, $res->viewData('totals')['cost_usd']);
+        foreach ($res->viewData('report') as $month) {
+            foreach ($month['features'] as $f) {
+                $this->assertSame('claim_receipt_scan', $f['feature']);
+            }
+        }
+    }
+
+    public function test_an_invalid_feature_filter_is_ignored(): void
+    {
+        $super = $this->superadmin();
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0);
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index', ['feature' => 'not_a_feature']));
+        $res->assertOk();
+        $this->assertSame('', $res->viewData('feature'));           // fell back to "all"
+        $this->assertSame(1.0, $res->viewData('totals')['cost_usd']); // nothing filtered out
+    }
+
+    public function test_the_whole_period_export_button_is_gone(): void
+    {
+        $super = $this->superadmin();
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0);
+
+        // The top-of-page "Export PDF — <period>" button is removed; download is per-month.
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        $res->assertDontSee('Export PDF', false);
+        // The month-level download link is still present.
+        $res->assertSee('usage.pdf?period='.now()->format('Y-m'), false);
+        // ...and the Feature filter label is now on the page.
+        $res->assertSee('Feature', false);
+    }
+
+    public function test_pdf_export_respects_the_feature_filter(): void
+    {
+        $super = $this->superadmin();
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0);
+        $this->usage('accounting_invoice_scan', 'claude-haiku-4-5', 4_000_000, 0);
+
+        $ym = now()->format('Y-m');
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.usage-pdf', ['period' => $ym, 'feature' => 'claim_receipt_scan']));
+        $res->assertOk();
+        $this->assertSame('application/pdf', $res->headers->get('content-type'));
+    }
+
     public function test_an_unrecognised_period_falls_back_to_12_months(): void
     {
         $super = $this->superadmin();
