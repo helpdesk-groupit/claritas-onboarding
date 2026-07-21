@@ -976,14 +976,10 @@ class ExpenseClaimController extends Controller
             return back()->withErrors(['expense_category_id' => 'Invalid expense category.'])->withInput();
         }
 
-        // Entity scoping: a company-specific category is only for that company.
-        if ($category->company && $employee->company && $category->company !== $employee->company) {
-            return back()->withErrors(['expense_category_id' => 'This category is not available for your company.'])->withInput();
-        }
-
-        // Role eligibility (e.g. intern-only categories).
+        // Full eligibility — entity scope (incl. timeline-based 'ever' benefits), role, and any
+        // per-employee restriction — via the single source of truth that also builds the dropdown.
         if (! ClaimRulesService::categoryAllowed($employee, $category)) {
-            return back()->withErrors(['expense_category_id' => 'You are not eligible to claim under this category.'])->withInput();
+            return back()->withErrors(['expense_category_id' => 'This category is not available to you.'])->withInput();
         }
 
         // Petrol is always a per-km mileage claim (car/motorcycle rate). The origin
@@ -1224,11 +1220,9 @@ class ExpenseClaimController extends Controller
         if (! $category || ! $category->is_active) {
             return back()->withErrors(['expense_category_id' => 'Invalid expense category.'])->withInput();
         }
-        if ($category->company && $employee->company && $category->company !== $employee->company) {
-            return back()->withErrors(['expense_category_id' => 'This category is not available for your company.'])->withInput();
-        }
+        // Full eligibility (entity scope incl. timeline-based 'ever' benefits, role, per-employee).
         if (! ClaimRulesService::categoryAllowed($employee, $category)) {
-            return back()->withErrors(['expense_category_id' => 'You are not eligible to claim under this category.'])->withInput();
+            return back()->withErrors(['expense_category_id' => 'This category is not available to you.'])->withInput();
         }
 
         $isPetrolMileage = $category->isMileageClaim();
@@ -1765,9 +1759,13 @@ class ExpenseClaimController extends Controller
     public function detectCategory(Request $request)
     {
         $description = $request->input('description', '');
-        $company = Auth::user()->employee?->company;
+        $employee = Auth::user()->employee;
+        // Score only the employee's eligible categories, so timeline-based 'ever' benefits
+        // (e.g. Optical & Dental for an ex-Claritas mover) are detectable and no ineligible
+        // category is ever suggested.
+        $candidates = $employee ? ClaimRulesService::categoriesFor($employee) : null;
 
-        $category = ExpenseCategory::detectFromDescription($description, $company);
+        $category = ExpenseCategory::detectFromDescription($description, $employee?->company, $candidates);
 
         return response()->json([
             'category_id' => $category?->id,
@@ -3029,7 +3027,8 @@ class ExpenseClaimController extends Controller
         }
         $hint = trim(($it['vendor'] ?? '').' '.($it['item_description'] ?? ''));
         if ($hint !== '') {
-            $kwCat = ExpenseCategory::detectFromDescription($hint, $company);
+            // Detect within the employee's eligible set (honours 'ever' scope; nothing off-list).
+            $kwCat = ExpenseCategory::detectFromDescription($hint, $company, $categories);
             if ($kwCat && $categories->contains('id', $kwCat->id)) {
                 $catId = $kwCat->id;
                 $catName = $kwCat->name;

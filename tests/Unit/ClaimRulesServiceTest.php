@@ -2,9 +2,12 @@
 
 namespace Tests\Unit;
 
+use App\Models\Employee;
+use App\Models\EmployeeCompanyHistory;
 use App\Models\ExpenseCategory;
 use App\Services\ClaimRulesService;
 use Carbon\Carbon;
+use Illuminate\Support\Collection;
 use Tests\TestCase;
 
 /**
@@ -139,5 +142,75 @@ class ClaimRulesServiceTest extends TestCase
         // Force 20 Jul 2026 (a Monday) to be a holiday → rolls back to Fri 17 Jul.
         config(['claims.public_holidays' => ['2026-07-20']]);
         $this->assertEquals('2026-07-17', ClaimRulesService::submissionDeadline(20, Carbon::create(2026, 7, 1))->toDateString());
+    }
+
+    /**
+     * Build an employee with a current company and optional prior company stints, with the
+     * companyHistories relation pre-set so companyAllows() never touches the DB.
+     */
+    private function employeeWith(string $current, array $pastCompanies = []): Employee
+    {
+        $e = new Employee;
+        $e->company = $current;
+
+        $stints = (new Collection($pastCompanies))
+            ->push($current) // the current company is itself the open stint
+            ->map(function (string $c) {
+                $s = new EmployeeCompanyHistory;
+                $s->company = $c;
+
+                return $s;
+            });
+        $e->setRelation('companyHistories', $stints);
+
+        return $e;
+    }
+
+    public function test_null_company_category_is_available_to_every_entity(): void
+    {
+        $general = new ExpenseCategory;
+        $general->company = null;
+
+        $this->assertTrue(ClaimRulesService::companyAllows($this->employeeWith('Enlinea Sdn Bhd'), $general));
+        $this->assertTrue(ClaimRulesService::companyAllows($this->employeeWith('Nuren SG Pte Ltd'), $general));
+    }
+
+    public function test_current_scope_matches_current_company_only(): void
+    {
+        $support = new ExpenseCategory;
+        $support->company = 'Claritas';
+        $support->company_scope = 'current';
+
+        // Prefix match on the full registered name.
+        $this->assertTrue(ClaimRulesService::companyAllows(
+            $this->employeeWith('Claritas Consulting (Asia) Sdn Bhd'), $support
+        ));
+
+        // A past Claritas stint does NOT rescue a 'current'-scoped category once they've moved.
+        $this->assertFalse(ClaimRulesService::companyAllows(
+            $this->employeeWith('Enlinea Sdn Bhd', ['Claritas Consulting (Asia) Sdn Bhd']), $support
+        ));
+    }
+
+    public function test_ever_scope_follows_the_person_across_a_company_move(): void
+    {
+        $optical = new ExpenseCategory;
+        $optical->company = 'Claritas';
+        $optical->company_scope = 'ever';
+
+        // Current Claritas staff qualify.
+        $this->assertTrue(ClaimRulesService::companyAllows(
+            $this->employeeWith('Claritas Consulting (Asia) Sdn Bhd'), $optical
+        ));
+
+        // Ex-Claritas staff who moved to Enlinea keep it (a recorded Claritas stint).
+        $this->assertTrue(ClaimRulesService::companyAllows(
+            $this->employeeWith('Enlinea Sdn Bhd', ['Claritas Consulting (Asia) Sdn Bhd']), $optical
+        ));
+
+        // Someone who was never at Claritas does not.
+        $this->assertFalse(ClaimRulesService::companyAllows(
+            $this->employeeWith('Enlinea Sdn Bhd'), $optical
+        ));
     }
 }

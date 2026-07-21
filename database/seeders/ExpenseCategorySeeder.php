@@ -317,6 +317,10 @@ class ExpenseCategorySeeder extends Seeder
                 'gl_code' => null,
                 'name' => 'Optical & Dental',
                 'company' => 'Claritas',
+                // 'ever' = the benefit follows the person: current Claritas staff AND ex-Claritas
+                // staff who moved to another entity (e.g. Enlinea) keep it, resolved from the
+                // employee company timeline. See ClaimRulesService::companyAllows.
+                'company_scope' => 'ever',
                 'description' => 'Claritas optical and dental benefit, capped at RM500 per calendar year.',
                 'keywords' => json_encode(['optical', 'dental', 'dental clinic', 'dentist', 'pergigian', 'klinik pergigian', 'optometry', 'optician', 'glasses', 'spectacles', 'teeth', 'eye', 'lens', 'contact lens']),
                 'monthly_limit' => 500.00,

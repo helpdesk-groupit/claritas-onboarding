@@ -17,23 +17,17 @@ use Illuminate\Support\Collection;
  */
 class ClaimRulesService
 {
-    /** Categories this employee may file under (entity + role scoped). */
+    /** Categories this employee may file under (entity + role + per-employee scoped). */
     public static function categoriesFor(Employee $employee): Collection
     {
-        $company = $employee->company;
+        // Eager-load the timeline once so the 'ever' company scope doesn't re-query per category.
+        $employee->loadMissing('companyHistories');
 
+        // Company scope, role and per-employee restriction are all applied by categoryAllowed()
+        // (the single source of truth reused by every add/edit enforcement point), so fetch the
+        // active set and filter in PHP rather than duplicating the company rule in SQL.
         return ExpenseCategory::query()
             ->where('is_active', true)
-            ->where(function ($q) use ($company) {
-                $q->whereNull('company');
-                if ($company) {
-                    // Category.company holds the short entity token ("Claritas"); employees store
-                    // the full registered name ("Claritas Consulting (Asia) Sdn Bhd"). Match the
-                    // token as a prefix of the employee's company so entity-scoped categories are
-                    // actually reachable (exact match still works — it's a prefix of itself).
-                    $q->orWhereRaw("LOWER(TRIM(?)) LIKE LOWER(CONCAT(`company`, '%'))", [$company]);
-                }
-            })
             ->orderBy('sort_order')
             ->get()
             ->filter(fn (ExpenseCategory $c) => self::categoryAllowed($employee, $c))
@@ -212,10 +206,41 @@ class ClaimRulesService
         return in_array((int) $employee->id, array_map('intval', (array) $ids), true);
     }
 
-    /** Full category eligibility for an employee: role AND per-employee restriction. */
+    /**
+     * Does the category's ENTITY scope admit this employee?
+     *   - Null company token → all entities (always allowed).
+     *   - company_scope 'ever' → the employee is, OR ever was, at a company matching the token
+     *     (read from the EmployeeCompanyHistory timeline) — a benefit that follows the person after
+     *     a company move, e.g. the Claritas Optical & Dental benefit kept by ex-Claritas staff.
+     *   - otherwise ('current', the default) → only the employee's CURRENT company matches.
+     * Matching is a prefix test: the category holds the short token ("Claritas") while employees
+     * store the full registered name ("Claritas Consulting (Asia) Sdn Bhd").
+     */
+    public static function companyAllows(Employee $employee, ExpenseCategory $category): bool
+    {
+        $token = strtolower(trim((string) $category->company));
+        if ($token === '') {
+            return true; // all entities
+        }
+
+        $names = $category->company_scope === 'ever'
+            ? $employee->companyNamesEverAssociated()
+            : [strtolower(trim((string) $employee->company))];
+
+        foreach ($names as $name) {
+            if ($name !== '' && str_starts_with($name, $token)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Full category eligibility for an employee: entity scope AND role AND per-employee restriction. */
     public static function categoryAllowed(Employee $employee, ExpenseCategory $category): bool
     {
-        return self::roleAllows($employee, $category->applies_to_role)
+        return self::companyAllows($employee, $category)
+            && self::roleAllows($employee, $category->applies_to_role)
             && self::employeeAllowed($employee, $category);
     }
 

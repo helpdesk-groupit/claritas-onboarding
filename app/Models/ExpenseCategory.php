@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class ExpenseCategory extends Model
 {
     protected $fillable = [
-        'company', 'name', 'code', 'gl_code', 'description',
+        'company', 'company_scope', 'name', 'code', 'gl_code', 'description',
         'monthly_limit', 'rate_type', 'rate_amount', 'limit_period', 'applies_to_role',
         'applies_to_employee_ids', 'requires_receipt', 'is_active',
         'sort_order', 'keywords',
@@ -62,8 +62,13 @@ class ExpenseCategory extends Model
      * keywords don't false-match inside longer words ("ot" no longer hits "promotion"),
      * and it falls back to the category NAME's own words so categories without explicit
      * keywords are still detectable. Returns null when nothing clears the threshold.
+     *
+     * Pass $candidates (an already eligibility-filtered set, e.g. ClaimRulesService::categoriesFor)
+     * to score only categories the employee may actually file — this honours timeline-based 'ever'
+     * scoping (a benefit an ex-Claritas mover keeps). Without it, detection falls back to a plain
+     * current-company token-prefix filter, which is timeline-unaware.
      */
-    public static function detectFromDescription(string $description, ?string $company = null): ?self
+    public static function detectFromDescription(string $description, ?string $company = null, ?iterable $candidates = null): ?self
     {
         // Normalise: strip punctuation to spaces, pad so \b works at the ends.
         $desc = ' '.strtolower(preg_replace('/[^a-z0-9\s]/i', ' ', $description)).' ';
@@ -71,21 +76,26 @@ class ExpenseCategory extends Model
             return null;
         }
 
-        $query = static::where('is_active', true)->orderBy('sort_order');
-        if ($company) {
-            // Category.company is the short entity token ("Claritas"); employees store the full
-            // registered name. Match the token as a prefix of the employee's company (same rule
-            // as ClaimRulesService::categoriesFor) so entity-scoped categories — e.g. the Claritas
-            // Optical & Dental benefit — actually compete in detection.
-            $query->where(function ($q) use ($company) {
-                $q->whereNull('company')
-                    ->orWhereRaw("LOWER(TRIM(?)) LIKE LOWER(CONCAT(`company`, '%'))", [$company]);
-            });
+        if ($candidates !== null) {
+            $categories = $candidates;
+        } else {
+            $query = static::where('is_active', true)->orderBy('sort_order');
+            if ($company) {
+                // Category.company is the short entity token ("Claritas"); employees store the full
+                // registered name. Match the token as a prefix of the employee's company (same rule
+                // as ClaimRulesService::categoriesFor) so entity-scoped categories — e.g. the Claritas
+                // Optical & Dental benefit — actually compete in detection.
+                $query->where(function ($q) use ($company) {
+                    $q->whereNull('company')
+                        ->orWhereRaw("LOWER(TRIM(?)) LIKE LOWER(CONCAT(`company`, '%'))", [$company]);
+                });
+            }
+            $categories = $query->get();
         }
 
         $best = null;
         $bestScore = 0.0;
-        foreach ($query->get() as $category) {
+        foreach ($categories as $category) {
             $score = $category->descriptionMatchScore($desc);
             if ($score > $bestScore) {
                 $bestScore = $score;

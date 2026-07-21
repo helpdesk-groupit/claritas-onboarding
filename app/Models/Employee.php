@@ -223,6 +223,32 @@ class Employee extends Model
     }
 
     /**
+     * Every company name this employee is or has ever been under — their current company plus
+     * all company-timeline stints, normalised (lower-cased, trimmed) and de-duplicated. Used for
+     * benefits that FOLLOW THE PERSON after a company move (see ClaimRulesService::companyAllows,
+     * 'ever' scope) — e.g. the Claritas Optical & Dental benefit kept by ex-Claritas staff now at
+     * another entity. Uses the loaded relation when present to avoid an N+1.
+     *
+     * NB: only reflects moves the timeline recorded. An employee moved BEFORE the timeline existed
+     * may have a single backfilled stint showing their current company only — backfill the missing
+     * historical stint for them to be recognised as "ever at" that company.
+     */
+    public function companyNamesEverAssociated(): array
+    {
+        $stints = $this->relationLoaded('companyHistories')
+            ? $this->companyHistories
+            : $this->companyHistories()->get();
+
+        return collect([$this->company])
+            ->merge($stints->pluck('company'))
+            ->filter()
+            ->map(fn ($c) => strtolower(trim((string) $c)))
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
      * Change this employee to $newCompany effective from $effectiveDate (which may be in the
      * past), recording it on the company timeline. Closes the current open stint at the effective
      * date and opens a new one from it. Returns a result array {status, message}:
