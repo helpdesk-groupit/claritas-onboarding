@@ -291,24 +291,26 @@
                                             <span class="fw-semibold">{{ $fmtUsd($f['cost_usd']) }}</span>
                                         </button>
                                         <div class="collapse" id="{{ $fId }}">
-                                            <div class="uc-split">
+                                            {{-- Tinted panel with the feature's colour on its left edge, so the
+                                                 breakdown reads as a distinct detail area, not white-on-white. --}}
+                                            <div class="uc-split" style="border-left-color:{{ $f['color'] }};">
                                                 <div class="uc-splitrow">
-                                                    <span class="uc-io-in"><i class="bi bi-box-arrow-in-down-right"></i>Input</span>
+                                                    <span class="uc-io"><i class="bi bi-box-arrow-in-down-right"></i>Input</span>
                                                     <span class="uc-io-tok">{{ $fmtTok($f['in_tokens']) }} tokens</span>
                                                     <span class="uc-io-amt">{{ $fmtUsd($f['in_cost']) }}</span>
-                                                    <span class="uc-dim small">({{ $fmtMyr($f['in_cost_myr']) }})</span>
+                                                    <span class="uc-io-myr">{{ $fmtMyr($f['in_cost_myr']) }}</span>
                                                 </div>
                                                 <div class="uc-splitrow">
-                                                    <span class="uc-io-out"><i class="bi bi-box-arrow-up-right"></i>Output</span>
+                                                    <span class="uc-io"><i class="bi bi-box-arrow-up-right"></i>Output</span>
                                                     <span class="uc-io-tok">{{ $fmtTok($f['out_tokens']) }} tokens</span>
                                                     <span class="uc-io-amt">{{ $fmtUsd($f['out_cost']) }}</span>
-                                                    <span class="uc-dim small">({{ $fmtMyr($f['out_cost_myr']) }})</span>
+                                                    <span class="uc-io-myr">{{ $fmtMyr($f['out_cost_myr']) }}</span>
                                                 </div>
                                                 <div class="uc-splitrow uc-splittot">
-                                                    <span>Total</span>
+                                                    <span class="uc-io">Total</span>
                                                     <span class="uc-io-tok">{{ $fmtTok($f['total_tokens']) }} tokens</span>
                                                     <span class="uc-io-amt">{{ $fmtUsd($f['cost_usd']) }}</span>
-                                                    <span class="uc-dim small">({{ $fmtMyr($f['cost_myr']) }})</span>
+                                                    <span class="uc-io-myr">{{ $fmtMyr($f['cost_myr']) }}</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -404,26 +406,36 @@
     .uc-mhead-row { display:flex; align-items:center; padding-left:1.4rem; }
     .uc-mhead { padding-left:0; }
     .uc-fhead { padding-left:2.6rem; font-size:.85rem; border-top:1px solid #f5f5f2; }
-    .uc-yhead:hover, .uc-mhead:hover, .uc-fhead:hover { background:#f9f9f7; }
+    .uc-yhead:hover, .uc-mhead:hover, .uc-fhead:hover { background:#f4f5f7; }
+    /* When a header is open, tint it so it reads as connected to the panel it reveals. */
+    .uc-mhead[aria-expanded="true"], .uc-fhead[aria-expanded="true"] { background:#eef1f5; }
     .uc-feat-name { color:#52514e; }
+    .uc-fhead[aria-expanded="true"] .uc-feat-name { color:#0b0b0b; }
     .uc-dl { padding:.05rem .45rem; margin-left:.35rem; flex-shrink:0; }
 
     /* Chevron: points right when collapsed, rotates down when the panel is open. */
     .uc-chev { font-size:.7rem; color:#898781; transition:transform .15s ease; flex-shrink:0; }
-    [aria-expanded="true"] > .uc-chev { transform:rotate(90deg); }
+    [aria-expanded="true"] > .uc-chev { transform:rotate(90deg); color:#0b0b0b; }
 
-    /* The input/output/total split revealed when a feature drops down. */
-    .uc-split { padding:.4rem 1rem .8rem 3.4rem; }
-    .uc-splitrow { display:flex; align-items:center; gap:.6rem; padding:.28rem 0; font-size:.82rem; }
-    .uc-splitrow + .uc-splitrow { border-top:1px solid #f5f5f2; }
-    /* Ink, not hue — blue already means "eClaim" via the module dot on this page,
-       so input/output lean on a direction icon + label rather than a second colour. */
-    .uc-io-in, .uc-io-out { width:74px; font-weight:600; color:#0b0b0b; }
-    .uc-io-in i, .uc-io-out i { color:#898781; margin-right:.25rem; }
-    .uc-io-tok { width:130px; color:#52514e; font-variant-numeric:tabular-nums; }
-    .uc-io-amt { min-width:72px; font-weight:600; color:#0b0b0b; font-variant-numeric:tabular-nums; }
-    .uc-splittot { font-weight:600; }
-    .uc-splittot span:first-child { width:64px; color:#0b0b0b; }
+    /* The input/output/total split revealed when a feature drops down. A tinted, boxed
+       panel (not white-on-white) with the feature's colour on its left edge, and a 4-column
+       grid so labels, token counts, USD and MYR line up cleanly. */
+    .uc-split { margin:.35rem 1rem .7rem 2.6rem; background:#f5f7fa; border:1px solid #e3e7ec;
+                border-left:3px solid #cbd2da; border-radius:10px; padding:.35rem .95rem; }
+    .uc-splitrow { display:grid; grid-template-columns:96px 1fr auto auto; align-items:center;
+                   gap:.9rem; padding:.4rem 0; font-size:.83rem; }
+    .uc-splitrow + .uc-splitrow { border-top:1px solid #e3e7ec; }
+    /* Ink + a direction icon, not hue — blue already means "eClaim" via the module dot. */
+    .uc-io { font-weight:600; color:#0b0b0b; white-space:nowrap; }
+    .uc-io i { color:#6b7280; margin-right:.35rem; }
+    .uc-io-tok { color:#52514e; font-variant-numeric:tabular-nums; }
+    .uc-io-amt { justify-self:end; min-width:72px; text-align:right; font-weight:600; color:#0b0b0b; font-variant-numeric:tabular-nums; }
+    .uc-io-myr { justify-self:end; min-width:66px; text-align:right; color:#5b6470; font-variant-numeric:tabular-nums; }
+    /* Total: a firmer rule above it and heavier ink, so the sum stands apart from the two
+       halves. Selector matches the sibling rule's specificity (0,2,0) and comes later, so it wins. */
+    .uc-splitrow.uc-splittot { border-top:1.5px solid #cbd2da; margin-top:.1rem; padding-top:.5rem; }
+    .uc-splittot .uc-io-tok { color:#0b0b0b; font-weight:600; }
+    .uc-splittot .uc-io-myr { color:#0b0b0b; }
 </style>
 @endpush
 
