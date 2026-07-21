@@ -64,7 +64,29 @@ Schedule::command('geoip:update')
 // Email Workflow: drive every active capture automation. Runs every minute and
 // self-gates — each workflow carries its own capture_cron + timezone, which the
 // static scheduler can't express, so RunEmailWorkflows evaluates them itself.
+// Each due workflow is dispatched to the `database` queue (set in
+// RunEmailWorkflowCapture's constructor) so this command returns in well under a
+// second and fans out every workflow due this minute — under the old `sync`
+// path each dispatch ran the full multi-minute sweep inline, so only the first
+// workflow of the batch ever fired and the rest missed their cron minute.
 Schedule::command('email-workflows:run')
     ->everyMinute()
     ->withoutOverlapping()
     ->appendOutputTo(storage_path('logs/email-workflows.log'));
+
+// Email Workflow queue worker (scheduler-supervised, not a bare daemon).
+// --stop-when-empty: one invocation drains every queued sweep then exits, so
+// there is no idle daemon to babysit; riding the already-working every-minute
+// cron means it self-heals after a crash or reboot (a bare daemon would need a
+// DSM boot task and would silently stop sweeping if it died). runInBackground
+// is mandatory — a drain can take ~20 min and must NOT block schedule:run (that
+// would stall birthdays, claim reminders, etc.). withoutOverlapping(30) keeps a
+// single drain in flight and self-releases in 30 min if a drain is killed
+// without clearing its mutex (ShouldBeUnique + the captures UNIQUE index make a
+// rare overlap harmless). Only the `database` connection is drained; `sync`
+// work (mails, notifications) never touches a queue table.
+Schedule::command('queue:work database --stop-when-empty --tries=1 --timeout=3600 --sleep=3')
+    ->everyMinute()
+    ->withoutOverlapping(30)
+    ->runInBackground()
+    ->appendOutputTo(storage_path('logs/queue-worker.log'));
