@@ -113,13 +113,15 @@ class DashboardController extends Controller
         ];
     }
 
-    private function getAnnouncements(?string $company): \Illuminate\Database\Eloquent\Collection
+    private function getAnnouncements(?string $company): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
+        // Page 1 seed for the widget; the in-widget pager fetches further pages
+        // via AnnouncementController@feed. Explicit page=1 ignores any stray
+        // ?page= in the dashboard URL so the widget always opens on the newest.
         return Announcement::with('creator.employee')
             ->visibleTo($company)
             ->orderByDesc('created_at')
-            ->limit(5)
-            ->get();
+            ->paginate(5, ['*'], 'page', 1);
     }
 
     public function systemOverview(

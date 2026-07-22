@@ -271,6 +271,9 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     // Keep legacy route pointing to HR index for any old links
     Route::get('/offboarding', fn () => redirect()->route('hr.offboarding.index'))->name('offboarding.index');
 
+    // Announcements — dashboard widget feed (all authenticated users, company-scoped)
+    Route::get('/announcements/feed', [AnnouncementController::class, 'feed'])->name('announcements.feed');
+
     // Announcements (HR Manager / Superadmin)
     Route::get('/hr/announcements', [AnnouncementController::class, 'index'])->name('announcements.index');
     Route::get('/hr/announcements/create', [AnnouncementController::class, 'create'])->name('announcements.create');

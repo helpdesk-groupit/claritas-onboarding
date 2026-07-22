@@ -1,7 +1,13 @@
 {{-- ── NEWS & ANNOUNCEMENTS WIDGET ──────────────────────────────────────── --}}
 @include('partials.dashboard-widgets-style')
 
-@php $annCount = $latestAnnouncements->count(); @endphp
+@php
+    // $latestAnnouncements is a LengthAwarePaginator (DashboardController::getAnnouncements),
+    // seeded to page 1. Fall back gracefully if a plain collection is ever passed.
+    $annTotal    = method_exists($latestAnnouncements, 'total') ? $latestAnnouncements->total() : $latestAnnouncements->count();
+    $annLastPage = method_exists($latestAnnouncements, 'lastPage') ? $latestAnnouncements->lastPage() : 1;
+    $annCurrent  = method_exists($latestAnnouncements, 'currentPage') ? $latestAnnouncements->currentPage() : 1;
+@endphp
 
 <style>
     .ann-toggle { cursor: pointer; user-select: none; }
@@ -9,6 +15,10 @@
     /* Bootstrap adds .collapsed to the trigger when the target is collapsed,
        and removes it when expanded. Rotate the chevron in the expanded state. */
     .ann-toggle:not(.collapsed) .ann-chevron { transform: rotate(180deg); }
+    .ann-pager-btn { border:1px solid #fcd34d; background:#fffbeb; color:#b45309; border-radius:8px;
+                     padding:4px 12px; font-size:12px; font-weight:600; line-height:1.4; transition:background .15s ease; }
+    .ann-pager-btn:hover:not(:disabled) { background:#fef3c7; }
+    .ann-pager-btn:disabled { opacity:.45; cursor:not-allowed; }
 </style>
 
 <div class="section-header">
@@ -25,96 +35,84 @@
                 <div class="d-flex align-items-center gap-3">
                     <div class="widget-icon"><i class="bi bi-megaphone-fill"></i></div>
                     <div>
-                        <div class="widget-number" style="font-size:28px;">{{ $annCount }}</div>
-                        <div class="widget-label">Latest {{ $annCount === 1 ? 'Announcement' : 'Announcements' }}</div>
+                        <div class="widget-number" style="font-size:28px;">{{ $annTotal }}</div>
+                        <div class="widget-label">{{ $annTotal === 1 ? 'Announcement' : 'Announcements' }}</div>
                     </div>
                 </div>
             </div>
             <div class="widget-body" style="padding:16px 22px;">
-                @forelse($latestAnnouncements as $ann)
-                @php
-                    $attachments = $ann->attachment_paths ?? [];
-                    $imageExts   = ['jpg','jpeg','png','gif','webp'];
-                    $isLatest    = $loop->first;
-                    $bodyId      = 'ann-body-' . $ann->id;
-                @endphp
-                <div class="{{ !$loop->last ? 'border-bottom pb-3 mb-3' : '' }}">
-                    <div class="d-flex align-items-start gap-3">
-                        <div style="width:40px;height:40px;background:#fef3c7;border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                            <i class="bi bi-megaphone-fill" style="font-size:18px;color:#d97706;"></i>
-                        </div>
-                        <div class="flex-fill" style="min-width:0;">
-
-                            {{-- Title row — clickable toggle for older items; always-open for the latest --}}
-                            <div class="d-flex align-items-center gap-2 flex-wrap @if(!$isLatest) ann-toggle collapsed @endif"
-                                 @if(!$isLatest)
-                                     role="button"
-                                     data-bs-toggle="collapse"
-                                     data-bs-target="#{{ $bodyId }}"
-                                     aria-expanded="false"
-                                     aria-controls="{{ $bodyId }}"
-                                 @endif>
-                                <span class="fw-semibold" style="font-size:14px;color:#1e293b;">{{ $ann->title }}</span>
-                                @if(!empty($ann->companies))
-                                    @foreach($ann->companies as $co)
-                                        <span class="badge" style="background:#f59e0b;font-size:10px;vertical-align:middle;">{{ $co }}</span>
-                                    @endforeach
-                                @endif
-                                @if($isLatest)
-                                    <span class="badge ms-1" style="background:#10b981;font-size:10px;">Latest</span>
-                                @else
-                                    <i class="bi bi-chevron-down ms-auto ann-chevron" style="color:#94a3b8;font-size:14px;"></i>
-                                @endif
-                            </div>
-
-                            {{-- Body + attachments — open for latest, collapsed for older ones --}}
-                            <div @if(!$isLatest) class="collapse" id="{{ $bodyId }}" @endif>
-                                @if($ann->body)
-                                <div class="mt-1" style="font-size:13px;line-height:1.6;color:#475569;white-space:pre-line;">{{ $ann->body }}</div>
-                                @endif
-
-                                {{-- Attachments — images inline, PDFs as styled link --}}
-                                @if(!empty($attachments))
-                                <div class="mt-2">
-                                    @foreach($attachments as $i => $path)
-                                    @php $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION)); @endphp
-                                    @if(in_array($ext, $imageExts))
-                                        <a href="{{ asset('storage/'.$path) }}" target="_blank" style="display:inline-block;margin:0 6px 6px 0;">
-                                            <img src="{{ asset('storage/'.$path) }}" alt="Attachment {{ $i+1 }}"
-                                                 style="max-width:100%;max-height:280px;border-radius:8px;border:1px solid #e2e8f0;object-fit:contain;display:block;">
-                                        </a>
-                                    @else
-                                        <a href="{{ asset('storage/'.$path) }}" target="_blank"
-                                           class="d-inline-flex align-items-center gap-2 px-3 py-2 rounded border mb-2"
-                                           style="font-size:13px;color:#dc2626;text-decoration:none;background:#fff5f5;border-color:#fca5a5 !important;">
-                                            <i class="bi bi-file-earmark-pdf-fill" style="font-size:18px;"></i>
-                                            <span>PDF Attachment {{ $i+1 }}</span>
-                                            <i class="bi bi-box-arrow-up-right" style="font-size:11px;opacity:0.6;"></i>
-                                        </a>
-                                    @endif
-                                    @endforeach
-                                </div>
-                                @endif
-                            </div>
-
-                            {{-- Date/byline always visible so collapsed items still show context --}}
-                            <div class="text-muted mt-1" style="font-size:11px;">
-                                {{ $ann->created_at->format('d/m/Y') }}
-                                &bull; {{ $ann->creator?->employee?->full_name ?? $ann->creator?->name ?? 'HR' }}
-                            </div>
-
-                        </div>
-                    </div>
+                <div id="ann-list">
+                    @include('partials.announcement-items', ['announcements' => $latestAnnouncements, 'isFirstPage' => true])
                 </div>
-                @empty
-                <div class="text-center py-3">
-                    <div style="width:44px;height:44px;background:#fef3c7;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 10px;">
-                        <i class="bi bi-megaphone" style="font-size:20px;color:#d97706;"></i>
-                    </div>
-                    <div class="text-muted small">No announcements at the moment.</div>
+
+                @if($annLastPage > 1)
+                <div id="ann-pager" class="d-flex align-items-center justify-content-between gap-2 pt-3 mt-1 border-top"
+                     data-feed-url="{{ route('announcements.feed') }}"
+                     data-current="{{ $annCurrent }}"
+                     data-last="{{ $annLastPage }}">
+                    <button type="button" class="ann-pager-btn" data-ann-prev disabled>
+                        <i class="bi bi-chevron-left"></i> Prev
+                    </button>
+                    <span class="text-muted" style="font-size:12px;">
+                        Page <span data-ann-current>{{ $annCurrent }}</span> of <span data-ann-last>{{ $annLastPage }}</span>
+                    </span>
+                    <button type="button" class="ann-pager-btn" data-ann-next>
+                        Next <i class="bi bi-chevron-right"></i>
+                    </button>
                 </div>
-                @endforelse
+                @endif
             </div>
         </div>
     </div>
 </div>
+
+@if($annLastPage > 1)
+<script nonce="{{ $cspNonce ?? '' }}">
+(function () {
+    const pager = document.getElementById('ann-pager');
+    const list  = document.getElementById('ann-list');
+    if (!pager || !list) return;
+
+    const prevBtn  = pager.querySelector('[data-ann-prev]');
+    const nextBtn  = pager.querySelector('[data-ann-next]');
+    const curLabel = pager.querySelector('[data-ann-current]');
+    const feedUrl  = pager.dataset.feedUrl;
+    const lastPage = parseInt(pager.dataset.last, 10) || 1;
+    let page       = parseInt(pager.dataset.current, 10) || 1;
+    let loading    = false;
+
+    function syncButtons() {
+        prevBtn.disabled = loading || page <= 1;
+        nextBtn.disabled = loading || page >= lastPage;
+    }
+
+    async function go(target) {
+        if (loading || target < 1 || target > lastPage || target === page) return;
+        loading = true;
+        syncButtons();
+        try {
+            const url = feedUrl + (feedUrl.includes('?') ? '&' : '?') + 'page=' + target;
+            const res = await fetch(url, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+                credentials: 'same-origin'
+            });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            list.innerHTML = data.html;                 // server-rendered + Blade-escaped
+            page = data.current_page || target;
+            curLabel.textContent = page;
+        } catch (e) {
+            // Leave the current page in place on failure — nothing destructive happened.
+            console.error('Announcement feed load failed:', e);
+        } finally {
+            loading = false;
+            syncButtons();
+        }
+    }
+
+    prevBtn.addEventListener('click', () => go(page - 1));
+    nextBtn.addEventListener('click', () => go(page + 1));
+    syncButtons();
+})();
+</script>
+@endif

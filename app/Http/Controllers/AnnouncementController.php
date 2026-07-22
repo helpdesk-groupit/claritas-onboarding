@@ -53,6 +53,40 @@ class AnnouncementController extends Controller
         return view('hr.announcements.index', compact('announcements'));
     }
 
+    /**
+     * AJAX feed for the dashboard announcements widget's in-widget pager.
+     * Available to every authenticated user (NOT HR-gated) — scoped per-company
+     * via visibleTo() so a user only ever sees announcements addressed to them.
+     * Returns the same server-rendered markup the widget paints on first load.
+     */
+    public function feed(Request $request)
+    {
+        $company = Auth::user()->employee?->company;
+        $page    = max(1, (int) $request->integer('page', 1));
+
+        try {
+            $announcements = Announcement::with('creator.employee')
+                ->visibleTo($company)
+                ->orderByDesc('created_at')
+                ->paginate(5, ['*'], 'page', $page);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Announcement feed error: ' . $e->getMessage());
+            $announcements = new \Illuminate\Pagination\LengthAwarePaginator([], 0, 5, $page);
+        }
+
+        $html = view('partials.announcement-items', [
+            'announcements' => $announcements,
+            'isFirstPage'   => $announcements->currentPage() === 1,
+        ])->render();
+
+        return response()->json([
+            'html'         => $html,
+            'current_page' => $announcements->currentPage(),
+            'last_page'    => $announcements->lastPage(),
+            'total'        => $announcements->total(),
+        ]);
+    }
+
     public function create()
     {
         $this->authorizeHrManager();
