@@ -339,7 +339,12 @@ class ExpenseClaimController extends Controller
                 return response()->json(['ok' => false, 'errors' => ['amount' => 'Enter the distance (km) for the mileage claim.']], 422);
             }
             $rateApplied = ClaimRulesService::mileageRate($request->input('c_vehicle', 'car'));
-            $amount = round($quantity * $rateApplied, 2);
+            // Amount pre-fills from km × rate but is EDITABLE: the employee may claim LESS
+            // (allowed), while claiming MORE than the calculated mileage is blocked.
+            ['amount' => $amount, 'error' => $mileageErr] = $this->mileageAmount($validated, round($quantity * $rateApplied, 2));
+            if ($mileageErr !== null) {
+                return response()->json(['ok' => false, 'errors' => ['amount' => $mileageErr]], 422);
+            }
             $gst = 0;
             $unit = 'km';
             $mileageDest = $request->input('c_itemdesc') ? mb_substr(strip_tags((string) $request->input('c_itemdesc')), 0, 255) : null;
@@ -575,7 +580,12 @@ class ExpenseClaimController extends Controller
                 return response()->json(['ok' => false, 'errors' => ['amount' => 'Enter the distance (km) for the mileage claim.']], 422);
             }
             $rateApplied = ClaimRulesService::mileageRate($request->input('c_vehicle', 'car'));
-            $amount = round($quantity * $rateApplied, 2);
+            // Amount pre-fills from km × rate but is EDITABLE: the employee may claim LESS
+            // (allowed), while claiming MORE than the calculated mileage is blocked.
+            ['amount' => $amount, 'error' => $mileageErr] = $this->mileageAmount($validated, round($quantity * $rateApplied, 2));
+            if ($mileageErr !== null) {
+                return response()->json(['ok' => false, 'errors' => ['amount' => $mileageErr]], 422);
+            }
             $gst = 0;
             $unit = 'km';
             $mileageDest = $request->input('c_itemdesc') ? mb_substr(strip_tags((string) $request->input('c_itemdesc')), 0, 255) : null;
@@ -732,6 +742,28 @@ class ExpenseClaimController extends Controller
         $claim->delete();
 
         return redirect()->route('user.claims.index')->with('success', 'Draft '.$number.' deleted.');
+    }
+
+    /**
+     * Resolve the claimable amount for a mileage (Petrol) line. The amount field is editable:
+     * it pre-fills from the calculated km × rate ($computed), the employee may claim LESS
+     * (allowed), but claiming MORE than $computed is blocked — mirroring the My Claims page's
+     * counter-check. A blank amount falls back to the full calculated figure.
+     *
+     * @return array{amount: float, error: ?string}
+     */
+    private function mileageAmount(array $validated, float $computed): array
+    {
+        $entered = isset($validated['amount']) && $validated['amount'] !== '' ? (float) $validated['amount'] : null;
+        if ($entered !== null && $entered > 0) {
+            if (round($entered, 2) > $computed + 0.001) {
+                return ['amount' => $computed, 'error' => 'You can’t claim more than the calculated mileage of RM '.number_format($computed, 2).'. Lower the amount and try again.'];
+            }
+
+            return ['amount' => round($entered, 2), 'error' => null];
+        }
+
+        return ['amount' => $computed, 'error' => null];
     }
 
     /**

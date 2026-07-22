@@ -97,12 +97,18 @@ class ExpenseClaimItem extends Model
         $mathOk = abs(((float) $this->amount + (float) $this->gst_amount) - (float) $this->total_with_gst) < 0.01;
         $out[] = ['label' => 'Total = amount + GST', 'ok' => $mathOk];
 
-        // Computed amount matches quantity × rate (mileage / per-day; OT uses bands, skip)
+        // Computed amount matches quantity × rate (mileage / per-day; OT uses bands, skip).
+        // Mileage may be voluntarily UNDER-claimed (claim less than km × rate is allowed and
+        // only soft-warned on entry), so for km the check passes as long as the amount does
+        // not EXCEED the calculated figure — only an over-claim is a genuine mismatch.
         if ($this->quantity !== null && $this->rate_applied !== null && $this->unit && $this->unit !== 'hour') {
             $expected = round((float) $this->quantity * (float) $this->rate_applied, 2);
+            $isKm = $this->unit === 'km';
             $out[] = [
-                'label' => $this->unit === 'km' ? 'Amount = km × rate' : 'Amount = '.$this->unit.' × rate',
-                'ok' => abs($expected - (float) $this->amount) < 0.01,
+                'label' => $isKm ? 'Amount ≤ km × rate' : 'Amount = '.$this->unit.' × rate',
+                'ok' => $isKm
+                    ? ((float) $this->amount <= $expected + 0.01)
+                    : (abs($expected - (float) $this->amount) < 0.01),
                 'detail' => number_format($this->quantity, 2).' × '.number_format($this->rate_applied, 2).' = '.number_format($expected, 2),
             ];
         }

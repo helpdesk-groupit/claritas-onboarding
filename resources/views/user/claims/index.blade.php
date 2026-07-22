@@ -705,31 +705,41 @@
         const red   = () => { el.style.background = '#fef2f2'; el.style.border = '1px solid #f87171'; el.style.color = '#b91c1c'; };
         const hide = () => { el.classList.add('d-none'); el.innerHTML = ''; amber(); return false; };
         const cat = q(c, '.cc-i-cat'), opt = (cat && cat.value) ? cat.selectedOptions[0] : null;
+        const isMileage = opt && opt.dataset.mileage === '1';
         // If a category IS chosen, skip capped ones (Medical, Optical & Dental, etc.) and
-        // computed/fixed ones (mileage, per-day/hour, season parking) — their claimable is
-        // intentionally ≠ the receipt. With NO category yet, still counter-check (it re-runs
-        // when a category is picked).
-        if (opt && ((opt.dataset.rateType || 'receipt') !== 'receipt' || CAP_INFO[opt.value])) return hide();
-        const receipt = parseFloat(q(c, '.cc-c-total').value);   // total read from the receipt (scan)
+        // computed/fixed ones (per-day/hour, season parking) — their claimable is intentionally
+        // ≠ the receipt. Mileage (Petrol) is the exception: it IS counter-checked, but against
+        // the calculated km × rate figure, not a receipt total. With NO category yet, still
+        // counter-check (it re-runs when a category is picked).
+        if (opt && !isMileage && ((opt.dataset.rateType || 'receipt') !== 'receipt' || CAP_INFO[opt.value])) return hide();
+        // Reference to compare the claim against: mileage → calculated km × rate; else → receipt total.
+        const reference = isMileage ? parseFloat(c.dataset.mileageComputed) : parseFloat(q(c, '.cc-c-total').value);
         const claimed = parseFloat(q(c, '.cc-i-total').value);   // amount + SST being claimed
-        if (!(receipt > 0) || !(claimed > 0)) return hide();      // nothing to compare against
-        const diff = Math.round((claimed - receipt) * 100) / 100; // 2-dp difference
+        if (!(reference > 0) || !(claimed > 0)) return hide();    // nothing to compare against
+        const diff = Math.round((claimed - reference) * 100) / 100; // 2-dp difference
         const fmt = n => Number(n).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         if (diff > 0) {
-            // ANY amount over the receipt → hard block (even 1 cent). Red banner; addItem refuses.
+            // ANY amount over the reference → hard block (even 1 cent). Red banner; addItem refuses.
             el.classList.remove('d-none');
             red();
-            el.innerHTML = '<i class="bi bi-x-octagon-fill me-1"></i><strong>You can’t claim more than the receipt</strong> — you’re claiming <strong>RM ' + fmt(claimed) +
-                '</strong> but the receipt only shows <strong>RM ' + fmt(receipt) + '</strong>. Lower the amount to <strong>RM ' + fmt(receipt) + '</strong> or less to add this item.';
+            el.innerHTML = isMileage
+                ? '<i class="bi bi-x-octagon-fill me-1"></i><strong>You can’t claim more than the calculated mileage</strong> — you’re claiming <strong>RM ' + fmt(claimed) +
+                    '</strong> but the mileage works out to <strong>RM ' + fmt(reference) + '</strong>. Lower the amount to <strong>RM ' + fmt(reference) + '</strong> or less to add this item.'
+                : '<i class="bi bi-x-octagon-fill me-1"></i><strong>You can’t claim more than the receipt</strong> — you’re claiming <strong>RM ' + fmt(claimed) +
+                    '</strong> but the receipt only shows <strong>RM ' + fmt(reference) + '</strong>. Lower the amount to <strong>RM ' + fmt(reference) + '</strong> or less to add this item.';
             return true;
         }
         if (Math.abs(diff) <= 0.01) return hide();   // exact match or ≤1 cent under — all good
         // Under-claim → soft warning only (allowed).
         el.classList.remove('d-none');
         amber();
-        el.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>Heads up — you’re claiming <strong>RM ' + fmt(claimed) +
-            '</strong> but the receipt shows <strong>RM ' + fmt(receipt) + '</strong>. That’s fine if it’s intentional ' +
-            '(e.g. a partial claim); otherwise please double-check before adding.';
+        el.innerHTML = isMileage
+            ? '<i class="bi bi-exclamation-triangle me-1"></i>Heads up — you’re claiming <strong>RM ' + fmt(claimed) +
+                '</strong> but the mileage works out to <strong>RM ' + fmt(reference) + '</strong>. That’s fine if you meant to claim less; ' +
+                'otherwise please double-check before adding.'
+            : '<i class="bi bi-exclamation-triangle me-1"></i>Heads up — you’re claiming <strong>RM ' + fmt(claimed) +
+                '</strong> but the receipt shows <strong>RM ' + fmt(reference) + '</strong>. That’s fine if it’s intentional ' +
+                '(e.g. a partial claim); otherwise please double-check before adding.';
         return false;
     }
     // Capped-category preview (e.g. intern Medical RM100/mo): show the remaining allowance and
@@ -796,6 +806,10 @@
         const rate = parseFloat(veh.selectedOptions[0] && veh.selectedOptions[0].dataset.rate) || 0;
         const km = parseFloat(kmEl.value) || 0;
         const amt = km * rate;
+        // Stash the calculated figure as the counter-check reference (analogous to the receipt
+        // total), then PRE-FILL the editable amount with it. Must be set before syncTotal(),
+        // which runs applyReceiptCheck() and reads this. The user may lower the amount after.
+        c.dataset.mileageComputed = amt ? amt.toFixed(2) : '';
         amount.value = amt ? amt.toFixed(2) : '';
         syncTotal(c);
         const vehLabel = veh.value === 'motorcycle' ? 'Motorcycle' : 'Car';
@@ -816,6 +830,7 @@
         const mrow = c.querySelector('.cc-mileage-row'); if (mrow) mrow.classList.add('d-none');
         const km = q(c,'.cc-i-km'); if (km) km.value = '';
         const veh = q(c,'.cc-i-vehicle'); if (veh) veh.value = 'car';
+        c.dataset.mileageComputed = ''; // drop the stale mileage counter-check reference
         setC(c, {});
         const sb = q(c,'.cc-scan-btn'); if (sb) sb.classList.add('d-none');
         const od = q(c,'.cc-ocr-details'); if (od) { od.classList.add('d-none'); od.innerHTML = ''; }
@@ -1263,18 +1278,22 @@
         const fixed = opt && opt.dataset.rateType === 'fixed';
         if (isMileage) {
             if (!(parseFloat(q(c,'.cc-i-km').value) > 0)) return showErr(err, 'Enter the distance (km) for the mileage claim.');
+            // Amount is editable for mileage now — it must still be a positive figure.
+            if (!(parseFloat(amount.value) > 0)) return showErr(err, 'Enter the amount for the mileage claim.');
         } else if (!fixed && (!amount.value || parseFloat(amount.value) <= 0)) {
             return showErr(err, 'Enter the amount.');
         }
 
-        // Hard stop: never let the claimed amount exceed the receipt total the scan read.
-        // applyReceiptCheck() shows the red banner and returns true only for an over-claim
-        // (under-claims pass through as an allowed soft warning).
+        // Hard stop: never let the claimed amount exceed the reference (a receipt's total, or —
+        // for mileage — the calculated km × rate). applyReceiptCheck() shows the red banner and
+        // returns true only for an over-claim (under-claims pass through as an allowed soft warning).
         if (applyReceiptCheck(c)) {
             const rc = q(c, '.cc-receipt-check'); if (rc) rc.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            const receiptTotal = parseFloat(q(c, '.cc-c-total').value);
+            const reference = isMileage ? parseFloat(c.dataset.mileageComputed) : parseFloat(q(c, '.cc-c-total').value);
             const fmt = n => Number(n).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            showErr(err, 'Can’t add — the amount is more than the receipt' + (receiptTotal > 0 ? ' (RM ' + fmt(receiptTotal) + ')' : '') + '. Lower it to the receipt total or less, then click Add to list.');
+            showErr(err, isMileage
+                ? 'Can’t add — the amount is more than the calculated mileage' + (reference > 0 ? ' (RM ' + fmt(reference) + ')' : '') + '. Lower it to the calculated amount or less, then click Add to list.'
+                : 'Can’t add — the amount is more than the receipt' + (reference > 0 ? ' (RM ' + fmt(reference) + ')' : '') + '. Lower it to the receipt total or less, then click Add to list.');
             amount.focus();
             return;
         }
@@ -1682,8 +1701,9 @@
             const mrow = c.querySelector('.cc-mileage-row');
             if (mrow) mrow.classList.toggle('d-none', !isMileage);
             if (isMileage) {
-                // Mileage: amount comes from km × vehicle rate (choose the vehicle below).
-                amount.readOnly = true; gst.value = '0'; gst.readOnly = true;
+                // Mileage: amount PRE-FILLS from km × vehicle rate but stays EDITABLE — the user
+                // may claim less (soft warning); claiming more than the calculated figure is blocked.
+                amount.readOnly = false; gst.value = '0'; gst.readOnly = true;
                 computeMileage(c);
             } else if (opt && opt.dataset.rateType === 'fixed') {
                 amount.value = parseFloat(opt.dataset.rateAmount || 0).toFixed(2); amount.readOnly = true;

@@ -185,7 +185,7 @@
         </div>
         <div class="col-md-6 d-flex align-items-end gap-2 flex-wrap">
             <button type="button" class="btn btn-sm btn-outline-primary cc-calc-dist"><i class="bi bi-signpost-2 me-1"></i>Calculate distance</button>
-            <span class="small text-muted cc-mileage-note">Amount = distance × vehicle rate.</span>
+            <span class="small text-muted cc-mileage-note">Amount pre-fills from distance × vehicle rate — you can lower it, but not claim more.</span>
         </div>
     </div>
 

@@ -249,10 +249,10 @@
             </div>
             <div class="um-frow c6" style="display:flex;align-items:flex-end;gap:7px;flex-wrap:wrap;">
                 <span class="um-btn um-btn-grey" style="border-color:#93c5fd;color:#1d4ed8;"><i class="bi bi-signpost-2"></i> Calculate distance</span>
-                <span style="font-size:9.5px;color:#64748b;">Amount = distance × vehicle rate.</span>
+                <span style="font-size:9.5px;color:#64748b;">Amount pre-fills from distance × vehicle rate — you can lower it.</span>
             </div>
         </div>
-        <div class="um-mockup-caption">Pick the Petrol category and this row appears. The <strong>Amount</strong> above becomes read-only — it's worked out as distance × rate.</div>
+        <div class="um-mockup-caption">Pick the Petrol category and this row appears. The <strong>Amount</strong> above pre-fills as distance × rate; you can lower it if you're claiming less, but you can't claim more than the calculated figure.</div>
     </div>
 
     <div class="um-fields">
