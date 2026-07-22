@@ -432,15 +432,19 @@ class ClaimRulesService
     }
 
     /**
-     * Effective submission deadline for a month: the policy day (e.g. the 20th),
-     * pulled back to the preceding working day when it lands on a weekend/holiday.
+     * Effective submission deadline for a month: the policy day (e.g. the 20th).
+     *
+     * By company policy this is a FIXED calendar day — it is intentionally NOT rolled back
+     * for weekends or public holidays. The deadline is always the policy day itself (the
+     * 20th), whatever day of the week it lands on. (`precedingWorkingDay()` is kept for the
+     * manager-approval buffer, which still counts in working days.)
      */
     public static function submissionDeadline(int $deadlineDay, ?Carbon $monthRef = null): Carbon
     {
         $monthRef = $monthRef ? $monthRef->copy() : now();
         $day = min(max(1, $deadlineDay), $monthRef->daysInMonth);
 
-        return self::precedingWorkingDay($monthRef->copy()->setDay($day));
+        return $monthRef->copy()->setDay($day)->startOfDay();
     }
 
     /**

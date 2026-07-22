@@ -12,9 +12,12 @@ use Illuminate\Support\Facades\Mail;
 
 class ClaimDeadlineReminder extends Command
 {
-    protected $signature = 'claims:remind {--force : Send now regardless of the day-before check}';
+    /** Day of the month for the early mid-month nudge ("time to prepare your claims"). */
+    private const MIDMONTH_NUDGE_DAY = 15;
 
-    protected $description = 'Day before the submission deadline: remind every employee to submit drafts, or nudge those with no claim this month.';
+    protected $signature = 'claims:remind {--force : Send now regardless of the day checks}';
+
+    protected $description = 'Claim reminders: a mid-month nudge (15th), a day-before-deadline reminder, and a deadline-day last call.';
 
     public function handle(): int
     {
@@ -28,16 +31,20 @@ class ClaimDeadlineReminder extends Command
 
         $isDeadlineDay = $now->isSameDay($deadlineDate);
         $isDayBefore = $now->isSameDay($deadlineDate->copy()->subDay());
+        $isMidMonth = $now->day === self::MIDMONTH_NUDGE_DAY;
 
-        if (! $this->option('force') && ! $isDeadlineDay && ! $isDayBefore) {
-            $this->info('Not the day-before or deadline day ('.$deadlineDate->toDateString().'). Skipping.');
+        if (! $this->option('force') && ! $isDeadlineDay && ! $isDayBefore && ! $isMidMonth) {
+            $this->info('Not the mid-month ('.self::MIDMONTH_NUDGE_DAY.'th), day-before or deadline day ('.$deadlineDate->toDateString().'). Skipping.');
 
             return self::SUCCESS;
         }
 
-        // Deadline day = urgent "last call" to draft-holders only. Day-before (or a
-        // forced run on any other day) = the full reminder to everyone.
+        // Deadline day = urgent "last call" to draft-holders only. The mid-month nudge is the
+        // early "prepare your claims" reminder. Day-before (or a forced run) = full reminder.
+        // The three days never overlap on the calendar; the deadline window wins if --force
+        // trips more than one.
         $lastCall = $isDeadlineDay && ! $isDayBefore;
+        $midMonth = $isMidMonth && ! $isDeadlineDay && ! $isDayBefore;
 
         $year = $now->year;
         $month = $now->month;
@@ -46,6 +53,7 @@ class ClaimDeadlineReminder extends Command
         $employees = Employee::whereNull('active_until')->with('user')->get();
         $sentDraft = 0;
         $sentNone = 0;
+        $sentMid = 0;
 
         foreach ($employees as $employee) {
             $email = $employee->user->work_email ?? $employee->user->email ?? null;
@@ -59,6 +67,16 @@ class ClaimDeadlineReminder extends Command
                 ->where('item_count', '>', 0)
                 ->orderByDesc('created_at')
                 ->get();
+
+            // Mid-month nudge goes to EVERY active employee regardless of status — a blanket
+            // "prepare your claims" reminder. Draft-holders get their drafts listed; everyone
+            // else gets the general prompt.
+            if ($midMonth) {
+                Mail::to($email)->queue(new ClaimReminderMail($employee, $year, $month, $deadlineStr, 'midmonth', $drafts));
+                $sentMid++;
+
+                continue;
+            }
 
             if ($drafts->isNotEmpty()) {
                 $type = $lastCall ? 'lastcall' : 'draft';
@@ -85,8 +103,8 @@ class ClaimDeadlineReminder extends Command
             }
         }
 
-        $phase = $lastCall ? 'Deadline-day LAST CALL' : 'Day-before';
-        $this->info("{$phase} reminders queued — drafts: {$sentDraft}, no-claim nudges: {$sentNone}.");
+        $phase = $midMonth ? 'Mid-month nudge' : ($lastCall ? 'Deadline-day LAST CALL' : 'Day-before');
+        $this->info("{$phase} reminders queued — drafts: {$sentDraft}, no-claim nudges: {$sentNone}, mid-month: {$sentMid}.");
 
         return self::SUCCESS;
     }

@@ -33,7 +33,39 @@
   <div class="body">
     <div class="greeting">Dear {{ $employee->preferred_name ?? $employee->full_name }},</div>
 
-    @if($type === 'none')
+    @if($type === 'midmonth')
+      @if($drafts->isNotEmpty())
+        <p style="color:#475569;font-size:15px;line-height:1.6;">
+          A quick mid-month reminder — you have <strong>{{ $drafts->count() }}</strong> unsubmitted
+          draft claim{{ $drafts->count() == 1 ? '' : 's' }} for <strong>{{ $period }}</strong>.
+          Please review and submit {{ $drafts->count() == 1 ? 'it' : 'them' }} for your reporting
+          manager's approval before the deadline.
+        </p>
+        <table class="draft-table">
+          <thead><tr><th>Event / claim</th><th>Items</th><th style="text-align:right;">Total</th></tr></thead>
+          <tbody>
+            @foreach($drafts as $d)
+            <tr>
+              <td>{{ $d->event ?: 'Untitled claim' }} <span style="color:#94a3b8;">({{ $d->claim_number }})</span></td>
+              <td>{{ $d->item_count }}</td>
+              <td style="text-align:right;">RM {{ number_format($d->total_with_gst, 2) }}</td>
+            </tr>
+            @endforeach
+          </tbody>
+        </table>
+      @else
+        <p style="color:#475569;font-size:15px;line-height:1.6;">
+          A quick mid-month reminder to file your <strong>{{ $period }}</strong> expense claims.
+          If you have business expenses to claim (mileage, toll, meals, etc.), please submit them
+          in My Claims before the deadline so your manager has time to approve.
+        </p>
+      @endif
+      <div class="info-box">
+        <strong>Submission deadline:</strong> {{ $deadline }}<br><br>
+        Submitting early gives your reporting manager time to approve before the cutoff.
+        Claims submitted after the deadline are processed in the next month's cycle.
+      </div>
+    @elseif($type === 'none')
       <p style="color:#475569;font-size:15px;line-height:1.6;">
         We don't have any expense claim from you for <strong>{{ $period }}</strong> yet.
         If you have business expenses to claim (mileage, toll, meals, etc.), please file them

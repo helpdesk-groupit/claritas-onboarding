@@ -125,10 +125,11 @@ class ClaimRulesServiceTest extends TestCase
         $this->assertEqualsWithDelta(80.0, ClaimRulesService::computeAmount($cat, ['quantity' => 5]), 0.001); // qty ignored
     }
 
-    public function test_deadline_rolls_back_off_weekend(): void
+    public function test_deadline_is_fixed_on_weekend(): void
     {
-        // 20 Jun 2026 is a Saturday → preceding working day = Fri 19 Jun.
-        $this->assertEquals('2026-06-19', ClaimRulesService::submissionDeadline(20, Carbon::create(2026, 6, 1))->toDateString());
+        // Policy: the deadline is ALWAYS the 20th, even on a weekend.
+        // 20 Jun 2026 is a Saturday — it stays the 20th (no roll-back).
+        $this->assertEquals('2026-06-20', ClaimRulesService::submissionDeadline(20, Carbon::create(2026, 6, 1))->toDateString());
     }
 
     public function test_deadline_unchanged_on_weekday(): void
@@ -137,11 +138,12 @@ class ClaimRulesServiceTest extends TestCase
         $this->assertEquals('2026-05-20', ClaimRulesService::submissionDeadline(20, Carbon::create(2026, 5, 1))->toDateString());
     }
 
-    public function test_deadline_rolls_back_off_public_holiday(): void
+    public function test_deadline_is_fixed_on_public_holiday(): void
     {
-        // Force 20 Jul 2026 (a Monday) to be a holiday → rolls back to Fri 17 Jul.
+        // Policy: the deadline is ALWAYS the 20th, even on a public holiday.
+        // 20 Jul 2026 forced to a holiday → still the 20th (no roll-back).
         config(['claims.public_holidays' => ['2026-07-20']]);
-        $this->assertEquals('2026-07-17', ClaimRulesService::submissionDeadline(20, Carbon::create(2026, 7, 1))->toDateString());
+        $this->assertEquals('2026-07-20', ClaimRulesService::submissionDeadline(20, Carbon::create(2026, 7, 1))->toDateString());
     }
 
     /**

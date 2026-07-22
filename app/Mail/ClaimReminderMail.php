@@ -15,8 +15,9 @@ class ClaimReminderMail extends Mailable
     use Queueable, SerializesModels;
 
     /**
-     * $type: 'draft' (has unsubmitted draft claims) or 'none' (no claim this month).
-     * $drafts: the employee's open draft claims (for the 'draft' variant).
+     * $type: 'midmonth' (early 15th nudge), 'draft' (has unsubmitted draft claims, day-before),
+     *        'lastcall' (deadline day, has drafts), or 'none' (no claim this month).
+     * $drafts: the employee's open draft claims (listed for the 'midmonth'/'draft'/'lastcall' variants).
      */
     public function __construct(
         public Employee $employee,
@@ -33,6 +34,7 @@ class ClaimReminderMail extends Mailable
         $subject = match ($this->type) {
             'none' => "No expense claim for {$period}? Submission closes {$this->deadline}",
             'lastcall' => "Last call: submit your {$period} expense claim(s) TODAY ({$this->deadline})",
+            'midmonth' => "Reminder: prepare your {$period} expense claim(s) — deadline {$this->deadline}",
             default => "Reminder: submit your {$period} expense claim(s) by {$this->deadline}",
         };
 
