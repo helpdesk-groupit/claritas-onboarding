@@ -26,6 +26,13 @@ class ClaudeApiUsageLog extends Model
         'claim_item_verify' => 'eClaim — Reviewer Verification',
         'accounting_invoice_scan' => 'Accounting — Invoice Scan',
         'accounting_ai_chat' => 'Accounting — AI Assistant',
+        'strategist_gap_check' => 'Social Strategist — Gap Check',
+        'strategist_market' => 'Social Strategist — Market Intelligence',
+        'strategist_competitor' => 'Social Strategist — Competitor & Leverage',
+        'strategist_compliance' => 'Social Strategist — Compliance Matrix',
+        'strategist_strategy' => 'Social Strategist — Strategy',
+        'strategist_measure' => 'Social Strategist — Roadmap & Measurement',
+        'strategist_handoff' => 'Social Strategist — Executive Summary',
         'api_key_test' => 'Claude API — Key Test',
     ];
 
@@ -61,6 +68,13 @@ class ClaudeApiUsageLog extends Model
         'claim_item_verify' => 'eClaim (Receipt OCR)',
         'accounting_invoice_scan' => 'Accounting (AI)',
         'accounting_ai_chat' => 'Accounting (AI)',
+        'strategist_gap_check' => 'Social Strategist',
+        'strategist_market' => 'Social Strategist',
+        'strategist_competitor' => 'Social Strategist',
+        'strategist_compliance' => 'Social Strategist',
+        'strategist_strategy' => 'Social Strategist',
+        'strategist_measure' => 'Social Strategist',
+        'strategist_handoff' => 'Social Strategist',
         'api_key_test' => 'System / Admin',
     ];
 
@@ -79,6 +93,7 @@ class ClaudeApiUsageLog extends Model
         'eClaim (Receipt OCR)' => '#2a78d6',   // slot 1 — blue
         'Accounting (AI)' => '#008300',        // slot 2 — green
         'System / Admin' => '#e87ba4',         // slot 3 — magenta
+        'Social Strategist' => '#7c3aed',      // slot 4 — violet (matches the module accent)
         'Other' => '#898781',                  // muted grey — the catch-all, never a real slot
     ];
 

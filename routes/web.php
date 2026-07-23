@@ -134,6 +134,37 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
         Route::get('/connections/callback', [\App\Http\Controllers\EmailWorkflowController::class, 'connectCallback'])->name('connections.callback');
     });
 
+    // ── IT: Automation › Social Media AI Strategist ─────────────────────
+    // Controller self-gates (User::canUseSocialStrategist — IT + superadmin +
+    // system_admin + HR managers). Same it.automation.* name prefix so the
+    // sidebar's Automation collapse auto-opens for this module too.
+    Route::prefix('it/automation/social-media-strategist')->name('it.automation.social-media-strategist.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\SocialMediaStrategistController::class, 'index'])->name('index');
+        Route::post('/', [\App\Http\Controllers\SocialMediaStrategistController::class, 'store'])->name('store');
+        Route::get('/{strategy}/edit', [\App\Http\Controllers\SocialMediaStrategistController::class, 'edit'])->name('edit');
+        Route::put('/{strategy}', [\App\Http\Controllers\SocialMediaStrategistController::class, 'update'])->name('update');
+        Route::post('/{strategy}/kb', [\App\Http\Controllers\SocialMediaStrategistController::class, 'saveKb'])->name('kb.save');
+        // Uploads cost storage + run the malware scan — throttled like every other upload route.
+        Route::post('/{strategy}/files', [\App\Http\Controllers\SocialMediaStrategistController::class, 'uploadFile'])
+            ->middleware('throttle:uploads')->name('files.store');
+        Route::delete('/{strategy}/files/{file}', [\App\Http\Controllers\SocialMediaStrategistController::class, 'deleteFile'])->name('files.delete');
+        // Gap check is one live Claude call — throttled, and fits inside the edge timeout.
+        Route::post('/{strategy}/gap-check', [\App\Http\Controllers\SocialMediaStrategistController::class, 'gapCheck'])
+            ->middleware('throttle:6,1')->name('gap-check');
+        Route::post('/{strategy}/gap-answers', [\App\Http\Controllers\SocialMediaStrategistController::class, 'saveGapAnswers'])->name('gap-answers');
+        // Full generation runs 7 AI calls — dispatched to the background queue, not run inline.
+        Route::post('/{strategy}/generate', [\App\Http\Controllers\SocialMediaStrategistController::class, 'generate'])
+            ->middleware('throttle:6,1')->name('generate');
+        Route::post('/{strategy}/retry', [\App\Http\Controllers\SocialMediaStrategistController::class, 'retryGeneration'])
+            ->middleware('throttle:6,1')->name('retry');
+        Route::get('/{strategy}/status', [\App\Http\Controllers\SocialMediaStrategistController::class, 'status'])->name('status');
+        Route::put('/{strategy}/sections/{section}', [\App\Http\Controllers\SocialMediaStrategistController::class, 'updateSection'])->name('sections.update');
+        Route::post('/{strategy}/sections/{section}/regenerate', [\App\Http\Controllers\SocialMediaStrategistController::class, 'regenerateSection'])
+            ->middleware('throttle:12,1')->name('sections.regenerate');
+        Route::get('/{strategy}/export/pdf', [\App\Http\Controllers\SocialMediaStrategistController::class, 'exportPdf'])->name('export.pdf');
+        Route::delete('/{strategy}', [\App\Http\Controllers\SocialMediaStrategistController::class, 'destroy'])->name('destroy');
+    });
+
     // Two-Factor Authentication management
     Route::get('/two-factor/setup', [TwoFactorController::class, 'setup'])->name('two-factor.setup');
     Route::post('/two-factor/confirm', [TwoFactorController::class, 'confirm'])->name('two-factor.confirm');

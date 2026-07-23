@@ -124,6 +124,18 @@ class User extends Authenticatable
         return $this->isHr() || $this->isIt() || $this->isSuperadmin() || $this->isSystemAdmin();
     }
 
+    /**
+     * Who may use the Social Media AI Strategist (IT > Automation). Broadened
+     * past the sibling Email Workflow gate (IT + superadmin/system_admin) to
+     * include HR managers, because strategy work is a management function. This
+     * one helper is the single place to widen access (e.g. a marketing role)
+     * later — the sidebar and the controller both read it.
+     */
+    public function canUseSocialStrategist(): bool
+    {
+        return $this->isIt() || $this->isSuperadmin() || $this->isSystemAdmin() || $this->isHrManager();
+    }
+
     public function canViewOnboarding(): bool
     {
         return in_array($this->role, ['hr_manager', 'hr_executive', 'hr_intern', 'superadmin', 'system_admin']);

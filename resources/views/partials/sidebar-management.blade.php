@@ -5,12 +5,13 @@
 @php
     $u = Auth::user();
     $mCanTask       = $u->isSuperadmin() || $u->isIt();                                   // IT work items
-    $mCanAutomation = $u->isSuperadmin() || $u->isIt();                                   // Email workflow automation
+    $mCanAutomation = $u->isSuperadmin() || $u->isIt();                                   // Email workflow automation (IT-only)
+    $mCanStrategist = $u->canUseSocialStrategist();                                       // Social Media AI Strategist (IT + admins + HR managers)
     $mCanTicket     = $u->canAccessTicketManagement();
     $mCanTeamLeave  = $u->isSuperadmin();                                                 // Team Leave (approver view)
     $mCanTeamClaims = $u->canViewTeamClaims();
     $mCanCompanyReg = $u->isSuperadmin() || $u->isHrManager() || $u->isHrExecutive();
-    $mShow = $mCanTask || $mCanAutomation || $mCanTicket || $mCanTeamLeave || $mCanTeamClaims || $mCanCompanyReg;
+    $mShow = $mCanTask || $mCanAutomation || $mCanStrategist || $mCanTicket || $mCanTeamLeave || $mCanTeamClaims || $mCanCompanyReg;
     $mAutomationOpen = request()->routeIs('it.automation.*');
 @endphp
 @if($mShow)
@@ -26,7 +27,7 @@
 </div>
 @endif
 
-@if($mCanAutomation)
+@if($mCanAutomation || $mCanStrategist)
 <div class="nav-item">
     <a href="#automationMenu" data-bs-toggle="collapse" role="button"
        aria-expanded="{{ $mAutomationOpen ? 'true' : 'false' }}"
@@ -35,11 +36,20 @@
         <i class="bi bi-chevron-down ms-auto" style="font-size:12px;"></i>
     </a>
     <div class="collapse {{ $mAutomationOpen ? 'show' : '' }}" id="automationMenu">
+        @if($mCanAutomation)
         <a href="{{ route('it.automation.email-workflow.index') }}"
            class="nav-link {{ request()->routeIs('it.automation.email-workflow.*') ? 'active' : '' }}"
            style="padding-left:38px;">
             <i class="bi bi-envelope-paper"></i> Email Workflow
         </a>
+        @endif
+        @if($mCanStrategist)
+        <a href="{{ route('it.automation.social-media-strategist.index') }}"
+           class="nav-link {{ request()->routeIs('it.automation.social-media-strategist.*') ? 'active' : '' }}"
+           style="padding-left:38px;">
+            <i class="bi bi-megaphone"></i> Social Media Strategist
+        </a>
+        @endif
     </div>
 </div>
 @endif
