@@ -52,17 +52,19 @@
 
     /* ── Analytics cards (sample-style gradient headers) ───────────────── */
     .analytics-card { border:none; border-radius:14px; overflow:hidden; box-shadow:0 2px 6px rgba(0,0,0,0.08); background:#fff; display:flex; flex-direction:column; }
-    .analytics-card .card-fancy-header { padding:18px 20px; color:#fff; position:relative; overflow:hidden; display:flex; align-items:center; gap:14px; }
+    .analytics-card .card-fancy-header { padding:18px 20px; color:#fff; position:relative; overflow:hidden; display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; }
     .analytics-card .card-fancy-header::before { content:''; position:absolute; right:-30px; top:-50px; width:140px; height:140px; border-radius:50%; background:rgba(255,255,255,0.08); }
     .analytics-card .card-fancy-header::after  { content:''; position:absolute; right:30px; bottom:-50px; width:90px; height:90px; border-radius:50%; background:rgba(255,255,255,0.06); }
     .analytics-card.blue   .card-fancy-header { background:linear-gradient(135deg,#3b82f6,#1e40af); }
     .analytics-card.green  .card-fancy-header { background:linear-gradient(135deg,#10b981,#047857); }
     .analytics-card.orange .card-fancy-header { background:linear-gradient(135deg,#f59e0b,#d97706); }
     .analytics-card .icon-box { width:48px; height:48px; border-radius:12px; background:rgba(255,255,255,0.18); display:flex; align-items:center; justify-content:center; font-size:22px; flex-shrink:0; position:relative; z-index:1; }
-    .analytics-card .header-meta { flex:1; min-width:0; position:relative; z-index:1; }
+    .analytics-card .header-meta { flex:1 1 auto; min-width:100px; position:relative; z-index:1; }
     .analytics-card .number { font-size:28px; font-weight:700; line-height:1.05; }
-    .analytics-card .subtitle { font-size:12px; opacity:0.9; line-height:1.2; }
-    .analytics-card .filter-select { min-width:130px; max-width:160px; font-size:12px; background:rgba(255,255,255,0.95); color:#1e293b; border:none; border-radius:8px; padding:5px 10px; position:relative; z-index:1; }
+    .analytics-card .subtitle { font-size:12px; opacity:0.9; line-height:1.2; white-space:nowrap; }
+    /* Filter stays inline on the right when there's room; when the card gets narrow it wraps
+       onto its own row beneath the "Active Tickets" text instead of crushing it letter-by-letter. */
+    .analytics-card .filter-select { flex:0 0 auto; min-width:130px; max-width:100%; font-size:12px; background:rgba(255,255,255,0.95); color:#1e293b; border:none; border-radius:8px; padding:5px 10px; position:relative; z-index:1; }
     .analytics-card .body-section { padding:14px 18px; flex:1; overflow-y:auto; max-height:320px; }
     .analytics-card .body-label { font-size:10px; text-transform:uppercase; color:#94a3b8; letter-spacing:1.2px; margin-bottom:6px; font-weight:700; }
     .analytics-card .item-row { display:flex; align-items:center; justify-content:space-between; padding:9px 4px; border-bottom:1px solid #f1f5f9; gap:10px; }
