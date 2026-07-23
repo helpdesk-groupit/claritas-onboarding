@@ -125,15 +125,42 @@ class User extends Authenticatable
     }
 
     /**
-     * Who may use the Social Media AI Strategist (IT > Automation). Broadened
-     * past the sibling Email Workflow gate (IT + superadmin/system_admin) to
-     * include HR managers, because strategy work is a management function. This
-     * one helper is the single place to widen access (e.g. a marketing role)
-     * later — the sidebar and the controller both read it.
+     * Creative / GTM departments (employees.department) whose members may use the
+     * Social Media AI Strategist, in addition to the admin roles below. Operations
+     * / finance / kitchen etc. are deliberately excluded. "Video" is listed for
+     * forward-compat — there is no such department in the data yet, so it matches
+     * nobody today; video staff currently sit under Production/Media.
+     */
+    public const SOCIAL_STRATEGIST_DEPARTMENTS = [
+        'Digital', 'Projects', 'Marketing', 'Sales', 'Production',
+        'Media', 'KOL', 'Content', 'Design', 'Video',
+    ];
+
+    /**
+     * Who may use the Social Media AI Strategist (IT > Automation). The admin
+     * roles (IT, superadmin, system_admin, HR manager) always qualify; beyond
+     * them, any active employee in one of SOCIAL_STRATEGIST_DEPARTMENTS. This one
+     * helper is the single place access is decided — the sidebar and the
+     * controller both read it.
      */
     public function canUseSocialStrategist(): bool
     {
-        return $this->isIt() || $this->isSuperadmin() || $this->isSystemAdmin() || $this->isHrManager();
+        if ($this->isIt() || $this->isSuperadmin() || $this->isSystemAdmin() || $this->isHrManager()) {
+            return true;
+        }
+
+        // employees.department is free-text — match case-insensitively so a stray
+        // casing difference doesn't silently lock a whole team out.
+        $dept = trim((string) ($this->employee?->department ?? ''));
+        if ($dept === '') {
+            return false;
+        }
+
+        return in_array(
+            mb_strtolower($dept),
+            array_map('mb_strtolower', self::SOCIAL_STRATEGIST_DEPARTMENTS),
+            true
+        );
     }
 
     public function canViewOnboarding(): bool

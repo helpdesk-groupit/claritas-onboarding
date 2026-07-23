@@ -68,6 +68,26 @@ class SocialMediaStrategistTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_employee_in_a_creative_department_can_view_the_list(): void
+    {
+        $user = User::factory()->withTwoFactor()->create(['role' => 'employee']);
+        \App\Models\Employee::factory()->withUser($user)->create(['department' => 'Content']);
+
+        $this->actingAs($user)
+            ->get(route('it.automation.social-media-strategist.index'))
+            ->assertOk();
+    }
+
+    public function test_employee_in_a_non_listed_department_is_forbidden(): void
+    {
+        $user = User::factory()->withTwoFactor()->create(['role' => 'employee']);
+        \App\Models\Employee::factory()->withUser($user)->create(['department' => 'Finance']);
+
+        $this->actingAs($user)
+            ->get(route('it.automation.social-media-strategist.index'))
+            ->assertForbidden();
+    }
+
     public function test_hr_manager_and_it_manager_can_view_the_list(): void
     {
         foreach ([User::factory()->hrManager(), User::factory()->itManager()] as $factory) {
