@@ -325,12 +325,13 @@ class ExpenseClaimController extends Controller
         // Amount: fixed-subsidy = flat rate; mileage = km × vehicle rate (server-authoritative);
         // everything else uses the entered amount.
         $isMileageCat = $category->isMileageClaim();
+        $isCapped = ClaimRulesService::effectiveLimit($category, $employee) !== null;
         $gst = (float) ($validated['gst_amount'] ?? 0);
         $quantity = null;
         $unit = null;
         $rateApplied = null;
         $mileageDest = null;
-        if ($category->isFixed()) {
+        if ($category->isFixed() && ! $isCapped) {
             $amount = (float) ($category->rate_amount ?? 0);
             $gst = 0;
         } elseif ($isMileageCat) {
@@ -348,6 +349,22 @@ class ExpenseClaimController extends Controller
             $gst = 0;
             $unit = 'km';
             $mileageDest = $request->input('c_itemdesc') ? mb_substr(strip_tags((string) $request->input('c_itemdesc')), 0, 255) : null;
+        } elseif ($isCapped) {
+            // Capped category (intern Medical, Optical & Dental, Support Allowance, Season parking):
+            // the claimable is min(receipt total, remaining cap) — NOT a user-typed figure. Read the
+            // OCR-captured receipt total (c_total); if OCR read nothing (it fails open) fall back to
+            // the typed amount. Either way capAdjust below caps it to the remaining allowance, so the
+            // stored amount is min(receipt, remaining). SST is folded into the receipt total.
+            $receiptTotal = $request->input('c_total');
+            if (is_numeric($receiptTotal) && (float) $receiptTotal > 0) {
+                $amount = (float) $receiptTotal;
+            } else {
+                $amount = isset($validated['amount']) ? (float) $validated['amount'] : null;
+                if ($amount === null || $amount <= 0) {
+                    return response()->json(['ok' => false, 'errors' => ['amount' => 'Enter the amount for this item.']], 422);
+                }
+            }
+            $gst = 0;
         } else {
             $amount = isset($validated['amount']) ? (float) $validated['amount'] : null;
             if ($amount === null || $amount <= 0) {
@@ -566,12 +583,13 @@ class ExpenseClaimController extends Controller
         }
 
         $isMileageCat = $category->isMileageClaim();
+        $isCapped = ClaimRulesService::effectiveLimit($category, $employee) !== null;
         $gst = (float) ($validated['gst_amount'] ?? 0);
         $quantity = null;
         $unit = null;
         $rateApplied = null;
         $mileageDest = null;
-        if ($category->isFixed()) {
+        if ($category->isFixed() && ! $isCapped) {
             $amount = (float) ($category->rate_amount ?? 0);
             $gst = 0;
         } elseif ($isMileageCat) {
@@ -589,6 +607,22 @@ class ExpenseClaimController extends Controller
             $gst = 0;
             $unit = 'km';
             $mileageDest = $request->input('c_itemdesc') ? mb_substr(strip_tags((string) $request->input('c_itemdesc')), 0, 255) : null;
+        } elseif ($isCapped) {
+            // Capped category (intern Medical, Optical & Dental, Support Allowance, Season parking):
+            // the claimable is min(receipt total, remaining cap) — NOT a user-typed figure. Read the
+            // OCR-captured receipt total (c_total); if OCR read nothing (it fails open) fall back to
+            // the typed amount. Either way capAdjust below caps it to the remaining allowance, so the
+            // stored amount is min(receipt, remaining). SST is folded into the receipt total.
+            $receiptTotal = $request->input('c_total');
+            if (is_numeric($receiptTotal) && (float) $receiptTotal > 0) {
+                $amount = (float) $receiptTotal;
+            } else {
+                $amount = isset($validated['amount']) ? (float) $validated['amount'] : null;
+                if ($amount === null || $amount <= 0) {
+                    return response()->json(['ok' => false, 'errors' => ['amount' => 'Enter the amount for this item.']], 422);
+                }
+            }
+            $gst = 0;
         } else {
             $amount = isset($validated['amount']) ? (float) $validated['amount'] : null;
             if ($amount === null || $amount <= 0) {

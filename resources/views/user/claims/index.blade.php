@@ -756,9 +756,9 @@
             hint.className = 'cc-cap-hint small fw-semibold ' + (remaining <= 0 ? 'text-danger' : 'text-success');
             hint.innerHTML = remaining <= 0
                 ? '<i class="bi bi-exclamation-triangle me-1"></i>RM ' + fmt(info.limit) + ' ' + info.period + ' ' + info.name + ' allowance fully used this period.'
-                : '<i class="bi bi-wallet2 me-1"></i>RM ' + fmt(remaining) + ' of your RM ' + fmt(info.limit) + ' ' + info.period + ' ' + info.name + ' allowance is left — a bigger receipt is auto-capped to this.';
+                : '<i class="bi bi-wallet2 me-1"></i>RM ' + fmt(remaining) + ' of your RM ' + fmt(info.limit) + ' ' + info.period + ' ' + info.name + ' allowance is left — the amount is read from your receipt, capped at this.';
         }
-        // Auto-cap only editable amounts (skip fixed categories); leave a fully-used category
+        // Auto-cap only editable amounts (skip fixed/locked ones); leave a fully-used category
         // for the server to block with its proper message.
         if (amountEl.readOnly || remaining <= 0) return;
         let a = parseFloat(amountEl.value) || 0, g = parseFloat(gstEl.value) || 0;
@@ -769,6 +769,27 @@
             gstEl.value = g.toFixed(2);
             totalEl.value = (a + g).toFixed(2);
         }
+    }
+    // Capped category: the claim amount is NOT typed — it is min(receipt total, remaining cap)
+    // and LOCKED (read-only) once OCR has read a receipt total. If no receipt total is available
+    // yet (OCR off / failed / not scanned), the field stays editable (still cap-enforced by the
+    // server) so a claim is never blocked. SST is folded into the receipt total for capped cats.
+    function refreshCappedAmount(c) {
+        const cat = q(c,'.cc-i-cat'), opt = (cat && cat.value) ? cat.selectedOptions[0] : null;
+        const info = opt ? CAP_INFO[opt.value] : null;
+        if (!info) return false; // not a capped category — leave to normal handling
+        const amount = q(c,'.cc-i-amount'), gst = q(c,'.cc-i-gst');
+        gst.value = '0'; gst.readOnly = true;
+        const receiptTotal = parseFloat(q(c,'.cc-c-total').value);
+        if (receiptTotal > 0) {
+            const remaining = Math.max(0, Number(info.remaining));
+            amount.value = Math.min(receiptTotal, remaining).toFixed(2);
+            amount.readOnly = true;   // locked — derived from the receipt + cap
+        } else {
+            amount.readOnly = false;  // OCR gave nothing → editable fallback (server still caps)
+        }
+        syncTotal(c);
+        return true;
     }
     function normalizeDate(s) {
         s = String(s || '').trim();
@@ -1076,6 +1097,9 @@
                     // Capture Category C (read-only receipt details) into the fields below.
                     setC(c, { company: d.vendor, itemdesc: d.item_description, date: d.date, paidby: d.paid_by, total: d.amount });
                     applyReceiptCheck(c); // re-check now that the receipt total is captured
+                    // Capped categories: now that the receipt total is known, LOCK the amount to
+                    // min(receipt, remaining cap). No-op for non-capped categories.
+                    refreshCappedAmount(c);
                     if (okDate) checkItemDateMonth(c); // surface a wrong-month receipt immediately
                     // No detailed "extracted" line for receipts — the Category C fields show it.
                 }
@@ -1705,6 +1729,12 @@
                 // may claim less (soft warning); claiming more than the calculated figure is blocked.
                 amount.readOnly = false; gst.value = '0'; gst.readOnly = true;
                 computeMileage(c);
+            } else if (opt && CAP_INFO[opt.value]) {
+                // Capped category (Medical, Optical & Dental, Support Allowance, Season parking):
+                // amount = min(receipt, cap), locked once OCR reads a receipt total; editable
+                // fallback until then. Wins over 'fixed' so season parking is min(receipt, RM80).
+                const cw = c.querySelector('.cc-c-calc-wrap'); if (cw) cw.classList.add('d-none');
+                refreshCappedAmount(c);
             } else if (opt && opt.dataset.rateType === 'fixed') {
                 amount.value = parseFloat(opt.dataset.rateAmount || 0).toFixed(2); amount.readOnly = true;
                 gst.value = '0'; gst.readOnly = true;
