@@ -101,7 +101,9 @@ DOCTRINE;
                 .'Return ONLY JSON: {"factbase":"...","gaps":[{"q":"...","why":"...","suggestion":"..."}]} — max 8 gaps, most critical first.',
         ]]);
 
-        $res = $this->callClaude($content, false, 'strategist_gap_check', 2500);
+        // Generous budget: a factbase + up to 8 gaps over several uploaded decks
+        // can be long, and truncating (stop_reason=max_tokens) breaks the JSON.
+        $res = $this->callClaude($content, false, 'strategist_gap_check', 6000);
         $j = $this->parseJson($res['text']);
 
         $gaps = array_slice($j['gaps'] ?? [], 0, 8);
@@ -139,7 +141,7 @@ DOCTRINE;
             ."SECTIONS ALREADY WRITTEN (stay consistent, don't repeat):\n".mb_substr($accumulated, -6000)."\n\n"
             .$prompt;
 
-        $res = $this->callClaude([['type' => 'text', 'text' => $userText]], $useSearch, 'strategist_'.$key, 3000);
+        $res = $this->callClaude([['type' => 'text', 'text' => $userText]], $useSearch, 'strategist_'.$key, 6000);
         $j = $this->parseJson($res['text']);
 
         return [
@@ -197,6 +199,16 @@ DOCTRINE;
             'model' => $model,
             'max_tokens' => $maxTokens,
             'system' => self::DOCTRINE,
+            // Disable extended thinking. Claude 5-family models (Sonnet 5 etc.)
+            // think on complex prompts by default, and on a large PDF-laden
+            // gap check that burned the ENTIRE token budget inside a `thinking`
+            // block — the response came back stop_reason=max_tokens with no text
+            // block at all, so the "join only text blocks" step got nothing and
+            // threw "Claude returned no text content". Disabling thinking also
+            // keeps the synchronous gap check well under the ~100s edge timeout
+            // (measured 28s vs 87s with thinking on). The doctrine + structured
+            // prompts carry quality without it.
+            'thinking' => ['type' => 'disabled'],
             'messages' => [['role' => 'user', 'content' => $content]],
         ];
 
