@@ -226,6 +226,34 @@ class SocialMediaStrategistTest extends TestCase
         $this->assertCount(1, $strategy->gaps_json);
     }
 
+    public function test_gap_check_recovers_gaps_returned_as_a_json_string(): void
+    {
+        $this->activateClaude();
+        $user = User::factory()->itManager()->withTwoFactor()->create();
+        $strategy = SocialStrategy::create([
+            'created_by' => $user->id, 'name' => 'Aria', 'status' => 'draft', 'wizard_step' => 6,
+            'intake_json' => $this->completeIntake(), 'use_web_search' => false,
+        ]);
+
+        // Forced tool output is best-effort: Anthropic sometimes returns `gaps`
+        // as a JSON STRING instead of an array (this crashed array_slice live).
+        Http::fake([
+            'api.anthropic.com/*' => $this->toolUseResponse('emit_gap_check', [
+                'factbase' => '- Aria sells facials',
+                'gaps' => json_encode([['q' => 'Ticket size?', 'why' => 'sizing', 'suggestion' => 'RM 800']]),
+            ]),
+        ]);
+
+        $this->actingAs($user)
+            ->postJson(route('it.automation.social-media-strategist.gap-check', $strategy->id))
+            ->assertOk()
+            ->assertJson(['ok' => true]);
+
+        $strategy->refresh();
+        $this->assertCount(1, $strategy->gaps_json);
+        $this->assertSame('Ticket size?', $strategy->gaps_json[0]['q']);
+    }
+
     public function test_gap_check_is_blocked_until_the_intake_is_complete(): void
     {
         $this->activateClaude();

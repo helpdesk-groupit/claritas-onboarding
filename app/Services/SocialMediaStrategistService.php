@@ -139,14 +139,33 @@ DOCTRINE;
         // rich decks). 6000 is generous headroom for the length-capped result.
         $j = $this->callClaudeStructured($content, self::GAP_SCHEMA, 'emit_gap_check', false, 'strategist_gap_check', 6000)['data'];
 
-        $gaps = array_slice($j['gaps'] ?? [], 0, 8);
+        // Tool schemas are best-effort, not strictly enforced: the model
+        // occasionally hands back `gaps` as a JSON STRING rather than an array
+        // (crashed array_slice), and could do the same for `factbase`. Normalise
+        // both so a schema slip degrades gracefully instead of erroring.
+        $factbase = $this->stringField($j['factbase'] ?? '');
+        $gaps = [];
+        foreach ($this->arrayField($j['gaps'] ?? []) as $g) {
+            if (! is_array($g)) {
+                continue;
+            }
+            $gaps[] = [
+                'q' => $this->stringField($g['q'] ?? ''),
+                'why' => $this->stringField($g['why'] ?? ''),
+                'suggestion' => $this->stringField($g['suggestion'] ?? ''),
+            ];
+            if (count($gaps) >= 8) {
+                break;
+            }
+        }
+
         $strategy->forceFill([
-            'factbase' => (string) ($j['factbase'] ?? ''),
-            'gaps_json' => array_values($gaps),
+            'factbase' => $factbase,
+            'gaps_json' => $gaps,
             'gap_answers_json' => [],
         ])->save();
 
-        return ['factbase' => (string) $strategy->factbase, 'gaps' => array_values($gaps)];
+        return ['factbase' => $factbase, 'gaps' => $gaps];
     }
 
     // ── Generate one section (one call) ──────────────────────────────────
@@ -180,8 +199,8 @@ DOCTRINE;
         $j = $res['data'];
 
         return [
-            'title' => (string) ($j['section'] ?? (SocialStrategy::SECTIONS[$key]['label'] ?? ucfirst($key))),
-            'content' => (string) ($j['content'] ?? ''),
+            'title' => $this->stringField($j['section'] ?? '') ?: (SocialStrategy::SECTIONS[$key]['label'] ?? ucfirst($key)),
+            'content' => $this->stringField($j['content'] ?? ''),
             // Only claim LIVE-SOURCED when search was requested AND actually ran
             // (a search-tool failure silently falls back to no-search).
             'live' => $useSearch && $res['searched'],
@@ -396,6 +415,42 @@ DOCTRINE;
         }
 
         throw new \RuntimeException('The AI response was not valid JSON.');
+    }
+
+    /** Coerce a tool-output field to a string (arrays → newline-joined or JSON). */
+    private function stringField(mixed $v): string
+    {
+        if (is_string($v)) {
+            return $v;
+        }
+        if (is_scalar($v)) {
+            return (string) $v;
+        }
+        if (is_array($v)) {
+            $scalars = array_filter($v, 'is_scalar');
+            if ($v !== [] && count($scalars) === count($v)) {
+                return implode("\n", array_map('strval', $v));
+            }
+
+            return json_encode($v) ?: '';
+        }
+
+        return '';
+    }
+
+    /** Coerce a tool-output field to an array (a JSON-string array → decoded). */
+    private function arrayField(mixed $v): array
+    {
+        if (is_array($v)) {
+            return $v;
+        }
+        if (is_string($v)) {
+            $decoded = json_decode($v, true);
+
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        return [];
     }
 
     // ── Prompt-context builders (ported from the artifact) ───────────────
