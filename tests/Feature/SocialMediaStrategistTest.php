@@ -175,6 +175,20 @@ class SocialMediaStrategistTest extends TestCase
         $this->assertSame(['section' => 'X', 'content' => 'Y'], $out);
     }
 
+    public function test_parse_json_repairs_raw_control_characters(): void
+    {
+        $svc = new SocialMediaStrategistService(null, null);
+        // Raw newline + tab inside a string value — json_decode rejects this with
+        // a "control character" error; the repair pass must recover it (this is
+        // the exact defect that broke the live gap check on rich inputs).
+        $raw = "{\"factbase\":\"line one\nline two\tindented\",\"gaps\":[]}";
+        $out = $svc->parseJson($raw);
+        $this->assertArrayHasKey('factbase', $out);
+        $this->assertSame([], $out['gaps']);
+        $this->assertStringContainsString('line one', $out['factbase']);
+        $this->assertStringContainsString('line two', $out['factbase']);
+    }
+
     // ── Gap check ────────────────────────────────────────────────────────
     public function test_gap_check_persists_the_factbase_and_gaps(): void
     {

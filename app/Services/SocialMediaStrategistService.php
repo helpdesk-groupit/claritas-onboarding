@@ -105,8 +105,7 @@ DOCTRINE;
         // decks was running to 6000+ tokens and truncating into invalid JSON, and
         // a bigger budget would exceed the ~100s edge timeout for this synchronous
         // call). 6000 is now generous headroom for the capped response.
-        $res = $this->callClaude($content, false, 'strategist_gap_check', 6000);
-        $j = $this->parseJson($res['text']);
+        $j = $this->callClaudeJson($content, false, 'strategist_gap_check', 6000)['data'];
 
         $gaps = array_slice($j['gaps'] ?? [], 0, 8);
         $strategy->forceFill([
@@ -143,15 +142,17 @@ DOCTRINE;
             ."SECTIONS ALREADY WRITTEN (stay consistent, don't repeat):\n".mb_substr($accumulated, -6000)."\n\n"
             .$prompt;
 
-        $res = $this->callClaude([['type' => 'text', 'text' => $userText]], $useSearch, 'strategist_'.$key, 6000);
-        $j = $this->parseJson($res['text']);
+        // Sections run in the background job (no edge limit), so allow an extra
+        // parse re-roll before giving up on a section.
+        $res = $this->callClaudeJson([['type' => 'text', 'text' => $userText]], $useSearch, 'strategist_'.$key, 6000, 3);
+        $j = $res['data'];
 
         return [
             'title' => (string) ($j['section'] ?? (SocialStrategy::SECTIONS[$key]['label'] ?? ucfirst($key))),
             'content' => (string) ($j['content'] ?? ''),
             // Only claim LIVE-SOURCED when search was requested AND actually ran
             // (a search-tool failure silently falls back to no-search).
-            'live' => $useSearch && ($res['searched'] ?? false),
+            'live' => $useSearch && $res['searched'],
         ];
     }
 
@@ -273,12 +274,51 @@ DOCTRINE;
             throw new \RuntimeException('No JSON object found in the AI response.');
         }
 
-        $data = json_decode(substr($clean, $start, $end - $start + 1), true);
-        if (! is_array($data)) {
-            throw new \RuntimeException('The AI response was not valid JSON.');
+        $json = substr($clean, $start, $end - $start + 1);
+
+        $data = json_decode($json, true);
+        if (is_array($data)) {
+            return $data;
         }
 
-        return $data;
+        // Repair pass: Claude often emits raw newlines/tabs INSIDE string values
+        // (e.g. a bulleted factbase), which json_decode rejects with a "control
+        // character" error. Replacing ASCII control bytes with spaces fixes those
+        // strings without touching structure (whitespace between JSON tokens is
+        // insignificant). Note: 0x00-0x1F are only ever ASCII controls — UTF-8
+        // continuation/lead bytes are 0x80+, so multibyte text is untouched.
+        $data = json_decode(preg_replace('/[\x00-\x1F]+/', ' ', $json), true);
+        if (is_array($data)) {
+            return $data;
+        }
+
+        throw new \RuntimeException('The AI response was not valid JSON.');
+    }
+
+    /**
+     * callClaude + parseJson with a re-roll on parse failure.
+     *
+     * Model JSON is non-deterministic — an unescaped quote or stray token slips
+     * through the repair pass occasionally. Re-calling the model almost always
+     * yields clean JSON. Bounded so the synchronous gap check stays under the
+     * ~100s edge timeout (2 tries ≈ 2×~30s worst case).
+     *
+     * @return array{data:array<string,mixed>, searched:bool}
+     */
+    private function callClaudeJson(array $content, bool $useSearch, string $feature, int $maxTokens, int $parseTries = 2): array
+    {
+        $lastError = null;
+
+        for ($i = 0; $i < $parseTries; $i++) {
+            $res = $this->callClaude($content, $useSearch, $feature, $maxTokens);
+            try {
+                return ['data' => $this->parseJson($res['text']), 'searched' => $res['searched'] ?? false];
+            } catch (\Throwable $e) {
+                $lastError = $e;
+            }
+        }
+
+        throw $lastError ?? new \RuntimeException('The AI response was not valid JSON.');
     }
 
     // ── Prompt-context builders (ported from the artifact) ───────────────
