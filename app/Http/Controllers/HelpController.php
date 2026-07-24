@@ -18,6 +18,7 @@ namespace App\Http\Controllers;
  *   GET /help/my-claims            → claims()
  *   GET /help/team-claims          → teamClaims()
  *   GET /help/hr-claims            → hrClaims()
+ *   GET /help/claim-reports        → claimReports()
  */
 class HelpController extends Controller
 {
@@ -49,5 +50,10 @@ class HelpController extends Controller
     public function hrClaims()
     {
         return view('help.hr-claims');
+    }
+
+    public function claimReports()
+    {
+        return view('help.claim-reports');
     }
 }

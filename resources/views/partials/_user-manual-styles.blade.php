@@ -178,6 +178,17 @@
     .um-cat-pill { background: #e2e3e5; color: #3f464b; border-radius: 999px; padding: 1px 7px; font-size: 9px; font-weight: 600; white-space: nowrap; }
     [data-theme="dark"] .um-cat-pill { background: #334155; color: #e2e8f0; }
 
+    /* Reviewer check chips — mirror partials/claim-item-checks.blade.php (HR detail page) */
+    .um-chk { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 2px 8px; font-size: 9.5px; font-weight: 600; margin: 0 4px 4px 0; white-space: nowrap; }
+    .um-chk i { font-size: 9px; }
+    .um-chk-ok     { background: #d1e7dd; color: #0a3622; }            /* bg-success-subtle text-success-emphasis */
+    .um-chk-warn   { background: #fff3cd; color: #664d03; }            /* bg-warning-subtle text-warning-emphasis */
+    .um-chk-dup    { background: #dc3545; color: #fff; }               /* bg-danger text-white */
+    .um-chk-verify { background: #fff; border: 1px solid #6edff6; color: #087990; }  /* btn-outline-info */
+    [data-theme="dark"] .um-chk-ok     { background: #0f3d2e; color: #a7f3d0; }
+    [data-theme="dark"] .um-chk-warn   { background: #422006; color: #fcd34d; }
+    [data-theme="dark"] .um-chk-verify { background: #1e293b; border-color: #0e7490; color: #67e8f9; }
+
     /* Dark theme — form/banner/modal/items */
     [data-theme="dark"] .um-fmock { background: #1e293b; border-color: #475569; color: #e2e8f0; }
     [data-theme="dark"] .um-fmock.is-ro { background: #0f172a; color: #cbd5e1; }

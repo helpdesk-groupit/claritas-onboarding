@@ -74,7 +74,12 @@
 
     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-1">
         <h5 class="mb-0"><i class="bi bi-file-earmark-spreadsheet me-2 text-primary"></i>Claim Reports</h5>
-        <span class="badge bg-primary-subtle text-primary-emphasis">Grand total: {{ $rm($grandTotal) }}</span>
+        <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-primary-subtle text-primary-emphasis">Grand total: {{ $rm($grandTotal) }}</span>
+            <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal" data-bs-target="#userManualClaimReportsModal">
+                <i class="bi bi-book me-1"></i>User Manual
+            </button>
+        </div>
     </div>
     <p class="text-muted small mb-3">
         <i class="bi bi-shield-check me-1"></i>Only claims <strong>approved by both the Manager/PIC and HR</strong> are shown here — ready for posting into the accounting system.
@@ -240,4 +245,6 @@
     @endif
 
 </div>
+
+@include('partials._user-manual-claimreports')
 @endsection
