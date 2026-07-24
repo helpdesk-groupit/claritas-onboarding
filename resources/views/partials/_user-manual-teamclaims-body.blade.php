@@ -12,7 +12,7 @@
     </p>
     <div class="um-tip">
         <i class="bi bi-diagram-2"></i>You're the <strong>first</strong> of two approvals. After you
-        approve, the claim goes to <strong>HR</strong> for the final sign-off and payout.
+        approve, the claim goes to <strong>HR</strong> for the final sign-off.
     </div>
     <div class="um-tip">
         <i class="bi bi-person-check"></i>You only see claims routed to <strong>you</strong>. Your own
@@ -355,7 +355,7 @@
                 <tr><td><span class="badge bg-success">Manager Approved</span></td><td>You approved it. Now with HR.</td></tr>
                 <tr><td><span class="badge bg-danger">Manager Rejected</span></td><td>You sent it back.</td></tr>
                 <tr><td><span class="badge bg-warning text-dark">Pending HR</span></td><td>With HR for final approval.</td></tr>
-                <tr><td><span class="badge bg-success">HR Approved</span></td><td>Fully approved — heading for payout.</td></tr>
+                <tr><td><span class="badge bg-success">HR Approved</span></td><td>Fully approved — the final step in the system.</td></tr>
                 <tr><td><span class="badge bg-danger">HR Rejected</span></td><td>HR sent it back to the employee. Shown to you for information.</td></tr>
                 <tr><td><span class="badge bg-warning text-dark">Reversed</span></td><td>HR un-approved a claim that had already been approved.</td></tr>
                 <tr><td><span class="badge bg-primary">Resubmitted</span></td><td>This claim is a correction of an earlier one.</td></tr>
@@ -380,7 +380,7 @@
     </ol>
     <div class="um-warn">
         <i class="bi bi-clock-history"></i>Claims must be <strong>manager-approved by the 20th</strong> to
-        make that month's payout run. Sitting on an approval pushes your team member's money to the next
+        make that month's cycle. Sitting on an approval pushes your team member's claim to the next
         cycle — you'll get reminder emails as the cutoff nears.
     </div>
 </div>

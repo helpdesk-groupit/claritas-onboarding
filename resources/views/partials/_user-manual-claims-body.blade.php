@@ -8,7 +8,7 @@
     <p>
         <strong>My Expense Claims</strong> is where you file the money you spent for work and get it
         reimbursed. You build a claim, attach your receipts, and send it to your manager for approval —
-        it then goes to HR for the final approval and payout.
+        it then goes to HR for the final approval.
     </p>
     <div class="um-tip">
         <i class="bi bi-lightbulb"></i><strong>The one rule to remember:</strong> file
@@ -516,7 +516,7 @@
         <span class="um-node">Pending Manager</span><i class="bi bi-arrow-right"></i>
         <span class="um-node">Manager Approved</span><i class="bi bi-arrow-right"></i>
         <span class="um-node">Pending HR</span><i class="bi bi-arrow-right"></i>
-        <span class="um-node is-end">HR Approved → Paid</span>
+        <span class="um-node is-end">HR Approved</span>
     </div>
     <p>A submitted claim shows <strong>two</strong> badges — the manager stage and the HR stage:</p>
     <div class="um-table-wrap">
@@ -527,7 +527,7 @@
                 <tr><td><span class="badge bg-warning text-dark">Pending Manager</span></td><td>Waiting for your approving manager.</td></tr>
                 <tr><td><span class="badge bg-success">Manager Approved</span></td><td>Your manager signed off. Now with HR.</td></tr>
                 <tr><td><span class="badge bg-warning text-dark">Pending HR</span></td><td>Waiting for HR's final approval.</td></tr>
-                <tr><td><span class="badge bg-success">HR Approved</span></td><td>Fully approved — heading for payout.</td></tr>
+                <tr><td><span class="badge bg-success">HR Approved</span></td><td>Fully approved — the final step in the system.</td></tr>
                 <tr><td><span class="badge bg-danger">Manager Rejected</span></td><td>Sent back by your manager. You can correct it.</td></tr>
                 <tr><td><span class="badge bg-danger">HR Rejected</span></td><td>Sent back by HR. You can correct it.</td></tr>
                 <tr><td><span class="badge bg-warning text-dark">Reversed</span></td><td>HR un-approved a claim that had been approved. You can correct it.</td></tr>

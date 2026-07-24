@@ -160,7 +160,7 @@
         <table class="um-table">
             <thead><tr><th>Claim state</th><th>Shown here?</th></tr></thead>
             <tbody>
-                <tr><td><span class="badge bg-success">HR Approved</span> / <span class="badge bg-success">Paid</span></td><td><i class="bi bi-check-circle-fill text-success"></i> Yes — fully approved, ready to post.</td></tr>
+                <tr><td><span class="badge bg-success">HR Approved</span></td><td><i class="bi bi-check-circle-fill text-success"></i> Yes — fully approved, ready to post.</td></tr>
                 <tr><td><span class="badge bg-secondary">Draft</span> · <span class="badge bg-warning text-dark">Pending Manager</span> · <span class="badge bg-warning text-dark">Pending HR</span></td><td><i class="bi bi-x-circle text-muted"></i> No — not fully approved yet.</td></tr>
                 <tr><td><span class="badge bg-success">Manager Approved</span> only</td><td><i class="bi bi-x-circle text-muted"></i> No — still needs HR's sign-off.</td></tr>
                 <tr><td><span class="badge bg-danger">Rejected</span> · <span class="badge bg-warning text-dark">Reversed</span></td><td><i class="bi bi-x-circle text-muted"></i> No — sent back to the employee.</td></tr>

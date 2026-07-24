@@ -7,7 +7,7 @@
     <div class="um-section-title"><i class="bi bi-info-circle"></i> What this page is for</div>
     <p>
         <strong>Expense Claims</strong> is HR's final approval desk. Claims arrive here <em>after</em> the
-        employee's manager has approved them. You do the last check, approve them for payout, and export
+        employee's manager has approved them. You do the last check, approve them, and export
         the approved forms for Finance.
     </p>
     <div class="um-tip">
@@ -17,7 +17,7 @@
     <div class="um-flow">
         <span class="um-node">Manager Approved</span><i class="bi bi-arrow-right"></i>
         <span class="um-node">Pending HR — you are here</span><i class="bi bi-arrow-right"></i>
-        <span class="um-node is-end">HR Approved → Paid</span>
+        <span class="um-node is-end">HR Approved</span>
     </div>
 </div>
 
@@ -200,10 +200,10 @@
     <ol class="um-step-list">
         <li>Work through the checks and the report — receipts, amounts, categories, caps, duplicates.</li>
         <li>Click <strong>HR Approve</strong> (only shown while the claim is <em>Manager Approved</em>).</li>
-        <li>Confirm <em>“HR approve this entire claim for payout?”</em>.</li>
+        <li>Confirm the prompt to HR-approve the whole claim.</li>
     </ol>
     <p style="font-size:13px;color:#475569;">
-        The claim becomes <strong>HR Approved</strong> and is ready for payout — and from that moment it's
+        The claim becomes <strong>HR Approved</strong> — and from that moment it's
         included in the <strong>Approved PDFs (ZIP)</strong> export.
     </p>
 </div>
@@ -292,8 +292,8 @@
         <div><span class="um-fname">It leaves the export</span><span class="um-fdesc">A reversed claim <strong>drops out of the Approved PDFs (ZIP)</strong>, so Finance won't pay it.</span></div>
     </div>
     <div class="um-warn">
-        <i class="bi bi-cash-stack"></i><strong>Check whether it's already been paid.</strong> Reversing
-        doesn't claw money back — if the payout has run, sort that out with Finance/payroll separately.
+        <i class="bi bi-cash-stack"></i><strong>Reversing only un-approves the claim in the system.</strong>
+        It doesn't recover any money — if the reimbursement was already settled outside the system, sort that out with Finance separately.
     </div>
 </div>
 
@@ -353,7 +353,7 @@
             <thead><tr><th>Badge</th><th>What it means</th><th>Your move</th></tr></thead>
             <tbody>
                 <tr><td><span class="badge bg-success">Manager Approved</span> + <span class="badge bg-warning text-dark">Pending HR</span></td><td>Waiting on you.</td><td><strong>Review</strong> → approve or reject</td></tr>
-                <tr><td><span class="badge bg-success">HR Approved</span></td><td>Fully approved, ready for payout.</td><td>Include in the ZIP export</td></tr>
+                <tr><td><span class="badge bg-success">HR Approved</span></td><td>Fully approved — the final step in the system.</td><td>Include in the ZIP export</td></tr>
                 <tr><td><span class="badge bg-danger">HR Rejected</span></td><td>You sent it back.</td><td>Wait for their correction</td></tr>
                 <tr><td><span class="badge bg-warning text-dark">Reversed</span></td><td>You un-approved an approved claim.</td><td>Wait for their correction</td></tr>
                 <tr><td><span class="badge bg-primary">Resubmitted</span></td><td>A correction of an earlier claim.</td><td>Review as normal</td></tr>
