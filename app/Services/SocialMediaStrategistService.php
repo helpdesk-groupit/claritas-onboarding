@@ -96,13 +96,15 @@ DOCTRINE;
         $content = array_merge($this->binaryBlocks($strategy), [[
             'type' => 'text',
             'text' => $this->contextBlock($strategy)."\n\n"
-                ."TASK 1 — FACTBASE: Extract every verifiable client fact from the material above into a dense bullet factbase (facts only, no interpretation). If integrations/links were provided and you can read them, include their facts too.\n"
-                ."TASK 2 — GAP CHECK: As the strategist, list the questions that MUST be answered before a zero-guess strategy is possible. For each: the question, why it matters strategically, and one recommended suggested answer (your best professional default the user can accept in one tap).\n"
-                .'Return ONLY JSON: {"factbase":"...","gaps":[{"q":"...","why":"...","suggestion":"..."}]} — max 8 gaps, most critical first.',
+                ."TASK 1 — FACTBASE: Extract the key verifiable client facts into a TERSE bullet list — facts only, no interpretation. HARD LIMIT ~250 words; keep only what a strategist needs.\n"
+                ."TASK 2 — GAP CHECK: List the questions that MUST be answered before a zero-guess strategy is possible. For each give: q = the question (≤20 words), why = why it matters strategically (≤25 words), suggestion = one recommended default the user can accept in one tap (≤30 words). Max 8 gaps, most critical first.\n"
+                .'Output ONLY compact JSON — no markdown fences, no preamble: {"factbase":"...","gaps":[{"q":"...","why":"...","suggestion":"..."}]}. Keep the WHOLE response well under 1200 words so it stays complete and valid JSON.',
         ]]);
 
-        // Generous budget: a factbase + up to 8 gaps over several uploaded decks
-        // can be long, and truncating (stop_reason=max_tokens) breaks the JSON.
+        // Output is length-capped in the prompt above (a factbase over several
+        // decks was running to 6000+ tokens and truncating into invalid JSON, and
+        // a bigger budget would exceed the ~100s edge timeout for this synchronous
+        // call). 6000 is now generous headroom for the capped response.
         $res = $this->callClaude($content, false, 'strategist_gap_check', 6000);
         $j = $this->parseJson($res['text']);
 
