@@ -13,7 +13,8 @@ use Illuminate\Support\Str;
  * Risk-based 2FA "remember this device" support.
  *
  * The trust anchor is a high-entropy, server-issued token stored in an
- * encrypted httpOnly cookie and mirrored as a hashed row in `trusted_devices`.
+ * encrypted httpOnly cookie (named per-account, see cookieName()) and mirrored
+ * as a hashed row in `trusted_devices`.
  * On login, if the cookie matches a valid non-expired row for the user AND no
  * risk signal fires (device family change, or — when enabled — country change),
  * the TOTP challenge is skipped. Anything missing or stale falls back to the
@@ -24,8 +25,8 @@ class TrustedDeviceService
     /** Decide whether the current request may skip the 2FA challenge. */
     public static function trusts(Request $request, User $user): bool
     {
-        $raw = $request->cookie(self::cookieName());
-        if (!is_string($raw) || !str_contains($raw, ':')) {
+        $raw = $request->cookie(self::cookieName($user->id));
+        if (! is_string($raw) || ! str_contains($raw, ':')) {
             return false;
         }
 
@@ -35,34 +36,35 @@ class TrustedDeviceService
             ->where('selector', $selector)
             ->first();
 
-        if (!$device) {
+        if (! $device) {
             return false;
         }
 
         if ($device->isExpired()) {
             $device->delete();
+
             return false;
         }
 
         // Constant-time comparison against the stored hash.
-        if (!hash_equals($device->validator_hash, hash('sha256', $validator))) {
+        if (! hash_equals($device->validator_hash, hash('sha256', $validator))) {
             return false;
         }
 
         // Risk signal 1: device/browser family changed (ignores version bumps).
-        if (!self::deviceMatches($device, $request)) {
+        if (! self::deviceMatches($device, $request)) {
             return false;
         }
 
         // Risk signal 2: country changed (fails open when undeterminable).
-        if (!self::countryMatches($device, $request)) {
+        if (! self::countryMatches($device, $request)) {
             return false;
         }
 
         // Trusted — refresh last-seen metadata.
         $device->forceFill([
             'last_used_at' => now(),
-            'last_ip'      => $request->ip(),
+            'last_ip' => $request->ip(),
             'last_country' => self::lookupCountry($request->ip()) ?? $device->last_country,
         ])->save();
 
@@ -72,25 +74,25 @@ class TrustedDeviceService
     /** Mint a new trusted-device row + queue the cookie on the response. */
     public static function issue(User $user, Request $request): TrustedDevice
     {
-        $selector  = Str::random(24);
+        $selector = Str::random(24);
         $validator = Str::random(40);
 
         $device = TrustedDevice::create([
-            'user_id'        => $user->id,
-            'selector'       => $selector,
+            'user_id' => $user->id,
+            'selector' => $selector,
             'validator_hash' => hash('sha256', $validator),
-            'device_label'   => self::deviceLabel($request->userAgent()),
-            'user_agent'     => $request->userAgent() ? Str::limit($request->userAgent(), 1000, '') : null,
-            'last_ip'        => $request->ip(),
-            'last_country'   => self::lookupCountry($request->ip()),
-            'last_used_at'   => now(),
-            'expires_at'     => now()->addDays(self::days()),
+            'device_label' => self::deviceLabel($request->userAgent()),
+            'user_agent' => $request->userAgent() ? Str::limit($request->userAgent(), 1000, '') : null,
+            'last_ip' => $request->ip(),
+            'last_country' => self::lookupCountry($request->ip()),
+            'last_used_at' => now(),
+            'expires_at' => now()->addDays(self::days()),
         ]);
 
         $minutes = self::days() * 24 * 60;
         Cookie::queue(Cookie::make(
-            self::cookieName(),
-            $selector . ':' . $validator,
+            self::cookieName($user->id),
+            $selector.':'.$validator,
             $minutes,
             null,   // path  (default)
             null,   // domain (default)
@@ -107,12 +109,13 @@ class TrustedDeviceService
     public static function revoke(TrustedDevice $device, ?Request $request = null): void
     {
         $selector = $device->selector;
+        $userId = $device->user_id;
         $device->delete();
 
         if ($request) {
-            $raw = $request->cookie(self::cookieName());
-            if (is_string($raw) && str_starts_with($raw, $selector . ':')) {
-                Cookie::queue(Cookie::forget(self::cookieName()));
+            $raw = $request->cookie(self::cookieName($userId));
+            if (is_string($raw) && str_starts_with($raw, $selector.':')) {
+                Cookie::queue(Cookie::forget(self::cookieName($userId)));
             }
         }
     }
@@ -127,7 +130,7 @@ class TrustedDeviceService
 
     protected static function deviceMatches(TrustedDevice $device, Request $request): bool
     {
-        $stored  = self::uaSignature($device->user_agent);
+        $stored = self::uaSignature($device->user_agent);
         $current = self::uaSignature($request->userAgent());
 
         // Fail open if either UA is missing/unparseable — don't punish odd clients.
@@ -140,7 +143,7 @@ class TrustedDeviceService
 
     protected static function countryMatches(TrustedDevice $device, Request $request): bool
     {
-        if (!config('trusted-device.check_country', true)) {
+        if (! config('trusted-device.check_country', true)) {
             return true;
         }
 
@@ -159,24 +162,25 @@ class TrustedDeviceService
     /** Resolve an IP to an ISO country code, or null when undeterminable. */
     public static function lookupCountry(?string $ip): ?string
     {
-        if (!$ip || !class_exists(\GeoIp2\Database\Reader::class)) {
+        if (! $ip || ! class_exists(\GeoIp2\Database\Reader::class)) {
             return null;
         }
 
         // Private / reserved / loopback addresses have no public geolocation.
-        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+        if (! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
             return null;
         }
 
         $disk = config('trusted-device.geoip_disk', 'local');
-        $rel  = config('trusted-device.geoip_path', 'geoip/GeoLite2-Country.mmdb');
+        $rel = config('trusted-device.geoip_path', 'geoip/GeoLite2-Country.mmdb');
 
         try {
-            if (!Storage::disk($disk)->exists($rel)) {
+            if (! Storage::disk($disk)->exists($rel)) {
                 return null;
             }
-            $reader  = new \GeoIp2\Database\Reader(Storage::disk($disk)->path($rel));
+            $reader = new \GeoIp2\Database\Reader(Storage::disk($disk)->path($rel));
             $country = $reader->country($ip)->country->isoCode;
+
             return $country ?: null;
         } catch (\Throwable $e) {
             return null; // fail open — never block a login on a GeoIP hiccup
@@ -188,27 +192,28 @@ class TrustedDeviceService
     /** Coarse "Browser/OS" signature, version-insensitive. Null if unknown. */
     protected static function uaSignature(?string $ua): ?string
     {
-        if (!$ua) {
+        if (! $ua) {
             return null;
         }
 
         $browser = self::browserFamily($ua);
-        $os       = self::osFamily($ua);
+        $os = self::osFamily($ua);
 
         if ($browser === null && $os === null) {
             return null;
         }
 
-        return ($browser ?? '?') . '/' . ($os ?? '?');
+        return ($browser ?? '?').'/'.($os ?? '?');
     }
 
     public static function deviceLabel(?string $ua): string
     {
-        if (!$ua) {
+        if (! $ua) {
             return 'Unknown device';
         }
         $browser = self::browserFamily($ua) ?? 'Unknown browser';
-        $os      = self::osFamily($ua);
+        $os = self::osFamily($ua);
+
         return $os ? "{$browser} on {$os}" : $browser;
     }
 
@@ -216,25 +221,25 @@ class TrustedDeviceService
     {
         // Order matters: Edge/Opera identify themselves before Chrome.
         return match (true) {
-            str_contains($ua, 'Edg')                                   => 'Edge',
-            str_contains($ua, 'OPR') || str_contains($ua, 'Opera')     => 'Opera',
-            str_contains($ua, 'Chrome') && !str_contains($ua, 'Chromium') => 'Chrome',
-            str_contains($ua, 'Chromium')                              => 'Chromium',
-            str_contains($ua, 'Firefox')                               => 'Firefox',
-            str_contains($ua, 'Safari')                                => 'Safari',
-            default                                                    => null,
+            str_contains($ua, 'Edg') => 'Edge',
+            str_contains($ua, 'OPR') || str_contains($ua, 'Opera') => 'Opera',
+            str_contains($ua, 'Chrome') && ! str_contains($ua, 'Chromium') => 'Chrome',
+            str_contains($ua, 'Chromium') => 'Chromium',
+            str_contains($ua, 'Firefox') => 'Firefox',
+            str_contains($ua, 'Safari') => 'Safari',
+            default => null,
         };
     }
 
     protected static function osFamily(string $ua): ?string
     {
         return match (true) {
-            str_contains($ua, 'Windows')                               => 'Windows',
-            str_contains($ua, 'iPhone') || str_contains($ua, 'iPad')   => 'iOS',
+            str_contains($ua, 'Windows') => 'Windows',
+            str_contains($ua, 'iPhone') || str_contains($ua, 'iPad') => 'iOS',
             str_contains($ua, 'Mac OS X') || str_contains($ua, 'Macintosh') => 'macOS',
-            str_contains($ua, 'Android')                               => 'Android',
-            str_contains($ua, 'Linux')                                 => 'Linux',
-            default                                                    => null,
+            str_contains($ua, 'Android') => 'Android',
+            str_contains($ua, 'Linux') => 'Linux',
+            default => null,
         };
     }
 
@@ -245,8 +250,18 @@ class TrustedDeviceService
         return max(1, (int) config('trusted-device.days', 30));
     }
 
-    protected static function cookieName(): string
+    /**
+     * Per-user trust cookie name (e.g. "td_token_42").
+     *
+     * The cookie is scoped to ONE account so that two accounts sharing a single
+     * browser (e.g. an IT-Manager login and a Superadmin login) each keep their
+     * own trusted-device cookie instead of clobbering a single shared one — the
+     * bug where the second account's trust overwrote the first, re-challenging
+     * both on every login. The DB row is already keyed by user_id + selector;
+     * this aligns the cookie with that same per-account scoping.
+     */
+    public static function cookieName(int|string $userId): string
     {
-        return config('trusted-device.cookie', 'td_token');
+        return config('trusted-device.cookie', 'td_token').'_'.$userId;
     }
 }
