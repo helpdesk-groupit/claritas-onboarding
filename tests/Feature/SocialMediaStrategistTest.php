@@ -33,6 +33,16 @@ class SocialMediaStrategistTest extends TestCase
         ]);
     }
 
+    /** A fake Anthropic response whose model calls the given output tool (forced-tool path). */
+    private function toolUseResponse(string $name, array $input): \GuzzleHttp\Promise\PromiseInterface
+    {
+        return Http::response([
+            'content' => [['type' => 'tool_use', 'id' => 'tu_1', 'name' => $name, 'input' => $input]],
+            'stop_reason' => 'tool_use',
+            'usage' => ['input_tokens' => 100, 'output_tokens' => 50],
+        ], 200);
+    }
+
     private function completeIntake(): array
     {
         return [
@@ -200,13 +210,10 @@ class SocialMediaStrategistTest extends TestCase
         ]);
 
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
-                'content' => [['type' => 'text', 'text' => json_encode([
-                    'factbase' => '- Aria sells facials',
-                    'gaps' => [['q' => 'Ticket size?', 'why' => 'sizing', 'suggestion' => 'RM 800']],
-                ])]],
-                'usage' => ['input_tokens' => 10, 'output_tokens' => 5],
-            ], 200),
+            'api.anthropic.com/*' => $this->toolUseResponse('emit_gap_check', [
+                'factbase' => '- Aria sells facials',
+                'gaps' => [['q' => 'Ticket size?', 'why' => 'sizing', 'suggestion' => 'RM 800']],
+            ]),
         ]);
 
         $this->actingAs($user)
@@ -273,10 +280,7 @@ class SocialMediaStrategistTest extends TestCase
         $strategy = $this->readyStrategy($user);
 
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
-                'content' => [['type' => 'text', 'text' => json_encode(['section' => 'A Section', 'content' => 'Section body.'])]],
-                'usage' => ['input_tokens' => 10, 'output_tokens' => 5],
-            ], 200),
+            'api.anthropic.com/*' => $this->toolUseResponse('emit_section', ['section' => 'A Section', 'content' => 'Section body.']),
         ]);
 
         foreach (SocialStrategy::SECTIONS as $key => $meta) {

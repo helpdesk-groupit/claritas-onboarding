@@ -32,6 +32,38 @@ class SocialMediaStrategistService
     /** Cap web searches per section so a runaway tool loop can't burn budget. */
     private const MAX_SEARCHES = 6;
 
+    /** Forced-tool output schema for the gap check (factbase + gaps). */
+    private const GAP_SCHEMA = [
+        'type' => 'object',
+        'properties' => [
+            'factbase' => ['type' => 'string', 'description' => 'Terse bullet factbase, facts only, ~250 words.'],
+            'gaps' => [
+                'type' => 'array',
+                'description' => 'Questions that must be answered before a zero-guess strategy. Max 8.',
+                'items' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'q' => ['type' => 'string', 'description' => 'The question, ≤20 words.'],
+                        'why' => ['type' => 'string', 'description' => 'Why it matters, ≤25 words.'],
+                        'suggestion' => ['type' => 'string', 'description' => 'A recommended default, ≤30 words.'],
+                    ],
+                    'required' => ['q', 'why', 'suggestion'],
+                ],
+            ],
+        ],
+        'required' => ['factbase', 'gaps'],
+    ];
+
+    /** Forced-tool output schema for a generated section. */
+    private const SECTION_SCHEMA = [
+        'type' => 'object',
+        'properties' => [
+            'section' => ['type' => 'string', 'description' => 'The section title.'],
+            'content' => ['type' => 'string', 'description' => 'The section body as plain text with line breaks.'],
+        ],
+        'required' => ['section', 'content'],
+    ];
+
     /**
      * The anti-hallucination doctrine — sent as the `system` prompt on every
      * call. Ported verbatim from strategist-os-agent.html (lines 159-167). Do
@@ -96,16 +128,16 @@ DOCTRINE;
         $content = array_merge($this->binaryBlocks($strategy), [[
             'type' => 'text',
             'text' => $this->contextBlock($strategy)."\n\n"
-                ."TASK 1 — FACTBASE: Extract the key verifiable client facts into a TERSE bullet list — facts only, no interpretation. HARD LIMIT ~250 words; keep only what a strategist needs.\n"
-                ."TASK 2 — GAP CHECK: List the questions that MUST be answered before a zero-guess strategy is possible. For each give: q = the question (≤20 words), why = why it matters strategically (≤25 words), suggestion = one recommended default the user can accept in one tap (≤30 words). Max 8 gaps, most critical first.\n"
-                .'Output ONLY compact JSON — no markdown fences, no preamble: {"factbase":"...","gaps":[{"q":"...","why":"...","suggestion":"..."}]}. Keep the WHOLE response well under 1200 words so it stays complete and valid JSON.',
+                ."TASK 1 — FACTBASE: Extract the key verifiable client facts — facts only, no interpretation, ~250 words max; keep only what a strategist needs.\n"
+                ."TASK 2 — GAP CHECK: List the questions that MUST be answered before a zero-guess strategy is possible. For each give: q = the question (≤20 words), why it matters strategically (≤25 words), and a suggestion = one recommended default the user can accept in one tap (≤30 words). Max 8 gaps, most critical first.\n"
+                .'Call emit_gap_check with the result.',
         ]]);
 
-        // Output is length-capped in the prompt above (a factbase over several
-        // decks was running to 6000+ tokens and truncating into invalid JSON, and
-        // a bigger budget would exceed the ~100s edge timeout for this synchronous
-        // call). 6000 is now generous headroom for the capped response.
-        $j = $this->callClaudeJson($content, false, 'strategist_gap_check', 6000)['data'];
+        // Forced tool use: Anthropic validates the output against GAP_SCHEMA and
+        // returns it already parsed, so there is no text-JSON to malform (the
+        // previous approach truncated / emitted invalid JSON ~half the time on
+        // rich decks). 6000 is generous headroom for the length-capped result.
+        $j = $this->callClaudeStructured($content, self::GAP_SCHEMA, 'emit_gap_check', false, 'strategist_gap_check', 6000)['data'];
 
         $gaps = array_slice($j['gaps'] ?? [], 0, 8);
         $strategy->forceFill([
@@ -140,11 +172,11 @@ DOCTRINE;
             ."INTAKE:\n".$this->summaryText($strategy)."\n\n"
             ."GAP-CHECK ANSWERS (user-confirmed truth):\n{$gapQA}\n\n"
             ."SECTIONS ALREADY WRITTEN (stay consistent, don't repeat):\n".mb_substr($accumulated, -6000)."\n\n"
-            .$prompt;
+            .$prompt."\n\nWhen the answer is ready, call emit_section with {section, content}.";
 
-        // Sections run in the background job (no edge limit), so allow an extra
-        // parse re-roll before giving up on a section.
-        $res = $this->callClaudeJson([['type' => 'text', 'text' => $userText]], $useSearch, 'strategist_'.$key, 6000, 3);
+        // Forced/structured tool output (same reliability win as the gap check).
+        // With search on, the model searches first then emits via emit_section.
+        $res = $this->callClaudeStructured([['type' => 'text', 'text' => $userText]], self::SECTION_SCHEMA, 'emit_section', $useSearch, 'strategist_'.$key, 6000);
         $j = $res['data'];
 
         return [
@@ -193,37 +225,34 @@ DOCTRINE;
         throw $lastError ?? new \RuntimeException('Claude call failed');
     }
 
-    /** One raw /v1/messages call → joined text. Throws on any error. */
-    private function send(array $content, bool $useSearch, string $feature, int $maxTokens): string
+    /** Web-search server tool spec. */
+    private function searchTool(): array
+    {
+        return ['type' => 'web_search_20250305', 'name' => 'web_search', 'max_uses' => self::MAX_SEARCHES];
+    }
+
+    /**
+     * One raw /v1/messages call → decoded response array. Records usage and
+     * throws on any API error. `$extraBody` carries tools / tool_choice.
+     *
+     * @return array<string,mixed>
+     */
+    private function sendRaw(array $content, array $extraBody, string $feature, int $maxTokens): array
     {
         [$key, $model] = $this->config();
 
-        $body = [
+        $body = array_merge([
             'model' => $model,
             'max_tokens' => $maxTokens,
             'system' => self::DOCTRINE,
             // Disable extended thinking. Claude 5-family models (Sonnet 5 etc.)
-            // think on complex prompts by default, and on a large PDF-laden
-            // gap check that burned the ENTIRE token budget inside a `thinking`
-            // block — the response came back stop_reason=max_tokens with no text
-            // block at all, so the "join only text blocks" step got nothing and
-            // threw "Claude returned no text content". Disabling thinking also
-            // keeps the synchronous gap check well under the ~100s edge timeout
-            // (measured 28s vs 87s with thinking on). The doctrine + structured
-            // prompts carry quality without it.
+            // think on complex prompts by default, and on a large PDF-laden gap
+            // check that burned the ENTIRE token budget inside a `thinking` block
+            // (stop_reason=max_tokens, no answer). Disabling it also keeps the
+            // synchronous gap check under the ~100s edge timeout (28s vs 87s).
             'thinking' => ['type' => 'disabled'],
             'messages' => [['role' => 'user', 'content' => $content]],
-        ];
-
-        if ($useSearch) {
-            // Anthropic's server-side web search tool. Anthropic runs the search
-            // and returns the results inline — no client tool loop needed.
-            $body['tools'] = [[
-                'type' => 'web_search_20250305',
-                'name' => 'web_search',
-                'max_uses' => self::MAX_SEARCHES,
-            ]];
-        }
+        ], $extraBody);
 
         $resp = Http::timeout(180)
             ->withHeaders([
@@ -243,9 +272,17 @@ DOCTRINE;
             throw new \RuntimeException('Claude API error: '.$msg);
         }
 
+        return (array) $resp->json();
+    }
+
+    /** One raw call → joined text (only type=text blocks). Throws if empty. */
+    private function send(array $content, bool $useSearch, string $feature, int $maxTokens): string
+    {
+        $extra = $useSearch ? ['tools' => [$this->searchTool()]] : [];
+
         // With web_search the response interleaves tool_use / tool_result blocks —
-        // keep only the model's text, or the JSON parser would choke on tool noise.
-        $text = collect($resp->json('content', []))
+        // keep only the model's own text.
+        $text = collect($this->sendRaw($content, $extra, $feature, $maxTokens)['content'] ?? [])
             ->filter(fn ($b) => ($b['type'] ?? null) === 'text')
             ->map(fn ($b) => $b['text'] ?? '')
             ->implode("\n");
@@ -255,6 +292,72 @@ DOCTRINE;
         }
 
         return trim($text);
+    }
+
+    /**
+     * Get a schema-shaped object from Claude via FORCED TOOL USE — the reliable
+     * way to obtain structured output. Anthropic validates the tool input against
+     * the schema and returns it already parsed, so there is no fragile text-JSON
+     * parsing (which produced malformed JSON ~half the time on rich inputs).
+     *
+     * Without search the output tool is forced (tool_choice) → guaranteed one
+     * clean result. With search, web_search + the output tool are both offered
+     * (the model searches, then emits); if it answers as text instead, we fall
+     * back to parseJson. Retries + a no-search fallback mirror callClaude().
+     *
+     * @param  array<string,mixed>  $schema  JSON schema for the tool input
+     * @return array{data:array<string,mixed>, searched:bool}
+     */
+    private function callClaudeStructured(array $content, array $schema, string $toolName, bool $useSearch, string $feature, int $maxTokens): array
+    {
+        $outputTool = [
+            'name' => $toolName,
+            'description' => 'Return the requested result strictly in this structure.',
+            'input_schema' => $schema,
+        ];
+
+        $lastError = null;
+
+        foreach ([$useSearch, false] as $withSearch) {
+            $extra = $withSearch
+                ? ['tools' => [$this->searchTool(), $outputTool], 'tool_choice' => ['type' => 'auto']]
+                : ['tools' => [$outputTool], 'tool_choice' => ['type' => 'tool', 'name' => $toolName]];
+
+            for ($attempt = 0; $attempt <= self::MAX_RETRIES; $attempt++) {
+                try {
+                    $blocks = $this->sendRaw($content, $extra, $feature, $maxTokens)['content'] ?? [];
+
+                    $searched = false;
+                    $data = null;
+                    foreach ($blocks as $b) {
+                        $type = $b['type'] ?? '';
+                        if ($type === 'server_tool_use' || $type === 'web_search_tool_result') {
+                            $searched = true;
+                        }
+                        if ($type === 'tool_use' && ($b['name'] ?? '') === $toolName && is_array($b['input'] ?? null)) {
+                            $data = $b['input'];
+                        }
+                    }
+
+                    if ($data === null) {
+                        // Model answered as text instead of calling the tool — parse it.
+                        $text = collect($blocks)->filter(fn ($b) => ($b['type'] ?? null) === 'text')
+                            ->map(fn ($b) => $b['text'] ?? '')->implode("\n");
+                        $data = $this->parseJson($text);
+                    }
+
+                    return ['data' => $data, 'searched' => $withSearch && $searched];
+                } catch (\Throwable $e) {
+                    $lastError = $e; // re-roll immediately (parse/HTTP failures are non-deterministic)
+                }
+            }
+
+            if (! $useSearch) {
+                break;
+            }
+        }
+
+        throw $lastError ?? new \RuntimeException('Claude structured call failed');
     }
 
     /**
@@ -293,32 +396,6 @@ DOCTRINE;
         }
 
         throw new \RuntimeException('The AI response was not valid JSON.');
-    }
-
-    /**
-     * callClaude + parseJson with a re-roll on parse failure.
-     *
-     * Model JSON is non-deterministic — an unescaped quote or stray token slips
-     * through the repair pass occasionally. Re-calling the model almost always
-     * yields clean JSON. Bounded so the synchronous gap check stays under the
-     * ~100s edge timeout (2 tries ≈ 2×~30s worst case).
-     *
-     * @return array{data:array<string,mixed>, searched:bool}
-     */
-    private function callClaudeJson(array $content, bool $useSearch, string $feature, int $maxTokens, int $parseTries = 2): array
-    {
-        $lastError = null;
-
-        for ($i = 0; $i < $parseTries; $i++) {
-            $res = $this->callClaude($content, $useSearch, $feature, $maxTokens);
-            try {
-                return ['data' => $this->parseJson($res['text']), 'searched' => $res['searched'] ?? false];
-            } catch (\Throwable $e) {
-                $lastError = $e;
-            }
-        }
-
-        throw $lastError ?? new \RuntimeException('The AI response was not valid JSON.');
     }
 
     // ── Prompt-context builders (ported from the artifact) ───────────────
