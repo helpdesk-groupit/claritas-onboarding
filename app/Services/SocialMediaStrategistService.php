@@ -137,24 +137,18 @@ DOCTRINE;
         // returns it already parsed, so there is no text-JSON to malform (the
         // previous approach truncated / emitted invalid JSON ~half the time on
         // rich decks). 6000 is generous headroom for the length-capped result.
-        $j = $this->callClaudeStructured($content, self::GAP_SCHEMA, 'emit_gap_check', false, 'strategist_gap_check', 6000)['data'];
-
         // Tool schemas are best-effort, not strictly enforced: the model
-        // occasionally hands back `gaps` as a JSON STRING rather than an array
-        // (crashed array_slice), and could do the same for `factbase`. Normalise
-        // both so a schema slip degrades gracefully instead of erroring.
-        $factbase = $this->stringField($j['factbase'] ?? '');
+        // sometimes returns `gaps` as a JSON string, or in a shape that yields no
+        // usable gap items at all (0 gaps → the user can't proceed). Re-roll once
+        // if that happens — bounded so the synchronous call stays under the ~100s
+        // edge timeout (each call is ~25s).
+        $factbase = '';
         $gaps = [];
-        foreach ($this->arrayField($j['gaps'] ?? []) as $g) {
-            if (! is_array($g)) {
-                continue;
-            }
-            $gaps[] = [
-                'q' => $this->stringField($g['q'] ?? ''),
-                'why' => $this->stringField($g['why'] ?? ''),
-                'suggestion' => $this->stringField($g['suggestion'] ?? ''),
-            ];
-            if (count($gaps) >= 8) {
+        for ($try = 0; $try < 2; $try++) {
+            $j = $this->callClaudeStructured($content, self::GAP_SCHEMA, 'emit_gap_check', false, 'strategist_gap_check', 6000)['data'];
+            $factbase = $this->stringField($j['factbase'] ?? '') ?: $factbase;
+            $gaps = $this->normalizeGaps($j['gaps'] ?? []);
+            if (count($gaps) > 0) {
                 break;
             }
         }
@@ -415,6 +409,32 @@ DOCTRINE;
         }
 
         throw new \RuntimeException('The AI response was not valid JSON.');
+    }
+
+    /**
+     * Coerce a best-effort tool `gaps` field into a clean list of ≤8 gap items,
+     * recovering a stringified array and dropping malformed entries.
+     *
+     * @return array<int,array{q:string,why:string,suggestion:string}>
+     */
+    private function normalizeGaps(mixed $raw): array
+    {
+        $out = [];
+        foreach ($this->arrayField($raw) as $g) {
+            if (! is_array($g)) {
+                continue;
+            }
+            $out[] = [
+                'q' => $this->stringField($g['q'] ?? ''),
+                'why' => $this->stringField($g['why'] ?? ''),
+                'suggestion' => $this->stringField($g['suggestion'] ?? ''),
+            ];
+            if (count($out) >= 8) {
+                break;
+            }
+        }
+
+        return $out;
     }
 
     /** Coerce a tool-output field to a string (arrays → newline-joined or JSON). */
