@@ -1044,7 +1044,7 @@ class OnboardingController extends Controller
 
         $nameOnboardingQuery = PersonalDetail::join('work_details', 'personal_details.onboarding_id', '=', 'work_details.onboarding_id')
             ->join('onboardings', 'personal_details.onboarding_id', '=', 'onboardings.id')
-            ->where('onboardings.status', 'pending')
+            ->whereIn('onboardings.status', ['pending', 'active'])
             ->whereRaw('LOWER(personal_details.full_name) = ?', [mb_strtolower($fullName)])
             ->where('work_details.company', $company);
         if ($excludeOnboardingId) {
@@ -1055,7 +1055,7 @@ class OnboardingController extends Controller
         if ($nameEmployeeDupe) {
             $errors['full_name'] = 'An active employee with this name (' . $fullName . ') already exists at ' . $company . '.';
         } elseif ($nameOnboardingDupe) {
-            $errors['full_name'] = 'A pending onboarding record with this name (' . $fullName . ') already exists at ' . $company . '.';
+            $errors['full_name'] = 'An onboarding record with this name (' . $fullName . ') already exists at ' . $company . '.';
         }
 
         // 2. NRIC + Company — same person at the same company
@@ -1066,7 +1066,7 @@ class OnboardingController extends Controller
 
         $nricOnboardingQuery = PersonalDetail::join('work_details', 'personal_details.onboarding_id', '=', 'work_details.onboarding_id')
             ->join('onboardings', 'personal_details.onboarding_id', '=', 'onboardings.id')
-            ->where('onboardings.status', 'pending')
+            ->whereIn('onboardings.status', ['pending', 'active'])
             ->where('personal_details.official_document_id', $nric)
             ->where('work_details.company', $company);
         if ($excludeOnboardingId) {
@@ -1077,7 +1077,7 @@ class OnboardingController extends Controller
         if ($nricEmployeeDupe) {
             $errors['official_document_id'] = 'An active employee with this NRIC/Passport (' . $nric . ') already exists at ' . $company . '.';
         } elseif ($nricOnboardingDupe) {
-            $errors['official_document_id'] = 'A pending onboarding record with this NRIC/Passport (' . $nric . ') already exists at ' . $company . '.';
+            $errors['official_document_id'] = 'An onboarding record with this NRIC/Passport (' . $nric . ') already exists at ' . $company . '.';
         }
 
         // 3. Company email — globally unique
@@ -1087,7 +1087,7 @@ class OnboardingController extends Controller
                 ->exists();
 
             $emailOnboardingQuery = WorkDetail::join('onboardings', 'work_details.onboarding_id', '=', 'onboardings.id')
-                ->where('onboardings.status', 'pending')
+                ->whereIn('onboardings.status', ['pending', 'active'])
                 ->where('work_details.company_email', $companyEmail);
             if ($excludeOnboardingId) {
                 $emailOnboardingQuery->where('onboardings.id', '!=', $excludeOnboardingId);
@@ -1097,7 +1097,7 @@ class OnboardingController extends Controller
             if ($emailEmployeeDupe) {
                 $errors['company_email'] = 'An active employee with this company email (' . $companyEmail . ') already exists.';
             } elseif ($emailOnboardingDupe) {
-                $errors['company_email'] = 'A pending onboarding record with this company email (' . $companyEmail . ') already exists.';
+                $errors['company_email'] = 'An onboarding record with this company email (' . $companyEmail . ') already exists.';
             }
         }
 

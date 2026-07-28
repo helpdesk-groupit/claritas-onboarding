@@ -1104,7 +1104,7 @@
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
                     <i class="bi bi-x me-1"></i>Cancel
                 </button>
-                <button type="submit" class="btn btn-primary px-4">
+                <button type="submit" id="obSubmitBtn" class="btn btn-primary px-4">
                     <i class="bi bi-check-circle me-2"></i>Submit Onboarding Record
                 </button>
             </div>
@@ -1440,6 +1440,25 @@ document.addEventListener('DOMContentLoaded', function() {
         obToggleSpouseSection(sel.value);
         sel.addEventListener('change', function() { obToggleSpouseSection(this.value); });
     }
+});
+
+// ── Prevent duplicate submissions (double/triple-click on a slow request) ──
+// The submit event fires only AFTER native required-field validation passes, so
+// disabling here never traps the user on an invalid form. A guard flag blocks any
+// further submits while the first one is in flight.
+document.addEventListener('DOMContentLoaded', function () {
+    const obForm = document.getElementById('onboardingForm');
+    const obBtn  = document.getElementById('obSubmitBtn');
+    if (!obForm) return;
+    let obSubmitting = false;
+    obForm.addEventListener('submit', function (e) {
+        if (obSubmitting) { e.preventDefault(); return; }
+        obSubmitting = true;
+        if (obBtn) {
+            obBtn.disabled  = true;
+            obBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Submitting…';
+        }
+    });
 });
 
 </script>
