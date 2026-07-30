@@ -20,9 +20,10 @@ class AssetController extends Controller
     {
         $this->authorizeItAccess();
 
-        // Exclude 'not_good' assets — they are shown in the Damaged Assets page
+        // Exclude assets staged for decommissioning (Not Good / Returned) — they are
+        // shown in the Decommissioning tab instead, never in both places at once.
         $query = AssetInventory::with('assignedEmployee.onboarding.personalDetail')
-            ->where('asset_condition', '!=', 'not_good');
+            ->whereNotIn('asset_condition', AssetInventory::DECOMMISSION_CONDITIONS);
 
         if ($request->filled('search')) {
             $s = $request->search;
@@ -51,11 +52,14 @@ class AssetController extends Controller
 
         $assets = $query->latest()->paginate(15)->withQueryString();
 
+        // Stats mirror the listing above, so a staged asset is not counted as active stock.
+        $activeInv = fn () => AssetInventory::whereNotIn('asset_condition', AssetInventory::DECOMMISSION_CONDITIONS);
+
         $stats = [
-            'total_assets'    => AssetInventory::where('asset_condition', '!=', 'not_good')->count(),
-            'available'       => AssetInventory::where('status', 'available')->where('asset_condition', '!=', 'not_good')->count(),
+            'total_assets'    => $activeInv()->count(),
+            'available'       => $activeInv()->where('status', 'available')->count(),
             'assigned'        => AssetInventory::where('status', 'assigned')->count(),
-            'unavailable'     => AssetInventory::where('status', 'unavailable')->where('asset_condition', '!=', 'not_good')->count(),
+            'unavailable'     => $activeInv()->where('status', 'unavailable')->count(),
         ];
 
         $employees = Employee::with('onboarding.personalDetail')->whereNull('active_until')->get();
@@ -81,7 +85,7 @@ class AssetController extends Controller
             ->whereNotNull('rental_vendor')
             ->distinct()->orderBy('rental_vendor')
             ->pluck('rental_vendor');
-        $filterBrands = AssetInventory::where('asset_condition', '!=', 'not_good')
+        $filterBrands = AssetInventory::whereNotIn('asset_condition', AssetInventory::DECOMMISSION_CONDITIONS)
             ->whereNotNull('brand')->where('brand', '!=', '')
             ->distinct()->orderBy('brand')
             ->pluck('brand');
@@ -199,31 +203,11 @@ class AssetController extends Controller
 
         $asset = AssetInventory::create($data);
 
-        // ── Dispose if condition = not_good ────────────────────────────────
-        if (($data['asset_condition'] ?? null) === 'not_good') {
+        // ── Stage for decommissioning if condition = not_good / returned ───
+        if ($decommissionType = $this->decommissionTypeFor($data['asset_condition'] ?? null)) {
             $actor     = Auth::user();
             $actorName = $actor->name ?? $actor->work_email ?? 'IT Team';
-            $decommissionReason = $request->input('decommission_reason');
-            DisposedAsset::firstOrCreate(
-                ['asset_inventory_id' => $asset->id],
-                [
-                    'asset_tag'       => $asset->asset_tag,
-                    'asset_type'      => $asset->asset_type,
-                    'brand'           => $asset->brand,
-                    'model'           => $asset->model,
-                    'serial_number'   => $asset->serial_number,
-                    'asset_condition' => 'not_good',
-                    'disposed_by'     => $actorName,
-                    'disposed_at'     => now(),
-                    'remarks'         => $asset->remarks,
-                ]
-            );
-            if ($decommissionReason) {
-                DisposedAsset::where('asset_inventory_id', $asset->id)
-                    ->update(['reason' => $decommissionReason]);
-            }
-            $reasonNote = $decommissionReason ? " Reason: {$decommissionReason}." : '';
-            $asset->appendRemark("Asset flagged as Not Good — moved to Decommissioning Assets by {$actorName}.{$reasonNote}");
+            $this->stageForDecommission($asset, $decommissionType, $actorName, $request->input('decommission_reason'));
         }
 
         // Save uploaded photos into asset_photos/{asset_tag}/ folder
@@ -264,7 +248,7 @@ class AssetController extends Controller
             }
         }
 
-        $tab = ($data['asset_condition'] ?? null) === 'not_good' ? 'damaged' : null;
+        $tab = $this->decommissionTypeFor($data['asset_condition'] ?? null) ? 'damaged' : null;
         return redirect()->route('assets.index', array_filter(['tab' => $tab]))
             ->with('success', 'Asset added successfully.');
     }
@@ -373,33 +357,14 @@ class AssetController extends Controller
 
         $asset->update($data);
 
-        // ── Dispose if condition = not_good ────────────────────────────────
-        if (($data['asset_condition'] ?? null) === 'not_good') {
-            $decommissionReason = $request->input('decommission_reason');
-            DisposedAsset::firstOrCreate(
-                ['asset_inventory_id' => $asset->id],
-                [
-                    'asset_tag'       => $asset->asset_tag,
-                    'asset_type'      => $asset->asset_type,
-                    'brand'           => $asset->brand,
-                    'model'           => $asset->model,
-                    'serial_number'   => $asset->serial_number,
-                    'asset_condition' => 'not_good',
-                    'disposed_by'     => $actorName,
-                    'disposed_at'     => now(),
-                    'remarks'         => $asset->remarks,
-                ]
-            );
-            if ($decommissionReason) {
-                DisposedAsset::where('asset_inventory_id', $asset->id)
-                    ->update(['reason' => $decommissionReason]);
-            }
-            $reasonNote = $decommissionReason ? " Reason: {$decommissionReason}." : '';
-            $asset->appendRemark("Asset flagged as Not Good — moved to Decommissioning Assets by {$actorName}.{$reasonNote}");
+        // ── Stage for decommissioning if condition = not_good / returned ───
+        if ($decommissionType = $this->decommissionTypeFor($data['asset_condition'] ?? null)) {
+            $this->stageForDecommission($asset, $decommissionType, $actorName, $request->input('decommission_reason'));
         } elseif (in_array($data['asset_condition'] ?? null, ['good', 'under_maintenance'])) {
             if (DisposedAsset::where('asset_inventory_id', $asset->id)->exists()) {
                 DisposedAsset::where('asset_inventory_id', $asset->id)->delete();
-                $asset->appendRemark("Asset condition restored to " . ucfirst($data['asset_condition']) . " — removed from Decommissioning Assets by {$actorName}.");
+                $restoredTo = ucfirst(str_replace('_', ' ', (string) $data['asset_condition']));
+                $asset->appendRemark("Asset condition restored to {$restoredTo} — removed from Decommissioning Assets by {$actorName}.");
             }
         }
 
@@ -591,7 +556,9 @@ class AssetController extends Controller
         // detail page's Back button returns to the same filtered/paginated list.
         $filters = $request->query();
 
-        if ($asset->asset_condition === 'not_good') {
+        // A staged asset (Not Good / Returned) is no longer in the active listing, so its
+        // detail page is the decommissioning one.
+        if ($asset->isStagedForDecommission()) {
             return redirect()->route('assets.disposed.show', array_merge($filters, ['asset' => $asset->id]))->with('success', 'Asset updated successfully.');
         }
 
@@ -1291,6 +1258,59 @@ class AssetController extends Controller
 
     // ── Private helpers ────────────────────────────────────────────────────
 
+    /**
+     * Map a Section E condition to the decommissioning flow it belongs to,
+     * or null when the condition keeps the asset in the active listing.
+     */
+    private function decommissionTypeFor(?string $condition): ?string
+    {
+        return match ($condition) {
+            'not_good' => 'e_waste',
+            'returned' => 'vendor_return',
+            default    => null,
+        };
+    }
+
+    /**
+     * Put an asset into the Decommissioning tab, recording which flow it leaves by.
+     * Shared by store() and update() so the two can never drift.
+     *
+     * The type is re-applied on every save, so switching the condition between
+     * Not Good and Returned re-routes an already-staged row rather than leaving
+     * it filed under the flow it was first staged with.
+     */
+    private function stageForDecommission(AssetInventory $asset, string $type, string $actorName, ?string $reason): void
+    {
+        DisposedAsset::firstOrCreate(
+            ['asset_inventory_id' => $asset->id],
+            [
+                'asset_tag'         => $asset->asset_tag,
+                'asset_type'        => $asset->asset_type,
+                'brand'             => $asset->brand,
+                'model'             => $asset->model,
+                'serial_number'     => $asset->serial_number,
+                'asset_condition'   => $asset->asset_condition,
+                'decommission_type' => $type,
+                'disposed_by'       => $actorName,
+                'disposed_at'       => now(),
+                'remarks'           => $asset->remarks,
+            ]
+        );
+
+        $update = [
+            'decommission_type' => $type,
+            'asset_condition'   => $asset->asset_condition,
+        ];
+        if ($reason) {
+            $update['reason'] = $reason;
+        }
+        DisposedAsset::where('asset_inventory_id', $asset->id)->update($update);
+
+        $label      = $type === 'vendor_return' ? 'Returned (to vendor)' : 'Not Good';
+        $reasonNote = $reason ? " Reason: {$reason}." : '';
+        $asset->appendRemark("Asset flagged as {$label} — moved to Decommissioning Assets by {$actorName}.{$reasonNote}");
+    }
+
     private function buildAssetData(Request $request, array $validated, $user = null): array
     {
         $canEditAll = !$user || $user->canEditAllAssetSections();
@@ -1413,7 +1433,7 @@ class AssetController extends Controller
             $rules['assigned_employee_id']      = 'nullable|exists:employees,id';
             $rules['asset_assigned_date']       = 'nullable|date';
             $rules['expected_return_date']      = 'nullable|date';
-            $rules['asset_condition']           = 'required|in:good,not_good,under_maintenance';
+            $rules['asset_condition']           = 'required|in:'.implode(',', array_keys(AssetInventory::CONDITIONS));
             $rules['maintenance_status']        = 'nullable|in:pending,in_progress,done';
             $rules['last_maintenance_date']     = 'required_if:asset_condition,under_maintenance|nullable|date';
             $rules['remarks']                   = 'nullable|string';

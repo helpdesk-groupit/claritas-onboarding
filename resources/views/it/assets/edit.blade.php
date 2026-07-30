@@ -3,7 +3,7 @@
 @section('page-title','Edit Asset')
 @section('content')
 <div class="d-flex gap-2 mb-3">
-    <a href="{{ $asset->asset_condition === 'not_good' ? route('assets.disposed.show', array_merge(request()->query(), ['asset' => $asset->id])) : route('assets.show', array_merge(request()->query(), ['asset' => $asset->id])) }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back</a>
+    <a href="{{ $asset->isStagedForDecommission() ? route('assets.disposed.show', array_merge(request()->query(), ['asset' => $asset->id])) : route('assets.show', array_merge(request()->query(), ['asset' => $asset->id])) }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back</a>
     @if(Auth::user()->canEditAsset() && ($asset->assigned_employee_id || $asset->status === 'assigned'))
     @php $assignedName = $asset->resolvedAssigneeName(); @endphp
     <button type="button" class="btn btn-sm btn-danger"
@@ -208,8 +208,8 @@
 </div>
 
 @if($canAll)
-{{-- Section D — hidden for decommissioned (not_good) assets --}}
-@if($asset->asset_condition !== 'not_good')
+{{-- Section D — hidden for assets staged for decommissioning (Not Good / Returned) --}}
+@if(! $asset->isStagedForDecommission())
 <div class="card mb-3">
     <div class="card-header bg-white py-3"><div class="section-header mb-0"><h6><i class="bi bi-person-check me-2 text-primary"></i>Section D — Assignment</h6></div></div>
     <div class="card-body"><div class="row g-3">
@@ -322,24 +322,23 @@
     <div class="card-header bg-white py-3"><div class="section-header mb-0"><h6><i class="bi bi-clipboard-check me-2 text-primary"></i>Section E — Condition & Status</h6></div></div>
     <div class="card-body"><div class="row g-3">
 
-        {{-- Condition: Good / Not Good / Under Maintenance --}}
+        {{-- Condition: Good / Under Maintenance / Not Good / Returned --}}
         <div class="col-md-3">
             <label class="form-label fw-semibold">Condition <span class="text-danger">*</span></label>
             <select name="asset_condition" id="assetCondition" class="form-select" required>
                 @php
-                    // Map any legacy/new values → current three-option set
+                    // Map any legacy value → the current condition set (drives Decommissioning).
                     $cond = old('asset_condition', $asset->asset_condition);
-                    if ($cond === 'under_maintenance') $cond = 'under_maintenance'; // already correct
-                    elseif ($cond === 'not_good' || $cond === 'damaged') $cond = 'not_good';
-                    elseif (in_array($cond, ['new', 'good', 'fair'])) $cond = 'good';
-                    else $cond = 'good'; // safe fallback
+                    if (! array_key_exists($cond, \App\Models\AssetInventory::CONDITIONS)) {
+                        $cond = $cond === 'damaged' ? 'not_good' : 'good'; // legacy 'damaged'; else safe fallback
+                    }
                 @endphp
-                <option value="good"               {{ $cond === 'good'               ? 'selected' : '' }}>Good</option>
-                <option value="not_good"           {{ $cond === 'not_good'           ? 'selected' : '' }}>Not Good</option>
-                <option value="under_maintenance"  {{ $cond === 'under_maintenance'  ? 'selected' : '' }}>Under Maintenance</option>
+                @foreach(\App\Models\AssetInventory::CONDITIONS as $condValue => $condLabel)
+                    <option value="{{ $condValue }}" {{ $cond === $condValue ? 'selected' : '' }}>{{ $condLabel }}</option>
+                @endforeach
             </select>
             <div class="form-text">
-                Good → Available &nbsp;|&nbsp; Not Good → Disposed &nbsp;|&nbsp; Under Maintenance → Unavailable
+                Good → Available &nbsp;|&nbsp; Under Maintenance → Unavailable &nbsp;|&nbsp; Not Good / Returned → moved to Decommissioning
             </div>
         </div>
 
@@ -354,9 +353,11 @@
             </select>
         </div>
 
-        {{-- Decommission Reason — required when condition = Not Good --}}
-        <div class="col-md-6" id="decommissionReasonWrap" style="{{ $cond === 'not_good' ? '' : 'display:none;' }}">
-            <label class="form-label fw-semibold">Decommission Reason <span class="text-danger">*</span></label>
+        {{-- Decommission / Return reason — shown for Not Good (e-waste) and Returned (vendor return).
+             Required only for Not Good; a return is usually just "end of lease". --}}
+        @php $isDecommissioning = in_array($cond, \App\Models\AssetInventory::DECOMMISSION_CONDITIONS); @endphp
+        <div class="col-md-6" id="decommissionReasonWrap" style="{{ $isDecommissioning ? '' : 'display:none;' }}">
+            <label class="form-label fw-semibold">Decommission / Return Reason @if($cond === 'not_good')<span class="text-danger">*</span>@endif</label>
             @php
                 $existingReason = old('decommission_reason',
                     \App\Models\DisposedAsset::where('asset_inventory_id', $asset->id)->value('reason') ?? '');
@@ -364,9 +365,9 @@
             <input type="text" name="decommission_reason" id="decommissionReason"
                    class="form-control"
                    value="{{ $existingReason }}"
-                   placeholder="e.g. Screen cracked beyond repair, Water damage, Hardware failure..."
+                   placeholder="e.g. End of lease, Screen cracked beyond repair, Hardware failure..."
                    {{ $cond === 'not_good' ? 'required' : '' }}>
-            <div class="form-text">This reason will be shown in the Decommissioning Assets table.</div>
+            <div class="form-text">Shown in the Decommissioning Assets table. Recommended for a returned rental asset (e.g. contract ended).</div>
         </div>
 
         <div class="col-md-3"><label class="form-label fw-semibold">Last Maintenance Date</label><input type="date" name="last_maintenance_date" class="form-control" value="{{ old('last_maintenance_date',$asset->last_maintenance_date?->format('Y-m-d')) }}"></div>
@@ -421,7 +422,7 @@
 @endif
 
 <div class="d-flex gap-2 justify-content-end">
-    <a href="{{ $asset->asset_condition === 'not_good' ? route('assets.disposed.show', array_merge(request()->query(), ['asset' => $asset->id])) : route('assets.show', array_merge(request()->query(), ['asset' => $asset->id])) }}" class="btn btn-outline-secondary">Cancel</a>
+    <a href="{{ $asset->isStagedForDecommission() ? route('assets.disposed.show', array_merge(request()->query(), ['asset' => $asset->id])) : route('assets.show', array_merge(request()->query(), ['asset' => $asset->id])) }}" class="btn btn-outline-secondary">Cancel</a>
     <button type="submit" class="btn btn-primary px-4"><i class="bi bi-check-circle me-2"></i>Save Changes</button>
 </div>
 </form>
@@ -637,7 +638,10 @@ function syncStatusFromCondition(condition) {
     }
 
     if (reasonWrap) {
-        reasonWrap.style.display = condition === 'not_good' ? '' : 'none';
+        // Shown for both decommissioning conditions, but only Not Good demands a reason —
+        // a vendor return is usually just "end of lease".
+        const isDecommissioning = (condition === 'not_good' || condition === 'returned');
+        reasonWrap.style.display = isDecommissioning ? '' : 'none';
         if (reasonInput) {
             reasonInput.required = condition === 'not_good';
         }

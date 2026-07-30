@@ -12,7 +12,15 @@
         <i class="bi bi-pencil me-1"></i>Edit
     </a>
     @endif
-    <span class="badge bg-danger align-self-center">Not Good — Decommissioning</span>
+    @php
+        // A staged asset is here either as e-waste (Not Good) or as a vendor return (Returned).
+        $isReturn       = $asset->asset_condition === 'returned';
+        $conditionLabel = $asset->conditionLabel();
+        $conditionClass = $isReturn ? 'warning text-dark' : 'danger';
+    @endphp
+    <span class="badge bg-{{ $conditionClass }} align-self-center">
+        {{ $conditionLabel }} — {{ $isReturn ? 'Vendor Return' : 'Decommissioning' }}
+    </span>
 </div>
 
 @php $sc = ['available'=>'success','assigned'=>'primary','unavailable'=>'warning text-dark','retired'=>'secondary']; @endphp
@@ -34,7 +42,7 @@
                     <tr><td class="text-muted">Status</td><td>
                         <span class="badge bg-{{ $sc[$asset->status] ?? 'secondary' }}">{{ ucfirst(str_replace('_',' ',$asset->status)) }}</span>
                     </td></tr>
-                    <tr><td class="text-muted">Condition</td><td><span class="badge bg-danger">Not Good</span></td></tr>
+                    <tr><td class="text-muted">Condition</td><td><span class="badge bg-{{ $conditionClass }}">{{ $conditionLabel }}</span></td></tr>
                 </table>
             </div>
         </div>
@@ -104,7 +112,7 @@
                     $decommReason = \App\Models\DisposedAsset::where('asset_inventory_id', $asset->id)->value('reason');
                 @endphp
                 <table class="table table-sm table-borderless mb-0">
-                    <tr><td class="text-muted" style="width:45%">Condition</td><td><span class="badge bg-danger">Not Good</span></td></tr>
+                    <tr><td class="text-muted" style="width:45%">Condition</td><td><span class="badge bg-{{ $conditionClass }}">{{ $conditionLabel }}</span></td></tr>
                     @if($decommReason)
                     <tr><td class="text-muted">Decommission Reason</td><td>{{ $decommReason }}</td></tr>
                     @endif

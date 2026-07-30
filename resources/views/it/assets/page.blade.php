@@ -238,7 +238,8 @@
         <div class="px-3 pt-3 pb-2">
             <p class="text-muted small mb-0">
                 <i class="bi bi-info-circle me-1"></i>
-                Assets marked as <strong>Not Good</strong> are removed from the active listing and tracked here for decommissioning.
+                Assets marked as <strong>Not Good</strong> or <strong>Returned</strong> are removed from the active listing and tracked here.
+                <strong>Not Good</strong> assets are decommissioned as e-waste; <strong>Returned</strong> assets go back to the rental vendor.
             </p>
         </div>
         @if($disposed->isEmpty())
@@ -257,6 +258,7 @@
                         <th>Serial Number</th>
                         <th>Ownership</th>
                         <th>Condition</th>
+                        <th>Status</th>
                         <th>Reason</th>
                         <th>Actions</th>
                     </tr>
@@ -277,7 +279,19 @@
                                 <span class="text-muted">—</span>
                             @endif
                         </td>
-                        <td><span class="badge bg-danger">Not Good</span></td>
+                        <td>
+                            {{-- The staging row's own snapshot, not the live asset's current condition. --}}
+                            <span class="badge bg-{{ $d->isVendorReturn() ? 'warning text-dark' : 'danger' }}">
+                                {{ \App\Models\AssetInventory::CONDITIONS[$d->asset_condition] ?? ($d->isVendorReturn() ? 'Returned' : 'Not Good') }}
+                            </span>
+                        </td>
+                        <td>
+                            @if($d->isVendorReturn())
+                                <span class="badge bg-primary"><i class="bi bi-arrow-return-left me-1"></i>Return</span>
+                            @else
+                                <span class="badge bg-danger"><i class="bi bi-recycle me-1"></i>E-waste</span>
+                            @endif
+                        </td>
                         <td style="max-width:180px;white-space:normal;">{{ $d->reason ?? '—' }}</td>
                         <td>
                             <div class="d-flex gap-1">

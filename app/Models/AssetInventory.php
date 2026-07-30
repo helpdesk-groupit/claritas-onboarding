@@ -9,6 +9,31 @@ use Carbon\Carbon;
 class AssetInventory extends Model
 {
     use HasFactory;
+
+    /**
+     * Section E condition values, keyed value => label. Single source of truth for the
+     * validation rule and the edit form's dropdown.
+     *   good              → available (unless assigned)
+     *   under_maintenance → unavailable
+     *   not_good          → unavailable + staged for decommissioning as e-waste
+     *   returned          → unavailable + staged for decommissioning as a vendor return
+     */
+    public const CONDITIONS = [
+        'good'              => 'Good',
+        'under_maintenance' => 'Under Maintenance',
+        'not_good'          => 'Not Good',
+        'returned'          => 'Returned',
+    ];
+
+    /** How a staged asset is decommissioned. Mirrors DisposedAsset.decommission_type. */
+    public const DECOMMISSION_TYPES = [
+        'e_waste'       => 'E-waste',
+        'vendor_return' => 'Vendor Return',
+    ];
+
+    /** Conditions that move an asset out of the active listing into the Decommissioning tab. */
+    public const DECOMMISSION_CONDITIONS = ['not_good', 'returned'];
+
     protected $fillable = [
         // Section A – Identification
         'asset_tag', 'asset_category', 'asset_type', 'brand', 'model', 'serial_number',
@@ -45,6 +70,18 @@ class AssetInventory extends Model
 
     public function assignments()      { return $this->hasMany(AssetAssignment::class); }
     public function assignedEmployee() { return $this->belongsTo(Employee::class, 'assigned_employee_id'); }
+
+    /** True when this condition takes the asset out of the active listing. */
+    public function isStagedForDecommission(): bool
+    {
+        return in_array($this->asset_condition, self::DECOMMISSION_CONDITIONS, true);
+    }
+
+    public function conditionLabel(): string
+    {
+        return self::CONDITIONS[$this->asset_condition]
+            ?? ucfirst(str_replace('_', ' ', (string) $this->asset_condition));
+    }
 
     /**
      * Resolve the assigned person's name for display.
