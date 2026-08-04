@@ -871,12 +871,26 @@ class Ticket extends Model
      * users.role (for app-role-gated depts) or employees.department
      * (for work-role-gated depts). Excludes superadmin/system_admin since
      * they aren't department-specific members.
+     *
+     * DEPARTED STAFF ARE EXCLUDED (`active_until IS NULL`). This mirrors
+     * User::employee(), which is `hasOne(Employee)->whereNull('active_until')`
+     * — so every whereHas('employee') path (notably picPoolForDeptAndCompany)
+     * already ignores leavers. This method queries Employee DIRECTLY and so
+     * used to bypass that filter, and the disagreement was load-bearing: a
+     * company whose entire team for a dept had left still counted as a valid
+     * service provider via sourceCompanyIdsForDepartment(), so tickets routed
+     * there looked correctly-routed to scopeVisibleTo() (no orphan rescue)
+     * while picPoolForDeptAndCompany() returned nobody but the sysadmins.
+     * Result: an Urgent ticket visible to no one and assignable to no one.
+     * Found 2026-08-04 on TIC-2026-0118 (Consulting → Claritas Consulting,
+     * whose only Consulting employee left 2026-04-30). Keep the two in sync.
      */
     private static function defaultServedCompanyIdsForDepartment(string $department): array
     {
         if (in_array($department, self::WORK_ROLE_MANAGER_DEPARTMENTS, true)) {
             // Work-role-gated: members = anyone with employee.department = $department
             $companyNames = Employee::where('department', $department)
+                ->whereNull('active_until')
                 ->whereNotNull('company')
                 ->where('company', '!=', '')
                 ->pluck('company')
@@ -900,6 +914,7 @@ class Ticket extends Model
             $companyNames = User::query()
                 ->join('employees', 'employees.user_id', '=', 'users.id')
                 ->whereIn('users.role', $memberRoles)
+                ->whereNull('employees.active_until')
                 ->whereNotNull('employees.company')
                 ->where('employees.company', '!=', '')
                 ->pluck('employees.company')
