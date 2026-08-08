@@ -23,13 +23,27 @@ class RunEmailWorkflows extends Command
     protected $signature = 'email-workflows:run
                             {--workflow= : Run a single workflow by id}
                             {--force : Ignore the cron schedule and run now}
-                            {--sync : Run inline instead of queueing (testing/CLI)}';
+                            {--sync : Run inline instead of queueing (testing/CLI)}
+                            {--catch-up : Sweep the whole lookback window, not just back to the previous run}';
 
     protected $description = 'Run due Email Workflow captures (Email → Rules → Storage → Log)';
 
     public function handle(CaptureService $capture): int
     {
         $workflows = $this->targets();
+
+        // A catch-up is the deliberate recovery of a backlog a capped sweep left
+        // behind: it reads the WHOLE window rather than just back to the previous
+        // run, which is minutes of work and exactly what nobody wants firing on a
+        // cron by accident. Requiring an explicit target makes that impossible.
+        $catchUp = (bool) $this->option('catch-up');
+
+        if ($catchUp && ! $this->option('workflow')) {
+            $this->error('--catch-up needs --workflow=<id>: it reads the entire lookback window, '
+                .'so it is a per-mailbox decision, not a fleet-wide one.');
+
+            return self::FAILURE;
+        }
 
         if ($workflows->isEmpty()) {
             $this->info('No workflows to run.');
@@ -46,7 +60,10 @@ class RunEmailWorkflows extends Command
             // its own cron. --force still forces a cron-style run.
             $requested = $workflow->hasPendingRunRequest();
 
-            if (! $requested && ! $this->option('force') && ! $this->isDue($workflow)) {
+            // --catch-up is already an explicit "this workflow, now" instruction
+            // (it cannot run without --workflow=), so making the operator ALSO
+            // pass --force would only ever produce a confusing no-op.
+            if (! $requested && ! $catchUp && ! $this->option('force') && ! $this->isDue($workflow)) {
                 continue;
             }
 
@@ -74,15 +91,19 @@ class RunEmailWorkflows extends Command
             }
 
             if ($this->option('sync')) {
-                $run = $capture->run($workflow, $trigger, $userId);
+                $run = $capture->run($workflow, $trigger, $userId, $catchUp);
                 $this->line(sprintf(
-                    '#%d “%s” → %s (scanned %d, captured %d, skipped %d, failed %d)%s',
-                    $workflow->id, $workflow->name, strtoupper($run->status),
+                    '#%d “%s” → %s (%d pass(es), scanned %d, captured %d, skipped %d, failed %d)%s',
+                    $workflow->id, $workflow->name, strtoupper($run->status), $run->passes,
                     $run->scanned_count, $run->captured_count, $run->skipped_count, $run->failed_count,
                     $run->error ? ' — '.$run->error : ''
                 ));
+
+                if ($run->coverage_warning) {
+                    $this->warn('   '.$run->coverage_warning);
+                }
             } else {
-                RunEmailWorkflowCapture::dispatch($workflow->id, $trigger, $userId);
+                RunEmailWorkflowCapture::dispatch($workflow->id, $trigger, $userId, $catchUp);
                 $this->line("#{$workflow->id} “{$workflow->name}” → queued.");
             }
 

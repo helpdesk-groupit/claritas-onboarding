@@ -13,33 +13,70 @@ return [
     | controls note in CLAUDE.md — the wizard's "load history" toggle is not
     | wired to anything).
     |
-    | `message_limit` caps ONE SWEEP (0 = unlimited). 500 is chosen so each
-    | sweep re-reads the newest 500, the captures table skips what it already
-    | has, and the window slides forward with the mailbox. While a day's volume
-    | stays well under the cap, every arriving message lands in at least one
-    | sweep before sliding past it — so nothing NEW is missed, and the cap costs
-    | only the old backlog, which is a deliberate choice. At the observed ~35
-    | messages/day that is roughly a fortnight of catch-up slack, so a few missed
-    | sweeps are harmless.
+    | `message_limit` caps ONE PASS of a sweep (0 = unlimited). It is a MEMORY
+    | bound, not a coverage bound — that distinction is the whole fix below.
     |
-    | It only goes wrong if daily volume ever approaches the cap. CaptureService
-    | detects exactly that (comparing how far back a sweep reached against the
-    | previous sweep) and records a coverage_warning on the run. It does NOT warn
-    | merely for filling the cap — that is the design working, and warning every
-    | run would be noise nobody reads.
+    | It used to be the coverage bound: a sweep read the newest 500 and stopped,
+    | which is sound only while a day's volume stays under 500. On
+    | admin@claritas.asia it did not, and the arithmetic is unforgiving — a
+    | 19:30 daily sweep that reaches back only to 03:56 leaves 15 hours of mail
+    | read by no run, ever, which then ages out of the `since_days` window. That
+    | happened on 27, 29, 30 Jul and 3, 4, 7 Aug 2026. The run rows warned about
+    | it every time; a warning nobody acts on is not a safeguard.
     |
-    | Why not unlimited: measured on the real mailbox, an unbounded sweep ran 25+
-    | minutes and accumulated 180MB+ before failing — the engine holds every
-    | normalized message for the run, so memory and time grow with the mailbox,
-    | not with the page. Unlimited would need a streaming redesign of
-    | EmailSourceAdapter::search (yield per message instead of returning an
-    | array). 500 keeps a sweep near ~10 minutes.
+    | A sweep now keeps requesting older slices (offset paging, newest-first)
+    | until it reaches back past what the previous run covered. Each pass is
+    | processed and released before the next is fetched, so peak memory tracks
+    | ONE pass however many it takes — which is why 500 can stay 500: it is the
+    | measured-safe slice size (~40MB, ~60s on Graph), not a statement about how
+    | much mail a sweep may read.
+    |
+    | Why not simply unlimited: measured on the real mailbox, an unbounded sweep
+    | ran 25+ minutes and accumulated 180MB+ before failing, because the engine
+    | held every normalized message for the whole run. Paged passes give the same
+    | coverage with bounded memory.
     |
     */
 
     'since_days' => (int) env('EWF_SINCE_DAYS', 30),
 
     'message_limit' => (int) env('EWF_MESSAGE_LIMIT', 500),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Catch-up bounds
+    |--------------------------------------------------------------------------
+    |
+    | What stops a sweep that is chasing coverage it cannot reach. Both are
+    | backstops against a pathological mailbox, NOT a normal stopping point: in
+    | the steady state a sweep needs one or two passes, and a run that regularly
+    | needs many is telling you its capture cron should fire more often.
+    |
+    | `max_passes` bounds the work; `max_sweep_seconds` bounds the wall clock and
+    | is the one that actually binds. It must stay comfortably under BOTH
+    | CaptureService::STALE_RUN_MINUTES (or a healthy long run gets reaped as
+    | dead mid-flight) and RunEmailWorkflowCapture::$timeout (or the worker kills
+    | it first and the budget never applies). 40 minutes against 180 and 60.
+    |
+    | Neither bounds the FIRST pass — that is the pre-existing behaviour and a
+    | sweep always does at least one, budget or no budget. When a run stops on a
+    | budget it records the target it could not reach (coverage_gap_from), and
+    | the next run inherits it, so the attempt is retried rather than forgotten.
+    |
+    | `pass_overlap` re-reads the last few messages of each pass on the next one.
+    | Offsets are positions in a LIVE mailbox: mail arriving mid-sweep shifts
+    | everything down (harmless — a re-read, and the captures table dedupes it),
+    | but a deletion shifts the other way and would slide one message through the
+    | seam unread. The overlap costs a handful of duplicate reads per pass and
+    | closes that seam.
+    |
+    */
+
+    'max_passes' => (int) env('EWF_MAX_PASSES', 40),
+
+    'max_sweep_seconds' => (int) env('EWF_MAX_SWEEP_SECONDS', 2400),
+
+    'pass_overlap' => (int) env('EWF_PASS_OVERLAP', 10),
 
     /*
     |--------------------------------------------------------------------------

@@ -317,6 +317,13 @@
                 + '<td class="fw-semibold">' + escHtml(r.captured) + '</td>'
                 + '<td>' + escHtml(r.skipped) + '</td>'
                 + '<td>' + escHtml(r.failed) + '</td>'
+                // Badged only when non-zero: an unreadable message is a document
+                // we did not capture, and the whole point of the column is that
+                // it used to leave no trace anywhere. bg-warning + text-dark
+                // rather than text-warning — amber text on white fails contrast.
+                + '<td>' + (r.unreadable
+                    ? '<span class="badge bg-warning text-dark">' + escHtml(r.unreadable) + '</span>'
+                    : '0') + '</td>'
                 + '<td class="text-danger" style="font-size:11px;">' + escHtml(r.error || '') + '</td>'
                 + '</tr>';
         }).join('');
@@ -324,7 +331,10 @@
         return '<h6 class="mb-2">Recent runs</h6>'
             + '<div class="table-responsive mb-4"><table class="table table-sm align-middle mb-0">'
             + '<thead><tr><th>Status</th><th>Started</th><th>By</th><th>Took</th>'
-            + '<th>Scanned</th><th>Matched</th><th>Captured</th><th>Skipped</th><th>Failed</th><th>Error</th></tr></thead>'
+            + '<th>Scanned</th><th>Matched</th><th>Captured</th><th>Skipped</th><th>Failed</th>'
+            + '<th title="Messages the mailbox returned but the mail parser could not read. '
+            + 'They were skipped, so their attachments were not captured.">Unreadable</th>'
+            + '<th>Error</th></tr></thead>'
             + '<tbody>' + rows + '</tbody></table></div>';
     }
 

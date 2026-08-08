@@ -32,7 +32,8 @@ class EmailWorkflowRun extends Model
     protected $fillable = [
         'email_workflow_id', 'trigger', 'triggered_by', 'status',
         'scanned_count', 'matched_count', 'captured_count',
-        'skipped_count', 'failed_count', 'error', 'coverage_warning',
+        'skipped_count', 'failed_count', 'unreadable_count', 'error', 'coverage_warning',
+        'covered_back_to', 'coverage_gap_from', 'passes',
         'started_at', 'finished_at',
     ];
 
@@ -42,6 +43,10 @@ class EmailWorkflowRun extends Model
         'captured_count' => 'integer',
         'skipped_count' => 'integer',
         'failed_count' => 'integer',
+        'unreadable_count' => 'integer',
+        'passes' => 'integer',
+        'covered_back_to' => 'datetime',
+        'coverage_gap_from' => 'datetime',
         'started_at' => 'datetime',
         'finished_at' => 'datetime',
     ];

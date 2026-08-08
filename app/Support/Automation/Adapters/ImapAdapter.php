@@ -4,6 +4,7 @@ namespace App\Support\Automation\Adapters;
 
 use App\Models\EmailWorkflowConnection;
 use App\Support\Automation\Contracts\EmailSourceAdapter;
+use App\Support\Automation\ParserWarnings;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 use Webklex\PHPIMAP\ClientManager;
@@ -32,11 +33,60 @@ class ImapAdapter implements EmailSourceAdapter
      */
     private const FETCH_BATCH = 10;
 
+    /**
+     * Messages the LAST search() could not read, and therefore did not return.
+     *
+     * @var array<int,array{ref:string,error:string}>
+     */
+    private array $unreadable = [];
+
+    /**
+     * Parser complaints already logged this sweep, so a sender that emits the
+     * same malformed header on every message writes one log line, not hundreds.
+     *
+     * @var array<string,true>
+     */
+    private array $warned = [];
+
     public function __construct(private readonly string $providerId = 'imap') {}
 
     public function providerId(): string
     {
         return $this->providerId;
+    }
+
+    /**
+     * Messages the last sweep gave up on. Empty is the healthy case.
+     *
+     * @return array<int,array{ref:string,error:string}>
+     */
+    public function unreadableMessages(): array
+    {
+        return $this->unreadable;
+    }
+
+    /**
+     * Where an offset lands in IMAP's page-and-position addressing.
+     *
+     * Pure, and public, because it is the whole of this adapter's offset
+     * correctness and there is no HTTP surface to assert it on: an error here
+     * silently skips messages a later pass believed it had read, and nothing
+     * ever comes back for them (the next run starts from the newest). It must
+     * honour the offset EXACTLY — rounding to a page boundary would drop up to
+     * `perPage` real documents per pass.
+     *
+     * @return array{page:int,drop:int} 1-based page to start at, and how many of
+     *                                  that page belong to the previous pass
+     */
+    public static function pageCursor(int $offset, int $perPage): array
+    {
+        $offset = max(0, $offset);
+        $perPage = max(1, $perPage);
+
+        return [
+            'page' => intdiv($offset, $perPage) + 1,
+            'drop' => $offset % $perPage,
+        ];
     }
 
     /**
@@ -80,9 +130,16 @@ class ImapAdapter implements EmailSourceAdapter
      */
     public function search(EmailWorkflowConnection $conn, array $query, array $paging = []): array
     {
+        // Per-sweep state: what this run could not read, and what it has already
+        // complained about. Reset here so unreadableMessages() always describes
+        // the sweep the caller just asked for.
+        $this->unreadable = [];
+        $this->warned = [];
+
         // 0 = unlimited: keep paging until the window is exhausted.
         $limit = max(0, (int) ($paging['limit'] ?? 25));
         $unlimited = $limit === 0;
+        $offset = max(0, (int) ($paging['offset'] ?? 0));
         $sinceDays = (int) ($query['since_days'] ?? 30);
         $since = now()->subDays($sinceDays);
 
@@ -95,7 +152,11 @@ class ImapAdapter implements EmailSourceAdapter
             $out = [];
             $perPage = max(1, (int) config('email-workflow.fetch_batch', self::FETCH_BATCH));
 
-            for ($page = 1; ; $page++) {
+            // IMAP pages by position in the ordered result, so an offset is just
+            // a later starting page plus a partial first batch.
+            ['page' => $startPage, 'drop' => $dropFromFirstPage] = self::pageCursor($offset, $perPage);
+
+            for ($page = $startPage; ; $page++) {
                 try {
                     $batch = $this->fetchPage($inbox, $since, $perPage, $page);
                 } catch (Throwable $e) {
@@ -122,6 +183,18 @@ class ImapAdapter implements EmailSourceAdapter
 
                 if ($batch === []) {
                     break; // window exhausted — the only stop condition when unlimited
+                }
+
+                // The offset's remainder lands mid-page; drop what belongs to the
+                // previous pass. A full page always leaves at least one behind
+                // (the remainder is < perPage), so an empty result here means the
+                // page was short — i.e. the window ended inside it.
+                if ($page === $startPage && $dropFromFirstPage > 0) {
+                    $batch = array_slice($batch, $dropFromFirstPage);
+
+                    if ($batch === []) {
+                        break;
+                    }
                 }
 
                 foreach ($batch as $message) {
@@ -159,7 +232,7 @@ class ImapAdapter implements EmailSourceAdapter
         $client->connect();
 
         try {
-            $message = $this->findByUid($client, $messageId);
+            $message = $this->read('message '.$messageId, fn () => $this->findByUid($client, $messageId));
 
             return $message ? $this->normalize($message) : [];
         } finally {
@@ -173,10 +246,23 @@ class ImapAdapter implements EmailSourceAdapter
         $client->connect();
 
         try {
-            $message = $this->findByUid($client, $messageId);
+            // Tolerated here too, and not only in search(): the download re-parses
+            // the whole message, so a header the sweep already forgave would
+            // otherwise resurface as a failed lookup and the attachment would
+            // arrive as 0 bytes — detected, matched, and still not captured.
+            //
+            // The tolerance stops at the parse. Reading the bytes out is done
+            // outside it, because a diagnostic there is about the CONTENT we are
+            // about to file, and a truncated attachment stored as a good one is
+            // never retried (ParserWarnings::NEVER_TOLERATED covers the transport
+            // side of the same hazard).
+            $message = $this->read('attachment '.$attachmentId.' of message '.$messageId,
+                fn () => $this->findByUid($client, $messageId));
+
             if (! $message) {
                 return '';
             }
+
             foreach ($message->getAttachments() as $att) {
                 if ((string) $att->getName() === $attachmentId) {
                     return (string) $att->getContent();
@@ -214,13 +300,23 @@ class ImapAdapter implements EmailSourceAdapter
      */
     private function fetchPage($inbox, \Carbon\Carbon $since, int $perPage, int $page): array
     {
-        $batch = $inbox->messages()
+        // Tolerate ONLY the fetch-and-parse. That is where the malformed-header
+        // notice fires (Message::make → Header::parse → imap_rfc822_parse_headers)
+        // and where losing it costs the whole page.
+        $batch = $this->read('page '.$page, fn () => $inbox->messages()
             ->since($since)
             ->setFetchBody(true)
             ->setFetchOrderDesc()
             ->limit($perPage, $page)
-            ->get();
+            ->get());
 
+        // Normalize OUTSIDE the tolerant scope, deliberately. A diagnostic raised
+        // here does not cost us the message — it costs us the TRUTH about it: a
+        // tolerated "Array to string conversion" (seen on this mailbox) makes
+        // (string) $subject the literal "Array", which detection then quietly
+        // fails to match, and nothing counts it. A counted skip beats an
+        // uncounted wrong answer, so let it escalate: the caller re-reads this
+        // page one message at a time and records exactly which one it was.
         $out = [];
         foreach ($batch as $message) {
             $out[] = $this->normalize($message);
@@ -252,12 +348,13 @@ class ImapAdapter implements EmailSourceAdapter
             $offset = $base + $i;
 
             try {
-                $one = $inbox->messages()
+                // Same split as fetchPage: tolerate the parse, not the shaping.
+                $one = $this->read('page '.$page.' offset '.$offset, fn () => $inbox->messages()
                     ->since($since)
                     ->setFetchBody(true)
                     ->setFetchOrderDesc()
                     ->limit(1, $offset)
-                    ->get();
+                    ->get());
 
                 if ($one->isEmpty()) {
                     break; // ran off the end of the window
@@ -267,14 +364,79 @@ class ImapAdapter implements EmailSourceAdapter
                     $out[] = $this->normalize($message);
                 }
             } catch (Throwable $e) {
-                Log::warning('Email Workflow skipped an unreadable IMAP message', [
-                    'offset' => $offset,
-                    'error' => $e->getMessage(),
-                ]);
+                $this->recordUnreadable($offset, $e);
             }
         }
 
         return $out;
+    }
+
+    /**
+     * Note a message this sweep could not read, in the log AND on the adapter.
+     *
+     * The log alone was not enough: a skipped message left NO trace in any run
+     * counter, so a sweep that dropped twenty documents still reported success
+     * with a green tick. CaptureService reads unreadableMessages() and turns the
+     * count into a run counter and an operator-visible note.
+     */
+    private function recordUnreadable(int $offset, Throwable $e): void
+    {
+        $cause = $e->getPrevious() ?: $e;
+
+        $this->unreadable[] = [
+            // The IMAP UID is not available here (the message is precisely the
+            // thing that would not construct), so identify it by its position in
+            // the newest-first window — enough to locate it in the mailbox.
+            'ref' => 'message #'.$offset.' in the '.$this->providerId.' window',
+            'error' => mb_substr($cause::class.': '.$cause->getMessage(), 0, 300),
+        ];
+
+        Log::warning('Email Workflow skipped an unreadable IMAP message', [
+            'provider' => $this->providerId,
+            'offset' => $offset,
+            'error' => $e->getMessage(),
+            'root_cause' => $e->getPrevious()
+                ? $e->getPrevious()::class.': '.$e->getPrevious()->getMessage()
+                    .' @ '.$e->getPrevious()->getFile().':'.$e->getPrevious()->getLine()
+                : null,
+        ]);
+    }
+
+    /**
+     * Perform an IMAP read with the mail parser's non-fatal complaints tolerated.
+     *
+     * Every path that turns raw mail into our shape goes through here, because
+     * every one of them can trip a diagnostic on a header written by somebody
+     * else. Without this, Laravel's error handler promotes that diagnostic to an
+     * ErrorException, webklex loses the whole page it was building, and the
+     * documents on those messages are never captured — see ParserWarnings.
+     *
+     * @template TReturn
+     *
+     * @param  callable():TReturn  $fn
+     * @return TReturn
+     */
+    private function read(string $context, callable $fn): mixed
+    {
+        $warnings = [];
+
+        try {
+            return ParserWarnings::tolerate($fn, $warnings);
+        } finally {
+            $fresh = array_values(array_filter($warnings, fn (string $w) => ! isset($this->warned[$w])));
+
+            if ($fresh !== []) {
+                foreach ($fresh as $w) {
+                    $this->warned[$w] = true;
+                }
+
+                Log::info('Email Workflow tolerated a mail-parser complaint (message kept)', [
+                    'provider' => $this->providerId,
+                    'context' => $context,
+                    'warnings' => $fresh,
+                ]);
+            }
+        }
     }
 
     /** Build a webklex client straight from the connection's stored config. */

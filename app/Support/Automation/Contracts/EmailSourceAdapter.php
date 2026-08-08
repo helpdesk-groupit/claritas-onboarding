@@ -48,11 +48,35 @@ interface EmailSourceAdapter
      * a single page (Gmail maxResults, Graph $top, IMAP fetch batch), so a
      * one-shot request silently truncates the sweep.
      *
+     * `$paging['offset']` skips that many messages from the NEWEST end before
+     * returning anything, so a caller can walk a window in limit-sized passes
+     * without holding it all in memory. CaptureService uses it to keep reading
+     * older mail until a sweep reaches back past the previous run's coverage —
+     * which is what stops the cap from silently becoming a coverage bound on a
+     * high-volume mailbox. Honour it EXACTLY: an implementation that rounds it
+     * to a page boundary drops real messages, and they are never re-read,
+     * because the next run starts from the newest again.
+     *
      * @param  array<string,mixed>  $query  provider-agnostic query (window, keywords)
-     * @param  array<string,mixed>  $paging  ['limit' => int]  0 = unlimited
+     * @param  array<string,mixed>  $paging  ['limit' => int, 'offset' => int]  limit 0 = unlimited
      * @return array<int, array<string,mixed>> normalized messages, newest first
      */
     public function search(EmailWorkflowConnection $conn, array $query, array $paging = []): array;
+
+    /**
+     * Messages the LAST search() could not read, and therefore did not return.
+     *
+     * Part of the contract because a message dropped in the adapter is a document
+     * that never reaches the engine, the storage, or the log — the same silent
+     * failure this module keeps producing. Returning it here lets CaptureService
+     * put a number on the run instead of leaving a green tick over lost mail.
+     *
+     * Implementations MUST return [] when the sweep read everything, and MUST
+     * reset the list at the start of each search().
+     *
+     * @return array<int,array{ref:string,error:string}>
+     */
+    public function unreadableMessages(): array;
 
     /**
      * Fetch a full message (body + attachment metadata).

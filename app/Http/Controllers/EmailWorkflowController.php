@@ -327,6 +327,10 @@ class EmailWorkflowController extends Controller
                 'captured' => $r->captured_count,
                 'skipped' => $r->skipped_count,
                 'failed' => $r->failed_count,
+                // Messages the mailbox handed over but the parser could not read.
+                // Its own column because it is not a captured/skipped/failed
+                // ATTACHMENT — it is a message that never got as far as having any.
+                'unreadable' => $r->unreadable_count,
                 // A scheduled sweep has no flash message — the history is the
                 // only place its coverage warning can ever be read.
                 'error' => $r->error ?: $r->coverage_warning,

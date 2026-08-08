@@ -33,15 +33,48 @@ class CaptureService
     public const DEFAULT_SINCE_DAYS = 30;
 
     /**
-     * Messages per sweep; 0 = unlimited. See config/email-workflow.php for the
-     * reasoning behind 500 (re-read the newest N daily, let the dedupe skip the
-     * overlap, accept the old backlog) and for why unlimited needs a streaming
-     * redesign before it is safe on a large mailbox.
+     * Messages per PASS; 0 = unlimited. A memory bound, not a coverage bound.
+     *
+     * It used to be both, and that is what silently lost mail: a sweep read the
+     * newest 500 and stopped, so a mailbox taking more than 500 a day left the
+     * gap between two runs read by neither, and the window then carried it away.
+     * A sweep now keeps asking for older slices until it reaches back past the
+     * previous run's coverage — see execute(). 500 stays 500 because it is the
+     * measured-safe slice (~40MB held, ~60s on Graph), and each pass is released
+     * before the next is fetched, so peak memory tracks one pass however many
+     * passes a sweep needs.
      */
     public const DEFAULT_MESSAGE_LIMIT = 500;
 
     /** Seconds a synchronous "Run now" may take before PHP kills it. */
     public const REQUEST_TIME_LIMIT = 900;
+
+    /**
+     * Passes a sweep may make before it gives up on reaching its coverage
+     * target, and the wall-clock budget that usually binds first.
+     *
+     * Backstops, not stopping points: in the steady state a sweep needs one or
+     * two passes. The budget must stay well under STALE_RUN_MINUTES (or a
+     * healthy long sweep gets reaped as dead while still working) and under
+     * RunEmailWorkflowCapture::$timeout (or the worker kills it before the
+     * budget can record anything). Neither bounds the first pass — a sweep
+     * always makes at least one, exactly as it always did.
+     */
+    public const DEFAULT_MAX_PASSES = 40;
+
+    public const DEFAULT_MAX_SWEEP_SECONDS = 2400;
+
+    /**
+     * Messages each pass re-reads from the end of the previous one.
+     *
+     * An offset is a position in a LIVE mailbox. Mail arriving mid-sweep shifts
+     * everything down, which is harmless (a re-read, which the captures table
+     * dedupes away), but a deletion shifts the other way and would slide a
+     * message through the seam unread — and nothing would ever look at it again,
+     * because the next run starts from the newest. The overlap costs a handful
+     * of duplicate reads per pass and closes the seam.
+     */
+    public const DEFAULT_PASS_OVERLAP = 10;
 
     /**
      * After this long, a run still marked `running` is presumed dead.
@@ -82,9 +115,21 @@ class CaptureService
      * Execute one capture run. Never throws: a fatal error is recorded on the
      * run (and the workflow) and returned, so callers — job, command, or
      * controller — have a uniform result to report.
+     *
+     * $catchUp makes the sweep target the whole lookback window instead of the
+     * previous run's coverage, and drops the pass/time budget with it. That is
+     * for the deliberate, operator-initiated recovery of a backlog a capped
+     * sweep left behind (`email-workflows:run --catch-up`), which is inherently
+     * one full read of the window — minutes of work nobody should trigger by
+     * accident, and which must not be bounded by a budget sized for the nightly
+     * case. Ordinary runs never set it.
      */
-    public function run(EmailWorkflow $workflow, string $trigger = EmailWorkflowRun::TRIGGER_MANUAL, ?int $userId = null): EmailWorkflowRun
-    {
+    public function run(
+        EmailWorkflow $workflow,
+        string $trigger = EmailWorkflowRun::TRIGGER_MANUAL,
+        ?int $userId = null,
+        bool $catchUp = false,
+    ): EmailWorkflowRun {
         $this->raiseMemoryFloor();
         $this->reapStaleRuns($workflow);
 
@@ -97,7 +142,7 @@ class CaptureService
         ]);
 
         try {
-            $this->execute($workflow, $run);
+            $this->execute($workflow, $run, $catchUp);
         } catch (Throwable $e) {
             // Fatal: auth, unreachable folder/sheet, misconfiguration.
             //
@@ -139,8 +184,18 @@ class CaptureService
             return $run->refresh();
         }
 
+        // Unreadable messages count towards `partial` as much as failed
+        // attachments do: both mean the sweep finished without doing its whole
+        // job. Leaving them out is what let a run drop documents and still
+        // present the green badge the operator reads as "nothing to see".
+        //
+        // An unclosed coverage gap is the third member of that family, and the
+        // one this module spent weeks getting wrong: it means the sweep KNOWS
+        // there is mail behind it that no run has read. Green over that is the
+        // same lie in a different place. It should also be rare now — the sweep
+        // closes the ordinary gap itself — so it stays worth noticing.
         $run->update([
-            'status' => $run->failed_count > 0
+            'status' => ($run->failed_count > 0 || $run->unreadable_count > 0 || $run->coverage_gap_from !== null)
                 ? EmailWorkflowRun::STATUS_PARTIAL
                 : EmailWorkflowRun::STATUS_SUCCESS,
             'finished_at' => now(),
@@ -163,7 +218,26 @@ class CaptureService
 
     // ── Pipeline ─────────────────────────────────────────────────────────
 
-    private function execute(EmailWorkflow $workflow, EmailWorkflowRun $run): void
+    /**
+     * Sweep the mailbox in limit-sized passes until coverage is complete.
+     *
+     * The loop is the fix for the cap silently becoming a coverage bound. One
+     * pass reads the newest `limit` messages; if that did not reach back as far
+     * as the previous run covered, the next pass asks for the slice behind it,
+     * and so on. Each pass is processed and released before the next is
+     * fetched, so peak memory is one pass regardless of how many run.
+     *
+     * Every exit is deliberate, and which one fired decides whether the run
+     * reports a gap:
+     *  - the window ran out (a short pass, or an empty one) — complete by
+     *    definition, since nothing older exists to read;
+     *  - coverage reached the target — the normal, quiet exit;
+     *  - no target (the first ever run) — one pass, exactly as before, because
+     *    walking a whole mailbox on day one is not what anyone asked for;
+     *  - budget spent — the only exit that records an unclosed gap, which the
+     *    next run inherits and retries.
+     */
+    private function execute(EmailWorkflow $workflow, EmailWorkflowRun $run, bool $catchUp = false): void
     {
         [$emailConn, $storageConn, $logConn] = $this->connections($workflow);
 
@@ -179,71 +253,205 @@ class CaptureService
         $rootFolder = $storage->resolveFolder($storageConn, (string) ($storageCfg['folder_ref'] ?? ''));
         $target = $logger->resolveTarget($logConn, (string) ($logCfg['target_ref'] ?? ''));
 
-        $limit = (int) config('email-workflow.message_limit', self::DEFAULT_MESSAGE_LIMIT);
-
-        $messages = $email->search($emailConn, $this->query($rules), ['limit' => $limit]);
-
-        $run->update(['scanned_count' => count($messages)]);
-
-        // No silent caps — but warn about the case that actually costs documents.
-        //
-        // A cap is designed to leave the old backlog unread: each sweep re-reads
-        // the newest N, the dedupe skips what it already has, and the window
-        // slides forward with the mailbox. Nothing NEW is lost while daily volume
-        // stays below the cap, so "we hit the cap" on its own is expected and
-        // warning about it every run would be noise nobody reads.
-        //
-        // The real failure is the cap hiding mail the PREVIOUS sweep hadn't
-        // covered either — that mail is seen by no run, ever, and slides out of
-        // the window. See coverageWarning().
-        if ($warning = $this->coverageWarning($workflow, $run->refresh(), $messages)) {
-            Log::warning('Email Workflow sweep may have missed new mail — raise the message cap', [
-                'workflow_id' => $workflow->id,
-                'run_id' => $run->id,
-                'limit' => $limit,
-                'window_days' => $this->sinceDays(),
-            ]);
-
-            $run->update(['coverage_warning' => $warning]);
+        $limit = $this->messageLimit();
+        $query = $this->query($rules);
+        $reachBackTo = $this->coverageTarget($workflow, $run, $catchUp);
+        // Clamped below the pass size: an overlap >= limit would advance the
+        // offset by the max(1, …) floor instead, so a sweep would crawl forward
+        // one message at a time, burn its pass budget, and report a gap — a
+        // config typo turning into apparent data loss.
+        $overlap = max(0, (int) config('email-workflow.pass_overlap', self::DEFAULT_PASS_OVERLAP));
+        if ($limit > 0) {
+            $overlap = min($overlap, $limit - 1);
         }
+
+        // A catch-up is a deliberate one-off read of the whole window; budgeting
+        // it would just stop it half way and leave the operator to guess.
+        $maxPasses = $catchUp ? PHP_INT_MAX : max(1, (int) config('email-workflow.max_passes', self::DEFAULT_MAX_PASSES));
+        $deadline = $catchUp
+            ? null
+            : now()->addSeconds(max(60, (int) config('email-workflow.max_sweep_seconds', self::DEFAULT_MAX_SWEEP_SECONDS)));
 
         $headers = $this->headers($logCfg);
         $folders = [];   // partition name → folder ref  (one Drive call per month)
         $partitions = []; // partition name → sheet partition ref (one Sheets call per month)
 
-        foreach ($messages as $message) {
-            $verdict = $this->engine->evaluate($message, $rules);
-            if (! $verdict['matched'] || empty($verdict['attachments'])) {
-                continue;
-            }
+        $offset = 0;
+        $passes = 0;
+        $oldest = null;              // oldest message this run has examined
+        $windowExhausted = false;
+        $unreadable = [];
 
-            $run->increment('matched_count');
-            $capturedHere = 0;
+        $stoppedBecause = null;      // why continuation ended, when it ended badly
 
-            foreach ($verdict['attachments'] as $attachment) {
-                $outcome = $this->captureAttachment(
-                    $workflow, $run, $message, $attachment, $verdict['fields'],
-                    $emailConn, $storageConn, $logConn,
-                    $email, $storage, $logger,
-                    $storageCfg, $logCfg, $headers, $rootFolder, $target,
-                    $folders, $partitions
-                );
+        while (true) {
+            $passes++;
 
-                if ($outcome === 'captured') {
-                    $capturedHere++;
+            try {
+                $messages = $email->search($emailConn, $query, ['limit' => $limit, 'offset' => $offset]);
+            } catch (Throwable $e) {
+                // The FIRST pass failing means the mailbox itself is unusable —
+                // auth, host, folder — and that must fail the run loudly, exactly
+                // as it always has.
+                if ($passes === 1) {
+                    throw $e;
                 }
 
-                $run->increment(match ($outcome) {
-                    'captured' => 'captured_count',
-                    'skipped' => 'skipped_count',
-                    default => 'failed_count',
-                });
+                // A LATER pass is different in kind: pass one already proved the
+                // mailbox works and its documents are already captured. Throwing
+                // here would discard a good run's work over a catch-up problem
+                // (a provider refusing a deep offset, a transient 5xx), and would
+                // report the whole sweep as failed when most of it succeeded. So
+                // stop, keep everything captured so far, and let the unclosed gap
+                // — which is already how "we did not catch up" is expressed — say
+                // what happened. The next run inherits the target and retries.
+                Log::warning('Email Workflow could not read a continuation pass — keeping what the sweep captured', [
+                    'workflow_id' => $workflow->id,
+                    'run_id' => $run->id,
+                    'pass' => $passes,
+                    'offset' => $offset,
+                    'error' => $e->getMessage(),
+                    'exception' => $e::class,
+                ]);
+
+                $passes--;   // this pass read nothing; do not count it as work done
+                $stoppedBecause = 'the mailbox refused the request for older mail ('
+                    .$this->safeMessage($e, $emailConn).')';
+
+                break;
             }
 
-            // Best-effort inbox hygiene — a labelling failure must not fail the run.
-            if ($capturedHere > 0) {
-                $this->markProcessed($email, $emailConn, (string) ($message['message_id'] ?? ''));
+            // A message the adapter could not read never reaches the engine, so it
+            // is invisible to scanned_count — which counts what the adapter
+            // RETURNED. That is how ~20 documents a day went missing under a green
+            // tick. Read per pass and BEFORE any early exit, or an empty pass would
+            // throw away the report of what it failed on.
+            $passUnreadable = $email->unreadableMessages();
+            if ($passUnreadable !== []) {
+                $unreadable = array_merge($unreadable, $passUnreadable);
+                $run->increment('unreadable_count', count($passUnreadable));
             }
+
+            if ($messages === []) {
+                $windowExhausted = true;
+                break;
+            }
+
+            $run->increment('scanned_count', count($messages));
+            $oldest = $this->earlier($oldest, $this->oldestDate($messages));
+
+            foreach ($messages as $message) {
+                $verdict = $this->engine->evaluate($message, $rules);
+                if (! $verdict['matched'] || empty($verdict['attachments'])) {
+                    continue;
+                }
+
+                $run->increment('matched_count');
+                $capturedHere = 0;
+
+                foreach ($verdict['attachments'] as $attachment) {
+                    $outcome = $this->captureAttachment(
+                        $workflow, $run, $message, $attachment, $verdict['fields'],
+                        $emailConn, $storageConn, $logConn,
+                        $email, $storage, $logger,
+                        $storageCfg, $logCfg, $headers, $rootFolder, $target,
+                        $folders, $partitions
+                    );
+
+                    if ($outcome === 'captured') {
+                        $capturedHere++;
+                    }
+
+                    $run->increment(match ($outcome) {
+                        'captured' => 'captured_count',
+                        'skipped' => 'skipped_count',
+                        default => 'failed_count',
+                    });
+                }
+
+                // Best-effort inbox hygiene — a labelling failure must not fail the run.
+                if ($capturedHere > 0) {
+                    $this->markProcessed($email, $emailConn, (string) ($message['message_id'] ?? ''));
+                }
+            }
+
+            // ── Does another pass follow? ────────────────────────────────
+            // A short pass means the window ran out behind it. Unlimited (0) read
+            // the whole window in one go, so it is short by definition.
+            if ($limit <= 0 || count($messages) < $limit) {
+                $windowExhausted = true;
+                break;
+            }
+
+            // Nothing to reach back to (first ever run), or nothing datable to
+            // judge coverage by — either way, do not spin.
+            if ($reachBackTo === null || $oldest === null) {
+                break;
+            }
+
+            if ($oldest->lessThanOrEqualTo($reachBackTo)) {
+                break;  // coverage overlaps the previous run: nothing in between
+            }
+
+            if ($passes >= $maxPasses || ($deadline && now()->greaterThanOrEqualTo($deadline))) {
+                $stoppedBecause = 'it ran out of budget';
+
+                break;  // records a gap below
+            }
+
+            // Step back by what this pass covered, less the overlap that closes
+            // the seam against mail moving under us mid-sweep.
+            $offset += max(1, count($messages) - $overlap);
+
+            unset($messages);
+            gc_collect_cycles();
+        }
+
+        $gap = (! $windowExhausted && $reachBackTo && $oldest && $oldest->greaterThan($reachBackTo))
+            ? $reachBackTo
+            : null;
+
+        $run->update([
+            'passes' => $passes,
+            'covered_back_to' => $oldest,
+            'coverage_gap_from' => $gap,
+        ]);
+
+        $notes = [];
+
+        // No silent caps. The engine now closes the ordinary gap itself, so this
+        // fires only when it could NOT — which makes it rare and worth reading,
+        // rather than the nightly noise it had become.
+        if ($warning = $this->coverageWarning($workflow, $run->refresh(), $oldest, $reachBackTo, $windowExhausted, $stoppedBecause)) {
+            Log::warning('Email Workflow sweep could not cover everything since the previous run', [
+                'workflow_id' => $workflow->id,
+                'run_id' => $run->id,
+                'limit' => $limit,
+                'passes' => $passes,
+                'reach_back_to' => (string) $reachBackTo,
+                'covered_back_to' => (string) $oldest,
+                'window_days' => $this->sinceDays(),
+            ]);
+
+            $notes[] = $warning;
+        }
+
+        // The other way a sweep silently under-covers: mail it reached but could
+        // not parse. Same column, because "this sweep did not see everything" is
+        // the same fact to the operator whatever caused it.
+        if ($unreadable !== []) {
+            Log::warning('Email Workflow could not read some messages — they were skipped', [
+                'workflow_id' => $workflow->id,
+                'run_id' => $run->id,
+                'count' => count($unreadable),
+                'skipped' => array_slice($unreadable, 0, 10),
+            ]);
+
+            $notes[] = $this->unreadableWarning($unreadable);
+        }
+
+        if ($notes !== []) {
+            $run->update(['coverage_warning' => implode(' ', $notes)]);
         }
 
         $run->refresh();
@@ -480,44 +688,52 @@ class CaptureService
         return (int) config('email-workflow.since_days', self::DEFAULT_SINCE_DAYS);
     }
 
+    /** Messages one pass may read; 0 = unlimited. */
+    public function messageLimit(): int
+    {
+        return (int) config('email-workflow.message_limit', self::DEFAULT_MESSAGE_LIMIT);
+    }
+
     /**
-     * True when a run examined exactly as many messages as its cap allows, so
+     * True when a run examined at least as many messages as one pass allows, so
      * there was probably more behind it. Always false when unlimited (0).
      *
      * On its own this is NOT a problem — see coverageWarning().
      */
     public function hitCeiling(EmailWorkflowRun $run): bool
     {
-        $limit = (int) config('email-workflow.message_limit', self::DEFAULT_MESSAGE_LIMIT);
+        $limit = $this->messageLimit();
 
         return $limit > 0 && $run->scanned_count >= $limit;
     }
 
     /**
-     * The operator-facing warning when a cap may have cost NEW documents, or
-     * null when coverage is sound.
+     * How far back this run must read for the chain of sweeps to be unbroken,
+     * or null when it has no such obligation.
      *
-     * A capped sweep reads the newest N and re-reads them daily; the dedupe
-     * makes the overlap free. While each day's volume stays under the cap, every
-     * arriving message appears in at least one sweep before sliding past N, so
-     * nothing new is missed and the untouched backlog is a deliberate choice.
+     * Normally that is where the previous run started: everything older was
+     * already this workflow's business on an earlier night. Two refinements
+     * matter and both are load-bearing:
      *
-     * It only goes wrong when the cap fills with mail NEWER than the previous
-     * sweep: the messages between the previous sweep and the oldest one this
-     * sweep looked at were examined by neither, and the window will carry them
-     * away. That is the condition worth interrupting someone for — and it is
-     * self-correcting information, because it means volume has outgrown the cap.
+     *  - an unmet target is INHERITED (`coverage_gap_from`). Without it, a run
+     *    that ran out of budget would hand the next run its own start time as
+     *    the target, and the hole behind it would become permanent — the exact
+     *    failure this whole change exists to remove.
+     *  - the target is clamped to the window. Mail older than `since_days` can
+     *    never be captured, so chasing past it is pure work for no documents,
+     *    and it bounds the worst case at one window's worth of reading.
      *
-     * @param  array<int,array<string,mixed>>  $messages  newest-first
+     * Null on the first ever run: there is no previous coverage to join up to,
+     * and reading an entire mailbox because someone switched a workflow on is
+     * not what they asked for. `--catch-up` is how that is asked for.
      */
-    public function coverageWarning(EmailWorkflow $workflow, EmailWorkflowRun $run, array $messages): ?string
+    private function coverageTarget(EmailWorkflow $workflow, EmailWorkflowRun $run, bool $catchUp): ?\Carbon\CarbonInterface
     {
-        if (! $this->hitCeiling($run) || $messages === []) {
-            return null;
-        }
+        $windowStart = now()->subDays($this->sinceDays());
 
-        // Newest-first is contractual, so the last row is the oldest we saw.
-        $oldestSeen = data_get($messages[array_key_last($messages)], 'date');
+        if ($catchUp) {
+            return $windowStart;
+        }
 
         $previous = EmailWorkflowRun::where('email_workflow_id', $workflow->id)
             ->where('id', '<', $run->id)
@@ -525,34 +741,153 @@ class CaptureService
             ->latest('id')
             ->first();
 
-        // No earlier sweep to have covered the remainder: the backlog beyond the
-        // cap is unread by definition. Worth saying once, on the first run.
         if (! $previous) {
-            return 'This first sweep filled its '.$run->scanned_count.'-message cap, so older mail in the '
-                .$this->sinceDays().'-day window was not read. Ongoing runs will keep up with new mail; '
-                .'raise EWF_MESSAGE_LIMIT once if you want the existing backlog captured too.';
-        }
-
-        if (! $oldestSeen) {
-            return null; // can't date the messages — don't cry wolf
-        }
-
-        try {
-            $reachedBack = \Carbon\Carbon::parse($oldestSeen);
-        } catch (\Throwable) {
             return null;
         }
 
-        // Reached back past the previous sweep ⇒ the two runs' coverage overlaps
-        // ⇒ nothing in between was skipped. This is the healthy, quiet case.
-        if ($reachedBack->lessThanOrEqualTo($previous->started_at)) {
+        $target = $previous->coverage_gap_from ?: $previous->started_at;
+
+        if (! $target) {
             return null;
         }
 
-        return 'Mail volume has outgrown the '.$run->scanned_count.'-message cap: this sweep only reached back to '
-            .$reachedBack->format('Y-m-d H:i').', but the previous one ran at '
-            .$previous->started_at->format('Y-m-d H:i').'. Messages in between were read by neither run and will '
-            .'fall out of the '.$this->sinceDays().'-day window. Raise EWF_MESSAGE_LIMIT or sweep more often.';
+        return $target->greaterThan($windowStart) ? $target : $windowStart;
+    }
+
+    /**
+     * The date of the oldest message in a pass.
+     *
+     * Newest-first is contractual, so this is normally the last row — but it is
+     * computed as a minimum over everything datable rather than trusted blindly,
+     * because a single undated or out-of-order message at the end would
+     * otherwise decide whether the sweep believes it has caught up.
+     *
+     * @param  array<int,array<string,mixed>>  $messages
+     */
+    private function oldestDate(array $messages): ?\Carbon\CarbonInterface
+    {
+        $oldest = null;
+
+        foreach ($messages as $message) {
+            $raw = data_get($message, 'date');
+            if (! $raw) {
+                continue;
+            }
+
+            try {
+                $date = \Carbon\Carbon::parse($raw);
+            } catch (\Throwable) {
+                continue;
+            }
+
+            // A date OUTSIDE the window this sweep asked for cannot be telling
+            // the truth about coverage — the mailbox only returned it because it
+            // ARRIVED inside the window, so the header is wrong (a wrong clock, a
+            // spoofed date, a document date reused as Date:). Ignoring it rather
+            // than folding it in closes two holes at once:
+            //
+            //  - it cannot decide the stop condition. One message stamped last
+            //    year would make $oldest predate the target, the sweep would
+            //    break after pass 1, and the run would claim full coverage.
+            //  - it cannot reach the database. covered_back_to is a MySQL
+            //    TIMESTAMP (1970-01-01 .. 2038-01-19); a `Date: 1 Jan 1969` or a
+            //    year-9999 header raises SQLSTATE 22007 in strict mode, which
+            //    fails a sweep that had actually captured everything and flips
+            //    the workflow to `error`.
+            //
+            // A day of slack on each side absorbs timezone skew rather than lies.
+            if ($date->greaterThan(now()->addDay())
+                || $date->lessThan(now()->subDays($this->sinceDays() + 1))) {
+                continue;
+            }
+
+            $oldest = $this->earlier($oldest, $date);
+        }
+
+        return $oldest;
+    }
+
+    /** The earlier of two instants, either of which may be null. */
+    private function earlier(?\Carbon\CarbonInterface $a, ?\Carbon\CarbonInterface $b): ?\Carbon\CarbonInterface
+    {
+        if ($a === null) {
+            return $b;
+        }
+        if ($b === null) {
+            return $a;
+        }
+
+        return $b->lessThan($a) ? $b : $a;
+    }
+
+    /**
+     * The operator-facing warning when this sweep left mail unread that no run
+     * will ever come back for, or null when coverage is sound.
+     *
+     * The engine closes the ordinary gap by itself now, so reaching this point
+     * means it ran out of budget trying — which is a genuine "volume has
+     * outgrown the schedule" signal rather than the nightly noise the old
+     * cap-based warning became. Silence is the healthy case, and it must stay
+     * silent in every case that is actually fine, or the amber badge means
+     * nothing again.
+     */
+    public function coverageWarning(
+        EmailWorkflow $workflow,
+        EmailWorkflowRun $run,
+        ?\Carbon\CarbonInterface $oldest,
+        ?\Carbon\CarbonInterface $reachBackTo,
+        bool $windowExhausted,
+        ?string $stoppedBecause = null,
+    ): ?string {
+        // Read to the end of the window: there is nothing behind it to miss.
+        if ($windowExhausted) {
+            return null;
+        }
+
+        // No previous coverage to join up to. Whatever sits behind this first
+        // sweep's cap has been read by nobody — worth saying once, and only once,
+        // because every later run does have a target and closes the gap itself.
+        if ($reachBackTo === null) {
+            return $this->hitCeiling($run)
+                ? 'This first sweep filled its '.$run->scanned_count.'-message pass, so older mail in the '
+                    .$this->sinceDays().'-day window was not read. Later runs keep up with new mail on their own; '
+                    .'run `php artisan email-workflows:run --workflow='.$workflow->id.' --catch-up --sync` once '
+                    .'if you want the existing backlog captured too.'
+                : null;
+        }
+
+        if ($oldest === null || $oldest->lessThanOrEqualTo($reachBackTo)) {
+            return null;
+        }
+
+        return 'This sweep could not catch up — '.($stoppedBecause ?? 'it stopped early').': after '.$run->passes
+            .' pass(es) ('.$run->scanned_count.' messages) it had only reached back to '.$oldest->format('Y-m-d H:i')
+            .', and needed to reach '.$reachBackTo->format('Y-m-d H:i').'. Mail in between has been read by no run '
+            .'yet and will fall out of the '.$this->sinceDays().'-day window if this keeps happening. The next run '
+            .'will try again from the same point — if it repeats, sweep more often (capture cron) so each run has '
+            .'less to catch up on.';
+    }
+
+    /**
+     * The operator-facing sentence for messages the mail parser gave up on.
+     *
+     * Names the first cause verbatim, because these are third-party headers we
+     * cannot fix and the remedy — if any — depends entirely on what broke. The
+     * full list goes to the log; the run carries enough to know it happened and
+     * roughly why.
+     *
+     * @param  array<int,array{ref:string,error:string}>  $unreadable
+     */
+    public function unreadableWarning(array $unreadable): string
+    {
+        $count = count($unreadable);
+        $one = $count === 1;
+        $reason = trim((string) ($unreadable[0]['error'] ?? ''));
+
+        return $count.' message'.($one ? '' : 's').' in the window could not be read by the mail parser and '
+            .($one ? 'was' : 'were').' skipped, so any attachments on '.($one ? 'it' : 'them')
+            .' were not captured'.($reason !== '' ? ' ('.$reason.')' : '')
+            .'. The full list is in the application log.';
     }
 
     /**

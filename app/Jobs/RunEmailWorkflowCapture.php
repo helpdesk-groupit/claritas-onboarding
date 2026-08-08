@@ -45,6 +45,7 @@ class RunEmailWorkflowCapture implements ShouldBeUnique, ShouldQueue
         public readonly int $workflowId,
         public readonly string $trigger = EmailWorkflowRun::TRIGGER_SCHEDULED,
         public readonly ?int $userId = null,
+        public readonly bool $catchUp = false,
     ) {
         // Run on the `database` queue, not the app-wide `sync` default. Under
         // `sync` each dispatch ran the full multi-minute sweep INLINE, so
@@ -77,6 +78,6 @@ class RunEmailWorkflowCapture implements ShouldBeUnique, ShouldQueue
 
         // CaptureService records failures on the run rather than throwing, so
         // there is deliberately no try/catch here.
-        $capture->run($workflow, $this->trigger, $this->userId);
+        $capture->run($workflow, $this->trigger, $this->userId, $this->catchUp);
     }
 }

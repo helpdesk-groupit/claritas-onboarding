@@ -8,6 +8,9 @@ use App\Models\EmailWorkflowConnection;
 use App\Models\EmailWorkflowRun;
 use App\Models\User;
 use App\Support\Automation\CaptureService;
+use App\Support\Automation\Contracts\EmailSourceAdapter;
+use App\Support\Automation\EmailAdapterFactory;
+use App\Support\Automation\OAuthService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -378,27 +381,337 @@ class EmailWorkflowCaptureTest extends TestCase
         $this->assertNull($run->coverage_warning);
     }
 
-    public function test_a_cap_that_no_longer_reaches_the_previous_run_warns_that_mail_is_being_missed(): void
-    {
-        // Volume has outgrown the cap: this sweep only reached 2026-07-15, but
-        // the last one ran before that, so mail in between was read by neither
-        // and the window will carry it away. THIS is worth interrupting for.
-        config(['email-workflow.message_limit' => 1]);
+    // ── Coverage: the sweep keeps going until it has caught up ───────────
 
-        EmailWorkflowRun::create([
-            'email_workflow_id' => $this->workflow->id,
-            'status' => EmailWorkflowRun::STATUS_SUCCESS,
-            'started_at' => now()->subMonths(2),   // older than the oldest message seen
-            'finished_at' => now()->subMonths(2),
-        ]);
+    public function test_a_sweep_keeps_paging_older_until_it_reaches_the_previous_run(): void
+    {
+        // THE FIX. One pass used to be the whole sweep, so a mailbox taking more
+        // than `message_limit` a day left the gap between two runs read by
+        // neither — and the window then carried it away for good (that is exactly
+        // what happened to admin@claritas.asia on 27, 29, 30 Jul and 3, 4, 7 Aug
+        // 2026). The cap is a memory bound now; coverage is its own stop
+        // condition, so the sweep asks for the next slice back until it has
+        // overlapped what the previous run already covered.
+        config(['email-workflow.message_limit' => 2, 'email-workflow.pass_overlap' => 0]);
+
+        // The assertions below compare a stored timestamp against now() computed
+        // again at assert time; a second boundary crossed mid-test makes them
+        // differ by one second. Freeze so the test measures coverage, not clocks.
+        $this->freezeTime();
 
         Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 3);
+        $adapter = $this->fakeEmailAdapter($this->datedMessages(6));   // now … now-5h
 
         $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
 
-        $this->assertNotNull($run->coverage_warning);
-        $this->assertStringContainsString('outgrown', $run->coverage_warning);
-        $this->assertStringContainsString('read by neither', $run->coverage_warning);
+        // Two passes: now/-1h, then -2h/-3h — which reaches the previous run.
+        $this->assertSame(2, $run->passes);
+        $this->assertSame(4, $run->scanned_count);
+        $this->assertSame(
+            [['limit' => 2, 'offset' => 0], ['limit' => 2, 'offset' => 2]],
+            $adapter->searchCalls
+        );
+
+        // Caught up, so there is nothing to warn about and the run says how far
+        // back it got — which is what the NEXT run joins onto.
+        $this->assertNull($run->coverage_warning);
+        $this->assertNull($run->coverage_gap_from);
+        // To the second: the column is a MySQL timestamp, so microseconds are
+        // truncated on the way in and an exact-instant compare would never hold.
+        $this->assertSame(
+            now()->subHours(3)->format('Y-m-d H:i:s'),
+            $run->covered_back_to->format('Y-m-d H:i:s')
+        );
+    }
+
+    public function test_a_sweep_stops_as_soon_as_it_has_caught_up(): void
+    {
+        // The other half of the same property: continuation must not become a
+        // "read everything" loop. One pass reaching past the previous run is a
+        // complete sweep, and asking for a second slice would be pure waste on
+        // every healthy workflow in the fleet.
+        config(['email-workflow.message_limit' => 2, 'email-workflow.pass_overlap' => 0]);
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 1);
+        $adapter = $this->fakeEmailAdapter($this->datedMessages(6));
+
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        $this->assertSame(1, $run->passes);
+        $this->assertSame(2, $run->scanned_count);
+        $this->assertCount(1, $adapter->searchCalls);
+        $this->assertNull($run->coverage_warning);
+    }
+
+    public function test_each_pass_re_reads_the_seam_so_a_shifting_mailbox_cannot_drop_a_message(): void
+    {
+        // An offset is a position in a LIVE mailbox: a deletion mid-sweep shifts
+        // everything up, and the message on the seam would slide through unread
+        // — permanently, since the next run starts from the newest. The overlap
+        // buys that back for a handful of duplicate reads, which the captures
+        // table dedupes away.
+        config(['email-workflow.message_limit' => 2, 'email-workflow.pass_overlap' => 1]);
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 4);
+        $adapter = $this->fakeEmailAdapter($this->datedMessages(8));
+
+        app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        // Steps of (limit - overlap) = 1, so each pass re-reads the last message
+        // of the one before it.
+        $this->assertSame(
+            [['limit' => 2, 'offset' => 0], ['limit' => 2, 'offset' => 1],
+                ['limit' => 2, 'offset' => 2], ['limit' => 2, 'offset' => 3]],
+            $adapter->searchCalls
+        );
+    }
+
+    public function test_the_first_ever_run_reads_one_pass_and_does_not_walk_the_mailbox(): void
+    {
+        // There is no previous coverage to join onto, and reading an entire
+        // mailbox because somebody switched a workflow on is not what they asked
+        // for. It says so instead, and names the command that does it on purpose.
+        config(['email-workflow.message_limit' => 2, 'email-workflow.pass_overlap' => 0]);
+
+        Http::fake($this->googleStack());
+        $adapter = $this->fakeEmailAdapter($this->datedMessages(50));
+
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        $this->assertSame(1, $run->passes);
+        $this->assertCount(1, $adapter->searchCalls);
+        $this->assertStringContainsString('first sweep', $run->coverage_warning);
+        $this->assertStringContainsString('--catch-up', $run->coverage_warning);
+    }
+
+    public function test_a_sweep_that_runs_out_of_budget_records_the_gap_it_could_not_close(): void
+    {
+        // The budget exists so a pathological mailbox cannot run a sweep past the
+        // point where the reaper declares it dead. When it bites, the run must
+        // say so — this is the ONE case left where mail is genuinely unread, and
+        // it is now rare enough to be worth an operator's attention.
+        config([
+            'email-workflow.message_limit' => 2,
+            'email-workflow.pass_overlap' => 0,
+            'email-workflow.max_passes' => 1,
+        ]);
+
+        // See the paging test: an exact-timestamp assertion needs a frozen clock.
+        $this->freezeTime();
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 10);
+        $this->fakeEmailAdapter($this->datedMessages(20));
+
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        $this->assertSame(1, $run->passes);
+        $this->assertStringContainsString('ran out of budget', $run->coverage_warning);
+        $this->assertStringContainsString('read by no run', $run->coverage_warning);
+        // Not green: the sweep KNOWS there is mail behind it that nothing has
+        // read, and the badge is all most operators ever look at.
+        $this->assertSame(EmailWorkflowRun::STATUS_PARTIAL, $run->status);
+        // The unmet target is state, not just prose — the next run reads it.
+        $this->assertSame(
+            now()->subHours(10)->format('Y-m-d H:i:s'),
+            $run->coverage_gap_from->format('Y-m-d H:i:s')
+        );
+    }
+
+    public function test_the_next_run_inherits_an_unclosed_gap_instead_of_forgetting_it(): void
+    {
+        // Without inheritance the hole is permanent: run N+1 would target run N's
+        // START time, which is newer than the mail run N never reached, so a
+        // single budget-limited night would silently cost a day of documents.
+        config([
+            'email-workflow.message_limit' => 2,
+            'email-workflow.pass_overlap' => 0,
+            'email-workflow.max_passes' => 1,
+        ]);
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 10);
+        $this->fakeEmailAdapter($this->datedMessages(20));
+
+        $first = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+        $this->assertNotNull($first->coverage_gap_from);
+
+        // Budget restored: the second run must chase the INHERITED target
+        // (now-10h), not its predecessor's start time (which is ~now and would
+        // have let it stop after a single pass).
+        config(['email-workflow.max_passes' => 40]);
+        $second = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        $this->assertSame(6, $second->passes, 'Stopped early — it forgot the inherited target.');
+        $this->assertSame(12, $second->scanned_count);
+        $this->assertNull($second->coverage_warning);
+        $this->assertNull($second->coverage_gap_from);
+    }
+
+    public function test_a_target_older_than_the_window_is_clamped_to_the_window(): void
+    {
+        // Mail older than since_days can never be captured, so chasing past the
+        // window is work that cannot produce a document — and it is what bounds
+        // the worst case at one window's worth of reading.
+        config([
+            'email-workflow.message_limit' => 2,
+            'email-workflow.pass_overlap' => 0,
+            'email-workflow.since_days' => 1,
+        ]);
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 24 * 30);      // long-paused workflow
+        $this->fakeEmailAdapter($this->datedMessages(50));
+
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        // 24h of messages, two per pass — it stops at the window edge, not at the
+        // two-month-old previous run.
+        $this->assertSame(13, $run->passes);
+        $this->assertNull($run->coverage_warning);
+    }
+
+    public function test_a_catch_up_sweep_reads_the_whole_window(): void
+    {
+        // The deliberate backlog recovery: ignore the previous run's coverage and
+        // read the window out. Safe to repeat — the captures table dedupes.
+        config(['email-workflow.message_limit' => 2, 'email-workflow.pass_overlap' => 0]);
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 1);            // a normal run would stop after one pass
+        $adapter = $this->fakeEmailAdapter($this->datedMessages(6));
+
+        $run = app(CaptureService::class)->run(
+            $this->workflow, EmailWorkflowRun::TRIGGER_MANUAL, $this->itManager->id, catchUp: true
+        );
+
+        $this->assertSame(6, $run->scanned_count);
+        $this->assertCount(4, $adapter->searchCalls);   // 3 full passes + the empty one that ends it
+        $this->assertNull($run->coverage_warning);
+    }
+
+    public function test_catch_up_refuses_to_run_fleet_wide(): void
+    {
+        // It reads the entire window per mailbox. Firing that across every
+        // workflow at once is never what someone means, and the cost is real.
+        Http::fake($this->googleStack());
+
+        $this->artisan('email-workflows:run --catch-up --sync')
+            ->expectsOutputToContain('--catch-up needs --workflow=')
+            ->assertFailed();
+
+        $this->assertSame(0, EmailWorkflowRun::count());
+    }
+
+    public function test_the_catch_up_flag_reaches_the_capture_service(): void
+    {
+        config(['email-workflow.message_limit' => 2, 'email-workflow.pass_overlap' => 0]);
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 1);
+        $this->fakeEmailAdapter($this->datedMessages(6));
+
+        $this->artisan('email-workflows:run --workflow='.$this->workflow->id.' --catch-up --sync')
+            ->assertSuccessful();
+
+        // Without the flag reaching CaptureService this would have stopped at 2.
+        $this->assertSame(6, EmailWorkflowRun::latest('id')->first()->scanned_count);
+    }
+
+    public function test_a_failed_continuation_pass_keeps_what_the_sweep_already_captured(): void
+    {
+        // Pass one already proved the mailbox works and its documents are already
+        // in Drive. Throwing away a good run because the CATCH-UP hit a problem —
+        // a provider refusing a deep offset, a transient 5xx — would report the
+        // whole sweep as failed when most of it succeeded, and would make the
+        // continuation a liability rather than an improvement.
+        config(['email-workflow.message_limit' => 2, 'email-workflow.pass_overlap' => 0]);
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 10);
+        $this->fakeEmailAdapter($this->datedMessages(20), failFromCall: 2);
+
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        // The run survives, keeps pass one's work, and says what went wrong.
+        $this->assertSame(EmailWorkflowRun::STATUS_PARTIAL, $run->status);
+        $this->assertSame(1, $run->passes, 'A pass that read nothing must not be counted as work.');
+        $this->assertSame(2, $run->scanned_count);
+        $this->assertStringContainsString('refused the request for older mail', $run->coverage_warning);
+        // And the target it never reached is inherited, so the next run retries.
+        $this->assertNotNull($run->coverage_gap_from);
+    }
+
+    public function test_a_failed_first_pass_still_fails_the_whole_run(): void
+    {
+        // The other side of that rule: if the very first pass cannot read the
+        // mailbox, nothing about this sweep is trustworthy and it must fail
+        // loudly. Softening this would hide a dead connection behind an amber
+        // badge for as long as anyone tolerated it.
+        Http::fake($this->googleStack());
+        $this->fakeEmailAdapter($this->datedMessages(20), failFromCall: 1);
+
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        $this->assertSame(EmailWorkflowRun::STATUS_FAILED, $run->status);
+        $this->assertNotNull($run->error);
+    }
+
+    // ── Adapters honour the offset exactly ───────────────────────────────
+
+    public function test_the_gmail_adapter_skips_the_offset_without_fetching_those_messages(): void
+    {
+        // Gmail has no $skip, so the offset is walked client-side — but over
+        // STUBS. Fetching and discarding full messages would make every later
+        // pass cost as much as a first one.
+        Http::fake([
+            'https://gmail.googleapis.com/gmail/v1/users/me/messages?*' => Http::response([
+                'messages' => [['id' => 'm1'], ['id' => 'm2'], ['id' => 'm3']],
+            ]),
+            'https://gmail.googleapis.com/gmail/v1/users/me/messages/*' => Http::response($this->gmailMessage()),
+        ]);
+
+        $conn = $this->workflow->emailConnection;
+        $out = app(EmailAdapterFactory::class)->for($conn)
+            ->search($conn, ['since_days' => 30], ['limit' => 2, 'offset' => 1]);
+
+        $this->assertCount(2, $out);
+        $this->assertSame(0, $this->sentCount('/messages/m1'), 'Skipped messages must not be fetched.');
+        $this->assertSame(1, $this->sentCount('/messages/m2'));
+        $this->assertSame(1, $this->sentCount('/messages/m3'));
+    }
+
+    public function test_the_outlook_adapter_asks_graph_to_skip_server_side(): void
+    {
+        // $skip keeps a later pass to one request instead of re-listing (and
+        // re-transferring the bodies of) everything already read.
+        Http::fake(['https://graph.microsoft.com/v1.0/me/messages*' => Http::response(['value' => []])]);
+
+        $conn = $this->workflow->emailConnection;
+        $conn->update(['provider_id' => 'outlook']);
+
+        app(EmailAdapterFactory::class)->for($conn->fresh())
+            ->search($conn->fresh(), ['since_days' => 30], ['limit' => 500, 'offset' => 500]);
+
+        Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), '$skip=500'));
+    }
+
+    public function test_the_outlook_adapter_omits_skip_on_a_first_pass(): void
+    {
+        // The ordinary pass must send exactly the request it always sent — a new
+        // parameter on the hot path is a new way for Graph to say no.
+        Http::fake(['https://graph.microsoft.com/v1.0/me/messages*' => Http::response(['value' => []])]);
+
+        $conn = $this->workflow->emailConnection;
+        $conn->update(['provider_id' => 'outlook']);
+
+        app(EmailAdapterFactory::class)->for($conn->fresh())
+            ->search($conn->fresh(), ['since_days' => 30], ['limit' => 500, 'offset' => 0]);
+
+        Http::assertSent(fn (Request $r) => ! str_contains(urldecode($r->url()), '$skip'));
     }
 
     public function test_a_sweep_below_its_cap_is_never_flagged(): void
@@ -424,6 +737,94 @@ class EmailWorkflowCaptureTest extends TestCase
             ->getJson(route('it.automation.email-workflow.runs', $this->workflow->id))
             ->assertOk()
             ->assertJsonPath('runs.0.error', fn ($e) => $e !== null && str_contains($e, 'first sweep'));
+    }
+
+    public function test_a_lying_date_header_can_neither_stop_the_sweep_nor_reach_the_database(): void
+    {
+        // The Date: header is written by the sender, and the mailbox returned the
+        // message because it ARRIVED in the window — so a date outside the window
+        // is simply wrong. Folding it in would let one message decide coverage
+        // for the whole sweep (break after pass 1, claim success), and writing it
+        // would raise SQLSTATE 22007 against covered_back_to's MySQL TIMESTAMP
+        // (1970..2038), failing a sweep that captured everything.
+        config(['email-workflow.message_limit' => 2, 'email-workflow.pass_overlap' => 0]);
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 2);
+
+        // now, LIE, LIE, -3h, -4h, -5h — one bad date per pass, which is the
+        // realistic shape: a stray sender with a wrong clock among good mail.
+        $messages = $this->datedMessages(6);
+        $messages[1]['date'] = '1969-01-01T00:00:00+00:00';   // pre-epoch: unstorable
+        $messages[2]['date'] = '9999-12-31T23:59:59+00:00';   // far future: unstorable
+
+        $this->fakeEmailAdapter($messages);
+
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        // Without the window guard, the 1969 header would be the minimum: the
+        // sweep would break after pass 1 believing it had reached back past the
+        // previous run, and then fail outright writing it to covered_back_to.
+        $this->assertNotSame(EmailWorkflowRun::STATUS_FAILED, $run->status, $run->error ?? '');
+        $this->assertSame(2, $run->passes);
+        $this->assertTrue(
+            $run->covered_back_to->greaterThan(now()->subDay()),
+            'covered_back_to must come from a real date, not a lying header.'
+        );
+    }
+
+    // ── Messages the parser could not read ───────────────────────────────
+
+    public function test_messages_the_parser_could_not_read_are_counted_on_the_run(): void
+    {
+        // These used to leave no trace in any counter: scanned_count records what
+        // the adapter RETURNED, so a message dropped inside the adapter simply
+        // never existed as far as the run was concerned. ~20 documents a day
+        // disappeared this way under a green tick.
+        Http::fake($this->googleStack());
+        $this->fakeEmailAdapter(unreadable: [
+            ['ref' => 'message #115 in the imap window', 'error' => 'ErrorException: Must use comma to separate addresses: Billing'],
+            ['ref' => 'message #116 in the imap window', 'error' => 'ErrorException: Must use comma to separate addresses: Billing'],
+        ]);
+
+        $run = app(CaptureService::class)->run($this->workflow);
+
+        $this->assertSame(2, $run->unreadable_count);
+        // Not success: the sweep finished without doing its whole job, and the
+        // badge is the only thing most operators ever look at.
+        $this->assertSame(EmailWorkflowRun::STATUS_PARTIAL, $run->status);
+        $this->assertStringContainsString('could not be read', $run->coverage_warning);
+        $this->assertStringContainsString('Must use comma', $run->coverage_warning);
+    }
+
+    public function test_a_sweep_that_read_everything_reports_nothing_unreadable(): void
+    {
+        // The quiet case must stay quiet, or the amber badge means nothing.
+        Http::fake($this->googleStack());
+
+        $run = app(CaptureService::class)->run($this->workflow);
+
+        $this->assertSame(0, $run->unreadable_count);
+        $this->assertSame(EmailWorkflowRun::STATUS_SUCCESS, $run->status);
+        $this->assertNull($run->coverage_warning);
+    }
+
+    public function test_the_run_history_shows_the_unreadable_count(): void
+    {
+        // A scheduled sweep has no flash message, so the history panel is the
+        // only place this can ever be read.
+        Http::fake($this->googleStack());
+        $this->fakeEmailAdapter(unreadable: [
+            ['ref' => 'message #21 in the imap window', 'error' => 'ErrorException: Must use comma to separate addresses: Billing'],
+        ]);
+
+        app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        $this->actingAs($this->itManager)
+            ->getJson(route('it.automation.email-workflow.runs', $this->workflow->id))
+            ->assertOk()
+            ->assertJsonPath('runs.0.unreadable', 1)
+            ->assertJsonPath('runs.0.error', fn ($e) => $e !== null && str_contains($e, 'could not be read'));
     }
 
     public function test_a_run_killed_without_finishing_is_reaped_not_left_running_forever(): void
@@ -741,6 +1142,135 @@ class EmailWorkflowCaptureTest extends TestCase
     }
 
     // ── Fixtures ─────────────────────────────────────────────────────────
+
+    /**
+     * Swap in an email adapter that reports whatever it is told to.
+     *
+     * The real path here is IMAP, which cannot be faked with Http::fake() — the
+     * failure lives in a MIME parser, not in an HTTP response. Faking at the
+     * contract boundary keeps the assertions on what CaptureService does with an
+     * adapter's report, which is the part that was missing.
+     *
+     * @param  array<int,array<string,mixed>>  $messages
+     * @param  array<int,array{ref:string,error:string}>  $unreadable
+     */
+    private function fakeEmailAdapter(array $messages = [], array $unreadable = [], ?int $failFromCall = null): EmailSourceAdapter
+    {
+        $adapter = new class($messages, $unreadable, $failFromCall) implements EmailSourceAdapter
+        {
+            /** Every $paging array this adapter was asked for, in order. */
+            public array $searchCalls = [];
+
+            /**
+             * @param  array<int,array<string,mixed>>  $messages
+             * @param  array<int,array{ref:string,error:string}>  $unreadable
+             */
+            public function __construct(
+                private array $messages,
+                private array $unreadable,
+                private ?int $failFromCall = null,
+            ) {}
+
+            public function providerId(): string
+            {
+                return 'imap';
+            }
+
+            public function verify(EmailWorkflowConnection $conn): void {}
+
+            /**
+             * Honours limit + offset like a real adapter, so a multi-pass sweep
+             * walks this list exactly as it would walk a mailbox. A fake that
+             * ignored offset would return the same slice forever and make a
+             * paging bug look like correct behaviour.
+             */
+            public function search(EmailWorkflowConnection $conn, array $query, array $paging = []): array
+            {
+                $this->searchCalls[] = $paging;
+
+                if ($this->failFromCall !== null && count($this->searchCalls) >= $this->failFromCall) {
+                    throw new \RuntimeException('Graph rejected the request: Invalid $skip.');
+                }
+
+                $limit = max(0, (int) ($paging['limit'] ?? 0));
+                $offset = max(0, (int) ($paging['offset'] ?? 0));
+
+                $slice = array_slice($this->messages, $offset);
+
+                return $limit > 0 ? array_slice($slice, 0, $limit) : $slice;
+            }
+
+            public function unreadableMessages(): array
+            {
+                return $this->unreadable;
+            }
+
+            public function getMessage(EmailWorkflowConnection $conn, string $messageId): array
+            {
+                return [];
+            }
+
+            public function downloadAttachment(EmailWorkflowConnection $conn, string $messageId, string $attachmentId): string
+            {
+                return '';
+            }
+
+            public function markProcessed(EmailWorkflowConnection $conn, string $messageId, string $label): void {}
+        };
+
+        $this->app->instance(EmailAdapterFactory::class, new class(app(OAuthService::class), $adapter) extends EmailAdapterFactory
+        {
+            public function __construct(OAuthService $oauth, private EmailSourceAdapter $adapter)
+            {
+                parent::__construct($oauth);
+            }
+
+            public function for(EmailWorkflowConnection $conn): EmailSourceAdapter
+            {
+                return $this->adapter;
+            }
+        });
+
+        return $adapter;
+    }
+
+    /**
+     * $count non-matching messages, newest first, one hour apart.
+     *
+     * Non-matching on purpose: these tests are about how far back a sweep
+     * READS, and a matching message would drag Drive and Sheets into an
+     * assertion that has nothing to say about coverage.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function datedMessages(int $count): array
+    {
+        $out = [];
+
+        for ($i = 0; $i < $count; $i++) {
+            $out[] = [
+                'message_id' => 'msg-'.$i,
+                'from' => 'someone@acme.test',
+                'subject' => 'Team lunch on Friday',   // no rule matches this
+                'body' => 'nothing to capture here',
+                'date' => now()->subHours($i)->toIso8601String(),
+                'attachments' => [],
+            ];
+        }
+
+        return $out;
+    }
+
+    /** A completed run this workflow can treat as its previous coverage. */
+    private function previousRun(int $hoursAgo): EmailWorkflowRun
+    {
+        return EmailWorkflowRun::create([
+            'email_workflow_id' => $this->workflow->id,
+            'status' => EmailWorkflowRun::STATUS_SUCCESS,
+            'started_at' => now()->subHours($hoursAgo),
+            'finished_at' => now()->subHours($hoursAgo),
+        ]);
+    }
 
     private function makeWorkflow(): EmailWorkflow
     {

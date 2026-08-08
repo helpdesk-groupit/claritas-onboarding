@@ -46,6 +46,17 @@ class OutlookAdapter implements EmailSourceAdapter
     }
 
     /**
+     * Always empty for Graph — see GmailAdapter::unreadableMessages(). Graph
+     * hands us parsed JSON, so there is no raw MIME here to be unreadable.
+     *
+     * @return array<int,array{ref:string,error:string}>
+     */
+    public function unreadableMessages(): array
+    {
+        return [];
+    }
+
+    /**
      * Refresh the token and read one message header. Throws on any failure.
      *
      * See GmailAdapter::verify() — same reasoning: the cheapest call that
@@ -67,18 +78,25 @@ class OutlookAdapter implements EmailSourceAdapter
         // 0 = unlimited: follow @odata.nextLink until the window is exhausted.
         $limit = max(0, (int) ($paging['limit'] ?? 25));
         $unlimited = $limit === 0;
+        $offset = max(0, (int) ($paging['offset'] ?? 0));
         $sinceDays = (int) ($query['since_days'] ?? 30);
         $since = now()->subDays($sinceDays)->toIso8601ZuluString();
 
         // $top caps ONE PAGE, not the total. Passing the sweep limit straight
         // through and ignoring @odata.nextLink silently truncated every sweep.
         $url = self::BASE.'/me/messages';
-        $params = [
+        $params = array_filter([
             '$filter' => "receivedDateTime ge {$since}",
             '$top' => $unlimited ? self::PAGE_SIZE : min($limit, self::PAGE_SIZE),
+            // Server-side, so a later pass costs one request rather than
+            // re-listing (and re-transferring the bodies of) everything already
+            // read. Graph honours $skip alongside $filter + $orderby; it is
+            // deliberately NOT emitted at 0 so the ordinary first pass sends the
+            // exact request it always did.
+            '$skip' => $offset,
             '$orderby' => 'receivedDateTime desc',   // newest first — contract
             '$select' => 'id,subject,from,receivedDateTime,bodyPreview,body,hasAttachments',
-        ];
+        ], fn ($v) => $v !== 0 && $v !== null);
 
         $out = [];
 

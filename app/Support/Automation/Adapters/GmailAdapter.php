@@ -45,6 +45,19 @@ class GmailAdapter implements EmailSourceAdapter
     }
 
     /**
+     * Always empty for Gmail: messages arrive as JSON the API has already
+     * validated, so there is no third-party MIME to trip a parser on. Every
+     * failure here is an HTTP failure, which fails the run loudly instead.
+     * Contrast ImapAdapter, which parses raw RFC822 written by the sender.
+     *
+     * @return array<int,array{ref:string,error:string}>
+     */
+    public function unreadableMessages(): array
+    {
+        return [];
+    }
+
+    /**
      * Refresh the token and read one message header. Throws on any failure.
      *
      * A one-message search is the cheapest call that exercises the whole chain
@@ -69,6 +82,7 @@ class GmailAdapter implements EmailSourceAdapter
         // 0 = unlimited: follow nextPageToken until the window is exhausted.
         $limit = max(0, (int) ($paging['limit'] ?? 25));
         $unlimited = $limit === 0;
+        $offset = max(0, (int) ($paging['offset'] ?? 0));
         $sinceDays = (int) ($query['since_days'] ?? 30);
 
         // Gmail query syntax — bound the window; has:attachment keeps it relevant.
@@ -76,15 +90,22 @@ class GmailAdapter implements EmailSourceAdapter
         $q = trim(($query['q'] ?? '').' newer_than:'.$sinceDays.'d');
 
         $out = [];
+        $skipped = 0;
         $pageToken = null;
 
         do {
             // maxResults caps ONE PAGE (500 max), it is not a total. Passing the
             // sweep limit straight through and ignoring nextPageToken silently
             // truncated every sweep — the same bug IMAP had via fetch_order.
+            //
+            // The page must be big enough for what is still to be skipped AND
+            // what is still wanted, or an offset larger than one page would
+            // return short.
+            $want = ($offset - $skipped) + ($unlimited ? self::PAGE_SIZE : $limit - count($out));
+
             $params = array_filter([
                 'q' => $q,
-                'maxResults' => $unlimited ? self::PAGE_SIZE : min($limit - count($out), self::PAGE_SIZE),
+                'maxResults' => min(max(1, $want), self::PAGE_SIZE),
                 'pageToken' => $pageToken,
             ]);
 
@@ -93,6 +114,14 @@ class GmailAdapter implements EmailSourceAdapter
                 ->throw()->json();
 
             foreach (($list['messages'] ?? []) as $stub) {
+                // Gmail has no $skip, but its list is stubs (ids only) — so the
+                // skip costs listing bandwidth, never a full message fetch.
+                if ($skipped < $offset) {
+                    $skipped++;
+
+                    continue;
+                }
+
                 $out[] = $this->getMessage($conn, $stub['id']);
                 if (! $unlimited && count($out) >= $limit) {
                     return $out;
