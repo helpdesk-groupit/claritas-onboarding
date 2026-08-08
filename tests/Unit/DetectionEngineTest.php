@@ -147,6 +147,204 @@ class DetectionEngineTest extends TestCase
         $this->assertTrue($fields['needs_review']);
     }
 
+    // ── Filename matching ────────────────────────────────────────────────
+
+    public function test_filename_keywords_default_to_substring_matching(): void
+    {
+        $rules = EmailWorkflow::DEFAULT_RULES;
+        $rules['attachment']['filename_keywords'] = ['invoice'];
+
+        $this->assertTrue($this->engine->evaluate($this->invoiceMessage(), $rules)['matched']);
+
+        $msg = $this->invoiceMessage([
+            'attachments' => [['id' => 'a1', 'name' => 'statement.pdf', 'mime' => 'application/pdf', 'size' => 1]],
+        ]);
+        $this->assertFalse($this->engine->evaluate($msg, $rules)['matched']);
+    }
+
+    public function test_filename_regex_mode_is_precise_where_substring_is_not(): void
+    {
+        $rules = EmailWorkflow::DEFAULT_RULES;
+        $rules['attachment']['filename_mode'] = 'regex';
+        $rules['attachment']['filename_keywords'] = ['(?<![a-z0-9])I-\d{6}(?!\d)'];
+
+        $hit = $this->invoiceMessage([
+            'attachments' => [['id' => 'a1', 'name' => 'I-001068 Care Digital Sdn Bhd.pdf', 'mime' => 'application/pdf', 'size' => 1]],
+        ]);
+        $this->assertTrue($this->engine->evaluate($hit, $rules)['matched']);
+
+        // A substring rule of "I-0" would have matched this; the pattern must not.
+        $miss = $this->invoiceMessage([
+            'attachments' => [['id' => 'a1', 'name' => 'API-0 spec invoice.pdf', 'mime' => 'application/pdf', 'size' => 1]],
+        ]);
+        $this->assertFalse($this->engine->evaluate($miss, $rules)['matched']);
+    }
+
+    public function test_no_filename_keywords_accepts_every_allowed_type(): void
+    {
+        $rules = EmailWorkflow::DEFAULT_RULES;
+        $rules['attachment']['filename_keywords'] = [];
+
+        $msg = $this->invoiceMessage([
+            'attachments' => [['id' => 'a1', 'name' => 'anything.pdf', 'mime' => 'application/pdf', 'size' => 1]],
+        ]);
+
+        $this->assertTrue($this->engine->evaluate($msg, $rules)['matched']);
+    }
+
+    // ── attachment_or_text capture logic ─────────────────────────────────
+
+    public function test_or_logic_captures_on_filename_evidence_alone(): void
+    {
+        $rules = EmailWorkflow::SUPPLIER_INVOICE_RULES;
+
+        // Subject says nothing useful; the house code in the filename is the
+        // only evidence. Under attachment_and_text this was a silent miss.
+        $msg = $this->invoiceMessage([
+            'subject' => 'Documents attached',
+            'body' => 'As discussed.',
+            'attachments' => [['id' => 'a1', 'name' => 'ENSB-IO-02452- Bio-Oil.pdf', 'mime' => 'application/pdf', 'size' => 1]],
+        ]);
+
+        $result = $this->engine->evaluate($msg, $rules);
+        $this->assertTrue($result['matched']);
+        $this->assertCount(1, $result['attachments']);
+    }
+
+    public function test_or_logic_on_text_evidence_still_returns_attachments_to_capture(): void
+    {
+        $rules = EmailWorkflow::SUPPLIER_INVOICE_RULES;
+
+        // Subject is the evidence; the filename matches no pattern. CaptureService
+        // skips a matched verdict with an empty attachment list *silently*, so an
+        // empty list here would be a success that stores nothing.
+        $msg = $this->invoiceMessage([
+            'subject' => 'Rental Invoice (Aug 2026)',
+            'body' => 'Kindly settle by month end.',
+            'attachments' => [['id' => 'a1', 'name' => 'monthly-schedule.pdf', 'mime' => 'application/pdf', 'size' => 1]],
+        ]);
+
+        $result = $this->engine->evaluate($msg, $rules);
+        $this->assertTrue($result['matched']);
+        $this->assertCount(1, $result['attachments'], 'A text-only match must still nominate attachments to store.');
+    }
+
+    public function test_or_logic_text_fallback_respects_the_type_filter(): void
+    {
+        $rules = EmailWorkflow::SUPPLIER_INVOICE_RULES;
+
+        $msg = $this->invoiceMessage([
+            'subject' => 'Rental Invoice (Aug 2026)',
+            'attachments' => [
+                ['id' => 'a1', 'name' => 'signature.png', 'mime' => 'image/png', 'size' => 1],
+                ['id' => 'a2', 'name' => 'schedule.pdf', 'mime' => 'application/pdf', 'size' => 1],
+            ],
+        ]);
+
+        $result = $this->engine->evaluate($msg, $rules);
+        $this->assertSame(['schedule.pdf'], array_column($result['attachments'], 'name'));
+    }
+
+    public function test_or_logic_still_skips_unrelated_mail(): void
+    {
+        $rules = EmailWorkflow::SUPPLIER_INVOICE_RULES;
+
+        $msg = $this->invoiceMessage([
+            'subject' => 'Your weekly digest',
+            'body' => 'Top stories this week.',
+            'attachments' => [['id' => 'a1', 'name' => 'newsletter.pdf', 'mime' => 'application/pdf', 'size' => 1]],
+        ]);
+
+        $this->assertFalse($this->engine->evaluate($msg, $rules)['matched']);
+    }
+
+    // ── The preset, against the documents it was built from ──────────────
+
+    /**
+     * Every filename here is a real supplier document the generic defaults let
+     * through. If one of these ever goes red, an invoice is being lost.
+     *
+     * @dataProvider realSupplierDocuments
+     */
+    public function test_supplier_invoice_preset_matches_real_documents(string $filename, string $subject): void
+    {
+        $msg = $this->invoiceMessage([
+            'subject' => $subject,
+            'body' => 'Please find the attached document.',
+            'attachments' => [['id' => 'a1', 'name' => $filename, 'mime' => 'application/pdf', 'size' => 2048]],
+        ]);
+
+        $result = $this->engine->evaluate($msg, EmailWorkflow::SUPPLIER_INVOICE_RULES);
+
+        $this->assertTrue($result['matched'], "Preset failed to match: {$filename}");
+        $this->assertCount(1, $result['attachments'], "Preset matched but captured nothing: {$filename}");
+    }
+
+    /** @return array<string,array{0:string,1:string}> */
+    public static function realSupplierDocuments(): array
+    {
+        // Subjects are '' where the real subject is unknown — the point of the
+        // filename patterns is that they must carry the match on their own.
+        return [
+            'Care Digital invoice · Telecontinent' => ['CDSB-IV-2608-002 (Telecontinent).pdf', 'Subscription Billing | August-2026'],
+            'Care Digital invoice · Nandos' => ['CDSB-IV-2608-003 (Nandos).pdf', ''],
+            'Care Digital invoice · MyRodeo' => ['CDSB-IV-2608-004 (MyRodeo).pdf', ''],
+            'Care Digital statement of account' => ['CDSB- SOA-20260731-Telecontinent.pdf', 'Statement of Account'],
+            'Supplier invoice to Care Digital' => ['I-001068 Care Digital Sdn Bhd.pdf', ''],
+            'Supplier invoice to Enlinea 038276' => ['I-038276 Enlinea Sdn Bhd.pdf', ''],
+            'Supplier invoice to Enlinea 038363' => ['I-038363 Enlinea Sdn Bhd.pdf', ''],
+            'Supplier invoice to Enlinea 038565' => ['I-038565 Enlinea Sdn Bhd.pdf', ''],
+            'Enlinea IO · Bio-Oil' => ['ENSB-IO-02452- Bio-Oil.pdf', ''],
+            'Enlinea IO · OZ Marketing' => ['ENSB-IO-02459-OZ Marketing.pdf', ''],
+            'Nuren ASX invoice' => ['NUREN GROUP LIMITED CHS26051383 2026-08-03.pdf', 'ASX Invoice'],
+            'Claritas statement of account' => ['SOA - CLARITAS (20.07.2026).pdf', ''],
+            'Care Digital rental invoice' => ['Care Digital - 082026.pdf', 'Rental Invoice (Aug 2026)'],
+        ];
+    }
+
+    public function test_preset_filename_patterns_all_compile(): void
+    {
+        foreach (EmailWorkflow::SUPPLIER_INVOICE_RULES['attachment']['filename_keywords'] as $pattern) {
+            $this->assertTrue(
+                DetectionEngine::isValidPattern($pattern),
+                "Preset pattern does not compile: {$pattern}"
+            );
+        }
+    }
+
+    /**
+     * The step-2 form re-parses its fields on every save, so the preset has to
+     * survive a round-trip through the splitter unchanged. A plain comma split
+     * would turn `\d{6,}` into `\d{6` + `}` — two dead patterns, silently.
+     */
+    public function test_preset_survives_the_form_round_trip(): void
+    {
+        $patterns = EmailWorkflow::SUPPLIER_INVOICE_RULES['attachment']['filename_keywords'];
+
+        $this->assertSame($patterns, DetectionEngine::splitKeywords(implode(', ', $patterns)));
+    }
+
+    public function test_split_keywords_is_brace_aware(): void
+    {
+        $this->assertSame(
+            ['invoice', '\d{3,}', 'receipt'],
+            DetectionEngine::splitKeywords('invoice, \d{3,}, receipt')
+        );
+
+        $this->assertSame(
+            ['invoice', 'receipt', 'credit note'],
+            DetectionEngine::splitKeywords("invoice, receipt\ncredit note")
+        );
+
+        $this->assertSame([], DetectionEngine::splitKeywords('  ,  '));
+    }
+
+    public function test_invalid_pattern_is_detected_not_thrown(): void
+    {
+        $this->assertFalse(DetectionEngine::isValidPattern('invoice(('));
+        $this->assertTrue(DetectionEngine::isValidPattern('CDSB-\s*IV-\d'));
+    }
+
     public function test_idempotency_key_format(): void
     {
         $this->assertSame(

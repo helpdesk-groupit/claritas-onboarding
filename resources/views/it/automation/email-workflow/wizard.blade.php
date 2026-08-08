@@ -161,8 +161,19 @@
             @csrf @method('PUT')
             <input type="hidden" name="step" value="2">
 
-            <div class="section-header"><h6>2 · Detection rules</h6></div>
-            <p class="text-muted small">Decide what counts as a target document. Defaults are pre-filled for invoices &amp; receipts.</p>
+            <div class="section-header d-flex justify-content-between align-items-center">
+                <h6 class="mb-0">2 · Detection rules</h6>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="loadInvoicePresetBtn"
+                        title="Fill this form with the supplier-invoice descriptors (house document codes + invoice wording). Review, then Save.">
+                    <i class="bi bi-magic me-1"></i> Load supplier-invoice preset
+                </button>
+            </div>
+            <p class="text-muted small">
+                Decide what counts as a target document. Defaults are pre-filled for invoices &amp; receipts.
+                Supplier documents often carry a house reference instead of the word “invoice”
+                (<code>CDSB-IV-2608-002</code>, <code>ENSB-IO-02452</code>, <code>I-001068</code>,
+                <code>CHS26051383</code>, <code>SOA-20260731</code>) — the preset matches those by filename pattern.
+            </p>
 
             {{-- Subject --}}
             <div class="mb-3 p-3 border rounded">
@@ -234,9 +245,25 @@
                         </div>
                     @endforeach
                 </div>
-                <input type="text" name="attachment_keywords" class="form-control form-control-sm"
-                       placeholder="filename keywords e.g. invoice, receipt (optional)"
-                       value="{{ implode(', ', (array) data_get($rules,'attachment.filename_keywords', [])) }}">
+                <label class="form-label small">Filename must match</label>
+                <div class="row g-2">
+                    <div class="col-md-4">
+                        <select name="attachment_mode" class="form-select form-select-sm">
+                            <option value="contains" {{ data_get($rules,'attachment.filename_mode')==='regex'?'':'selected' }}>Contains any keyword</option>
+                            <option value="regex" {{ data_get($rules,'attachment.filename_mode')==='regex'?'selected':'' }}>Matches pattern (regex)</option>
+                        </select>
+                    </div>
+                    <div class="col-md-8">
+                        <input type="text" name="attachment_keywords" class="form-control form-control-sm"
+                               placeholder="filename keywords e.g. invoice, receipt (leave blank to accept every allowed file type)"
+                               value="{{ implode(', ', (array) data_get($rules,'attachment.filename_keywords', [])) }}">
+                    </div>
+                </div>
+                <div class="form-text small">
+                    Leave blank to capture every attachment of an allowed type. Regex mode is for house
+                    document codes — e.g. <code>CDSB-\s*IV-\d</code> or <code>(?&lt;![a-z0-9])I-\d{6}(?!\d)</code>.
+                    A pattern that won’t compile is rejected on save rather than silently ignored.
+                </div>
             </div>
 
             {{-- Sender --}}
@@ -258,11 +285,16 @@
             {{-- Capture logic --}}
             <div class="mb-3">
                 <label class="form-label">Capture when</label>
-                <select name="capture_logic" class="form-select form-select-sm" style="max-width:380px;">
-                    <option value="attachment_and_text" {{ data_get($rules,'capture_logic')==='attachment_and_text'?'selected':'' }}>Attachment matches AND subject/body matches</option>
-                    <option value="attachment_only" {{ data_get($rules,'capture_logic')==='attachment_only'?'selected':'' }}>Attachment matches only</option>
-                    <option value="text_only" {{ data_get($rules,'capture_logic')==='text_only'?'selected':'' }}>Subject/body matches only</option>
+                <select name="capture_logic" class="form-select form-select-sm" style="max-width:520px;">
+                    @foreach(\App\Models\EmailWorkflow::CAPTURE_LOGICS as $val => $label)
+                        <option value="{{ $val }}" {{ data_get($rules,'capture_logic')===$val?'selected':'' }}>{{ $label }}</option>
+                    @endforeach
                 </select>
+                <div class="form-text small">
+                    Use <strong>OR</strong> for a dedicated invoice mailbox: a document-shaped filename is
+                    enough on its own, and so is invoice wording in the subject (in which case every
+                    allowed attachment on that mail is captured).
+                </div>
             </div>
 
             <div class="d-flex justify-content-between align-items-center mt-4">
@@ -560,6 +592,50 @@
                 btn.disabled = false;
                 btn.innerHTML = '<i class="bi bi-search me-1"></i> Test rules';
             });
+        });
+    }
+
+    // ── Step 2: load the supplier-invoice preset into the form ──
+    // Fills the form only — nothing is stored until the operator reviews and
+    // saves, so this can never silently rewrite live detection rules.
+    var presetBtn = document.getElementById('loadInvoicePresetBtn');
+    if (presetBtn) {
+        var PRESET = @json(\App\Models\EmailWorkflow::SUPPLIER_INVOICE_RULES);
+        presetBtn.addEventListener('click', function () {
+            var form = document.getElementById('rulesForm');
+            if (!form) { return; }
+
+            function set(name, value) {
+                var el = form.querySelector('[name="' + name + '"]');
+                if (el) { el.value = value; }
+            }
+            function check(name, on) {
+                var el = form.querySelector('[name="' + name + '"]');
+                if (el) { el.checked = !!on; }
+            }
+
+            check('subject_enabled', PRESET.subject.enabled);
+            set('subject_mode', PRESET.subject.mode);
+            set('subject_keywords', PRESET.subject.keywords.join(', '));
+
+            check('body_enabled', PRESET.body.enabled);
+            set('body_mode', PRESET.body.mode);
+            set('body_keywords', PRESET.body.keywords.join(', '));
+
+            set('combine_subject_body', PRESET.combine_subject_body);
+
+            check('attachment_required', PRESET.attachment.required);
+            form.querySelectorAll('[name="attachment_types[]"]').forEach(function (box) {
+                box.checked = PRESET.attachment.types.indexOf(box.value) !== -1;
+            });
+            set('attachment_mode', PRESET.attachment.filename_mode);
+            set('attachment_keywords', PRESET.attachment.filename_keywords.join(', '));
+
+            set('capture_logic', PRESET.capture_logic);
+
+            presetBtn.innerHTML = '<i class="bi bi-check2 me-1"></i> Preset loaded — review, then Save';
+            presetBtn.classList.remove('btn-outline-secondary');
+            presetBtn.classList.add('btn-outline-success');
         });
     }
 

@@ -88,9 +88,14 @@ class DetectionEngine
             $reasons[] = 'Sender excluded';
         }
 
-        // Attachments.
+        // Attachments. Type filtering and filename evidence are separate steps:
+        // the type list is a hard filter (we only ever store what was allowed),
+        // while the filename keywords say which attachments look like the target
+        // document. Keeping them apart is what lets the OR logic below fall back
+        // safely — see the fallback comment.
         $attRules = $rules['attachment'] ?? [];
-        $captured = $this->matchingAttachments($message['attachments'] ?? [], $attRules);
+        $allowedByType = $this->attachmentsOfAllowedType($message['attachments'] ?? [], $attRules);
+        $captured = $this->filterByFilename($allowedByType, $attRules);
         $attRequired = (bool) ($attRules['required'] ?? true);
         $attachmentMatch = $attRequired ? count($captured) > 0 : true;
 
@@ -103,13 +108,32 @@ class DetectionEngine
         $matched = match ($logic) {
             'attachment_only' => $attachmentMatch && $senderOk,
             'text_only' => $textMatch && $senderOk,
+            'attachment_or_text' => ($attachmentMatch || $textMatch) && $senderOk,
             default => $attachmentMatch && $textMatch && $senderOk,
         };
+
+        // OR-logic fallback: under `attachment_or_text` a text hit is evidence on
+        // its own, so every type-allowed attachment IS the document — a supplier
+        // whose subject reads "Rental Invoice" may still name the file anything.
+        //
+        // This is not cosmetic. CaptureService skips a verdict with an empty
+        // attachment list *silently* (neither matched nor captured), so without
+        // the fallback a text-only hit would report success and store nothing —
+        // the "looks configured, isn't" failure this module keeps producing.
+        //
+        // Deliberately scoped to the new logic: `text_only` keeps its existing
+        // narrowing behaviour so no live workflow starts storing more than it
+        // did yesterday.
+        $toCapture = $captured;
+        if ($logic === 'attachment_or_text' && $captured === [] && $allowedByType !== []) {
+            $toCapture = $allowedByType;
+            $reasons[] = count($allowedByType).' attachment(s) captured on text evidence';
+        }
 
         return [
             'matched' => $matched,
             'reasons' => $reasons,
-            'attachments' => $matched ? $captured : [],
+            'attachments' => $matched ? $toCapture : [],
             'fields' => $this->extractFields($message),
         ];
     }
@@ -173,13 +197,23 @@ class DetectionEngine
             return false;
         }
 
-        $mode = strtolower($rule['mode'] ?? 'contains');
+        return $this->anyKeywordMatches($text, $keywords, (string) ($rule['mode'] ?? 'contains'));
+    }
 
-        if ($mode === 'regex') {
+    /**
+     * Shared matcher for subject / body / filename rules, so all three agree on
+     * what "contains" and "regex" mean.
+     *
+     * @param  array<int,mixed>  $keywords
+     */
+    private function anyKeywordMatches(string $haystack, array $keywords, string $mode): bool
+    {
+        if (strtolower($mode) === 'regex') {
             foreach ($keywords as $pattern) {
-                // Case-insensitive; delimiter-wrapped; invalid patterns ignored.
-                $delimited = '/'.str_replace('/', '\/', (string) $pattern).'/i';
-                if (@preg_match($delimited, $text) === 1) {
+                // Invalid patterns are ignored here rather than thrown — the
+                // save path rejects them up front (EmailWorkflowController), so
+                // a dead pattern can't reach a live run unnoticed.
+                if (@preg_match(self::compilePattern((string) $pattern), $haystack) === 1) {
                     return true;
                 }
             }
@@ -188,7 +222,7 @@ class DetectionEngine
         }
 
         // contains (case-insensitive)
-        $lower = mb_strtolower($text);
+        $lower = mb_strtolower($haystack);
         foreach ($keywords as $kw) {
             if ($kw !== '' && mb_strpos($lower, mb_strtolower((string) $kw)) !== false) {
                 return true;
@@ -196,6 +230,45 @@ class DetectionEngine
         }
 
         return false;
+    }
+
+    /** Wrap an operator-entered pattern as a case-insensitive PCRE. */
+    public static function compilePattern(string $pattern): string
+    {
+        return '/'.str_replace('/', '\/', $pattern).'/i';
+    }
+
+    /** Would this operator-entered pattern compile? Used to reject dead rules on save. */
+    public static function isValidPattern(string $pattern): bool
+    {
+        return @preg_match(self::compilePattern($pattern), '') !== false;
+    }
+
+    /**
+     * Split an operator-entered comma/newline list into trimmed keywords.
+     *
+     * The comma is brace-aware. A regex quantifier is written `\d{6,}`, and a
+     * naive split on every comma turns that single pattern into `\d{6` and `}` —
+     * two patterns, both uncompilable, both silently ignored at match time. The
+     * step-2 form round-trips its fields through here on every save, so a plain
+     * split would quietly shred a working rule the next time anyone opened the
+     * wizard and pressed Save.
+     *
+     * `,(?![^{}]*\})` keeps a comma that sits inside `{...}` and splits on every
+     * other one, so `invoice, \d{3,}` still yields two keywords.
+     *
+     * @return array<int,string>
+     */
+    public static function splitKeywords(?string $raw): array
+    {
+        if (! $raw) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            array_map('trim', preg_split('/[\r\n]+|,(?![^{}]*\})/', $raw) ?: []),
+            fn ($v) => $v !== ''
+        ));
     }
 
     /** @param array<string,mixed> $senderRules */
@@ -223,14 +296,16 @@ class DetectionEngine
     }
 
     /**
+     * Hard filter: attachments whose extension is on the allow-list (an empty
+     * list allows everything). Nothing outside this set is ever stored.
+     *
      * @param  array<int,array<string,mixed>>  $attachments
      * @param  array<string,mixed>  $rules
      * @return array<int,array<string,mixed>>
      */
-    private function matchingAttachments(array $attachments, array $rules): array
+    private function attachmentsOfAllowedType(array $attachments, array $rules): array
     {
         $types = array_map('strtolower', array_filter((array) ($rules['types'] ?? [])));
-        $kw = array_filter((array) ($rules['filename_keywords'] ?? []));
 
         $out = [];
         foreach ($attachments as $att) {
@@ -238,27 +313,44 @@ class DetectionEngine
             if ($name === '') {
                 continue;
             }
-            $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-
-            if (! empty($types) && ! in_array($ext, $types, true)) {
+            if (! empty($types)
+                && ! in_array(strtolower(pathinfo($name, PATHINFO_EXTENSION)), $types, true)) {
                 continue;
             }
 
-            if (! empty($kw)) {
-                $lowerName = mb_strtolower($name);
-                $hit = false;
-                foreach ($kw as $k) {
-                    if ($k !== '' && mb_strpos($lowerName, mb_strtolower((string) $k)) !== false) {
-                        $hit = true;
-                        break;
-                    }
-                }
-                if (! $hit) {
-                    continue;
-                }
-            }
-
             $out[] = $att;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Filename evidence: which of the already type-allowed attachments look like
+     * the target document. No keywords configured ⇒ every one of them does.
+     *
+     * `filename_mode` mirrors the subject/body `mode`. Regex earns its place on
+     * filenames because supplier document codes need precision a substring can't
+     * express: "(?<![a-z0-9])I-\d{6}" catches I-001068 without also catching any
+     * filename that happens to contain "i-0".
+     *
+     * @param  array<int,array<string,mixed>>  $attachments
+     * @param  array<string,mixed>  $rules
+     * @return array<int,array<string,mixed>>
+     */
+    private function filterByFilename(array $attachments, array $rules): array
+    {
+        $kw = array_filter((array) ($rules['filename_keywords'] ?? []));
+        if (empty($kw)) {
+            return $attachments;
+        }
+
+        $mode = (string) ($rules['filename_mode'] ?? 'contains');
+
+        $out = [];
+        foreach ($attachments as $att) {
+            if ($this->anyKeywordMatches((string) ($att['name'] ?? ''), $kw, $mode)) {
+                $out[] = $att;
+            }
         }
 
         return $out;

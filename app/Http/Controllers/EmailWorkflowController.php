@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 /**
  * IT > Automation > Email Workflow.
@@ -160,6 +161,11 @@ class EmailWorkflowController extends Controller
                 break;
 
             case 2: // Detection rules
+                // Reject an uncompilable pattern here or it becomes a dead rule:
+                // the engine silently ignores what won't compile, so a typo'd
+                // regex looks saved and matches nothing forever — the same
+                // invisible-failure class as the unparseable cron on step 5.
+                $this->assertPatternsCompile($request);
                 $model->rules_json = $this->parseRules($request);
                 break;
 
@@ -792,16 +798,52 @@ class EmailWorkflowController extends Controller
                     ['pdf', 'png', 'jpg', 'docx', 'xlsx'],
                     array_map('strtolower', (array) $request->input('attachment_types', []))
                 )),
+                'filename_mode' => $request->input('attachment_mode', 'contains') === 'regex' ? 'regex' : 'contains',
                 'filename_keywords' => $this->splitKeywords($request->input('attachment_keywords', '')),
             ],
             'sender' => [
                 'allowlist' => $this->splitKeywords($request->input('sender_allowlist', '')),
                 'denylist' => $this->splitKeywords($request->input('sender_denylist', '')),
             ],
-            'capture_logic' => in_array($request->input('capture_logic'), ['attachment_only', 'text_only'], true)
-                ? $request->input('capture_logic')
+            'capture_logic' => array_key_exists((string) $request->input('capture_logic'), EmailWorkflow::CAPTURE_LOGICS)
+                ? (string) $request->input('capture_logic')
                 : 'attachment_and_text',
         ];
+    }
+
+    /**
+     * Fail the save if any pattern in a field set to regex mode won't compile.
+     *
+     * DetectionEngine ignores uncompilable patterns by design (a bad rule must
+     * not abort a live sweep), which means the only place a typo can be caught
+     * is here, before it is stored.
+     */
+    private function assertPatternsCompile(Request $request): void
+    {
+        $fields = [
+            'subject_keywords' => ['mode' => $request->input('subject_mode'), 'label' => 'Subject'],
+            'body_keywords' => ['mode' => $request->input('body_mode'), 'label' => 'Body'],
+            'attachment_keywords' => ['mode' => $request->input('attachment_mode'), 'label' => 'Filename'],
+        ];
+
+        $errors = [];
+        foreach ($fields as $input => $meta) {
+            if ($meta['mode'] !== 'regex') {
+                continue;
+            }
+            $bad = array_values(array_filter(
+                $this->splitKeywords($request->input($input, '')),
+                fn (string $p) => ! DetectionEngine::isValidPattern($p)
+            ));
+            if ($bad !== []) {
+                $errors[$input] = $meta['label'].' pattern(s) not valid regex: '.implode(', ', $bad)
+                    .'. Fix them or switch this field back to "Contains any keyword".';
+            }
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
     }
 
     /** @return array<int,array<string,string>> column map from the step-4 form. */
@@ -824,20 +866,27 @@ class EmailWorkflowController extends Controller
         return $cols ?: EmailWorkflow::DEFAULT_LOG_CONFIG['columns'];
     }
 
-    /** Split a comma/newline-separated list into trimmed non-empty keywords. */
+    /**
+     * Split a comma/newline-separated list into trimmed non-empty keywords.
+     *
+     * Delegates to the engine, which owns the brace-aware comma rule that keeps
+     * a regex quantifier (`\d{6,}`) from being split into two dead patterns.
+     */
     private function splitKeywords(?string $raw): array
     {
-        if (! $raw) {
-            return [];
-        }
-
-        return array_values(array_filter(array_map(
-            'trim',
-            preg_split('/[\r\n,]+/', $raw) ?: []
-        ), fn ($v) => $v !== ''));
+        return DetectionEngine::splitKeywords($raw);
     }
 
-    /** Representative sample emails for the Phase-1 "Test rules" preview. */
+    /**
+     * Representative sample emails for the "Test rules" preview.
+     *
+     * The awkward ones are deliberate and are drawn from real documents the
+     * generic defaults missed: a house reference in the filename with no
+     * invoice word anywhere (s4, s5), and invoice wording in the subject with
+     * an unhelpfully-named file (s6). A preset that leaves any of those grey in
+     * the preview will lose supplier invoices in production. s2 is the control —
+     * it must stay unmatched.
+     */
     private function sampleMessages(): array
     {
         return [
@@ -858,6 +907,24 @@ class EmailWorkflowController extends Controller
                 'subject' => 'Payment received for order #4821', 'body' => 'Thank you. Amount: $89.90.',
                 'date' => now()->toIso8601String(),
                 'attachments' => [['id' => 'b', 'name' => 'receipt-4821.pdf', 'mime' => 'application/pdf', 'size' => 1500]],
+            ],
+            [
+                'message_id' => 's4', 'from' => 'accounts@telecontinent.example',
+                'subject' => 'Subscription Billing | August-2026', 'body' => 'Attached for your records.',
+                'date' => now()->subDays(3)->toIso8601String(),
+                'attachments' => [['id' => 'c', 'name' => 'CDSB-IV-2608-002 (Telecontinent).pdf', 'mime' => 'application/pdf', 'size' => 3072]],
+            ],
+            [
+                'message_id' => 's5', 'from' => 'ap@supplier.example',
+                'subject' => 'Documents attached', 'body' => 'As discussed.',
+                'date' => now()->subDays(4)->toIso8601String(),
+                'attachments' => [['id' => 'd', 'name' => 'ENSB-IO-02452- Bio-Oil.pdf', 'mime' => 'application/pdf', 'size' => 2600]],
+            ],
+            [
+                'message_id' => 's6', 'from' => 'landlord@property.example',
+                'subject' => 'Rental Invoice (Aug 2026)', 'body' => 'Kindly settle by month end.',
+                'date' => now()->subDays(5)->toIso8601String(),
+                'attachments' => [['id' => 'e', 'name' => 'Care Digital - 082026.pdf', 'mime' => 'application/pdf', 'size' => 1800]],
             ],
         ];
     }

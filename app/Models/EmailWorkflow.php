@@ -79,6 +79,7 @@ class EmailWorkflow extends Model
         'attachment' => [
             'required' => true,
             'types' => ['pdf'],     // pdf|png|jpg|docx|xlsx
+            'filename_mode' => 'contains',     // 'contains' | 'regex'
             'filename_keywords' => ['invoice', 'receipt', 'credit note'],
         ],
         'sender' => [
@@ -87,6 +88,94 @@ class EmailWorkflow extends Model
         ],
         // capture when (attachment matches) AND (subject OR body matches)
         'capture_logic' => 'attachment_and_text',
+    ];
+
+    /**
+     * How the attachment and subject/body verdicts combine. Keyed by the stored
+     * value so the wizard's select and the validator can't drift apart.
+     *
+     * `attachment_or_text` is the widest and the right default for a dedicated
+     * AP mailbox: either a document-shaped filename OR invoice wording in the
+     * subject is enough. See DetectionEngine::evaluate() for the capture-set
+     * fallback that keeps a text-only hit from storing nothing.
+     */
+    public const CAPTURE_LOGICS = [
+        'attachment_and_text' => 'Attachment matches AND subject/body matches',
+        'attachment_or_text' => 'Attachment matches OR subject/body matches (widest — best for an invoice mailbox)',
+        'attachment_only' => 'Attachment matches only',
+        'text_only' => 'Subject/body matches only',
+    ];
+
+    /**
+     * Supplier-invoice preset — the document shapes actually arriving in the
+     * group's AP mail, taken from an audit of invoices the generic defaults
+     * missed (Aug 2026).
+     *
+     * Why the generic defaults missed them: DEFAULT_RULES require an
+     * invoice/receipt word in BOTH the filename and the subject. Real supplier
+     * documents carry a house reference instead — CDSB-IV-2608-002, ENSB-IO-02452,
+     * I-001068, CHS26051383, SOA-20260731 — and arrive under subjects like
+     * "Subscription Billing | August-2026" or "Statement of Account" that never
+     * say "invoice". Every one of those is a silent miss, and a missed supplier
+     * invoice is a missed payment.
+     *
+     * So the filenames are matched as regex (house codes need precision a
+     * substring can't express) and the two sides are OR'd, not AND'd.
+     *
+     * Applied to a live workflow by `email-workflows:apply-invoice-preset`,
+     * which MERGES rather than overwrites, and loadable into the wizard's
+     * step 2 form with the "Load supplier-invoice preset" button.
+     */
+    public const SUPPLIER_INVOICE_RULES = [
+        'subject' => [
+            'enabled' => true,
+            'mode' => 'contains',
+            'keywords' => [
+                'invoice', 'tax invoice', 'e-invoice', 'invois',
+                'receipt', 'credit note', 'debit note',
+                'statement of account', 'account statement',
+                'billing', 'subscription billing', 'rental invoice',
+                'proforma', 'remittance', 'payment received', 'purchase order',
+            ],
+        ],
+        'body' => [
+            'enabled' => false,
+            'mode' => 'contains',
+            'keywords' => [],
+        ],
+        'combine_subject_body' => 'or',
+        'attachment' => [
+            'required' => true,
+            'types' => ['pdf'],
+            'filename_mode' => 'regex',
+            'filename_keywords' => [
+                // ── House document codes ─────────────────────────────────
+                'CDSB-\s*IV-\d',                    // CDSB-IV-2608-002 (Telecontinent)
+                'CDSB-\s*SOA-\d',                   // CDSB- SOA-20260731-Telecontinent
+                'ENSB-\s*IO-\d',                    // ENSB-IO-02452- Bio-Oil
+                '(?<![a-z0-9])CHS\d{6,}',           // NUREN GROUP LIMITED CHS26051383
+                '(?<![a-z0-9])I-\d{6}(?!\d)',       // I-001068 / I-038276 Sdn Bhd
+                '(?<![a-z])INV[-_ ]?\d{3,}',        // INV-1042, INV 1042
+                'care[\s_-]*digital[\s_-]*-[\s_-]*\d{6}',  // Care Digital - 082026 (rental)
+
+                // ── Generic document vocabulary ──────────────────────────
+                // Letter-only lookarounds, not \b: "\bSOA\b" fails on
+                // SOA_202607.pdf because "_" is a word character, and
+                // "\binvoice\b" fails on tax_invoice.pdf for the same reason.
+                '(?<![a-z])SOA(?![a-z])',
+                'invoice',
+                'invois',
+                'receipt',
+                'credit[\s_-]*note',
+                'debit[\s_-]*note',
+                'statement[\s_-]*of[\s_-]*account',
+            ],
+        ],
+        'sender' => [
+            'allowlist' => [],
+            'denylist' => [],
+        ],
+        'capture_logic' => 'attachment_or_text',
     ];
 
     public const DEFAULT_STORAGE_CONFIG = [
