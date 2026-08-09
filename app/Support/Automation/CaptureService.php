@@ -278,7 +278,10 @@ class CaptureService
 
         $offset = 0;
         $passes = 0;
-        $oldest = null;              // oldest message this run has examined
+        $oldest = null;              // oldest message this run has examined (outlier-guarded)
+        $cursor = null;              // true oldest seen, for date-based continuation
+        $lastCursor = null;          // the cursor the previous pass ended on
+        $lastPassWasFull = false;    // did the previous pass fill its quota?
         $windowExhausted = false;
         $unreadable = [];
 
@@ -288,7 +291,17 @@ class CaptureService
             $passes++;
 
             try {
-                $messages = $email->search($emailConn, $query, ['limit' => $limit, 'offset' => $offset]);
+                $messages = $email->search($emailConn, $query, [
+                    'limit' => $limit,
+                    'offset' => $offset,
+                    // A date cursor alongside the offset. An offset is a position
+                    // and every provider caps how deep one may go; a date is a
+                    // filter and has no such ceiling. Adapters that can honour it
+                    // exactly (Graph) page by this and ignore the offset; the rest
+                    // (Gmail's page tokens, IMAP's positions) have no depth limit
+                    // of their own and keep using the offset.
+                    'before' => $cursor?->toIso8601String(),
+                ]);
             } catch (Throwable $e) {
                 // The FIRST pass failing means the mailbox itself is unusable —
                 // auth, host, folder — and that must fail the run loudly, exactly
@@ -333,12 +346,41 @@ class CaptureService
             }
 
             if ($messages === []) {
+                // Empty normally means the window ran out. After a FULL pass it
+                // means something else, and reading the two as one is how a
+                // provider limit turns into silent data loss: Microsoft Graph
+                // stops honouring `$skip` at roughly a thousand messages and
+                // answers with an empty page rather than an error, so a sweep
+                // deep in a large mailbox was told "no more mail" while July was
+                // still sitting underneath it — and recorded full coverage over
+                // it, in green. Verified live on admin@claritas.asia.
+                //
+                // Mid-window, therefore, an empty page is a TRUNCATION. Record it
+                // as an unclosed gap so the next run retries and the badge says
+                // so. A window whose size happens to land exactly on a pass
+                // boundary is misreported as truncated by this, which costs one
+                // amber badge and one wasted pass — the opposite mistake costs
+                // documents, so the asymmetry is deliberate.
+                if ($lastPassWasFull) {
+                    $passes--;   // this pass read nothing; not work done
+                    $stoppedBecause = 'the mailbox stopped returning older mail before the window ended '
+                        .'(a provider paging limit, not the end of the mailbox)';
+
+                    break;
+                }
+
                 $windowExhausted = true;
                 break;
             }
 
             $run->increment('scanned_count', count($messages));
             $oldest = $this->earlier($oldest, $this->oldestDate($messages, $overlap));
+
+            // The CONTINUATION cursor is the true oldest of the pass, not the
+            // outlier-guarded boundary above: the guard deliberately understates
+            // how far back we reached, and paging from an understated point would
+            // step over everything between it and the real oldest.
+            $cursor = $this->earlier($cursor, $this->oldestDate($messages, 0));
 
             foreach ($messages as $message) {
                 $verdict = $this->engine->evaluate($message, $rules);
@@ -385,10 +427,23 @@ class CaptureService
             // "some mail in this slice is unreadable" from being reported as
             // "there is no more mail" — the same conflation that let a hole in the
             // middle of a mailbox close a sweep and still show full coverage.
-            if ($limit <= 0 || (count($messages) + count($passUnreadable)) < $limit) {
+            $lastPassWasFull = $limit > 0 && (count($messages) + count($passUnreadable)) >= $limit;
+
+            if (! $lastPassWasFull) {
                 $windowExhausted = true;
                 break;
             }
+
+            // A cursor that did not move means the next pass would ask the same
+            // question and get the same answer forever — a whole quota of
+            // messages sharing one timestamp, or an adapter ignoring the cursor.
+            // Stop and record the gap rather than spin.
+            if ($cursor !== null && $lastCursor !== null && ! $cursor->lessThan($lastCursor)) {
+                $stoppedBecause = 'the mailbox stopped yielding older mail (the paging cursor did not advance)';
+
+                break;
+            }
+            $lastCursor = $cursor;
 
             // Nothing to reach back to (first ever run), or nothing datable to
             // judge coverage by — either way, do not spin.

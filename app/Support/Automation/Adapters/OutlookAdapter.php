@@ -79,21 +79,38 @@ class OutlookAdapter implements EmailSourceAdapter
         $limit = max(0, (int) ($paging['limit'] ?? 25));
         $unlimited = $limit === 0;
         $offset = max(0, (int) ($paging['offset'] ?? 0));
+        $before = $paging['before'] ?? null;
         $sinceDays = (int) ($query['since_days'] ?? 30);
         $since = now()->subDays($sinceDays)->toIso8601ZuluString();
+
+        // Continue by DATE, never by $skip.
+        //
+        // Graph stops honouring $skip at roughly a thousand messages and answers
+        // with an empty page rather than an error — indistinguishable from the
+        // end of the mailbox. On admin@claritas.asia that hid all of early July
+        // beneath a sweep that reported full coverage in green, which is the
+        // exact failure this module keeps producing. `receivedDateTime le` is a
+        // filter rather than a position, so it has no depth ceiling.
+        //
+        // `le`, not `lt`: two messages can share a timestamp, and `lt` would drop
+        // the second one at the seam. Re-reading the boundary message costs
+        // nothing — the captures table dedupes it.
+        $filter = "receivedDateTime ge {$since}";
+        if ($before) {
+            $filter .= ' and receivedDateTime le '.\Carbon\Carbon::parse($before)->toIso8601ZuluString();
+        }
 
         // $top caps ONE PAGE, not the total. Passing the sweep limit straight
         // through and ignoring @odata.nextLink silently truncated every sweep.
         $url = self::BASE.'/me/messages';
         $params = array_filter([
-            '$filter' => "receivedDateTime ge {$since}",
+            '$filter' => $filter,
             '$top' => $unlimited ? self::PAGE_SIZE : min($limit, self::PAGE_SIZE),
-            // Server-side, so a later pass costs one request rather than
-            // re-listing (and re-transferring the bodies of) everything already
-            // read. Graph honours $skip alongside $filter + $orderby; it is
-            // deliberately NOT emitted at 0 so the ordinary first pass sends the
-            // exact request it always did.
-            '$skip' => $offset,
+            // Only as a fallback for a caller that gives an offset but no cursor;
+            // the sweep always supplies a cursor after its first pass. Never
+            // emitted at 0, so the ordinary first pass sends exactly the request
+            // it always did.
+            '$skip' => $before ? 0 : $offset,
             '$orderby' => 'receivedDateTime desc',   // newest first — contract
             '$select' => 'id,subject,from,receivedDateTime,bodyPreview,body,hasAttachments',
         ], fn ($v) => $v !== 0 && $v !== null);
