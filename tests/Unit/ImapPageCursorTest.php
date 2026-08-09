@@ -49,4 +49,30 @@ class ImapPageCursorTest extends TestCase
     {
         $this->assertSame(['page' => 6, 'drop' => 0], ImapAdapter::pageCursor(5, 0));
     }
+
+    // ── Empty page: the window ended, or a hole in the middle of it? ──────
+
+    public function test_a_genuinely_empty_page_ends_the_sweep(): void
+    {
+        // Nothing failed, so there is nothing behind it — the window ran out and
+        // the caller is right to record full coverage.
+        $this->assertFalse(ImapAdapter::shouldStepOverDeadPage(false, 0));
+    }
+
+    public function test_a_page_whose_every_message_failed_is_stepped_over(): void
+    {
+        // Observed live: offsets 31-40 all failed, the page came back empty, the
+        // sweep stopped there and the run still claimed no coverage gap. The
+        // rest of the window was sitting right behind it.
+        $this->assertTrue(ImapAdapter::shouldStepOverDeadPage(true, 0));
+        $this->assertTrue(ImapAdapter::shouldStepOverDeadPage(true, 2));
+    }
+
+    public function test_stepping_over_holes_is_bounded_so_a_dead_connection_cannot_spin(): void
+    {
+        // A dead connection fails every page and never returns the empty page
+        // that would otherwise end the loop, so the step-over must give up.
+        $this->assertFalse(ImapAdapter::shouldStepOverDeadPage(true, 3));
+        $this->assertFalse(ImapAdapter::shouldStepOverDeadPage(true, 99));
+    }
 }

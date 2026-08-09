@@ -56,6 +56,19 @@ class ImapAdapter implements EmailSourceAdapter
     }
 
     /**
+     * Consecutive fully-unreadable pages a sweep will step over before it gives
+     * up and stops paging.
+     *
+     * One bad page is a hole to walk past; several in a row is a connection that
+     * has died, and a dead connection never returns the empty page that would
+     * otherwise end the loop — so without a bound, stepping over holes spins
+     * forever. Three pages (30 messages at the default batch) is comfortably
+     * more than the single-page failures seen in production and small enough
+     * that a dead socket costs one wasted round-trip per page, briefly.
+     */
+    private const MAX_CONSECUTIVE_DEAD_PAGES = 3;
+
+    /**
      * Messages the last sweep gave up on. Empty is the healthy case.
      *
      * @return array<int,array{ref:string,error:string}>
@@ -63,6 +76,20 @@ class ImapAdapter implements EmailSourceAdapter
     public function unreadableMessages(): array
     {
         return $this->unreadable;
+    }
+
+    /**
+     * Whether an empty page should be stepped over rather than end the sweep.
+     *
+     * Pure, and public, so the decision that separates "the window ran out" from
+     * "this page is a hole" can be tested without an IMAP server — the same
+     * reason pageCursor() is public. Getting it wrong in either direction is
+     * invisible: stop too early and the remainder is reported as read; never
+     * stop and a dead connection loops.
+     */
+    public static function shouldStepOverDeadPage(bool $pageHadFailures, int $consecutiveDeadPages): bool
+    {
+        return $pageHadFailures && $consecutiveDeadPages < self::MAX_CONSECUTIVE_DEAD_PAGES;
     }
 
     /**
@@ -156,7 +183,11 @@ class ImapAdapter implements EmailSourceAdapter
             // a later starting page plus a partial first batch.
             ['page' => $startPage, 'drop' => $dropFromFirstPage] = self::pageCursor($offset, $perPage);
 
+            $consecutiveDeadPages = 0;
+
             for ($page = $startPage; ; $page++) {
+                $failedBefore = count($this->unreadable);
+
                 try {
                     $batch = $this->fetchPage($inbox, $since, $perPage, $page);
                 } catch (Throwable $e) {
@@ -182,8 +213,25 @@ class ImapAdapter implements EmailSourceAdapter
                 }
 
                 if ($batch === []) {
-                    break; // window exhausted — the only stop condition when unlimited
+                    // An empty page has TWO very different meanings, and reading
+                    // them as one is a coverage lie. Genuinely empty = the window
+                    // ran out, and the caller is right to record full coverage.
+                    // Empty because every message in it failed = a HOLE, with the
+                    // rest of the window still behind it — observed live on
+                    // tech@careplusx.com, where offsets 31-40 all failed, the
+                    // sweep stopped there, and the run still reported no gap.
+                    // Step over the hole instead, bounded so a dead connection
+                    // (which never returns "empty") cannot spin forever.
+                    if (self::shouldStepOverDeadPage(count($this->unreadable) > $failedBefore, $consecutiveDeadPages)) {
+                        $consecutiveDeadPages++;
+
+                        continue;
+                    }
+
+                    break;
                 }
+
+                $consecutiveDeadPages = 0;
 
                 // The offset's remainder lands mid-page; drop what belongs to the
                 // previous pass. A full page always leaves at least one behind
