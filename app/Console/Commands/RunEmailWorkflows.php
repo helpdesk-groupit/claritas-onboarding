@@ -45,6 +45,14 @@ class RunEmailWorkflows extends Command
             return self::FAILURE;
         }
 
+        // A catch-up drops the sweep budgets, so QUEUEING one hands the worker a
+        // job that can outlive its 3600s timeout: it gets killed mid-sweep and
+        // the run row sits at `running` until the reaper notices, three hours
+        // later. On the CLI there is no such ceiling (max_execution_time = 0),
+        // and the operator is standing there watching, which is the whole point
+        // of running it by hand. So it runs inline whether or not --sync is given.
+        $sync = $this->option('sync') || $catchUp;
+
         if ($workflows->isEmpty()) {
             $this->info('No workflows to run.');
 
@@ -90,7 +98,7 @@ class RunEmailWorkflows extends Command
                 $workflow->clearRunRequest();
             }
 
-            if ($this->option('sync')) {
+            if ($sync) {
                 $run = $capture->run($workflow, $trigger, $userId, $catchUp);
                 $this->line(sprintf(
                     '#%d “%s” → %s (%d pass(es), scanned %d, captured %d, skipped %d, failed %d)%s',

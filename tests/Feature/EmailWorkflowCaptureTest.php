@@ -660,6 +660,98 @@ class EmailWorkflowCaptureTest extends TestCase
         $this->assertNotNull($run->error);
     }
 
+    public function test_a_mis_dated_message_cannot_convince_a_sweep_it_has_caught_up(): void
+    {
+        // A message date is what the SENDER wrote in the `Date:` header — IMAP
+        // hands us exactly that. A forwarded message, a replayed mailing-list
+        // post, or a sender whose clock is a fortnight slow lands INSIDE the
+        // window and looks perfectly legitimate. Taking the plain minimum, one
+        // such message would drag the boundary past the target, stop the sweep
+        // after a single pass, and record full coverage over mail nothing read —
+        // this bug wearing a different hat.
+        config(['email-workflow.message_limit' => 20, 'email-workflow.pass_overlap' => 2]);
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 25);
+
+        $messages = $this->datedMessages(30);          // now … now-29h
+        $messages[3]['date'] = now()->subHours(26)->toIso8601String();   // stale header
+        $messages[4]['date'] = now()->subHours(26)->toIso8601String();
+        $this->fakeEmailAdapter($messages);
+
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        // Pass 1 genuinely reaches only now-19h, so a second pass is required.
+        // Trusting the two stale headers would have stopped it at one.
+        $this->assertSame(2, $run->passes, 'Two mis-dated messages ended the sweep early.');
+        $this->assertNull($run->coverage_warning);
+    }
+
+    public function test_a_pass_shortened_by_unreadable_messages_is_not_the_end_of_the_window(): void
+    {
+        // A short pass normally means the window ran out. It ALSO happens when the
+        // adapter consumed its full quota but could not parse some of it — those
+        // messages left the window without being returned. Reading the two as one
+        // reports "some of this slice is unreadable" as "there is no more mail",
+        // which closes the sweep over a hole and still shows full coverage.
+        config(['email-workflow.message_limit' => 20, 'email-workflow.pass_overlap' => 0]);
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 100);
+        $adapter = $this->fakeEmailAdapter($this->datedMessages(18), unreadable: [
+            ['ref' => 'message #4 in the imap window', 'error' => 'ErrorException: Must use comma to separate addresses'],
+            ['ref' => 'message #5 in the imap window', 'error' => 'ErrorException: Must use comma to separate addresses'],
+            ['ref' => 'message #6 in the imap window', 'error' => 'ErrorException: Must use comma to separate addresses'],
+        ]);
+
+        $run = app(CaptureService::class)->run($this->workflow, EmailWorkflowRun::TRIGGER_SCHEDULED);
+
+        // 18 returned + 3 unreadable = 21 consumed against a 20-message quota, so
+        // the slice was full and there is more behind it.
+        $this->assertGreaterThan(1, $run->passes, 'An unreadable-shortened pass was read as the end of the window.');
+        $this->assertCount(2, $adapter->searchCalls);
+    }
+
+    public function test_a_catch_up_runs_inline_even_without_the_sync_flag(): void
+    {
+        // Queueing a catch-up hands the worker a job with no sweep budget, which
+        // can outlive its 3600s timeout: killed mid-sweep, the run row then sits
+        // at `running` until the reaper notices three hours later. On the CLI
+        // there is no such ceiling, and the operator is standing there watching.
+        config(['email-workflow.message_limit' => 2, 'email-workflow.pass_overlap' => 0]);
+
+        Http::fake($this->googleStack());
+        $this->previousRun(hoursAgo: 1);
+        $this->fakeEmailAdapter($this->datedMessages(6));
+
+        $this->artisan('email-workflows:run --workflow='.$this->workflow->id.' --catch-up')
+            ->assertSuccessful();
+
+        // A queued run would have left no run row at all (nothing drains the
+        // database queue here), and a budgeted one would have stopped at 2.
+        $this->assertSame(6, EmailWorkflowRun::latest('id')->first()->scanned_count);
+    }
+
+    public function test_a_capture_job_queued_before_the_catch_up_flag_existed_still_runs(): void
+    {
+        // Jobs already sitting in the `jobs` table at deploy time unserialise
+        // WITHOUT the new property, and reading a typed property in that state is
+        // a fatal Error — every in-flight sweep would die on the new worker.
+        Http::fake($this->googleStack());
+
+        $job = (new \ReflectionClass(\App\Jobs\RunEmailWorkflowCapture::class))->newInstanceWithoutConstructor();
+        foreach (['workflowId' => $this->workflow->id, 'trigger' => EmailWorkflowRun::TRIGGER_SCHEDULED, 'userId' => null] as $name => $value) {
+            $property = new \ReflectionProperty($job, $name);
+            $property->setValue($job, $value);
+        }
+        // `catchUp` deliberately left uninitialised — that is the pre-deploy shape.
+
+        $job->handle(app(CaptureService::class));
+
+        $this->assertSame(1, EmailWorkflowRun::count());
+        $this->assertSame(EmailWorkflowRun::STATUS_SUCCESS, EmailWorkflowRun::sole()->status);
+    }
+
     // ── Adapters honour the offset exactly ───────────────────────────────
 
     public function test_the_gmail_adapter_skips_the_offset_without_fetching_those_messages(): void

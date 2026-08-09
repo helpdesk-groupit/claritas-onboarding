@@ -78,6 +78,12 @@ class RunEmailWorkflowCapture implements ShouldBeUnique, ShouldQueue
 
         // CaptureService records failures on the run rather than throwing, so
         // there is deliberately no try/catch here.
-        $capture->run($workflow, $this->trigger, $this->userId, $this->catchUp);
+        // `?? false`, not `$this->catchUp`, and the difference is a deploy-day
+        // outage. A job serialised BEFORE this property existed unserialises with
+        // it uninitialised, and reading a typed property in that state is a fatal
+        // Error — so every sweep already sitting in the `jobs` table at deploy
+        // time would die on the new worker. `??` uses isset() semantics, which
+        // answers false for an uninitialised property instead of throwing.
+        $capture->run($workflow, $this->trigger, $this->userId, $this->catchUp ?? false);
     }
 }

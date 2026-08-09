@@ -338,7 +338,7 @@ class CaptureService
             }
 
             $run->increment('scanned_count', count($messages));
-            $oldest = $this->earlier($oldest, $this->oldestDate($messages));
+            $oldest = $this->earlier($oldest, $this->oldestDate($messages, $overlap));
 
             foreach ($messages as $message) {
                 $verdict = $this->engine->evaluate($message, $rules);
@@ -376,9 +376,16 @@ class CaptureService
             }
 
             // ── Does another pass follow? ────────────────────────────────
-            // A short pass means the window ran out behind it. Unlimited (0) read
-            // the whole window in one go, so it is short by definition.
-            if ($limit <= 0 || count($messages) < $limit) {
+            // A short pass normally means the window ran out behind it. Unlimited
+            // (0) read the whole window in one go, so it is short by definition.
+            //
+            // But a pass is ALSO short when the adapter reached its full quota and
+            // could not parse some of it: those messages were consumed from the
+            // window without being returned. Counting them back in is what stops
+            // "some mail in this slice is unreadable" from being reported as
+            // "there is no more mail" — the same conflation that let a hole in the
+            // middle of a mailbox close a sweep and still show full coverage.
+            if ($limit <= 0 || (count($messages) + count($passUnreadable)) < $limit) {
                 $windowExhausted = true;
                 break;
             }
@@ -764,9 +771,9 @@ class CaptureService
      *
      * @param  array<int,array<string,mixed>>  $messages
      */
-    private function oldestDate(array $messages): ?\Carbon\CarbonInterface
+    private function oldestDate(array $messages, int $overlap = 0): ?\Carbon\CarbonInterface
     {
-        $oldest = null;
+        $dates = [];
 
         foreach ($messages as $message) {
             $raw = data_get($message, 'date');
@@ -801,10 +808,35 @@ class CaptureService
                 continue;
             }
 
-            $oldest = $this->earlier($oldest, $date);
+            $dates[] = $date;
         }
 
-        return $oldest;
+        if ($dates === []) {
+            return null;
+        }
+
+        // Sort the instants themselves rather than their timestamps: rebuilding a
+        // Carbon from an epoch loses the timezone (it comes back UTC, eight hours
+        // adrift of Asia/Kuala_Lumpur), and this value is written to a wall-clock
+        // MySQL column and compared against now() — both of which would then be
+        // wrong by the offset.
+        usort($dates, fn ($a, $b) => $a <=> $b);
+
+        // Not the oldest — the k-th oldest. The window filter above throws out
+        // dates that are obviously lies, but a header can be wrong and still land
+        // INSIDE the window: a forwarded message, a mailing list replaying an old
+        // post, a sender whose clock is a fortnight slow. One of those among five
+        // hundred would drag the minimum back past the target, stop the sweep
+        // after a single pass, and record full coverage over mail nothing read.
+        //
+        // k is bounded by `pass_overlap` — the messages the NEXT pass re-reads
+        // anyway — so this can never cost coverage: understating how far back a
+        // pass reached only ever buys an extra pass, while overstating it skips
+        // mail, and only one of those is recoverable. It also scales down on
+        // small passes, which have no room for outlier resistance.
+        $guard = min($overlap, intdiv(count($dates), 10), count($dates) - 1);
+
+        return $dates[max(0, $guard)];
     }
 
     /** The earlier of two instants, either of which may be null. */
