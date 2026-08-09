@@ -18,17 +18,17 @@ class DetectionEngineTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->engine = new DetectionEngine();
+        $this->engine = new DetectionEngine;
     }
 
     private function invoiceMessage(array $overrides = []): array
     {
         return array_merge([
-            'message_id'  => 'msg-1',
-            'from'        => 'billing@acme.com',
-            'subject'     => 'Invoice for June services',
-            'body'        => 'Please find attached. Total RM 1,250.00 due.',
-            'date'        => '2026-06-15T08:30:00Z',
+            'message_id' => 'msg-1',
+            'from' => 'billing@acme.com',
+            'subject' => 'Invoice for June services',
+            'body' => 'Please find attached. Total RM 1,250.00 due.',
+            'date' => '2026-06-15T08:30:00Z',
             'attachments' => [
                 ['id' => 'a1', 'name' => 'invoice-202606.pdf', 'mime' => 'application/pdf', 'size' => 1024],
             ],
@@ -299,6 +299,62 @@ class DetectionEngineTest extends TestCase
             'Nuren ASX invoice' => ['NUREN GROUP LIMITED CHS26051383 2026-08-03.pdf', 'ASX Invoice'],
             'Claritas statement of account' => ['SOA - CLARITAS (20.07.2026).pdf', ''],
             'Care Digital rental invoice' => ['Care Digital - 082026.pdf', 'Rental Invoice (Aug 2026)'],
+
+            // ── Collections: SOAs and payment chasers (July 2026 audit) ──
+            // Real threads from finance@claritas.asia that every run dropped.
+            // A payment chaser rarely says "invoice" anywhere: the subject
+            // chases, and the attachment is a statement or a transfer slip.
+            'Payment chaser · SOA attached' => [
+                'SOA - CLARITAS (20.07.2026).pdf',
+                '[6th Follow Up] ACCORDIA - CLARITAS : PAYMENT FOLLOW UP (20/07/2026)',
+            ],
+            'Payment chaser · Maybank2u slip' => [
+                'NCSB-M2U-20260720-accordia.pdf',
+                'Re: [5th Follow Up] ACCORDIA - CLARITAS : PAYMENT FOLLOW UP',
+            ],
+            'Outstanding debt · transfer slip' => [
+                'NCSB-M2U-20260720-cloudspace.pdf',
+                'Re: OUTSTANDING DEBT – RM 59,826.31 - Claritas Consulting (Asia) SB',
+            ],
+            // The subject alone must carry it — a chaser can attach a plainly
+            // named scan, and dropping it is the whole bug.
+            'Payment chaser · anonymous scan' => [
+                'scan0042.pdf',
+                'PAYMENT FOLLOW UP — August statement',
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider innocentLookalikes
+     */
+    public function test_the_collections_vocabulary_does_not_swallow_unrelated_mail(string $filename, string $subject): void
+    {
+        // Widening the rules is only safe if the widening is precise. `contains`
+        // is a plain substring match, so a bare "soa" keyword would fire on
+        // "soap" and a bare "follow up" on every thread in the mailbox — and
+        // each false positive files a stranger's PDF into the client's Drive.
+        $msg = $this->invoiceMessage([
+            'subject' => $subject,
+            'body' => 'Nothing financial here at all.',
+            'attachments' => [['id' => 'a1', 'name' => $filename, 'mime' => 'application/pdf', 'size' => 2048]],
+        ]);
+
+        $this->assertFalse(
+            $this->engine->evaluate($msg, EmailWorkflow::SUPPLIER_INVOICE_RULES)['matched'],
+            "Preset wrongly matched: {$subject} / {$filename}"
+        );
+    }
+
+    /** @return array<string,array{0:string,1:string}> */
+    public static function innocentLookalikes(): array
+    {
+        return [
+            'soap is not an SOA' => ['product-list.pdf', 'Soap dispenser restock for the pantry'],
+            'soaring is not an SOA' => ['deck.pdf', 'Soaring engagement on our July campaign'],
+            'a plain follow-up is not a payment chaser' => ['notes.pdf', 'Follow up on yesterday’s design review'],
+            'a meeting reminder is not a payment reminder' => ['agenda.pdf', 'Reminder: townhall at 3pm'],
+            'lunch is still lunch' => ['menu.pdf', 'Team lunch on Friday'],
         ];
     }
 

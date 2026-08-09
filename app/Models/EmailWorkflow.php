@@ -136,6 +136,23 @@ class EmailWorkflow extends Model
                 'statement of account', 'account statement',
                 'billing', 'subscription billing', 'rental invoice',
                 'proforma', 'remittance', 'payment received', 'purchase order',
+
+                // ── Collections: SOAs and payment chasers (added Aug 2026) ──
+                // A statement of account and a payment follow-up ARE finance
+                // documents — the July audit found them arriving with a
+                // statement or a bank transfer slip attached and being dropped,
+                // because the subject says "PAYMENT FOLLOW UP" and never says
+                // "invoice".
+                //
+                // Every phrase here is deliberately multi-word. `contains` is a
+                // plain substring match, so a bare "soa" would fire on "soap"
+                // and "soar", and a bare "follow up" would swallow every thread
+                // in the mailbox that happens to be a follow-up about anything.
+                // SOA files are caught on the FILENAME side instead, where the
+                // regex mode can demand real word boundaries.
+                'payment follow up', 'payment follow-up', 'follow up on payment',
+                'outstanding debt', 'outstanding payment', 'outstanding balance',
+                'overdue', 'payment reminder', 'demand for payment',
             ],
         ],
         'body' => [
@@ -169,6 +186,21 @@ class EmailWorkflow extends Model
                 'credit[\s_-]*note',
                 'debit[\s_-]*note',
                 'statement[\s_-]*of[\s_-]*account',
+
+                // ── What a payment chaser actually carries ───────────────
+                // Not an invoice — a statement, or proof of a transfer. The
+                // July audit found these attached to "PAYMENT FOLLOW UP" and
+                // "OUTSTANDING DEBT" threads and dropped by every run.
+                // M2U is Maybank2u, whose slips arrive as
+                // NCSB-M2U-20260720-accordia.pdf; the lookarounds keep it off
+                // words that merely contain the letters.
+                '(?<![a-z0-9])M2U(?![a-z0-9])',
+                'payment[\s_-]*advice',
+                'remittance[\s_-]*advice',
+                'payment[\s_-]*slip',
+                'transfer[\s_-]*slip',
+                'outstanding',
+                'overdue',
             ],
         ],
         'sender' => [
