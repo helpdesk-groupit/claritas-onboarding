@@ -183,9 +183,25 @@ class ImapAdapter implements EmailSourceAdapter
             // a later starting page plus a partial first batch.
             ['page' => $startPage, 'drop' => $dropFromFirstPage] = self::pageCursor($offset, $perPage);
 
+            // How many messages the window actually holds. One IMAP SEARCH, no
+            // fetch — and it is the difference between a truthful sweep and an
+            // invented one.
+            //
+            // Asking webklex for a page BEYOND the result set does not come back
+            // empty. Query::fetch() slices an empty UID array, and
+            // ImapProtocol::fetch() then matches neither of its array branches
+            // (count > 1, count === 1) and falls through to string-concatenating
+            // it — emitting "Array to string conversion" and sending the literal
+            // command `UID FETCH Array:Array`, which the server rejects. That is
+            // indistinguishable from a page of genuinely unreadable messages, so
+            // every sweep whose last real page came back FULL went on to invent
+            // one: tech@careplusx.com holds 23 messages and was reporting 40
+            // unreadable ones at offsets 31-70, none of which exist.
+            $total = $this->read('counting the window', fn () => $inbox->messages()->since($since)->count());
+
             $consecutiveDeadPages = 0;
 
-            for ($page = $startPage; ; $page++) {
+            for ($page = $startPage; ($page - 1) * $perPage < $total; $page++) {
                 $failedBefore = count($this->unreadable);
 
                 try {
@@ -194,14 +210,14 @@ class ImapAdapter implements EmailSourceAdapter
                     // One unparseable message must not cost the whole sweep. webklex
                     // raises GetMessagesFailedException for the entire page, so fall
                     // back to fetching this page one message at a time and skip only
-                    // the offender. (A real mailbox killed a 25-minute unlimited
-                    // sweep with "Array to string conversion" from a single message.)
+                    // the offender.
                     // webklex rethrows everything as GetMessagesFailedException
                     // (Query::curate_messages), so record the wrapped cause or
                     // the log names the wrapper and hides the actual fault.
                     Log::warning('Email Workflow IMAP page failed — salvaging it message by message', [
                         'page' => $page,
                         'per_page' => $perPage,
+                        'in_window' => $total,
                         'error' => $e->getMessage(),
                         'root_cause' => $e->getPrevious()
                             ? $e->getPrevious()::class.': '.$e->getPrevious()->getMessage()
@@ -209,19 +225,20 @@ class ImapAdapter implements EmailSourceAdapter
                             : null,
                     ]);
 
-                    $batch = $this->salvagePage($inbox, $since, $perPage, $page);
+                    $batch = $this->salvagePage($inbox, $since, $perPage, $page, $total);
                 }
 
                 if ($batch === []) {
-                    // An empty page has TWO very different meanings, and reading
-                    // them as one is a coverage lie. Genuinely empty = the window
-                    // ran out, and the caller is right to record full coverage.
-                    // Empty because every message in it failed = a HOLE, with the
-                    // rest of the window still behind it — observed live on
-                    // tech@careplusx.com, where offsets 31-40 all failed, the
-                    // sweep stopped there, and the run still reported no gap.
-                    // Step over the hole instead, bounded so a dead connection
-                    // (which never returns "empty") cannot spin forever.
+                    // In-range and still empty means every message on this page
+                    // failed to parse — a HOLE, with real messages still behind
+                    // it. Breaking here would report the remainder as read.
+                    // Step over it instead, bounded so a genuinely dead
+                    // connection (which fails every page rather than returning
+                    // empty) cannot spin.
+                    //
+                    // Only reachable for pages inside the window now: the loop
+                    // is bounded by $total, so "past the end" — which used to
+                    // arrive here disguised as a failed page — cannot occur.
                     if (self::shouldStepOverDeadPage(count($this->unreadable) > $failedBefore, $consecutiveDeadPages)) {
                         $consecutiveDeadPages++;
 
@@ -360,11 +377,11 @@ class ImapAdapter implements EmailSourceAdapter
 
         // Normalize OUTSIDE the tolerant scope, deliberately. A diagnostic raised
         // here does not cost us the message — it costs us the TRUTH about it: a
-        // tolerated "Array to string conversion" (seen on this mailbox) makes
-        // (string) $subject the literal "Array", which detection then quietly
-        // fails to match, and nothing counts it. A counted skip beats an
-        // uncounted wrong answer, so let it escalate: the caller re-reads this
-        // page one message at a time and records exactly which one it was.
+        // tolerated "Array to string conversion" would make (string) $subject the
+        // literal "Array", which detection then quietly fails to match, and
+        // nothing counts it. A counted skip beats an uncounted wrong answer, so
+        // let it escalate: the caller re-reads this page one message at a time
+        // and records exactly which one it was.
         $out = [];
         foreach ($batch as $message) {
             $out[] = $this->normalize($message);
@@ -383,17 +400,28 @@ class ImapAdapter implements EmailSourceAdapter
      * failure this module keeps producing.
      *
      * `limit(1, $n)` selects the nth message of the ordered result, so the page's
-     * offsets map to n = (page-1)*perPage + i.
+     * offsets map to n = (page-1)*perPage + i. $total bounds those probes to
+     * positions that exist — see the note in search() on what webklex does with
+     * an out-of-range one.
      *
      * @return array<int,array<string,mixed>>
      */
-    private function salvagePage($inbox, \Carbon\Carbon $since, int $perPage, int $page): array
+    private function salvagePage($inbox, \Carbon\Carbon $since, int $perPage, int $page, int $total): array
     {
         $out = [];
         $base = ($page - 1) * $perPage;
 
         for ($i = 1; $i <= $perPage; $i++) {
             $offset = $base + $i;
+
+            // Never probe past the end of the result set. webklex answers an
+            // out-of-range position with a failure, not an empty page (see
+            // search()), so probing one would be recorded as an unreadable
+            // MESSAGE that does not exist — inventing exactly the loss this
+            // module reports on.
+            if ($offset > $total) {
+                break;
+            }
 
             try {
                 // Same split as fetchPage: tolerate the parse, not the shaping.
