@@ -31,7 +31,8 @@ class AssetController extends Controller
                 $q->where('asset_tag', 'like', "%{$s}%")
                                     ->orWhere('brand', 'like', "%{$s}%")
                   ->orWhere('model', 'like', "%{$s}%")
-                  ->orWhere('serial_number', 'like', "%{$s}%");
+                  ->orWhere('serial_number', 'like', "%{$s}%")
+                  ->orWhere('notes', 'like', "%{$s}%");
             });
         }
         if ($request->filled('status'))    $query->where('status', $request->status);

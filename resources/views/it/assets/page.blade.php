@@ -45,7 +45,7 @@
         <form action="{{ route('assets.index') }}" method="GET" class="row g-2 align-items-end">
             <div class="col-md-3">
                 <input type="text" name="search" class="form-control form-control-sm"
-                       placeholder="Tag, name, brand, serial..." value="{{ request('search') }}">
+                       placeholder="Tag, brand, model, serial, notes..." value="{{ request('search') }}">
             </div>
             <div class="col-md-2">
                 <select name="status" class="form-select form-select-sm">
