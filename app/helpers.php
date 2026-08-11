@@ -40,6 +40,28 @@ if (!function_exists('fmt_datetime')) {
     }
 }
 
+if (! function_exists('asset_onboarding_option_label')) {
+    /**
+     * How a not-yet-started new hire reads in the asset "Assigned To" picker.
+     *
+     * Shared by the Add-Asset modal and the asset edit form so one person cannot appear
+     * under two different descriptions on the two screens that assign them kit. The start
+     * date is part of the label on purpose: it is what tells IT this person has no login
+     * yet and will acknowledge the AARF from their email instead.
+     */
+    function asset_onboarding_option_label(\App\Models\Onboarding $onboarding): string
+    {
+        $name = $onboarding->personalDetail?->full_name ?: 'New hire #'.$onboarding->id;
+        $email = $onboarding->workDetail?->company_email ?: $onboarding->personalDetail?->personal_email;
+        $start = $onboarding->workDetail?->start_date;
+
+        $label = $email ? "{$name} — {$email}" : $name;
+        $label .= ' · New hire';
+
+        return $start ? $label.', starts '.fmt_date($start) : $label;
+    }
+}
+
 if (!function_exists('secure_file_url')) {
     /**
      * Generate the URL for a stored file.

@@ -521,6 +521,7 @@
                 </div>
                 @php
                     $addPreselectedId = old('assigned_employee_id', '');
+                    $addPreselectedOnbId = old('assigned_onboarding_id', '');
                     $addPreselectedLabel = '';
                     if ($addPreselectedId) {
                         foreach ($employees as $emp) {
@@ -531,13 +532,20 @@
                                 break;
                             }
                         }
+                    } elseif ($addPreselectedOnbId) {
+                        foreach ($pendingOnboardings as $ob) {
+                            if ($ob->id == $addPreselectedOnbId) {
+                                $addPreselectedLabel = asset_onboarding_option_label($ob);
+                                break;
+                            }
+                        }
                     }
                 @endphp
                 <div class="row g-3 mb-4">
-                    <div class="col-md-3"><label class="form-label fw-semibold">Assigned Employee</label>
+                    <div class="col-md-3"><label class="form-label fw-semibold">Assigned To</label>
                         <div class="position-relative">
                             <input type="text" id="addEmpSearchInput" class="form-control"
-                                   placeholder="Search or select employee..."
+                                   placeholder="Search employee or new hire..."
                                    autocomplete="off"
                                    value="{{ $addPreselectedLabel }}">
                             <ul id="addEmpList"
@@ -545,7 +553,7 @@
                                 style="z-index:1060;max-height:200px;overflow-y:auto;display:none;top:100%;left:0;min-width:100%;width:max-content;max-width:480px;">
                                 <li>
                                     <button type="button" class="dropdown-item"
-                                            data-empid="" data-emplabel="— Not Assigned —">
+                                            data-empid="" data-onbid="" data-emplabel="— Not Assigned —">
                                         — Not Assigned —
                                     </button>
                                 </li>
@@ -557,18 +565,38 @@
                                 @endphp
                                 <li>
                                     <button type="button" class="dropdown-item"
-                                            data-empid="{{ $emp->id }}" data-emplabel="{{ $empLabel }}"
+                                            data-empid="{{ $emp->id }}" data-onbid="" data-emplabel="{{ $empLabel }}"
                                             data-empname="{{ strtolower($empLabel) }}"
                                             style="white-space:normal;word-break:break-word;">
                                         {{ $empLabel }}
                                     </button>
                                 </li>
                                 @endforeach
+                                {{-- New hires: no employees row exists until their start date, so they are
+                                     posted as assigned_onboarding_id. Handing over kit early is the point. --}}
+                                @if($pendingOnboardings->isNotEmpty())
+                                <li class="px-3 py-1 small text-muted bg-light border-top border-bottom">
+                                    New hires — not started yet
+                                </li>
+                                @foreach($pendingOnboardings as $ob)
+                                @php $obLabel = asset_onboarding_option_label($ob); @endphp
+                                <li>
+                                    <button type="button" class="dropdown-item"
+                                            data-empid="" data-onbid="{{ $ob->id }}" data-emplabel="{{ $obLabel }}"
+                                            data-empname="{{ strtolower($obLabel) }}"
+                                            style="white-space:normal;word-break:break-word;">
+                                        {{ $obLabel }}
+                                    </button>
+                                </li>
+                                @endforeach
+                                @endif
                             </ul>
                             <input type="hidden" name="assigned_employee_id" id="addAssignedEmployeeId"
                                    value="{{ old('assigned_employee_id', '') }}">
+                            <input type="hidden" name="assigned_onboarding_id" id="addAssignedOnboardingId"
+                                   value="{{ old('assigned_onboarding_id', '') }}">
                         </div>
-                        <div class="form-text text-muted small">Type to search by name or email.</div>
+                        <div class="form-text text-muted small">Employees and new hires who haven't started. The AARF is emailed on save.</div>
                     </div>
                     <div class="col-md-3"><label class="form-label fw-semibold">Assigned Date</label>
                         <input type="date" name="asset_assigned_date" class="form-control" value="{{ old('asset_assigned_date') }}"></div>
@@ -712,27 +740,36 @@ if (importFileInput) {
     });
 })();
 
+// An asset can be assigned to an employee OR to a new hire who has no employees row yet,
+// so "is it assigned?" must read BOTH hidden fields — testing only the employee one would
+// leave a new hire's laptop showing as Available.
+function addHasAssignee() {
+    const emp = document.getElementById('addAssignedEmployeeId');
+    const onb = document.getElementById('addAssignedOnboardingId');
+    return (emp && emp.value !== '') || (onb && onb.value !== '');
+}
+
 function syncAssignmentStatus() {
-    const empHidden    = document.getElementById('addAssignedEmployeeId');
     const statusSelect = document.getElementById('assetStatus');
     const condSelect   = document.getElementById('addAssetCondition');
-    if (!empHidden || !statusSelect) return;
+    if (!statusSelect) return;
 
-    if (empHidden.value !== '') {
-        // Employee assigned → unavailable (locked to assignee)
+    if (addHasAssignee()) {
+        // Held by someone → unavailable (locked to assignee)
         statusSelect.value = 'unavailable';
     } else {
-        // No employee → status driven by condition
+        // Nobody holds it → status driven by condition
         const condition = condSelect ? condSelect.value : 'good';
         statusSelect.value = (condition === 'good') ? 'available' : 'unavailable';
     }
 }
 
-// ── Assigned Employee searchable dropdown (Add form) ──────────────────────
+// ── Assigned To searchable dropdown (Add form) — employees + pre-start new hires ──
 (function () {
     const searchInput = document.getElementById('addEmpSearchInput');
     const empList     = document.getElementById('addEmpList');
     const hiddenInput = document.getElementById('addAssignedEmployeeId');
+    const onbInput    = document.getElementById('addAssignedOnboardingId');
     if (!searchInput || !empList) return;
 
     function showList()  { empList.style.display = ''; }
@@ -748,9 +785,12 @@ function syncAssignmentStatus() {
         showList();
     }
 
-    function selectEmp(id, label) {
-        if (hiddenInput) hiddenInput.value = id;
-        searchInput.value = id ? label : '';
+    // Exactly one of the two ids may be set: the other is always cleared, so a switch from
+    // an employee to a new hire (or back) can never submit both and file the asset twice.
+    function selectEmp(empId, onbId, label) {
+        if (hiddenInput) hiddenInput.value = empId || '';
+        if (onbInput)    onbInput.value    = onbId || '';
+        searchInput.value = (empId || onbId) ? label : '';
         hideList();
         syncAssignmentStatus();
     }
@@ -762,7 +802,7 @@ function syncAssignmentStatus() {
     empList.querySelectorAll('button[data-emplabel]').forEach(btn => {
         btn.addEventListener('mousedown', function (e) {
             e.preventDefault();
-            selectEmp(this.dataset.empid, this.dataset.emplabel);
+            selectEmp(this.dataset.empid, this.dataset.onbid, this.dataset.emplabel);
         });
     });
 
@@ -772,13 +812,12 @@ function syncAssignmentStatus() {
 
 function syncStatusFromConditionAdd(condition) {
     const statusSelect  = document.getElementById('assetStatus');
-    const empHidden     = document.getElementById('addAssignedEmployeeId');
     const maintWrap     = document.getElementById('addMaintenanceWrap');
     const reasonWrap    = document.getElementById('addDecommissionReasonWrap');
     const reasonInput   = document.getElementById('addDecommissionReason');
     if (statusSelect) {
-        // If employee is assigned, always unavailable; otherwise condition-driven
-        if (empHidden && empHidden.value !== '') {
+        // Held by anyone (employee or pre-start new hire) → always unavailable; else condition-driven
+        if (addHasAssignee()) {
             statusSelect.value = 'unavailable';
         } else {
             statusSelect.value = (condition === 'good') ? 'available' : 'unavailable';

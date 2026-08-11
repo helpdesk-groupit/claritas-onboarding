@@ -24,7 +24,10 @@ class WorkDetailFactory extends Factory
             'start_date'       => fake()->dateTimeBetween('+1 month', '+3 months'),
             'company_email'    => fake()->unique()->companyEmail(),
             'department'       => fake()->randomElement(['Technology', 'Human Resources', 'Marketing', 'Finance']),
-            'role'             => 'employee',
+            // work_details.role is the ACCESS role enum, which has no 'employee' member —
+            // 'others' is what OnboardingController stores for a normal hire. The old value
+            // was silently truncated by MySQL, so every insert through this factory failed.
+            'role'             => 'others',
         ];
     }
 }

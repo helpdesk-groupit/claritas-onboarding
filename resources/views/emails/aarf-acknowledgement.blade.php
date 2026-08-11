@@ -36,8 +36,15 @@
     if (!$__aerfEmp && $aarf->onboarding_id) {
         $__aerfEmp = \App\Models\Employee::where('onboarding_id', $aarf->onboarding_id)->first();
     }
-    $__logoCompany = $__aerfEmp?->company
-        ? \App\Models\Company::where('name', $__aerfEmp->company)->first()
+    // A new hire handed a laptop before their start date has no employees row yet, so the
+    // company only exists on their onboarding — without this fallback their AARF email
+    // arrives unbranded, which is exactly the mail most likely to be doubted.
+    $__aerfCompany = $__aerfEmp?->company
+        ?: ($aarf->onboarding_id
+            ? \App\Models\WorkDetail::where('onboarding_id', $aarf->onboarding_id)->value('company')
+            : null);
+    $__logoCompany = $__aerfCompany
+        ? \App\Models\Company::where('name', $__aerfCompany)->first()
         : null;
     if ($__logoCompany?->logo_path) {
         $__logoUrl = asset('storage/' . $__logoCompany->logo_path);

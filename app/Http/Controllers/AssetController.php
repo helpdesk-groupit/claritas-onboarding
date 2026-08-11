@@ -12,6 +12,7 @@ use Illuminate\Support\Str;
 use App\Models\Onboarding;
 use App\Models\DisposedAsset;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Validation\Rule;
 use App\Mail\AarfAcknowledgementMail;
 
 class AssetController extends Controller
@@ -64,6 +65,8 @@ class AssetController extends Controller
         ];
 
         $employees = Employee::with('onboarding.personalDetail')->whereNull('active_until')->get();
+        // New hires who can be handed an asset before day one (see pendingOnboardingOptions).
+        $pendingOnboardings = self::pendingOnboardingOptions();
 
         // Decommissioning tab with its own filters
         $disposedQuery = DisposedAsset::with('asset')->latest('disposed_at');
@@ -164,7 +167,7 @@ class AssetController extends Controller
         }
         $overviewRentalTotal = AssetInventory::where('ownership_type', 'rental')->count();
 
-        return view('it.assets.page', compact('assets', 'stats', 'employees', 'disposed', 'rentalVendors',
+        return view('it.assets.page', compact('assets', 'stats', 'employees', 'pendingOnboardings', 'disposed', 'rentalVendors',
             'registeredCompanies', 'filterBrands',
             'overviewAllTotal', 'overviewAllByType', 'overviewAllByCompany',
             'overviewCompanyTotal', 'overviewCompanyByType', 'overviewCompanyByCompany',
@@ -221,37 +224,24 @@ class AssetController extends Controller
             $asset->update(['asset_photos' => $paths]);
         }
 
-        if ($asset->assigned_employee_id) {
-            $employee  = Employee::find($asset->assigned_employee_id);
-            $actor     = Auth::user();
-            $actorName = $actor->name ?? $actor->work_email ?? 'IT Team';
-            $empName   = $employee?->full_name ?? "Employee #{$asset->assigned_employee_id}";
+        // The assignee may be an employee OR a new hire who has no employees row yet, so
+        // this reads the request rather than the asset's assigned_employee_id FK — which is
+        // null for an onboarding assignment (it is carried by asset_assignments alone).
+        $assignNote = '';
+        if ($assignee = $this->requestedAssignee($request)) {
+            $actorName = Auth::user()->name ?? Auth::user()->work_email ?? 'IT Team';
+            $line = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
+                    "assigned to {$assignee['name']} by {$actorName} during asset creation.";
 
-            $this->createAssignmentForEmployee($employee, $asset->id, $asset->asset_assigned_date ?? now()->toDateString());
-
-            $aarf = $this->ensureAarfForEmployee($employee);
-
-            // Specific remarks on asset and AARF
-            $asset->appendRemark(
-                "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                "assigned to {$empName} by {$actorName} during asset creation."
-            );
-            $aarf?->appendAssetChange(
-                "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                "assigned to {$empName} by {$actorName} during asset creation."
-            );
-
-            // Reset acknowledgement and send email
-            if ($aarf) {
-                $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
-                $aarf->addPendingAsset($asset->id);
-                $this->sendAarfEmail($aarf, $employee, $empName, 'assigned');
-            }
+            $this->createAssignmentForAssignee($assignee, $asset->id, $asset->asset_assigned_date?->toDateString() ?? now()->toDateString());
+            $asset->appendRemark($line);
+            $assignNote = trim($this->notifyAssigneeOfAarf($assignee, $asset, 'assigned', $line)
+                . ' ' . $this->sameTypeAlreadyHeldNote($assignee, $asset));
         }
 
         $tab = $this->decommissionTypeFor($data['asset_condition'] ?? null) ? 'damaged' : null;
         return redirect()->route('assets.index', array_filter(['tab' => $tab]))
-            ->with('success', 'Asset added successfully.');
+            ->with('success', trim('Asset added successfully. ' . $assignNote));
     }
 
     public function show(AssetInventory $asset)
@@ -269,8 +259,9 @@ class AssetController extends Controller
     {
         $this->authorizeCanEdit();
         $employees = Employee::with('onboarding.personalDetail')->whereNull('active_until')->get();
+        $pendingOnboardings = self::pendingOnboardingOptions();
         $registeredCompanies = \App\Models\Company::orderBy('name')->get(['name']);
-        return view('it.assets.edit', compact('asset', 'employees', 'registeredCompanies'));
+        return view('it.assets.edit', compact('asset', 'employees', 'pendingOnboardings', 'registeredCompanies'));
     }
 
     public function update(Request $request, AssetInventory $asset)
@@ -342,10 +333,13 @@ class AssetController extends Controller
             $data['asset_photos'] = $existing;
         }
 
-        // Capture BEFORE saving
-        $oldEmployeeId   = $asset->assigned_employee_id ? (int)$asset->assigned_employee_id : null;
-        $newEmployeeId   = isset($data['assigned_employee_id']) && $data['assigned_employee_id'] !== '' && $data['assigned_employee_id'] !== null
-                           ? (int)$data['assigned_employee_id'] : null;
+        // Capture BEFORE saving. Section D is only submitted by roles that may edit it
+        // (canEditAllAssetSections) — for anyone else the form carries no assignment fields
+        // at all, so touching the assignment here would read "not assigned" from an absent
+        // field and silently release the asset from whoever holds it.
+        $canEditAssignment = $user->canEditAllAssetSections();
+        $oldAssignee     = $canEditAssignment ? $this->currentAssignee($asset) : null;
+        $newAssignee     = $canEditAssignment ? $this->requestedAssignee($request) : null;
         $oldAssignedDate = $asset->asset_assigned_date?->toDateString();
 
         // Capture old Section A/B values before saving (for change detection)
@@ -370,117 +364,49 @@ class AssetController extends Controller
         }
 
         // ── Assignment change handling ─────────────────────────────────────
+        // Compared by assignee KEY ("employee:12" / "onboarding:34"), not employee id, so a
+        // new hire with no employees row is a first-class assignee: handing them an asset,
+        // swapping it, and taking it back all reach their AARF and their inbox.
+        $assignNote = '';
 
-        if (!$oldEmployeeId && $newEmployeeId) {
-            // Newly assigned
-            $emp  = Employee::find($newEmployeeId);
-            $name = $emp?->full_name ?? "Employee #{$newEmployeeId}";
-
+        if ($canEditAssignment && ($oldAssignee['key'] ?? null) !== ($newAssignee['key'] ?? null)) {
             AssetAssignment::where('asset_inventory_id', $asset->id)
                 ->where('status', 'assigned')
                 ->update(['status' => 'returned', 'returned_date' => now()->toDateString()]);
 
-            if ($emp) {
-                $this->createAssignmentForEmployee($emp, $asset->id, $data['asset_assigned_date'] ?? now()->toDateString());
-                $aarf = $this->ensureAarfForEmployee($emp);
-                $aarf?->appendAssetChange(
-                    "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                    "assigned to {$name} by {$actorName}."
-                );
-                if ($aarf) {
-                    $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
-                    $aarf->addPendingAsset($asset->id);
-                    $this->sendAarfEmail($aarf, $emp, $name, 'assigned');
-                }
-            }
-            $asset->appendRemark(
-                "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                "assigned to {$name} by {$actorName}."
-            );
-
-        } elseif ($oldEmployeeId && !$newEmployeeId) {
-            // Unassigned
-            $emp  = Employee::find($oldEmployeeId);
-            $name = $emp?->full_name ?? "Employee #{$oldEmployeeId}";
-
-            AssetAssignment::where('asset_inventory_id', $asset->id)
-                ->where('status', 'assigned')
-                ->update(['status' => 'returned', 'returned_date' => now()->toDateString()]);
-
-            if ($emp) {
-                $aarf = $emp->resolveAarf();
-                $aarf?->appendAssetChange(
-                    "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                    "unassigned from {$name} by {$actorName}."
-                );
-                if ($aarf) {
-                    $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
-                    $aarf->removePendingAsset($asset->id);
-                    $this->sendAarfEmail($aarf, $emp, $name, 'returned');
-                }
-            }
-            $asset->appendRemark(
-                "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                "unassigned from {$name} by {$actorName}."
-            );
-
-        } elseif ($oldEmployeeId && $newEmployeeId && $oldEmployeeId !== $newEmployeeId) {
-            // Reassigned to different employee
-            $oldEmp  = Employee::find($oldEmployeeId);
-            $newEmp  = Employee::find($newEmployeeId);
-            $oldName = $oldEmp?->full_name ?? "Employee #{$oldEmployeeId}";
-            $newName = $newEmp?->full_name ?? "Employee #{$newEmployeeId}";
-
-            AssetAssignment::where('asset_inventory_id', $asset->id)
-                ->where('status', 'assigned')
-                ->update(['status' => 'returned', 'returned_date' => now()->toDateString()]);
-
-            if ($newEmp) {
-                $this->createAssignmentForEmployee($newEmp, $asset->id, $data['asset_assigned_date'] ?? now()->toDateString());
+            if ($newAssignee) {
+                $this->createAssignmentForAssignee($newAssignee, $asset->id, $data['asset_assigned_date'] ?? now()->toDateString());
             }
 
-            if ($oldEmp) {
-                $oldAarf = $oldEmp->resolveAarf();
-                $oldAarf?->appendAssetChange(
-                    "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                    "returned — reassigned from {$oldName} to {$newName} by {$actorName}."
-                );
-                if ($oldAarf) {
-                    $oldAarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
-                    $oldAarf->removePendingAsset($asset->id);
-                    $this->sendAarfEmail($oldAarf, $oldEmp, $oldName, 'returned');
-                }
+            $label = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model})";
+
+            if (!$oldAssignee) {
+                $line = "{$label} assigned to {$newAssignee['name']} by {$actorName}.";
+                $asset->appendRemark($line);
+                $assignNote = trim($this->notifyAssigneeOfAarf($newAssignee, $asset, 'assigned', $line)
+                    . ' ' . $this->sameTypeAlreadyHeldNote($newAssignee, $asset));
+            } elseif (!$newAssignee) {
+                $line = "{$label} unassigned from {$oldAssignee['name']} by {$actorName}.";
+                $asset->appendRemark($line);
+                $this->notifyAssigneeOfAarf($oldAssignee, $asset, 'returned', $line);
+            } else {
+                $oldName = $oldAssignee['name'];
+                $newName = $newAssignee['name'];
+                $asset->appendRemark("{$label} reassigned from {$oldName} to {$newName} by {$actorName}.");
+                $this->notifyAssigneeOfAarf($oldAssignee, $asset, 'returned',
+                    "{$label} returned — reassigned from {$oldName} to {$newName} by {$actorName}.");
+                $assignNote = trim($this->notifyAssigneeOfAarf($newAssignee, $asset, 'assigned',
+                    "{$label} assigned — reassigned to {$newName} from {$oldName} by {$actorName}.")
+                    . ' ' . $this->sameTypeAlreadyHeldNote($newAssignee, $asset));
             }
-            if ($newEmp) {
-                $newAarf = $this->ensureAarfForEmployee($newEmp);
-                $newAarf?->appendAssetChange(
-                    "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                    "assigned — reassigned to {$newName} from {$oldName} by {$actorName}."
-                );
-                if ($newAarf) {
-                    $newAarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
-                    $newAarf->addPendingAsset($asset->id);
-                    $this->sendAarfEmail($newAarf, $newEmp, $newName, 'assigned');
-                }
-            }
-            $asset->appendRemark(
-                "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                "reassigned from {$oldName} to {$newName} by {$actorName}."
-            );
 
-        } elseif ($oldEmployeeId && $newEmployeeId && $oldEmployeeId === $newEmployeeId) {
-            // Same employee — check if Section A or B fields changed
-            $emp  = Employee::find($newEmployeeId);
-            $name = $emp?->full_name ?? "Employee #{$newEmployeeId}";
-
-            $sectionABFields = ['asset_tag','asset_type','brand','model','serial_number',
-                                'processor','ram_size','storage','operating_system','screen_size','spec_others'];
-
+        } elseif ($canEditAssignment && $newAssignee) {
+            // Same assignee — the asset they hold may itself have changed. Covers a new hire
+            // as well as an employee: the spec on the form they are asked to sign must match
+            // the machine, so a Section A/B edit re-opens the acknowledgement either way.
             $changedFields = [];
-            foreach ($sectionABFields as $field) {
-                $oldVal = $oldSectionAB[$field] ?? '';
-                $newVal = (string)($data[$field] ?? '');
-                if ($oldVal !== $newVal) {
+            foreach ($sectionABKeys as $field) {
+                if (($oldSectionAB[$field] ?? '') !== (string)($data[$field] ?? '')) {
                     $changedFields[] = ucfirst(str_replace('_', ' ', $field));
                 }
             }
@@ -490,15 +416,7 @@ class AssetController extends Controller
                 $remarkText = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
                               "details updated ({$changeList}) by {$actorName}.";
                 $asset->appendRemark($remarkText);
-
-                if ($emp) {
-                    $aarf = $emp->resolveAarf();
-                    $aarf?->appendAssetChange($remarkText);
-                    if ($aarf) {
-                        $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
-                        $this->sendAarfEmail($aarf, $emp, $name, 'assigned');
-                    }
-                }
+                $assignNote = $this->notifyAssigneeOfAarf($newAssignee, $asset, 'assigned', $remarkText, resetAcknowledgement: true, pending: false);
             } elseif (($data['asset_assigned_date'] ?? null) && ($data['asset_assigned_date'] ?? null) !== $oldAssignedDate) {
                 // Sync new date to asset_assignments so AARF reflects the change
                 AssetAssignment::where('asset_inventory_id', $asset->id)
@@ -507,49 +425,8 @@ class AssetController extends Controller
 
                 $asset->appendRemark(
                     "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                    "assignment date updated for {$name} by {$actorName}."
+                    "assignment date updated for {$newAssignee['name']} by {$actorName}."
                 );
-            }
-        }
-
-        // ── Auto-assigned (via onboarding) — detect Section A/B changes ──────
-        if (!$oldEmployeeId && !$newEmployeeId) {
-            $autoAssignment = AssetAssignment::with('onboarding.personalDetail')
-                ->where('asset_inventory_id', $asset->id)
-                ->where('status', 'assigned')
-                ->whereNotNull('onboarding_id')
-                ->first();
-
-            if ($autoAssignment) {
-                $changedAutoFields = [];
-                foreach ($sectionABKeys as $field) {
-                    if (($oldSectionAB[$field] ?? '') !== (string)($data[$field] ?? '')) {
-                        $changedAutoFields[] = ucfirst(str_replace('_', ' ', $field));
-                    }
-                }
-
-                if (!empty($changedAutoFields)) {
-                    $changeList   = implode(', ', $changedAutoFields);
-                    $assigneeName = $autoAssignment->onboarding?->personalDetail?->full_name ?? 'New Hire';
-                    $remarkText   = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                                    "details updated ({$changeList}) by {$actorName}.";
-                    $asset->appendRemark($remarkText);
-
-                    // Find employee if already activated
-                    $emp = Employee::where('onboarding_id', $autoAssignment->onboarding_id)->first();
-                    if ($emp) {
-                        $aarf = $emp->resolveAarf();
-                        $aarf?->appendAssetChange($remarkText);
-                        if ($aarf) {
-                            $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
-                            $this->sendAarfEmail($aarf, $emp, $emp->full_name ?? $assigneeName, 'assigned');
-                        }
-                    } else {
-                        // Employee not activated yet — log to onboarding AARF only
-                        $aarf = \App\Models\Aarf::where('onboarding_id', $autoAssignment->onboarding_id)->first();
-                        $aarf?->appendAssetChange($remarkText);
-                    }
-                }
             }
         }
 
@@ -563,7 +440,8 @@ class AssetController extends Controller
             return redirect()->route('assets.disposed.show', array_merge($filters, ['asset' => $asset->id]))->with('success', 'Asset updated successfully.');
         }
 
-        return redirect()->route('assets.show', array_merge($filters, ['asset' => $asset->id]))->with('success', 'Asset updated successfully.');
+        return redirect()->route('assets.show', array_merge($filters, ['asset' => $asset->id]))
+            ->with('success', trim('Asset updated successfully. ' . $assignNote));
     }
 
     // ── Damaged Assets page (view-only) ────────────────────────────────────
@@ -589,25 +467,11 @@ class AssetController extends Controller
         $actor       = Auth::user();
         $actorName   = $actor->name ?? $actor->work_email ?? 'IT Team';
 
-        // Resolve employee — direct OR via onboarding (auto-assigned)
-        $oldEmployee = $asset->assigned_employee_id
-            ? Employee::find($asset->assigned_employee_id)
-            : null;
-
-        if (!$oldEmployee) {
-            $assignment = AssetAssignment::where('asset_inventory_id', $asset->id)
-                ->where('status', 'assigned')
-                ->first();
-            if ($assignment?->employee_id) {
-                $oldEmployee = Employee::find($assignment->employee_id);
-            } elseif ($assignment?->onboarding_id) {
-                $oldEmployee = Employee::where('onboarding_id', $assignment->onboarding_id)->first();
-            }
-        }
-
-        $oldName    = $oldEmployee?->full_name ?? 'previous assignee';
-        $assetLabel = trim("{$asset->brand} {$asset->model}") ?: $asset->asset_tag;
-        $today      = now()->format('d/m/Y');
+        // Resolve the holder — an employee, or a new hire who has no employees row yet.
+        $oldAssignee = $this->currentAssignee($asset);
+        $oldName     = $oldAssignee['name'] ?? 'previous assignee';
+        $assetLabel  = trim("{$asset->brand} {$asset->model}") ?: $asset->asset_tag;
+        $today       = now()->format('d/m/Y');
 
         AssetAssignment::where('asset_inventory_id', $asset->id)
             ->where('status', 'assigned')
@@ -623,15 +487,8 @@ class AssetController extends Controller
         $remarkText = "{$assetLabel} returned by {$oldName} on {$today}, processed by {$actorName}.";
         $asset->appendRemark($remarkText);
 
-        if ($oldEmployee) {
-            $aarf = $oldEmployee->resolveAarf();
-            $aarf?->appendAssetChange($remarkText);
-
-            if ($aarf) {
-                $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
-                $aarf->removePendingAsset($asset->id);
-                $this->sendAarfEmail($aarf, $oldEmployee, $oldName, 'returned');
-            }
+        if ($oldAssignee) {
+            $this->notifyAssigneeOfAarf($oldAssignee, $asset, 'returned', $remarkText);
         }
 
         return redirect()->route('assets.index')
@@ -702,67 +559,50 @@ class AssetController extends Controller
     public function reassign(Request $request, AssetInventory $asset)
     {
         $this->authorizeCanEdit();
-        $request->validate(['new_employee_id' => 'required|exists:employees,id']);
+        // Either target is accepted, exactly one required: a new hire has no employees row
+        // until their start date, so demanding new_employee_id would exclude them.
+        $request->validate([
+            'new_employee_id'   => 'required_without:new_onboarding_id|nullable|exists:employees,id',
+            'new_onboarding_id' => ['required_without:new_employee_id', 'nullable', self::assignableOnboardingRule()],
+        ]);
 
-        $actor       = Auth::user();
-        $actorName   = $actor->name ?? $actor->work_email ?? 'IT Team';
-        $newEmployee = Employee::findOrFail($request->new_employee_id);
-        $newName     = $newEmployee->full_name ?? "Employee #{$newEmployee->id}";
-        $oldEmployee = $asset->assigned_employee_id ? Employee::find($asset->assigned_employee_id) : null;
-        if (!$oldEmployee) {
-            $assignment = AssetAssignment::where('asset_inventory_id', $asset->id)
-                ->where('status', 'assigned')
-                ->first();
-            if ($assignment?->employee_id) {
-                $oldEmployee = Employee::find($assignment->employee_id);
-            } elseif ($assignment?->onboarding_id) {
-                $oldEmployee = Employee::where('onboarding_id', $assignment->onboarding_id)->first();
-            }
+        $actor     = Auth::user();
+        $actorName = $actor->name ?? $actor->work_email ?? 'IT Team';
+
+        $newAssignee = $this->requestedAssignee($request, 'new_employee_id', 'new_onboarding_id');
+        if (!$newAssignee) {
+            return back()->with('error', 'That person could no longer be resolved — reassignment cancelled.');
         }
-        $oldName     = $oldEmployee?->full_name ?? 'previous assignee';
+        $newName     = $newAssignee['name'];
+        $oldAssignee = $this->currentAssignee($asset);
+        $oldName     = $oldAssignee['name'] ?? 'previous assignee';
 
         AssetAssignment::where('asset_inventory_id', $asset->id)
             ->where('status', 'assigned')
             ->update(['status' => 'returned', 'returned_date' => now()->toDateString()]);
 
-        $this->createAssignmentForEmployee($newEmployee, $asset->id, now()->toDateString());
+        $this->createAssignmentForAssignee($newAssignee, $asset->id, now()->toDateString());
 
         $asset->update([
-            'assigned_employee_id' => $newEmployee->id,
+            // Null for a pre-start hire — the assignment is carried by asset_assignments.
+            'assigned_employee_id' => $newAssignee['type'] === 'employee' ? $newAssignee['id'] : null,
             'asset_assigned_date'  => now()->toDateString(),
             'status'               => 'assigned',
         ]);
 
-        $asset->appendRemark(
-            "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-            "reassigned from {$oldName} to {$newName} by {$actorName}."
-        );
+        $label = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model})";
+        $asset->appendRemark("{$label} reassigned from {$oldName} to {$newName} by {$actorName}.");
 
-        if ($oldEmployee) {
-            $oldAarf = $oldEmployee->resolveAarf();
-            $oldAarf?->appendAssetChange(
-                "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                "returned — reassigned from {$oldName} to {$newName} by {$actorName}."
-            );
-            if ($oldAarf) {
-                $oldAarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
-                $oldAarf->removePendingAsset($asset->id);
-                $this->sendAarfEmail($oldAarf, $oldEmployee, $oldName, 'returned');
-            }
+        if ($oldAssignee) {
+            $this->notifyAssigneeOfAarf($oldAssignee, $asset, 'returned',
+                "{$label} returned — reassigned from {$oldName} to {$newName} by {$actorName}.");
         }
-        $newAarf = $this->ensureAarfForEmployee($newEmployee);
-        $newAarf?->appendAssetChange(
-            "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-            "assigned — reassigned to {$newName} from {$oldName} by {$actorName}."
-        );
-        if ($newAarf) {
-            $newAarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
-            $newAarf->addPendingAsset($asset->id);
-            $this->sendAarfEmail($newAarf, $newEmployee, $newName, 'assigned');
-        }
+        $note = trim($this->notifyAssigneeOfAarf($newAssignee, $asset, 'assigned',
+            "{$label} assigned — reassigned to {$newName} from {$oldName} by {$actorName}.")
+            . ' ' . $this->sameTypeAlreadyHeldNote($newAssignee, $asset));
 
         return redirect()->route('assets.show', $asset)
-            ->with('success', "Asset successfully reassigned from {$oldName} to {$newName}.");
+            ->with('success', trim("Asset successfully reassigned from {$oldName} to {$newName}. " . $note));
     }
 
     public function returnAsset(AssetInventory $asset)
@@ -771,18 +611,8 @@ class AssetController extends Controller
 
         $actor       = Auth::user();
         $actorName   = $actor->name ?? $actor->work_email ?? 'IT Team';
-        $oldEmployee = $asset->assigned_employee_id ? Employee::find($asset->assigned_employee_id) : null;
-        if (!$oldEmployee) {
-            $assignment = AssetAssignment::where('asset_inventory_id', $asset->id)
-                ->where('status', 'assigned')
-                ->first();
-            if ($assignment?->employee_id) {
-                $oldEmployee = Employee::find($assignment->employee_id);
-            } elseif ($assignment?->onboarding_id) {
-                $oldEmployee = Employee::where('onboarding_id', $assignment->onboarding_id)->first();
-            }
-        }
-        $oldName     = $oldEmployee?->full_name ?? 'previous assignee';
+        $oldAssignee = $this->currentAssignee($asset);
+        $oldName     = $oldAssignee['name'] ?? 'previous assignee';
 
         AssetAssignment::where('asset_inventory_id', $asset->id)
             ->where('status', 'assigned')
@@ -795,22 +625,12 @@ class AssetController extends Controller
             'expected_return_date' => null,
         ]);
 
-        $asset->appendRemark(
-            "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-            "returned by {$oldName} to IT department. Processed by {$actorName}."
-        );
+        $line = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
+                "returned by {$oldName} to IT department. Processed by {$actorName}.";
+        $asset->appendRemark($line);
 
-        if ($oldEmployee) {
-            $aarf = $oldEmployee->resolveAarf();
-            $aarf?->appendAssetChange(
-                "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
-                "returned by {$oldName} to IT department. Processed by {$actorName}."
-            );
-            if ($aarf) {
-                $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
-                $aarf->removePendingAsset($asset->id);
-                $this->sendAarfEmail($aarf, $oldEmployee, $oldName, 'returned');
-            }
+        if ($oldAssignee) {
+            $this->notifyAssigneeOfAarf($oldAssignee, $asset, 'returned', $line);
         }
 
         return redirect()->route('assets.show', $asset)
@@ -1172,37 +992,280 @@ class AssetController extends Controller
     }
 
   
-    /**
-     * Send AARF acknowledgement email to the employee.
-     * Resolves recipient email from employee record, falls back to onboarding data.
-     */
-    private function sendAarfEmail(Aarf $aarf, Employee $employee, string $empName, string $action): void
+    // ── Assignee resolution ────────────────────────────────────────────────
+    //
+    // An asset is not always held by an `employees` row. A new hire has no employee record
+    // until `employees:activate` creates it on their start date, so an asset handed over
+    // before day one can only be carried by asset_assignments.onboarding_id — the state the
+    // onboarding auto-assign has always produced, and now the state IT creates deliberately
+    // when it picks the machine a new hire will get.
+    //
+    // These helpers are the ONE place that difference is resolved, so every assign / swap /
+    // release path reaches the right AARF and the right inbox. Shape:
+    //   ['type' => 'employee'|'onboarding', 'id' => int, 'name' => string, 'key' => 'employee:12']
+    // The key exists so callers compare assignees without caring which kind they are.
+
+    private function employeeAssignee(Employee $emp): array
     {
+        return [
+            'type' => 'employee',
+            'id'   => $emp->id,
+            'name' => $emp->full_name
+                ?: ($emp->onboarding?->personalDetail?->full_name ?: "Employee #{$emp->id}"),
+            'key'  => "employee:{$emp->id}",
+        ];
+    }
+
+    private function onboardingAssignee(Onboarding $ob): array
+    {
+        return [
+            'type' => 'onboarding',
+            'id'   => $ob->id,
+            'name' => $ob->personalDetail?->full_name ?: "New hire #{$ob->id}",
+            'key'  => "onboarding:{$ob->id}",
+        ];
+    }
+
+    /**
+     * Whoever holds the asset right now: the employee FK if there is one, else the live
+     * asset_assignments row. An onboarding assignment whose hire has since been activated
+     * resolves to the employee — that row is the truthful identity once it exists.
+     */
+    private function currentAssignee(AssetInventory $asset): ?array
+    {
+        if ($asset->assigned_employee_id) {
+            $emp = Employee::find($asset->assigned_employee_id);
+            return $emp ? $this->employeeAssignee($emp) : null;
+        }
+
+        $assignment = AssetAssignment::where('asset_inventory_id', $asset->id)
+            ->where('status', 'assigned')
+            ->latest('id')
+            ->first();
+
+        if ($assignment?->employee_id) {
+            $emp = Employee::find($assignment->employee_id);
+            return $emp ? $this->employeeAssignee($emp) : null;
+        }
+
+        if ($assignment?->onboarding_id) {
+            $emp = Employee::where('onboarding_id', $assignment->onboarding_id)->first();
+            if ($emp) {
+                return $this->employeeAssignee($emp);
+            }
+            $ob = Onboarding::with('personalDetail')->find($assignment->onboarding_id);
+            return $ob ? $this->onboardingAssignee($ob) : null;
+        }
+
+        return null;
+    }
+
+    /** The assignee the submitted form asks for, or null for "not assigned". */
+    private function requestedAssignee(
+        Request $request,
+        string $employeeField = 'assigned_employee_id',
+        string $onboardingField = 'assigned_onboarding_id',
+    ): ?array {
+        if ($empId = $request->input($employeeField)) {
+            $emp = Employee::find($empId);
+            return $emp ? $this->employeeAssignee($emp) : null;
+        }
+
+        if ($obId = $request->input($onboardingField)) {
+            // Activated between page load and submit → file it under the employee row, so the
+            // asset is not left pointing at an identity that has been superseded.
+            $emp = Employee::where('onboarding_id', $obId)->first();
+            if ($emp) {
+                return $this->employeeAssignee($emp);
+            }
+            $ob = Onboarding::with('personalDetail')->find($obId);
+            return $ob ? $this->onboardingAssignee($ob) : null;
+        }
+
+        return null;
+    }
+
+    /** The AARF this assignee acknowledges on, created if they have none yet. */
+    private function assigneeAarf(array $assignee): ?Aarf
+    {
+        if ($assignee['type'] === 'employee') {
+            $emp = Employee::find($assignee['id']);
+            return $emp ? $this->ensureAarfForEmployee($emp) : null;
+        }
+
+        if (!Onboarding::whereKey($assignee['id'])->exists()) {
+            return null;
+        }
+
+        // Onboarding records are created with their AARF, but one from before that existed —
+        // or one whose AARF creation was skipped — must still be able to receive assets.
+        $aarf = Aarf::firstOrCreate(
+            ['onboarding_id' => $assignee['id']],
+            [
+                'aarf_reference'        => Onboarding::generateAarfReference(),
+                'acknowledgement_token' => Str::random(64),
+            ]
+        );
+
+        // Without a token the emailed link cannot exist, so the form would be unreachable.
+        if (!$aarf->acknowledgement_token) {
+            $aarf->update(['acknowledgement_token' => Str::random(64)]);
+        }
+
+        return $aarf;
+    }
+
+    private function createAssignmentForAssignee(array $assignee, int $assetId, string $date): void
+    {
+        if ($assignee['type'] === 'employee') {
+            $emp = Employee::find($assignee['id']);
+            if ($emp) {
+                $this->createAssignmentForEmployee($emp, $assetId, $date);
+            }
+            return;
+        }
+
+        AssetAssignment::create([
+            'onboarding_id'      => $assignee['id'],
+            'asset_inventory_id' => $assetId,
+            'assigned_date'      => $date,
+            'status'             => 'assigned',
+        ]);
+    }
+
+    /**
+     * Where an AARF notification goes. Work email first — it is the address the new hire is
+     * told to watch and the one the form is meant to arrive at — then the personal one, which
+     * for a pre-start hire may be all that is on file (work email is nullable on onboarding).
+     */
+    private function assigneeAarfEmail(array $assignee): ?string
+    {
+        if ($assignee['type'] === 'employee') {
+            $emp = Employee::with(['onboarding.workDetail', 'onboarding.personalDetail'])->find($assignee['id']);
+            return $emp?->company_email
+                ?: ($emp?->personal_email
+                ?: ($emp?->onboarding?->workDetail?->company_email
+                ?: $emp?->onboarding?->personalDetail?->personal_email));
+        }
+
+        $ob = Onboarding::with(['workDetail', 'personalDetail'])->find($assignee['id']);
+        return $ob?->workDetail?->company_email ?: $ob?->personalDetail?->personal_email;
+    }
+
+    /**
+     * Log the change on the assignee's AARF and email them the acknowledgement link.
+     *
+     * Returns a sentence for the operator's flash message: whether the AARF was emailed and
+     * to which address, or why it was not. A new hire's work email is nullable, so "no email
+     * was sent" is a real outcome IT has to be told about on screen — a log line they never
+     * read is how an unacknowledged handover goes unnoticed.
+     */
+    private function notifyAssigneeOfAarf(
+        array $assignee,
+        AssetInventory $asset,
+        string $action,
+        string $logLine,
+        bool $resetAcknowledgement = true,
+        bool $pending = true,
+    ): string {
+        $aarf = $this->assigneeAarf($assignee);
+        if (!$aarf) {
+            return '';
+        }
+
+        $aarf->appendAssetChange($logLine);
+        if ($resetAcknowledgement) {
+            $aarf->update(['acknowledged' => false, 'acknowledged_at' => null]);
+        }
+        if ($pending) {
+            $action === 'returned'
+                ? $aarf->removePendingAsset($asset->id)
+                : $aarf->addPendingAsset($asset->id);
+        }
+
+        $to = $this->assigneeAarfEmail($assignee);
+        if (!$to) {
+            \Log::info("AARF email skipped — no address on file for {$assignee['key']} ({$assignee['name']}), AARF #{$aarf->id}");
+            return "No work or personal email is on file for {$assignee['name']} — the AARF was NOT emailed.";
+        }
         if (!$aarf->acknowledgement_token) {
             \Log::info("AARF email skipped — no acknowledgement_token. AARF #{$aarf->id}");
-            return;
+            return '';
         }
 
-        $recipientEmail = $employee->company_email
-                       ?? $employee->personal_email
-                       ?? $employee->onboarding?->workDetail?->company_email
-                       ?? $employee->onboarding?->personalDetail?->personal_email
-                       ?? null;
+        $this->queueAarfEmail($aarf->id, $to, $assignee['name'], $action);
 
-        if (!$recipientEmail) {
-            \Log::info("AARF email skipped — no recipient email found for employee #{$employee->id} ({$empName})");
-            return;
+        return $action === 'returned'
+            ? "Asset-return notice emailed to {$to}."
+            : "AARF emailed to {$to} for acknowledgement.";
+    }
+
+    /**
+     * Warn when this person already holds another asset of the same type.
+     *
+     * The onboarding auto-assign reserves whichever machine of a requested type happens to be
+     * free, so a new hire is often already holding one by the time IT hands over the laptop it
+     * actually chose. Nothing is released automatically — which of the two they keep is IT's
+     * call, and guessing would take an asset back from someone who has it in their hands — but
+     * they are told, because otherwise a double handover shows up only at an audit.
+     */
+    private function sameTypeAlreadyHeldNote(array $assignee, AssetInventory $asset): string
+    {
+        if (!$asset->asset_type) {
+            return '';
         }
 
-        \Log::info("AARF email queued via terminating() — to: {$recipientEmail}, action: {$action}, AARF #{$aarf->id}");
+        // An employee's assignments may be keyed by onboarding_id (see
+        // createAssignmentForEmployee), so both keys have to be searched for one person.
+        $onboardingIds = [];
+        $employeeIds   = [];
+        if ($assignee['type'] === 'onboarding') {
+            $onboardingIds[] = $assignee['id'];
+        } else {
+            $employeeIds[] = $assignee['id'];
+            if ($obId = Employee::whereKey($assignee['id'])->value('onboarding_id')) {
+                $onboardingIds[] = $obId;
+            }
+        }
 
-        $aarfId = $aarf->id;
-        $to     = $recipientEmail;
-        $name   = $empName;
-        $act    = $action;
+        $tags = AssetAssignment::query()
+            ->with('asset:id,asset_tag')
+            ->where('status', 'assigned')
+            ->where('asset_inventory_id', '!=', $asset->id)
+            ->where(function ($q) use ($onboardingIds, $employeeIds) {
+                if ($onboardingIds) {
+                    $q->orWhereIn('onboarding_id', $onboardingIds);
+                }
+                if ($employeeIds) {
+                    $q->orWhereIn('employee_id', $employeeIds);
+                }
+            })
+            ->whereHas('asset', fn ($q) => $q->where('asset_type', $asset->asset_type))
+            ->get()
+            ->pluck('asset.asset_tag')
+            ->filter()->unique()->values();
 
-        app()->terminating(function () use ($aarfId, $to, $name, $act) {
-            \Illuminate\Support\Facades\Log::info("AARF terminating callback firing — to: {$to}, action: {$act}");
+        if ($tags->isEmpty()) {
+            return '';
+        }
+
+        $type = str_replace('_', ' ', (string) $asset->asset_type);
+
+        return "Note: {$assignee['name']} already holds another {$type} (" . $tags->implode(', ') .
+               ') — release whichever they are not keeping.';
+    }
+
+    /**
+     * Deferred to terminating() so a slow mail server never holds up the save. The AARF row
+     * is already committed at this point, so a send failure is logged, not surfaced as a
+     * failed assignment — and the link stays valid for a resend.
+     */
+    private function queueAarfEmail(int $aarfId, string $to, string $name, string $action): void
+    {
+        \Log::info("AARF email queued via terminating() — to: {$to}, action: {$action}, AARF #{$aarfId}");
+
+        app()->terminating(function () use ($aarfId, $to, $name, $action) {
+            \Illuminate\Support\Facades\Log::info("AARF terminating callback firing — to: {$to}, action: {$action}");
             try {
                 $freshAarf = \App\Models\Aarf::find($aarfId);
                 if (!$freshAarf) {
@@ -1211,7 +1274,7 @@ class AssetController extends Controller
                 }
 
                 \Illuminate\Support\Facades\Mail::to($to)
-                    ->send(new \App\Mail\AarfAcknowledgementMail($freshAarf, $name, $act));
+                    ->send(new \App\Mail\AarfAcknowledgementMail($freshAarf, $name, $action));
 
                 \Illuminate\Support\Facades\Log::info("AARF email sent successfully to {$to}");
 
@@ -1219,6 +1282,35 @@ class AssetController extends Controller
                 \Illuminate\Support\Facades\Log::error("AARF email FAILED to {$to}: " . $e->getMessage());
             }
         });
+    }
+
+    /**
+     * New hires who can hold an asset but have no employees row yet.
+     *
+     * Anyone already activated is excluded on purpose — they are in the employee list, and
+     * offering both would let one person be assigned an asset under two identities.
+     */
+    private static function pendingOnboardingOptions()
+    {
+        return Onboarding::with(['personalDetail', 'workDetail'])
+            ->whereIn('status', self::ASSIGNABLE_ONBOARDING_STATUSES)
+            ->whereDoesntHave('employee')
+            ->whereHas('personalDetail')
+            ->get()
+            ->sortBy(fn ($ob) => strtolower((string) $ob->personalDetail?->full_name))
+            ->values();
+    }
+
+    /**
+     * Statuses an onboarding can be assigned an asset under. 'active' persists after the hire
+     * is activated (nothing moves it on), which is why the employee fallback in
+     * requestedAssignee() matters; 'offboarded'/'completed' records are past handing kit over.
+     */
+    private const ASSIGNABLE_ONBOARDING_STATUSES = ['pending', 'active'];
+
+    private static function assignableOnboardingRule(): \Illuminate\Validation\Rules\Exists
+    {
+        return Rule::exists('onboardings', 'id')->whereIn('status', self::ASSIGNABLE_ONBOARDING_STATUSES);
     }
 
     private function ensureAarfForEmployee(Employee $emp): ?Aarf
@@ -1371,16 +1463,27 @@ class AssetController extends Controller
                 : null;
             $data['last_maintenance_date'] = $validated['last_maintenance_date'] ?? null;
 
-            // Section D — assignment
-            $newEmployeeId = $validated['assigned_employee_id'] ?? null;
-            if ($newEmployeeId) {
-                // Employee assigned → 'assigned' internally (AARF logic depends on this value)
+            // Section D — assignment. EITHER id means the asset is held by someone; only the
+            // FK differs. A pre-start new hire has no employees row, so their assignment is
+            // carried by asset_assignments alone and assigned_employee_id stays null — the
+            // same shape the onboarding auto-assign has always written.
+            $newEmployeeId   = $validated['assigned_employee_id'] ?? null;
+            $newOnboardingId = $validated['assigned_onboarding_id'] ?? null;
+
+            if (!$newEmployeeId && $newOnboardingId) {
+                // Activated between page load and submit → the employees row exists now, so
+                // stamp the FK rather than leaving the asset keyed to a superseded identity.
+                $newEmployeeId = Employee::where('onboarding_id', $newOnboardingId)->value('id');
+            }
+
+            if ($newEmployeeId || $newOnboardingId) {
+                // Assigned → 'assigned' internally (AARF logic depends on this value)
                 $data['status']               = 'assigned';
-                $data['assigned_employee_id'] = $newEmployeeId;
+                $data['assigned_employee_id'] = $newEmployeeId ?: null;
                 $data['asset_assigned_date']  = $validated['asset_assigned_date'] ?? now()->toDateString();
                 $data['expected_return_date'] = $validated['expected_return_date'] ?? null;
             } else {
-                // No employee → status driven by condition
+                // Nobody holds it → status driven by condition
                 $data['status']               = ($condition === 'good') ? 'available' : 'unavailable';
                 $data['assigned_employee_id'] = null;
                 $data['asset_assigned_date']  = null;
@@ -1432,6 +1535,9 @@ class AssetController extends Controller
             $rules['rental_contract_documents.*'] = 'file|mimes:pdf,jpg,jpeg,png|max:5120|valid_file_content';
             $rules['status']                    = 'required|in:available,unavailable,assigned';
             $rules['assigned_employee_id']      = 'nullable|exists:employees,id';
+            // A new hire can hold an asset before their start date, when no employees row
+            // exists yet — the picker offers them alongside employees and posts this instead.
+            $rules['assigned_onboarding_id']    = ['nullable', self::assignableOnboardingRule()];
             $rules['asset_assigned_date']       = 'nullable|date';
             $rules['expected_return_date']      = 'nullable|date';
             $rules['asset_condition']           = 'required|in:'.implode(',', array_keys(AssetInventory::CONDITIONS));

@@ -213,13 +213,14 @@
 <div class="card mb-3">
     <div class="card-header bg-white py-3"><div class="section-header mb-0"><h6><i class="bi bi-person-check me-2 text-primary"></i>Section D — Assignment</h6></div></div>
     <div class="card-body"><div class="row g-3">
-        <div class="col-md-4"><label class="form-label fw-semibold">Assigned Employee</label>
+        <div class="col-md-4"><label class="form-label fw-semibold">Assigned To</label>
             @php
                 $resolvedEmployeeId   = old('assigned_employee_id', $asset->assigned_employee_id);
-                $autoAssignedName     = null; // name from onboarding, when employee not yet activated
+                $resolvedOnboardingId = old('assigned_onboarding_id');
 
-                if (!$resolvedEmployeeId) {
-                    // Auto-assigned via onboarding: look up AssetAssignment → Onboarding → PersonalDetail
+                if (!$resolvedEmployeeId && !$resolvedOnboardingId) {
+                    // Held via onboarding (auto-assigned at onboarding, or handed over before the
+                    // start date): the assignment lives on asset_assignments, not on the FK.
                     $activeAssignment = \App\Models\AssetAssignment::with('onboarding.personalDetail')
                         ->where('asset_inventory_id', $asset->id)
                         ->where('status', 'assigned')
@@ -227,29 +228,18 @@
                         ->first();
 
                     if ($activeAssignment) {
-                        // Try to find activated employee first
+                        // Activated since → the employee row is the truthful identity now.
                         $assignedEmp = \App\Models\Employee::where('onboarding_id', $activeAssignment->onboarding_id)->first();
                         if ($assignedEmp) {
                             $resolvedEmployeeId = $assignedEmp->id;
                         } else {
-                            // Employee not yet activated — show name from personal detail as read-only
-                            $autoAssignedName = $activeAssignment->onboarding?->personalDetail?->full_name;
+                            $resolvedOnboardingId = $activeAssignment->onboarding_id;
                         }
                     }
                 }
-            @endphp
 
-            @if($autoAssignedName)
-                {{-- New hire not yet activated — show name as read-only, keep hidden input empty so no override --}}
-                <input type="text" class="form-control" style="background:#f8fafc;"
-                       value="{{ $autoAssignedName }} (pending activation)" readonly>
-                <input type="hidden" name="assigned_employee_id" value="">
-                <div class="form-text text-muted small">
-                    <i class="bi bi-info-circle me-1"></i>Auto-assigned via onboarding. Employee activates on start date.
-                </div>
-            @else
-                @php
-                    $editEmpDisplayLabel = '';
+                $editEmpDisplayLabel = '';
+                if ($resolvedEmployeeId) {
                     foreach ($employees as $emp) {
                         if ($emp->id == $resolvedEmployeeId) {
                             $eName  = $emp->onboarding?->personalDetail?->full_name ?? $emp->full_name ?? 'Employee #'.$emp->id;
@@ -258,42 +248,76 @@
                             break;
                         }
                     }
-                @endphp
-                <div class="position-relative">
-                    <input type="text" id="editEmpSearchInput" class="form-control"
-                           placeholder="Search or select employee..."
-                           autocomplete="off"
-                           value="{{ $editEmpDisplayLabel }}">
-                    <ul id="editEmpList"
-                        class="list-unstyled border rounded bg-white shadow-sm position-absolute mb-0"
-                        style="z-index:1055;max-height:200px;overflow-y:auto;display:none;top:100%;left:0;min-width:100%;width:max-content;max-width:480px;">
-                        <li>
-                            <button type="button" class="dropdown-item"
-                                    data-empid="" data-emplabel="— Not Assigned —">
-                                — Not Assigned —
-                            </button>
-                        </li>
-                        @foreach($employees as $emp)
-                        @php
-                            $eName  = $emp->onboarding?->personalDetail?->full_name ?? $emp->full_name ?? 'Employee #'.$emp->id;
-                            $eEmail = $emp->company_email ?? $emp->personal_email ?? '';
-                            $eLabel = $eEmail ? "{$eName} — {$eEmail}" : $eName;
-                        @endphp
-                        <li>
-                            <button type="button" class="dropdown-item"
-                                    data-empid="{{ $emp->id }}" data-emplabel="{{ $eLabel }}"
-                                    data-empname="{{ strtolower($eLabel) }}"
-                                    style="white-space:normal;word-break:break-word;">
-                                {{ $eLabel }}
-                            </button>
-                        </li>
-                        @endforeach
-                    </ul>
-                    <input type="hidden" name="assigned_employee_id" id="editAssignedEmployeeId"
-                           value="{{ $resolvedEmployeeId ?? '' }}">
-                </div>
-                <div class="form-text text-muted small">Type to search by name or email.</div>
-            @endif
+                } elseif ($resolvedOnboardingId) {
+                    foreach ($pendingOnboardings as $ob) {
+                        if ($ob->id == $resolvedOnboardingId) {
+                            $editEmpDisplayLabel = asset_onboarding_option_label($ob);
+                            break;
+                        }
+                    }
+                }
+            @endphp
+            <div class="position-relative">
+                <input type="text" id="editEmpSearchInput" class="form-control"
+                       placeholder="Search employee or new hire..."
+                       autocomplete="off"
+                       value="{{ $editEmpDisplayLabel }}">
+                <ul id="editEmpList"
+                    class="list-unstyled border rounded bg-white shadow-sm position-absolute mb-0"
+                    style="z-index:1055;max-height:200px;overflow-y:auto;display:none;top:100%;left:0;min-width:100%;width:max-content;max-width:480px;">
+                    <li>
+                        <button type="button" class="dropdown-item"
+                                data-empid="" data-onbid="" data-emplabel="— Not Assigned —">
+                            — Not Assigned —
+                        </button>
+                    </li>
+                    @foreach($employees as $emp)
+                    @php
+                        $eName  = $emp->onboarding?->personalDetail?->full_name ?? $emp->full_name ?? 'Employee #'.$emp->id;
+                        $eEmail = $emp->company_email ?? $emp->personal_email ?? '';
+                        $eLabel = $eEmail ? "{$eName} — {$eEmail}" : $eName;
+                    @endphp
+                    <li>
+                        <button type="button" class="dropdown-item"
+                                data-empid="{{ $emp->id }}" data-onbid="" data-emplabel="{{ $eLabel }}"
+                                data-empname="{{ strtolower($eLabel) }}"
+                                style="white-space:normal;word-break:break-word;">
+                            {{ $eLabel }}
+                        </button>
+                    </li>
+                    @endforeach
+                    {{-- New hires: no employees row until their start date, so they post as
+                         assigned_onboarding_id. The current holder is in this list when the
+                         asset was handed over before day one. --}}
+                    @if($pendingOnboardings->isNotEmpty())
+                    <li class="px-3 py-1 small text-muted bg-light border-top border-bottom">
+                        New hires — not started yet
+                    </li>
+                    @foreach($pendingOnboardings as $ob)
+                    @php $obLabel = asset_onboarding_option_label($ob); @endphp
+                    <li>
+                        <button type="button" class="dropdown-item"
+                                data-empid="" data-onbid="{{ $ob->id }}" data-emplabel="{{ $obLabel }}"
+                                data-empname="{{ strtolower($obLabel) }}"
+                                style="white-space:normal;word-break:break-word;">
+                            {{ $obLabel }}
+                        </button>
+                    </li>
+                    @endforeach
+                    @endif
+                </ul>
+                <input type="hidden" name="assigned_employee_id" id="editAssignedEmployeeId"
+                       value="{{ $resolvedEmployeeId ?? '' }}">
+                <input type="hidden" name="assigned_onboarding_id" id="editAssignedOnboardingId"
+                       value="{{ $resolvedOnboardingId ?? '' }}">
+            </div>
+            <div class="form-text text-muted small">
+                @if($resolvedOnboardingId)
+                    <i class="bi bi-info-circle me-1"></i>Held by a new hire who hasn't started — they acknowledge the AARF from their email.
+                @else
+                    Employees and new hires who haven't started. Changing this re-issues the AARF.
+                @endif
+            </div>
         </div>
         <div class="col-md-4"><label class="form-label fw-semibold">Assigned Date</label><input type="date" name="asset_assigned_date" id="assignedDate" class="form-control" value="{{ old('asset_assigned_date',$asset->asset_assigned_date?->format('Y-m-d')) }}"></div>
         <div class="col-md-4"><label class="form-label fw-semibold">Expected Return</label><input type="date" name="expected_return_date" class="form-control" value="{{ old('expected_return_date',$asset->expected_return_date?->format('Y-m-d')) }}"></div>
@@ -586,12 +610,21 @@ function updateBrandField(typeValue, brandSelect, brandText, preselected) {
  *   Not Good          → Unavailable (will be disposed on save)
  * Also show/hide the Maintenance Status dropdown.
  */
-function onEmployeeChange(employeeId) {
+// An asset can be held by an employee OR by a new hire who has no employees row yet, so
+// "is it assigned?" must read BOTH hidden fields — testing only the employee one would
+// leave a new hire's laptop showing as Available.
+function editHasAssignee() {
+    const emp = document.getElementById('editAssignedEmployeeId');
+    const onb = document.getElementById('editAssignedOnboardingId');
+    return (emp && emp.value !== '') || (onb && onb.value !== '');
+}
+
+function onEmployeeChange(assigneeSelected) {
     const dateField    = document.getElementById('assignedDate');
     const statusSelect = document.getElementById('assetStatus');
     const condSelect   = document.getElementById('assetCondition');
 
-    if (employeeId) {
+    if (assigneeSelected) {
         // Employee assigned → auto-fill date + set unavailable
         if (dateField && !dateField.value) {
             const today = new Date();
@@ -615,15 +648,14 @@ function onEmployeeChange(employeeId) {
 
 function syncStatusFromCondition(condition) {
     const statusSelect  = document.getElementById('assetStatus');
-    const empHidden     = document.getElementById('editAssignedEmployeeId');
     const maintWrap     = document.getElementById('maintenanceStatusWrap');
     const maintSelect   = document.getElementById('maintenanceStatus');
     const reasonWrap    = document.getElementById('decommissionReasonWrap');
     const reasonInput   = document.getElementById('decommissionReason');
 
     if (statusSelect) {
-        // If employee is assigned, always unavailable; otherwise condition-driven
-        if (empHidden && empHidden.value !== '') {
+        // Held by anyone (employee or pre-start new hire) → always unavailable; else condition-driven
+        if (editHasAssignee()) {
             statusSelect.value = 'unavailable';
         } else {
             statusSelect.value = (condition === 'good') ? 'available' : 'unavailable';
@@ -686,11 +718,12 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 });
 
-// ── Assigned Employee searchable dropdown ────────────────────────────────
+// ── Assigned To searchable dropdown — employees + pre-start new hires ────
 (function () {
     const searchInput = document.getElementById('editEmpSearchInput');
     const empList     = document.getElementById('editEmpList');
     const hiddenInput = document.getElementById('editAssignedEmployeeId');
+    const onbInput    = document.getElementById('editAssignedOnboardingId');
     if (!searchInput || !empList) return;
 
     function showList()  { empList.style.display = ''; }
@@ -706,11 +739,14 @@ document.addEventListener('DOMContentLoaded', function () {
         showList();
     }
 
-    function selectEmp(id, label) {
-        if (hiddenInput) hiddenInput.value = id;
-        searchInput.value = id ? label : '';
+    // Exactly one of the two ids may be set: the other is always cleared, so a switch from
+    // an employee to a new hire (or back) can never submit both and file the asset twice.
+    function selectEmp(empId, onbId, label) {
+        if (hiddenInput) hiddenInput.value = empId || '';
+        if (onbInput)    onbInput.value    = onbId || '';
+        searchInput.value = (empId || onbId) ? label : '';
         hideList();
-        onEmployeeChange(id);
+        onEmployeeChange(!!(empId || onbId));
     }
 
     searchInput.addEventListener('input', function () { filterList(this.value); });
@@ -720,7 +756,7 @@ document.addEventListener('DOMContentLoaded', function () {
     empList.querySelectorAll('button[data-emplabel]').forEach(btn => {
         btn.addEventListener('mousedown', function (e) {
             e.preventDefault();
-            selectEmp(this.dataset.empid, this.dataset.emplabel);
+            selectEmp(this.dataset.empid, this.dataset.onbid, this.dataset.emplabel);
         });
     });
 
