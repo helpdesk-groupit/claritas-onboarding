@@ -161,7 +161,10 @@ class ClaimReceiptOcrService
 
         // extract() serves the REVIEWER verification path — bill it to that feature,
         // not to the employee-facing scan (scanDocument takes callVision's default).
-        $json = self::callVision($prompt, $absolutePath, $mimeType, $company, 300, 'claim_item_verify');
+        // Token ceiling deliberately left at the (raised) default: the old explicit 300 was sized
+        // for the reply alone, which a thinking-enabled model spends before writing any text —
+        // and this reply is a 14-field object, far larger than 300 tokens even without thinking.
+        $json = self::callVision($prompt, $absolutePath, $mimeType, $company, feature: 'claim_item_verify');
         if (! is_array($json)) {
             return null;
         }
@@ -287,43 +290,109 @@ class ClaimReceiptOcrService
     // ──────────────────────────────────────────────────────────────────────────
 
     /**
+     * Which provider, model and key this call runs on.
+     *
+     * Extracted so the vision transport and the text transport can never disagree about
+     * it — the Claude API page override in particular has to mean the same thing to both,
+     * or a document read by Anthropic would be discussed by whatever the env happens to
+     * name. `settings` rides along because the Ollama base URL is read off it downstream.
+     *
+     * @return array{provider:string,model:string,key:?string,settings:?AccountingSetting}
+     */
+    protected static function resolveProvider(?string $company): array
+    {
+        $settings = self::settings($company);
+
+        if ($claude = self::claude()) {
+            // Claude API page is active — it is the source of truth.
+            return [
+                'provider' => 'anthropic',
+                'model' => $claude->model ?: 'claude-haiku-4-5',
+                'key' => $claude->getRawKey(),
+                'settings' => $settings,
+            ];
+        }
+
+        // A claims-specific provider override lets OCR use a free provider (e.g. Gemini)
+        // regardless of what the accounting module is set to.
+        $override = config('claims.ocr.provider');
+        $provider = $override ?: ($settings?->ai_provider ?? 'openai');
+
+        $defaultModel = match ($provider) {
+            'gemini' => 'gemini-2.5-flash',
+            'anthropic' => 'claude-haiku-4-5',
+            'ollama' => 'llama3.2-vision',
+            'groq' => 'meta-llama/llama-4-scout-17b-16e-instruct',
+            default => 'gpt-4o',
+        };
+
+        return [
+            'provider' => $provider,
+            // Don't borrow the accounting model when the provider was overridden
+            // (it would belong to a different provider).
+            'model' => config('claims.ocr.model')
+                ?: ($override ? $defaultModel : ($settings?->ai_model ?: $defaultModel)),
+            'key' => self::apiKey($company),
+            'settings' => $settings,
+        ];
+    }
+
+    /**
      * Send a prompt + image to the configured vision provider and return the decoded
      * JSON (associative array) or null. Encapsulates provider/model/key resolution so
      * extract() and scanDocument() share one transport.
+     *
+     * A thin wrapper over callVisionMeta() — every existing caller wants only the JSON,
+     * and keeping this signature means adding the meta variant changed nothing for them.
+     *
+     * @param  int  $maxTokens  Must leave room for THINKING, not just the reply. On Claude
+     *                          Sonnet 5 (the one model the settings page offers that thinks by
+     *                          default) runs adaptive thinking whenever `thinking` is
+     *                          omitted, and max_tokens caps thinking + text together — a ceiling
+     *                          sized to the JSON alone gets spent thinking and returns no text.
+     *                          Billing is per token actually generated, so a generous ceiling is
+     *                          free on models that don't think.
      */
-    protected static function callVision(string $prompt, string $absolutePath, string $mimeType, ?string $company, int $maxTokens = 300, string $feature = 'claim_receipt_scan'): ?array
+    protected static function callVision(string $prompt, string $absolutePath, string $mimeType, ?string $company, int $maxTokens = 2048, string $feature = 'claim_receipt_scan'): ?array
     {
-        $settings = self::settings($company);
-        if ($claude = self::claude()) {
-            // Claude API page is active — it is the source of truth for OCR.
-            $provider = 'anthropic';
-            $model = $claude->model ?: 'claude-haiku-4-5';
-            $key = $claude->getRawKey();
-        } else {
-            // A claims-specific provider override lets OCR use a free provider (e.g. Gemini)
-            // regardless of what the accounting module is set to.
-            $override = config('claims.ocr.provider');
-            $provider = $override ?: ($settings?->ai_provider ?? 'openai');
-            $key = self::apiKey($company);
+        return self::callVisionMeta($prompt, $absolutePath, $mimeType, $company, $maxTokens, $feature)['json'];
+    }
 
-            $defaultModel = match ($provider) {
-                'gemini' => 'gemini-2.5-flash',
-                'anthropic' => 'claude-haiku-4-5',
-                'ollama' => 'llama3.2-vision',
-                'groq' => 'meta-llama/llama-4-scout-17b-16e-instruct',
-                default => 'gpt-4o',
-            };
-            // Don't borrow the accounting model when the provider was overridden
-            // (it would belong to a different provider).
-            $model = config('claims.ocr.model')
-                ?: ($override ? $defaultModel : ($settings?->ai_model ?: $defaultModel));
-        }
+    /**
+     * The same call, plus the provider's `stop_reason`.
+     *
+     * A caller that asks the model to TRANSCRIBE a document rather than pick fields out of
+     * it needs to know whether the reply was cut off at max_tokens: a truncated transcript
+     * that reads as complete makes "that clause is not in this document" a lie. Every
+     * other caller wants the JSON alone and goes through callVision().
+     *
+     * @return array{json:?array,stop_reason:?string}
+     */
+    protected static function callVisionMeta(string $prompt, string $absolutePath, string $mimeType, ?string $company, int $maxTokens = 2048, string $feature = 'claim_receipt_scan'): array
+    {
+        ['provider' => $provider, 'model' => $model, 'key' => $key, 'settings' => $settings]
+            = self::resolveProvider($company);
+
+        $stopReason = null;
 
         try {
             $base64 = base64_encode(file_get_contents($absolutePath));
 
             if ($provider === 'anthropic') {
+                // The OpenAI-compatible branch below has always retried transient blips; this one
+                // did not, so a single capacity wobble silently cost the read. Anthropic's two
+                // retryable statuses are 500 (api_error) and 529 (overloaded_error) — 529 is the
+                // one that actually shows up under load. NOT 429: that needs a real wait, so it
+                // fails open to manual entry rather than burning quota on a fast retry.
                 $resp = Http::timeout(45)
+                    ->retry(2, 1500, function (\Throwable $e) {
+                        if ($e instanceof \Illuminate\Http\Client\ConnectionException) {
+                            return true;
+                        }
+
+                        return $e instanceof \Illuminate\Http\Client\RequestException
+                            && in_array($e->response?->status(), [500, 502, 503, 529], true);
+                    }, throw: false)
                     ->withHeaders(['x-api-key' => $key, 'anthropic-version' => '2023-06-01'])
                     ->post('https://api.anthropic.com/v1/messages', [
                         'model' => $model,
@@ -331,12 +400,19 @@ class ClaimReceiptOcrService
                         'messages' => [[
                             'role' => 'user',
                             'content' => [
+                                // Document/image FIRST, prompt second — Anthropic's documented
+                                // ordering for document Q&A, and it measurably reads better.
+                                // A PDF is NOT an image block — Anthropic rejects it. PDFs go in a
+                                // `document` block (base64, no beta header needed), which is the
+                                // only provider path here that can read a multi-page PDF at all.
+                                $mimeType === 'application/pdf'
+                                    ? ['type' => 'document', 'source' => ['type' => 'base64', 'media_type' => 'application/pdf', 'data' => $base64]]
+                                    : ['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => $mimeType, 'data' => $base64]],
                                 ['type' => 'text', 'text' => $prompt],
-                                ['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => $mimeType, 'data' => $base64]],
                             ],
                         ]],
                     ]);
-                $content = $resp->json('content.0.text');
+                $content = self::anthropicText($resp->json('content'));
                 // Anthropic reports token usage in the same body — record it for the
                 // Claude API page's spend report. Never throws (see the recorder).
                 ClaudeUsageRecorder::record($feature, $model, $resp->json('usage'), $company);
@@ -384,12 +460,21 @@ class ClaimReceiptOcrService
                             // of a downscaled thumbnail — materially better at faint, partial-cell
                             // highlights and small statement text (standard OpenAI vision field;
                             // Groq/OpenAI honour it, others ignore it harmlessly).
+                            // OpenAI-compatible chat/completions has no PDF part — `image_url`
+                            // with a data:application/pdf URI is rejected. Callers that may be
+                            // handed a PDF must check pdfCapable() first and fail open.
                             ['type' => 'image_url', 'image_url' => ['url' => "data:{$mimeType};base64,{$base64}", 'detail' => 'high']],
                         ],
                     ]],
                 ]);
                 $content = $resp->json('choices.0.message.content');
             }
+
+            // Anthropic reports it at the top level, the OpenAI-compatible shape as a
+            // per-choice `finish_reason` whose truncation value is "length". Normalised to
+            // Anthropic's wording so one caller-side check covers both.
+            $stopReason = $resp->json('stop_reason')
+                ?? (($resp->json('choices.0.finish_reason') === 'length') ? 'max_tokens' : $resp->json('choices.0.finish_reason'));
 
             if (! $resp->successful()) {
                 // Surface the real reason (esp. 429 rate-limit vs 5xx) so long multi-page scans
@@ -400,21 +485,175 @@ class ClaimReceiptOcrService
                     'body' => mb_substr((string) $resp->body(), 0, 300),
                 ]);
 
-                return null;
+                return ['json' => null, 'stop_reason' => $stopReason];
             }
+            // A 200 with no usable text is NOT the same as "the document has no total", but both
+            // used to return null in silence. The usual cause is max_tokens being consumed by
+            // thinking (stop_reason: max_tokens) — log it so a truncation is diagnosable instead
+            // of looking like a blank document.
             if (! $content) {
-                return null;
+                Log::warning('OCR reply had no usable text block', [
+                    'feature' => $feature,
+                    'provider' => $provider,
+                    'model' => $model,
+                    'stop_reason' => $stopReason,
+                    'max_tokens' => $maxTokens,
+                ]);
+
+                return ['json' => null, 'stop_reason' => $stopReason];
             }
 
             $content = trim(preg_replace('/```(?:json)?|```/', '', $content));
             $json = json_decode($content, true);
 
-            return is_array($json) ? $json : null;
+            return [
+                'json' => is_array($json) ? $json : null,
+                'stop_reason' => $stopReason,
+            ];
         } catch (\Throwable $e) {
             Log::warning('Claim receipt OCR failed', ['error' => $e->getMessage()]);
 
+            return ['json' => null, 'stop_reason' => $stopReason];
+        }
+    }
+
+    /**
+     * A TEXT-only call to the same provider, for a conversation about material that has
+     * already been read — no file goes up, so this path has none of callVision()'s PDF
+     * limitation and works on every provider.
+     *
+     * `$systemBlocks` is a list of ['text' => string, 'cache' => bool]. On Anthropic they
+     * become separate system blocks and a cacheable one carries `cache_control: ephemeral`,
+     * so a burst of follow-up questions re-reads a cached document context instead of
+     * paying for it again; every other provider gets them joined into one system message.
+     * Blocks below Anthropic's minimum cacheable length are sent uncached — asking to cache
+     * a short block is a wasted cache write, not an error.
+     *
+     * Returns the reply text, or null on any failure. FAILS OPEN like the rest of this
+     * class: the caller turns a null into a message the user can act on.
+     *
+     * @param  list<array{text:string,cache?:bool}>  $systemBlocks
+     * @param  list<array{role:string,content:string}>  $messages
+     */
+    protected static function callText(array $systemBlocks, array $messages, ?string $company = null, int $maxTokens = 2000, string $feature = 'accounting_ai_chat'): ?string
+    {
+        ['provider' => $provider, 'model' => $model, 'key' => $key, 'settings' => $settings]
+            = self::resolveProvider($company);
+
+        // Anthropic does not cache a block below ~1024 tokens; ~4000 chars is a safe floor.
+        $minCacheChars = 4000;
+
+        try {
+            $retry = function (\Throwable $e) {
+                if ($e instanceof \Illuminate\Http\Client\ConnectionException) {
+                    return true;
+                }
+
+                return $e instanceof \Illuminate\Http\Client\RequestException
+                    && in_array($e->response?->status(), [500, 502, 503, 529], true);
+            };
+
+            if ($provider === 'anthropic') {
+                $system = [];
+                foreach ($systemBlocks as $block) {
+                    $text = (string) ($block['text'] ?? '');
+                    if ($text === '') {
+                        continue;
+                    }
+                    $entry = ['type' => 'text', 'text' => $text];
+                    if (! empty($block['cache']) && mb_strlen($text) >= $minCacheChars) {
+                        $entry['cache_control'] = ['type' => 'ephemeral'];
+                    }
+                    $system[] = $entry;
+                }
+
+                $resp = Http::timeout(90)
+                    ->retry(2, 1500, $retry, throw: false)
+                    ->withHeaders(['x-api-key' => $key, 'anthropic-version' => '2023-06-01'])
+                    ->post('https://api.anthropic.com/v1/messages', array_filter([
+                        'model' => $model,
+                        'max_tokens' => $maxTokens,
+                        'system' => $system ?: null,
+                        'messages' => array_values($messages),
+                    ], fn ($v) => $v !== null));
+
+                $content = self::anthropicText($resp->json('content'));
+                ClaudeUsageRecorder::record($feature, $model, $resp->json('usage'), $company);
+            } else {
+                $ollamaBase = rtrim(config('claims.ocr.ollama_url') ?: ($settings?->ollama_base_url ?: 'http://localhost:11434'), '/');
+                $endpoint = match ($provider) {
+                    'gemini' => 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+                    'groq' => 'https://api.groq.com/openai/v1/chat/completions',
+                    'ollama' => "{$ollamaBase}/v1/chat/completions",
+                    default => 'https://api.openai.com/v1/chat/completions',
+                };
+
+                $joined = implode("\n\n", array_filter(array_map(
+                    fn ($b) => (string) ($b['text'] ?? ''),
+                    $systemBlocks
+                )));
+
+                $req = Http::timeout($provider === 'ollama' ? 180 : 90)
+                    ->retry(3, 1000, $retry, throw: false);
+                if ($provider !== 'ollama') {
+                    $req = $req->withToken($key);
+                }
+
+                $resp = $req->post($endpoint, [
+                    'model' => $model,
+                    'max_tokens' => $maxTokens,
+                    'temperature' => 0.1,
+                    'messages' => array_values(array_merge(
+                        $joined === '' ? [] : [['role' => 'system', 'content' => $joined]],
+                        $messages
+                    )),
+                ]);
+
+                $content = $resp->json('choices.0.message.content');
+            }
+
+            if (! $resp->successful()) {
+                Log::warning('AI text call non-2xx', [
+                    'feature' => $feature,
+                    'provider' => $provider,
+                    'status' => $resp->status(),
+                    'body' => mb_substr((string) $resp->body(), 0, 300),
+                ]);
+
+                return null;
+            }
+
+            return is_string($content) && trim($content) !== '' ? trim($content) : null;
+        } catch (\Throwable $e) {
+            Log::warning('AI text call failed', ['feature' => $feature, 'error' => $e->getMessage()]);
+
             return null;
         }
+    }
+
+    /**
+     * The first TEXT block of an Anthropic response, or null.
+     *
+     * NOT `content[0]`. On models where adaptive thinking is on by default when the `thinking`
+     * parameter is omitted — of the three models the Claude API settings page offers, Claude
+     * Sonnet 5 does exactly that (Haiku 4.5 and Opus 4.8 do not) — `content[0]` is a `thinking`
+     * block and the JSON we want sits in `content[1]`.
+     * Reading index 0 returned null there, so OCR failed open and every amount came back blank
+     * with no error: a silent, model-dependent break that only shows up on those models.
+     */
+    protected static function anthropicText($content): ?string
+    {
+        if (! is_array($content)) {
+            return null;
+        }
+
+        foreach ($content as $block) {
+            if (($block['type'] ?? null) === 'text' && ($block['text'] ?? '') !== '') {
+                return $block['text'];
+            }
+        }
+
+        return null;
     }
 
     /**

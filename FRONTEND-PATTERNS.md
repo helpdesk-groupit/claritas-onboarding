@@ -226,6 +226,39 @@ tbody.addEventListener('click', function(e) {
 
 #### `it/assets/edit.blade.php` — Asset Edit
 - Similar patterns to page.blade.php
+- **Section E condition dropdown** driven by `AssetInventory::CONDITIONS` (adds **Returned**). `syncStatusFromCondition()` toggles the maintenance + decommission-reason wraps and drives the read-only status field; reason wrap shows for both `not_good` and `returned` (required only for `not_good`).
+- **Section C vendor `<select>`** — see the shared vendor-picker note below.
+
+#### Vendor picker + auto-fill (`it/assets/page.blade.php` Add modal AND `it/assets/edit.blade.php`)
+- **TWO `<select name="vendor_id">` per form**, one inside `#companyFields` and one inside `#rentalFields`, offering different vendor sets (purchase suppliers vs rental vendors). Only the visible panel's may submit, so `toggleOwnership()` `disabled`-gates them — the same device the paired `invoice_documents[]` inputs already use. Miss it and the browser posts two values for one field. Initial `disabled` state is rendered server-side from `old('ownership_type')` / `$ownershipType`, not left to JS on load.
+- **Auto-fill (`.js-vendor-picker`)** reads `data-pic/-email/-phone/-tel/-reg/-sst/-address` off the selected `<option>` — no AJAX, so the page can never display details for a vendor since deactivated. Writes the summary via `textContent` (never `innerHTML`) into the `data-detail` target, and fills two inputs on the rental panel: `data-pic-field` ← the vendor's PIC **name**, `data-contact` ← their **phone** (falling back to PIC email, then the vendor's general line).
+- **`fill(select, picked)` — the second argument is the whole safety story.** A `change` passes `picked = true` and **overwrites** both fields: choosing a different vendor makes the previous vendor's PIC and number stale, and leaving them would attribute the wrong person to the new vendor. The initial reflect on load passes `false` and fills only what is empty, so opening an asset (or an `old()` replay after a failed submit) never clobbers stored values. Selecting the blank "not registered" option returns early and touches nothing — the operator is about to type an unregistered vendor's details there.
+- Free-text `rental_vendor` / `purchase_vendor` inputs remain for unregistered vendors. **They are NOT symmetric any more:** `purchase_vendor` is still server-synced to the picked supplier's company name, but `rental_vendor` holds the vendor's **PIC** (see the Asset ↔ vendor notes in CLAUDE.md) and the vendor filters resolve the company through `vendor_id` instead.
+
+#### `vendors/*` — Vendor Management (directory, form, profile)
+- Styling: `partials/vendor-ui-style.blade.php` (`@once`, `vnd-` prefixed) layered on `partials/decommission-ui-style` (`ewx-`) + `partials/dashboard-widgets-style`.
+- `vendors/form.blade.php` — one nonce'd IIFE showing/hiding the `.js-ewaste-only` primary toggle off `#vtype_ewaste`; `addEventListener` only.
+- `vendors/show.blade.php` — Bootstrap tabs via `data-bs-toggle="tab"` (declarative attributes, not handlers). The open tab comes from `?tab=`, which every contract/billing redirect carries.
+- **Modals are rendered OUTSIDE the tab panes and tables** — a `<div>` inside `<tbody>` is invalid markup the browser hoists out, which silently detaches the form from its fields.
+- **Multi-modal `old()` pattern:** one Add modal + one Edit modal per row, and `old()` is global. Each form carries a hidden `_form` naming itself; only the form matching `old('_form')` replays `old()`, and a nonce'd block re-opens exactly that modal through `bootstrap.Modal.getOrCreateInstance`. Without this a rejected Add would repopulate every Edit form on the page.
+- Delete/re-scan use the shared `form.js-confirm` + `data-confirm*` convention. These forms are rendered server-side and present at load, which matters: the confirm binder is `querySelectorAll` at load time, **not** delegation.
+
+#### `it/assets/page.blade.php` — Decommissioning tab (Asset Decommissioning module)
+- **Batch selection:** checkboxes (`.js-batch-check`, only on `vendor_return` rows that are not already on a return form) enable the **Create Collection Batch** button and, on modal `show.bs.modal`, inject the checked ids as hidden `dispose_ids[]` inputs into `#batchIdsContainer`. All in the page's existing nonce'd `@push('scripts')` block — no inline handlers. **Keep the ids `#createBatchBtn` / `#batchSelCount` / `.js-batch-check`**: the button ships `disabled` and only the IIFE enables it, the tab's CSS keys on the class, and `ItDecommissionAccessTest` asserts on `id="createBatchBtn"` (never the phrase "Create Collection Batch", which also appears in a JS comment served to every role).
+- **The modal previews the SPLIT before submit** (added 2026-08-10): each checkbox carries `data-vendor` / `data-company` / `data-rental`, and the IIFE groups them into "N forms will be created", one card per (vendor, company rented to), plus a warning list of assets that cannot become a form. It mirrors `RentalAssetAcknowledgement::planReturns()` — the server still decides — and disables `#batchSubmitBtn` when nothing is resolvable. Every dynamic value goes in through `textContent` via a small `el()` helper; the only `innerHTML` clears a container.
+- **Run e-waste sweep now / Cancel cycle:** plain POST forms guarded by a CSP-safe `form.js-confirm` (`data-confirm`) submit listener (replaces inline `onsubmit="confirm()"`).
+- **Create Collection Batch modal** posts to `decommission.returns.generate` (it raises return AARFs, not a batch); opened declaratively via `data-bs-toggle`/`data-bs-target`.
+
+#### `it/decommission/show.blade.php` — E-waste cycle detail
+- E-waste only since 2026-08-10 (the vendor-return block, its ack-link copy control and the nonce'd script that drove it were removed with the flow). Quotation/receipt upload forms are `enctype="multipart/form-data"`; `form.js-confirm` submit-confirm pattern via the shared `partials/confirm-modal`. **No `@push('scripts')` block remains on this page** — don't reintroduce one for the copy button, there is no link to copy.
+
+#### `vendors/aarf/show.blade.php` — the AARF (both directions)
+- **ONE `<form id="aarfAckForm">`, declared empty near the top**; every control attaches by `form="aarfAckForm"`. A receipt's two signatories interleave, so a wrapping form would have to nest — invalid HTML browsers silently drop. The receipt's second button differs only by `formaction` and carries **`formnovalidate`** (load-bearing: the receipt's own `required` fields are not the vendor rep's responsibility).
+- **A RETURN renders one button and no vendor-rep block** — the collector and our processor post together in a single submit. `$isReturn` drives every direction-specific string; keep `vendors/aarf/pdf.blade.php` in step, it carries the same split.
+
+#### `accounting/fixed-assets/index.blade.php` — Finance: pending quotations (status "Disposed")
+- The standalone `finance/ewaste-pending.blade.php` is gone; these controls render inline on the Assets tab when `?status=disposed`. Approve = `form.js-confirm` POST; Reject = per-batch Bootstrap modal (reason required), opened via `data-bs-toggle`. Nonce'd confirm listener.
+- **The status filter must stay bound via `addEventListener`** (`#assetStatusSelect` / `#assetStatusFilter`): it once carried `onchange="this.form.submit()"`, which the CSP blocks outright, so choosing "Disposed" silently did nothing and read as a permissions problem.
 
 ### User Module
 

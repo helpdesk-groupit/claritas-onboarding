@@ -3,17 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Models\Announcement;
-use App\Models\Company;
-use App\Models\Onboarding;
-use App\Models\Employee;
 use App\Models\AssetInventory;
-use App\Models\WorkDetail;
+use App\Models\Company;
+use App\Models\Employee;
+use App\Models\Onboarding;
 use App\Models\User;
-use App\Models\Aarf;
+use App\Models\WorkDetail;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Carbon\Carbon;
 
 class DashboardController extends Controller
 {
@@ -24,17 +23,24 @@ class DashboardController extends Controller
             $registered = \App\Models\Company::orderBy('name')->pluck('name')->toArray();
         }
         $trimmed = trim($name);
-        if ($trimmed === '') return 'Unspecified';
+        if ($trimmed === '') {
+            return 'Unspecified';
+        }
 
         // Normalize for comparison: strip periods, extra spaces, lowercase
-        $normalize = fn(string $s) => strtolower(str_replace(['.', ','], '', preg_replace('/\s+/', ' ', trim($s))));
+        $normalize = fn (string $s) => strtolower(str_replace(['.', ','], '', preg_replace('/\s+/', ' ', trim($s))));
         $normalizedInput = $normalize($trimmed);
 
         foreach ($registered as $r) {
-            if ($normalize($r) === $normalizedInput) return $r;
+            if ($normalize($r) === $normalizedInput) {
+                return $r;
+            }
         }
         // If no registered companies exist, use the raw name as-is
-        if (empty($registered)) return $trimmed;
+        if (empty($registered)) {
+            return $trimmed;
+        }
+
         return $trimmed;
     }
 
@@ -46,7 +52,8 @@ class DashboardController extends Controller
             $key = $normalizeAsCompany ? $this->groupCompanyName($raw) : (trim($raw) ?: 'Unspecified');
             $grouped[$key] = ($grouped[$key] ?? 0) + $row->total;
         }
-        return collect($grouped)->map(fn($t,$c) => (object)[$companyField=>$c,'total'=>$t])->values()->all();
+
+        return collect($grouped)->map(fn ($t, $c) => (object) [$companyField => $c, 'total' => $t])->values()->all();
     }
 
     // ── Shared stat data (HR + IT) ─────────────────────────────────────────
@@ -71,7 +78,7 @@ class DashboardController extends Controller
             ->groupBy('company')->get();
 
         // Active employees — base query
-        $activeQuery = fn() => Employee::whereNull('active_until');
+        $activeQuery = fn () => Employee::whereNull('active_until');
 
         $activeByCompany = $activeQuery()
             ->select('company', DB::raw('count(*) as total'))
@@ -97,19 +104,19 @@ class DashboardController extends Controller
 
         return [
             'stats' => [
-                'total_onboardings_ytd'  => WorkDetail::whereYear('start_date', $now->year)->count(),
+                'total_onboardings_ytd' => WorkDetail::whereYear('start_date', $now->year)->count(),
                 'new_joiners_this_month' => WorkDetail::whereMonth('start_date', $now->month)->whereYear('start_date', $now->year)->count(),
-                'exiting_this_month'     => \App\Models\Offboarding::whereNotNull('exit_date')->whereMonth('exit_date', $now->month)->whereYear('exit_date', $now->year)->count(),
-                'active_employees'       => Employee::whereNull('active_until')->count(),
+                'exiting_this_month' => \App\Models\Offboarding::whereNotNull('exit_date')->whereMonth('exit_date', $now->month)->whereYear('exit_date', $now->year)->count(),
+                'active_employees' => Employee::whereNull('active_until')->count(),
             ],
-            'onboardingsByCompany'   => $this->groupedCompanyCollection($rawOnboardingsByCompany),
-            'newJoinersByCompany'    => $this->groupedCompanyCollection($rawNewJoiners),
-            'exitingByCompany'       => $this->groupedCompanyCollection($exitingByCompany),
-            'activeByCompany'        => $this->groupedCompanyCollection($activeByCompany),
-            'activeByDesignation'    => $activeByDesignation,
-            'activeByRole'           => $activeByRole,
-            'activeByDepartment'     => $activeByDepartment,
-            'birthdayBabies'         => $birthdayBabies,
+            'onboardingsByCompany' => $this->groupedCompanyCollection($rawOnboardingsByCompany),
+            'newJoinersByCompany' => $this->groupedCompanyCollection($rawNewJoiners),
+            'exitingByCompany' => $this->groupedCompanyCollection($exitingByCompany),
+            'activeByCompany' => $this->groupedCompanyCollection($activeByCompany),
+            'activeByDesignation' => $activeByDesignation,
+            'activeByRole' => $activeByRole,
+            'activeByDepartment' => $activeByDepartment,
+            'birthdayBabies' => $birthdayBabies,
         ];
     }
 
@@ -130,14 +137,14 @@ class DashboardController extends Controller
         \App\Services\UpdateCheckerService $updates
     ) {
         $user = Auth::user();
-        if (!$user->isSuperadmin()) {
+        if (! $user->isSuperadmin()) {
             abort(403);
         }
 
         return view('superadmin.system-overview', [
-            'meta'          => $meta->get(),
+            'meta' => $meta->get(),
             'securityScore' => $security->get(),
-            'updateCheck'   => $updates->get(),
+            'updateCheck' => $updates->get(),
         ]);
     }
 
@@ -147,7 +154,7 @@ class DashboardController extends Controller
     public function refreshSecurityScore(\App\Services\SecurityScoreService $security)
     {
         $user = Auth::user();
-        if (!$user->isSuperadmin()) {
+        if (! $user->isSuperadmin()) {
             abort(403);
         }
 
@@ -160,7 +167,7 @@ class DashboardController extends Controller
     public function refreshUpdateCheck(\App\Services\UpdateCheckerService $updates)
     {
         $user = Auth::user();
-        if (!$user->isSuperadmin()) {
+        if (! $user->isSuperadmin()) {
             abort(403);
         }
 
@@ -170,7 +177,7 @@ class DashboardController extends Controller
     public function hrDashboard()
     {
         $user = Auth::user();
-        if (!$user->isHr() && !$user->isSuperadmin() && !$user->isSystemAdmin()) {
+        if (! $user->isHr() && ! $user->isSuperadmin() && ! $user->isSystemAdmin()) {
             return redirect()->route('user.dashboard');
         }
         extract($this->getDashboardStats());
@@ -178,9 +185,9 @@ class DashboardController extends Controller
 
         // Asset overview — needed for superadmin view on HR dashboard
         $assetStats = [
-            'total_assets'      => AssetInventory::count(),
-            'available'         => AssetInventory::where('status', 'available')->count(),
-            'assigned'          => AssetInventory::whereIn('status', ['assigned','unavailable'])->count(),
+            'total_assets' => AssetInventory::count(),
+            'available' => AssetInventory::where('status', 'available')->count(),
+            'assigned' => AssetInventory::whereIn('status', ['assigned', 'unavailable'])->count(),
             'under_maintenance' => AssetInventory::where('status', 'under_maintenance')->count(),
         ];
         $assetsByType = AssetInventory::selectRaw('asset_type, count(*) as total')
@@ -193,8 +200,12 @@ class DashboardController extends Controller
         $companyOwnedByCompany = $this->groupedCompanyCollection($rawCompanyOwned);
 
         $rentalTotal = AssetInventory::where('ownership_type', 'rental')->count();
+        // Vendor COMPANY off the vendor_id FK — rental_vendor holds the vendor's PIC (a
+        // person) now, so grouping on it alone would split one vendor across its contacts.
+        // It stays the fallback for assets never linked to a registered vendor.
         $rawRentalByVendor = AssetInventory::where('ownership_type', 'rental')
-            ->selectRaw('COALESCE(NULLIF(TRIM(rental_vendor),""), "Unspecified") as vendor, count(*) as total')
+            ->leftJoin('vendors', 'vendors.id', '=', 'asset_inventories.vendor_id')
+            ->selectRaw('COALESCE(NULLIF(TRIM(vendors.name),""), NULLIF(TRIM(asset_inventories.rental_vendor),""), "Unspecified") as vendor, count(*) as total')
             ->groupBy('vendor')->orderByDesc('total')->get();
         $rentalByVendor = $this->groupedCompanyCollection($rawRentalByVendor, 'vendor', normalizeAsCompany: false);
 
@@ -206,10 +217,10 @@ class DashboardController extends Controller
         $registeredCompanies = \App\Models\Company::orderBy('name')->get();
 
         return view('hr.dashboard', compact(
-            'stats','onboardingsByCompany','newJoinersByCompany','exitingByCompany',
-            'activeByCompany','activeByDesignation','activeByRole','activeByDepartment',
-            'assetStats','assetsByType','companyOwnedTotal','companyOwnedByCompany',
-            'rentalTotal','rentalByVendor','rentalBySuppliedTo','birthdayBabies','latestAnnouncements',
+            'stats', 'onboardingsByCompany', 'newJoinersByCompany', 'exitingByCompany',
+            'activeByCompany', 'activeByDesignation', 'activeByRole', 'activeByDepartment',
+            'assetStats', 'assetsByType', 'companyOwnedTotal', 'companyOwnedByCompany',
+            'rentalTotal', 'rentalByVendor', 'rentalBySuppliedTo', 'birthdayBabies', 'latestAnnouncements',
             'registeredCompanies'
         ));
     }
@@ -217,13 +228,15 @@ class DashboardController extends Controller
     public function itDashboard()
     {
         $user = Auth::user();
-        if (!$user->isIt() && !$user->isSuperadmin()) return redirect()->route('user.dashboard');
+        if (! $user->isIt() && ! $user->isSuperadmin()) {
+            return redirect()->route('user.dashboard');
+        }
 
         // ── Card 1: Overall Assets — breakdown by type ────────────────────
         $assetStats = [
-            'total_assets'      => AssetInventory::count(),
-            'available'         => AssetInventory::where('status', 'available')->count(),
-            'assigned'          => AssetInventory::whereIn('status', ['assigned','unavailable'])->count(),
+            'total_assets' => AssetInventory::count(),
+            'available' => AssetInventory::where('status', 'available')->count(),
+            'assigned' => AssetInventory::whereIn('status', ['assigned', 'unavailable'])->count(),
             'under_maintenance' => AssetInventory::where('status', 'under_maintenance')->count(),
         ];
 
@@ -243,8 +256,10 @@ class DashboardController extends Controller
 
         // ── Card 3: Rental — breakdown by vendor ─────────────────────────
         $rentalTotal = AssetInventory::where('ownership_type', 'rental')->count();
+        // Vendor COMPANY off the vendor_id FK — see the identical grouping above.
         $rawRentalByVendor = AssetInventory::where('ownership_type', 'rental')
-            ->selectRaw('COALESCE(NULLIF(TRIM(rental_vendor),""), "Unspecified") as vendor, count(*) as total')
+            ->leftJoin('vendors', 'vendors.id', '=', 'asset_inventories.vendor_id')
+            ->selectRaw('COALESCE(NULLIF(TRIM(vendors.name),""), NULLIF(TRIM(asset_inventories.rental_vendor),""), "Unspecified") as vendor, count(*) as total')
             ->groupBy('vendor')
             ->orderByDesc('total')
             ->get();
@@ -258,7 +273,7 @@ class DashboardController extends Controller
         extract($this->getDashboardStats());
 
         // Recent onboarding records (pending/active, upcoming start dates)
-        $recentOnboardings = Onboarding::with(['personalDetail','workDetail','aarf'])
+        $recentOnboardings = Onboarding::with(['personalDetail', 'workDetail', 'aarf'])
             ->whereIn('status', ['pending', 'active'])
             ->latest()
             ->limit(10)
@@ -280,9 +295,11 @@ class DashboardController extends Controller
     public function itOnboarding(Request $request)
     {
         $user = Auth::user();
-        if (!$user->isIt() && !$user->isSuperadmin()) return redirect()->route('user.dashboard');
+        if (! $user->isIt() && ! $user->isSuperadmin()) {
+            return redirect()->route('user.dashboard');
+        }
 
-        $query = Onboarding::with(['personalDetail','workDetail','aarf','assignedPic']);
+        $query = Onboarding::with(['personalDetail', 'workDetail', 'aarf', 'assignedPic']);
 
         // Only hide past-start-date records when no filter is active.
         // When the user searches by name or filters by date/company/position,
@@ -293,44 +310,53 @@ class DashboardController extends Controller
                   || $request->filled('start_date_from')
                   || $request->filled('start_date_to');
 
-        if (!$hasFilter) {
-            $query->whereHas('workDetail', fn($q) => $q->where('start_date', '>=', now()->toDateString()))
-                  ->whereDoesntHave('employee');
+        if (! $hasFilter) {
+            $query->whereHas('workDetail', fn ($q) => $q->where('start_date', '>=', now()->toDateString()))
+                ->whereDoesntHave('employee');
         }
 
         if ($request->filled('search')) {
             $s = $request->search;
-            $query->where(function($q) use ($s) {
-                $q->whereHas('personalDetail', fn($q2) => $q2->where('full_name','like',"%{$s}%"))
-                  ->orWhereHas('workDetail', fn($q2) =>
-                      $q2->where('designation','like',"%{$s}%")->orWhere('company','like',"%{$s}%")
-                  );
+            $query->where(function ($q) use ($s) {
+                $q->whereHas('personalDetail', fn ($q2) => $q2->where('full_name', 'like', "%{$s}%"))
+                    ->orWhereHas('workDetail', fn ($q2) => $q2->where('designation', 'like', "%{$s}%")->orWhere('company', 'like', "%{$s}%")
+                    );
             });
         }
-        if ($request->filled('company'))         $query->whereHas('workDetail', fn($q) => $q->where('company','like',"%{$request->company}%"));
-        if ($request->filled('position'))        $query->whereHas('workDetail', fn($q) => $q->where('designation','like',"%{$request->position}%"));
-        if ($request->filled('start_date_from')) $query->whereHas('workDetail', fn($q) => $q->where('start_date','>=',$request->start_date_from));
-        if ($request->filled('start_date_to'))   $query->whereHas('workDetail', fn($q) => $q->where('start_date','<=',$request->start_date_to));
+        if ($request->filled('company')) {
+            $query->whereHas('workDetail', fn ($q) => $q->where('company', 'like', "%{$request->company}%"));
+        }
+        if ($request->filled('position')) {
+            $query->whereHas('workDetail', fn ($q) => $q->where('designation', 'like', "%{$request->position}%"));
+        }
+        if ($request->filled('start_date_from')) {
+            $query->whereHas('workDetail', fn ($q) => $q->where('start_date', '>=', $request->start_date_from));
+        }
+        if ($request->filled('start_date_to')) {
+            $query->whereHas('workDetail', fn ($q) => $q->where('start_date', '<=', $request->start_date_to));
+        }
 
         $onboardings = $query->latest()->paginate(15)->withQueryString();
-        $companies   = WorkDetail::distinct()->pluck('company');
+        $companies = WorkDetail::distinct()->pluck('company');
         // IT staff for PIC dropdown — include IT Manager, executive, intern
         // Exclude: offboarded (active_until set) OR exit date has already passed
         $itStaff = User::whereIn('role', ['it_manager', 'it_executive', 'it_intern'])
             ->where('is_active', true)
-            ->whereDoesntHave('employee', fn($q) => $q->where(function ($q2) {
+            ->whereDoesntHave('employee', fn ($q) => $q->where(function ($q2) {
                 $q2->whereNotNull('active_until')
-                   ->orWhere(fn($q3) => $q3->whereNotNull('exit_date')->where('exit_date', '<', now()->toDateString()));
+                    ->orWhere(fn ($q3) => $q3->whereNotNull('exit_date')->where('exit_date', '<', now()->toDateString()));
             }))
             ->orderBy('name')
             ->get();
 
         // Onboarding overview stats for widget
         $now = now();
-        $normaliseCo = fn(string $s) => strtolower(str_replace(['.', ','], '', preg_replace('/\s+/', ' ', trim($s))));
+        $normaliseCo = fn (string $s) => strtolower(str_replace(['.', ','], '', preg_replace('/\s+/', ' ', trim($s))));
         $registeredCos = Company::orderBy('name')->pluck('name');
         $canonMap = [];
-        foreach ($registeredCos as $n) $canonMap[$normaliseCo($n)] = $n;
+        foreach ($registeredCos as $n) {
+            $canonMap[$normaliseCo($n)] = $n;
+        }
         $groupCo = function ($rows) use ($normaliseCo, $canonMap) {
             $grouped = [];
             foreach ($rows as $row) {
@@ -338,7 +364,8 @@ class DashboardController extends Controller
                 $key = $canonMap[$normaliseCo($raw)] ?? $raw;
                 $grouped[$key] = ($grouped[$key] ?? 0) + $row->total;
             }
-            return collect($grouped)->map(fn($t, $c) => (object) ['company' => $c, 'total' => $t])->values()->all();
+
+            return collect($grouped)->map(fn ($t, $c) => (object) ['company' => $c, 'total' => $t])->values()->all();
         };
 
         $onboardingsByCompany = $groupCo(
@@ -350,27 +377,32 @@ class DashboardController extends Controller
                 ->whereMonth('start_date', $now->month)->whereYear('start_date', $now->year)->groupBy('company')->get()
         );
         $onboardStats = [
-            'total_onboardings_ytd'  => WorkDetail::whereYear('start_date', $now->year)->count(),
+            'total_onboardings_ytd' => WorkDetail::whereYear('start_date', $now->year)->count(),
             'new_joiners_this_month' => WorkDetail::whereMonth('start_date', $now->month)->whereYear('start_date', $now->year)->count(),
         ];
 
-        return view('it.onboarding', compact('onboardings','companies','itStaff',
+        return view('it.onboarding', compact('onboardings', 'companies', 'itStaff',
             'onboardStats', 'onboardingsByCompany', 'newJoinersByCompany'));
     }
 
     public function userDashboard()
     {
         $user = Auth::user();
-        if ($user->isHr() || $user->isSuperadmin() || $user->isSystemAdmin()) return redirect()->route('hr.dashboard');
-        if ($user->isIt()) return redirect()->route('it.dashboard');
+        if ($user->isHr() || $user->isSuperadmin() || $user->isSystemAdmin()) {
+            return redirect()->route('hr.dashboard');
+        }
+        if ($user->isIt()) {
+            return redirect()->route('it.dashboard');
+        }
 
-        $employee = $user->employee?->load('onboarding.personalDetail','onboarding.workDetail');
+        $employee = $user->employee?->load('onboarding.personalDetail', 'onboarding.workDetail');
         $birthdayBabies = Employee::whereNull('active_until')
             ->whereNotNull('date_of_birth')
             ->whereMonth('date_of_birth', Carbon::now()->month)
             ->orderByRaw('DAY(date_of_birth) ASC')
             ->get(['full_name', 'preferred_name', 'date_of_birth', 'designation', 'department', 'company']);
         $latestAnnouncements = $this->getAnnouncements($employee?->company);
-        return view('user.dashboard', compact('user','employee','birthdayBabies','latestAnnouncements'));
+
+        return view('user.dashboard', compact('user', 'employee', 'birthdayBabies', 'latestAnnouncements'));
     }
 }

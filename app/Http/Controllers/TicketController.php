@@ -249,7 +249,7 @@ class TicketController extends Controller
         if ($user->canViewAllTickets()) {
             $analytics = $this->buildAnalytics();
         } elseif (! empty($managedDepartments)) {
-            $analytics = $this->buildManagerAnalytics($managedDepartments);
+            $analytics = $this->buildManagerAnalytics($user, $managedDepartments);
         }
 
         return view('tickets.manage', [
@@ -295,11 +295,23 @@ class TicketController extends Controller
      * company — the analytics span ALL companies their managed department(s)
      * serve, so they can benchmark their company against others. The
      * operational ticket table below is unaffected.
+     *
+     * Card 1 is the ONE exception to that cross-company scope, and deliberately
+     * so: cards 2 and 3 are labelled as averages (a benchmark you read), but
+     * card 1 says "N Active Tickets", which every manager reads as "my inbox".
+     * It used to count `department IN (managed)` with NO company restriction,
+     * so it included tickets served by OTHER companies — which scopeVisibleTo()
+     * excludes from the listing below. A Consulting manager saw "2 Active
+     * Tickets" above a list holding 1, with no way to reach the second, and it
+     * read as a permissions bug (reported 2026-08-04). Card 1 must therefore
+     * use the same scope as the listing and the tab badges: visibleTo().
      */
-    private function buildManagerAnalytics(array $managedDepartments): array
+    private function buildManagerAnalytics(User $user, array $managedDepartments): array
     {
-        // Card 1 — Active tickets by priority, scoped to managed depts only
-        $card1Query = Ticket::whereIn('tickets.department', $managedDepartments);
+        // Card 1 — Active tickets by priority. visibleTo() already restricts a
+        // manager to their managed depts (plus anything assigned to them
+        // personally), so this matches the "All Tickets" tab count exactly.
+        $card1Query = Ticket::visibleTo($user);
         $byPriority = $this->countActiveByPriority($card1Query);
 
         // Companies dropdown: union of companies served by the user's managed depts

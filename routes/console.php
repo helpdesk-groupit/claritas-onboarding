@@ -27,6 +27,11 @@ Schedule::command('birthdays:send-wishes')
     ->withoutOverlapping();
 Schedule::command('sweep:pending-weekly')->weeklyOn(3, '00:00'); // Wednesday midnight
 
+// E-waste: quarterly decommissioning sweep. Runs daily just after midnight and
+// self-gates to the first day of each quarter (Jan/Apr/Jul/Oct) — the static
+// scheduler can't express "first of quarter + config day", so the command does it.
+Schedule::command('ewaste:sweep-quarterly')->dailyAt('00:20')->withoutOverlapping();
+
 // Backup: daily encrypted full backup at 2 AM, retain 30 days
 Schedule::command('backup:run --type=full --encrypt --keep=30')
     ->dailyAt('02:00')

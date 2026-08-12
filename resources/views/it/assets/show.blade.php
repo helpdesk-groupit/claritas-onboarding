@@ -71,8 +71,15 @@
                             <a href="{{ secure_file_url($asset->invoice_document) }}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-file-pdf me-1"></i>View</a>
                         @else — @endif
                     </td></tr>
+                    @include('it.assets._origin-invoice-row')
                     @else
-                    <tr><td class="text-muted">Rental Vendor</td><td>{{ $asset->rental_vendor ?? '—' }}</td></tr>
+                    {{-- The vendor COMPANY is on the FK; rental_vendor is the PIC we deal
+                         with. An asset never linked to a registered vendor has only the
+                         free text, which is that vendor's own name. --}}
+                    <tr><td class="text-muted">Rental Vendor</td><td>{{ ($asset->vendor_id ? $asset->vendor?->name : $asset->rental_vendor) ?: '—' }}</td></tr>
+                    @if($asset->vendor_id)
+                    <tr><td class="text-muted">Vendor PIC</td><td>{{ $asset->rental_vendor ?: '—' }}</td></tr>
+                    @endif
                     <tr><td class="text-muted">Vendor Contact</td><td>{{ $asset->rental_vendor_contact ?? '—' }}</td></tr>
                     <tr><td class="text-muted">Monthly Cost</td><td>{{ $asset->rental_cost_per_month ? 'RM '.number_format($asset->rental_cost_per_month,2) : '—' }}</td></tr>
                     <tr><td class="text-muted">Rental Period</td><td>
@@ -100,6 +107,7 @@
                             <a href="{{ secure_file_url($asset->invoice_document) }}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-file-pdf me-1"></i>View</a>
                         @else — @endif
                     </td></tr>
+                    @include('it.assets._origin-invoice-row')
                     @endif
                 </table>
             </div>

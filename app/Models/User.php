@@ -387,6 +387,153 @@ class User extends Authenticatable
         return in_array($this->role, ['finance_manager', 'superadmin']);
     }
 
+    // ── Asset Decommissioning / Vendor Management ──────────────────────
+    /**
+     * Roles that reach Vendor Management. Finance + IT + admin oversight.
+     *
+     * Finance was excluded on 2026-07-29 while the module was only the rental/repair/
+     * e-waste list the decommissioning flows read a PIC from — at that scope it really
+     * was IT-only master data. Reversed on 2026-08-06: the table is now the company-wide
+     * vendor master holding contracts, quotations, invoices and SST registration, which
+     * is Finance's own subject matter, so locking them out would mean the people who own
+     * the commercial relationship couldn't see it.
+     *
+     * Interns (it_intern / hr_intern) stay out of BOTH gates: the profile carries
+     * contract values, billing and tax identity, and there is no read-only slice of it
+     * worth the blast radius of getting the split wrong.
+     */
+    private const VENDOR_ROLES = [
+        'it_manager', 'it_executive',
+        'finance_manager', 'finance_executive',
+        'superadmin', 'system_admin',
+    ];
+
+    /**
+     * May the user create/edit vendors, contracts and billing documents?
+     *
+     * Same set as canViewVendors(): everyone admitted to the vendor master maintains it.
+     * A viewer/editor split was considered and dropped — Finance corrects tax identity
+     * and payment terms, IT corrects PICs and technical contacts, and neither group is
+     * a passive audience for the other's fields.
+     */
+    public function canManageVendors(): bool
+    {
+        return in_array($this->role, self::VENDOR_ROLES);
+    }
+
+    /** May the user VIEW Vendor Management? See VENDOR_ROLES. */
+    public function canViewVendors(): bool
+    {
+        return in_array($this->role, self::VENDOR_ROLES);
+    }
+
+    /**
+     * May the user drive the IT-side decommission flows (create batches, sweep e-waste,
+     * upload quotation/receipt, finalize)? IT managers + IT executives + admins.
+     *
+     * it_executive was added 2026-07-30 so the day-to-day IT operator — not just the
+     * manager — can run a collection batch and work the e-waste cycle. This is the ONE
+     * gate for the whole IT side of both flows, so it necessarily also grants finalize,
+     * cancel and resend; the batch is IT's own operational record, and Finance still
+     * holds the only approval step (canApproveEwasteQuotation). Interns stay out.
+     * Note this does NOT grant the C-Suite report archive (canViewDecommissionReports)
+     * or the vendor master (canManageVendors) — both remain it_manager+admin.
+     */
+    public function canManageDecommission(): bool
+    {
+        return in_array($this->role, ['it_manager', 'it_executive', 'superadmin', 'system_admin']);
+    }
+
+    /**
+     * May the user approve/reject an e-waste quotation in-app (mirrors the eClaim
+     * hrApprove gate, for Finance)? Finance + superadmin oversight.
+     */
+    public function canApproveEwasteQuotation(): bool
+    {
+        return in_array($this->role, ['finance_manager', 'finance_executive', 'superadmin']);
+    }
+
+    /**
+     * May the user open the Decommissioning report (C-Suite archive)? The existing
+     * reports set (superadmin/hr_manager/system_admin) widened with it_manager + Finance.
+     */
+    public function canViewDecommissionReports(): bool
+    {
+        return in_array($this->role, ['superadmin', 'system_admin', 'hr_manager', 'it_manager', 'finance_manager', 'finance_executive']);
+    }
+
+    /**
+     * Finance recipients for decommission notifications/mail — the finance approvers plus
+     * superadmin oversight. No finance-targeted scope existed before this module; mirrors
+     * scopeClaimHrRole. Single source of truth for finance notify targeting.
+     */
+    public function scopeFinanceRole($query)
+    {
+        return $query->whereIn('role', ['finance_manager', 'finance_executive', 'superadmin']);
+    }
+
+    /**
+     * Recipients for the IT-team emails. Same shape and same rules as
+     * financeEmailRecipients(): TO the IT Manager(s), CC the IT Executive(s), work email
+     * only, superadmins taking the TO line when no it_manager exists so a report is never
+     * silently dropped.
+     *
+     * @return array{to: string[], cc: string[]}
+     */
+    public static function itEmailRecipients(): array
+    {
+        return static::roleEmailRecipients(['it_manager'], ['it_executive']);
+    }
+
+    /**
+     * Recipients for the e-waste "finance team" emails. The report is addressed TO the
+     * Finance Manager(s) and CC'd to the Finance Executive(s) — WORK EMAIL ONLY (users
+     * authenticate on work_email; there is no personal-email fallback). If no dedicated
+     * finance_manager exists, superadmins take the TO line so a report is never silently
+     * dropped. An address never appears on both the TO and CC lines.
+     *
+     * @return array{to: string[], cc: string[]}
+     */
+    public static function financeEmailRecipients(): array
+    {
+        return static::roleEmailRecipients(['finance_manager'], ['finance_executive']);
+    }
+
+    /**
+     * The shared body of the two helpers above — extracted so the IT and Finance lines can
+     * never drift apart on the rules that matter (active only, work email only, superadmin
+     * fallback, no address on both TO and CC).
+     *
+     * @param  string[]  $toRoles
+     * @param  string[]  $ccRoles
+     * @return array{to: string[], cc: string[]}
+     */
+    protected static function roleEmailRecipients(array $toRoles, array $ccRoles): array
+    {
+        $workEmails = fn (array $roles) => static::query()
+            ->whereIn('role', $roles)
+            ->where('is_active', true)
+            ->whereNotNull('work_email')
+            ->where('work_email', '!=', '')
+            ->pluck('work_email')
+            ->map(fn ($e) => trim((string) $e))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        $to = $workEmails($toRoles);
+        if (empty($to)) {
+            // No dedicated manager for that function — fall back to superadmin oversight
+            // so a report is never silently dropped.
+            $to = $workEmails(['superadmin']);
+        }
+
+        $cc = array_values(array_diff($workEmails($ccRoles), $to));
+
+        return ['to' => $to, 'cc' => $cc];
+    }
+
     public function canUseAiChat(): bool
     {
         return in_array($this->role, ['finance_manager', 'superadmin']);

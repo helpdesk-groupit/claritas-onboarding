@@ -7,6 +7,7 @@ use App\Models\AssetAssignment;
 use App\Models\AssetInventory;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
 
 class AarfController extends Controller
 {
@@ -14,13 +15,16 @@ class AarfController extends Controller
     private function canViewAllAarfs(): bool
     {
         $u = Auth::user();
+
         return $u->isSuperadmin() || $u->isHrManager() || $u->isHrExecutive() || $u->isItManager() || $u->isItExecutive();
     }
 
     public function index()
     {
         $u = Auth::user();
-        if (!$u->isIt() && !$u->isSuperadmin() && !$u->isHrManager() && !$u->isHrExecutive()) abort(403);
+        if (! $u->isIt() && ! $u->isSuperadmin() && ! $u->isHrManager() && ! $u->isHrExecutive()) {
+            abort(403);
+        }
 
         // Only show AARFs where the onboarding is still in-progress.
         // Once onboarding status = 'offboarded' (person moved to employees table),
@@ -31,9 +35,9 @@ class AarfController extends Controller
             'onboarding.assetAssignments.asset',
             'itManager',
         ])
-        ->whereHas('onboarding', fn($q) => $q->whereIn('status', ['pending', 'active']))
-        ->latest()
-        ->get();
+            ->whereHas('onboarding', fn ($q) => $q->whereIn('status', ['pending', 'active']))
+            ->latest()
+            ->get();
 
         return view('it.aarfs', compact('aarfs'));
     }
@@ -42,7 +46,9 @@ class AarfController extends Controller
     public function itShow(Aarf $aarf)
     {
         $u = Auth::user();
-        if (!$u->isIt() && !$u->isSuperadmin() && !$u->isHrManager() && !$u->isHrExecutive()) abort(403);
+        if (! $u->isIt() && ! $u->isSuperadmin() && ! $u->isHrManager() && ! $u->isHrExecutive()) {
+            abort(403);
+        }
 
         $aarf->load([
             'onboarding.personalDetail',
@@ -57,7 +63,9 @@ class AarfController extends Controller
     // ── IT Manager: Edit AARF notes ────────────────────────────────────────
     public function itEdit(Aarf $aarf)
     {
-        if (!Auth::user()->isItManager()) abort(403);
+        if (! Auth::user()->isItManager()) {
+            abort(403);
+        }
         if ($aarf->isLocked()) {
             return redirect()->route('it.aarf.show', $aarf)
                 ->with('error', 'This AARF is locked and cannot be edited.');
@@ -75,7 +83,9 @@ class AarfController extends Controller
     // ── IT Manager: Save AARF notes ────────────────────────────────────────
     public function itUpdate(Request $request, Aarf $aarf)
     {
-        if (!Auth::user()->isItManager()) abort(403);
+        if (! Auth::user()->isItManager()) {
+            abort(403);
+        }
         if ($aarf->isLocked()) {
             return redirect()->route('it.aarf.show', $aarf)
                 ->with('error', 'This AARF is locked and cannot be edited.');
@@ -91,7 +101,9 @@ class AarfController extends Controller
     // ── IT Manager: Acknowledge — MUST happen before employee can acknowledge
     public function itAcknowledge(Request $request, Aarf $aarf)
     {
-        if (!Auth::user()->isItManager()) abort(403);
+        if (! Auth::user()->isItManager()) {
+            abort(403);
+        }
 
         if ($aarf->it_manager_acknowledged) {
             return redirect()->route('it.aarf.show', $aarf)
@@ -105,10 +117,10 @@ class AarfController extends Controller
         $empName = $aarf->onboarding?->personalDetail?->full_name ?? 'New Hire';
 
         $aarf->update([
-            'it_manager_acknowledged'    => true,
+            'it_manager_acknowledged' => true,
             'it_manager_acknowledged_at' => now(),
-            'it_manager_user_id'         => Auth::id(),
-            'it_manager_remarks'         => $request->it_manager_remarks,
+            'it_manager_user_id' => Auth::id(),
+            'it_manager_remarks' => $request->it_manager_remarks,
         ]);
 
         // Log to asset_changes
@@ -129,7 +141,9 @@ class AarfController extends Controller
     // ── IT Manager: Edit asset assignments page ────────────────────────────
     public function itEditAssets(Aarf $aarf)
     {
-        if (!Auth::user()->isItManager()) abort(403);
+        if (! Auth::user()->isItManager()) {
+            abort(403);
+        }
         if ($aarf->isLocked()) {
             return redirect()->route('it.aarf.show', $aarf)
                 ->with('error', 'This AARF is locked and cannot be edited.');
@@ -153,39 +167,42 @@ class AarfController extends Controller
     // ── IT Manager: Add one or more assets to the AARF ───────────────────
     public function itAddAsset(Request $request, Aarf $aarf)
     {
-        if (!Auth::user()->isItManager()) abort(403);
+        if (! Auth::user()->isItManager()) {
+            abort(403);
+        }
         if ($aarf->isLocked()) {
             return back()->with('error', 'This AARF is locked.');
         }
 
         $request->validate([
-            'asset_ids'     => 'required|array|min:1',
-            'asset_ids.*'   => 'exists:asset_inventories,id',
+            'asset_ids' => 'required|array|min:1',
+            'asset_ids.*' => 'exists:asset_inventories,id',
             'assigned_date' => 'required|date',
         ]);
 
-        $actor     = Auth::user();
+        $actor = Auth::user();
         $actorName = $actor->name ?? $actor->work_email ?? 'IT Manager';
-        $empName   = $aarf->onboarding?->personalDetail?->full_name ?? 'New Hire';
-        $added     = [];
-        $skipped   = [];
+        $empName = $aarf->onboarding?->personalDetail?->full_name ?? 'New Hire';
+        $added = [];
+        $skipped = [];
 
         foreach ($request->asset_ids as $assetId) {
             $asset = AssetInventory::find($assetId);
-            if (!$asset || $asset->status !== 'available') {
+            if (! $asset || $asset->status !== 'available') {
                 $skipped[] = $asset?->asset_tag ?? "#$assetId";
+
                 continue;
             }
 
             AssetAssignment::create([
-                'onboarding_id'      => $aarf->onboarding_id,
+                'onboarding_id' => $aarf->onboarding_id,
                 'asset_inventory_id' => $asset->id,
-                'assigned_date'      => $request->assigned_date,
-                'status'             => 'assigned',
+                'assigned_date' => $request->assigned_date,
+                'status' => 'assigned',
             ]);
 
             $asset->update([
-                'status'              => 'assigned',
+                'status' => 'assigned',
                 'asset_assigned_date' => $request->assigned_date,
             ]);
 
@@ -197,17 +214,24 @@ class AarfController extends Controller
         }
 
         $msg = '';
-        if ($added)   $msg .= count($added) . ' asset(s) added: ' . implode(', ', $added) . '. ';
-        if ($skipped) $msg .= count($skipped) . ' skipped (no longer available): ' . implode(', ', $skipped) . '.';
+        if ($added) {
+            $msg .= count($added).' asset(s) added: '.implode(', ', $added).'. ';
+        }
+        if ($skipped) {
+            $msg .= count($skipped).' skipped (no longer available): '.implode(', ', $skipped).'.';
+        }
 
-        $flashType = $skipped && !$added ? 'error' : 'success';
+        $flashType = $skipped && ! $added ? 'error' : 'success';
+
         return back()->with($flashType, trim($msg) ?: 'Done.');
     }
 
     // ── IT Manager: Replace one assigned asset with another ───────────────
     public function itReplaceAsset(Request $request, Aarf $aarf, AssetAssignment $assignment)
     {
-        if (!Auth::user()->isItManager()) abort(403);
+        if (! Auth::user()->isItManager()) {
+            abort(403);
+        }
         if ($aarf->isLocked()) {
             return back()->with('error', 'This AARF is locked.');
         }
@@ -216,11 +240,11 @@ class AarfController extends Controller
             'new_asset_id' => 'required|exists:asset_inventories,id',
         ]);
 
-        $oldAsset  = AssetInventory::find($assignment->asset_inventory_id);
-        $newAsset  = AssetInventory::findOrFail($request->new_asset_id);
-        $actor     = Auth::user();
+        $oldAsset = AssetInventory::find($assignment->asset_inventory_id);
+        $newAsset = AssetInventory::findOrFail($request->new_asset_id);
+        $actor = Auth::user();
         $actorName = $actor->name ?? $actor->work_email ?? 'IT Manager';
-        $empName   = $aarf->onboarding?->personalDetail?->full_name ?? 'New Hire';
+        $empName = $aarf->onboarding?->personalDetail?->full_name ?? 'New Hire';
 
         if ($newAsset->status !== 'available') {
             return back()->with('error', "Asset [{$newAsset->asset_tag}] is not available.");
@@ -230,22 +254,22 @@ class AarfController extends Controller
         $assignment->update(['status' => 'returned', 'returned_date' => now()->toDateString()]);
         if ($oldAsset) {
             $oldAsset->update([
-                'status'               => 'available',
+                'status' => 'available',
                 'assigned_employee_id' => null,
-                'asset_assigned_date'  => null,
+                'asset_assigned_date' => null,
             ]);
             $oldAsset->appendRemark("Replaced in AARF [{$aarf->aarf_reference}] by {$actorName}. Swapped out for [{$newAsset->asset_tag}].");
         }
 
         // Assign the new asset
         AssetAssignment::create([
-            'onboarding_id'      => $aarf->onboarding_id,
+            'onboarding_id' => $aarf->onboarding_id,
             'asset_inventory_id' => $newAsset->id,
-            'assigned_date'      => $assignment->assigned_date ?? now()->toDateString(),
-            'status'             => 'assigned',
+            'assigned_date' => $assignment->assigned_date ?? now()->toDateString(),
+            'status' => 'assigned',
         ]);
         $newAsset->update([
-            'status'              => 'assigned',
+            'status' => 'assigned',
             'asset_assigned_date' => $assignment->assigned_date ?? now()->toDateString(),
         ]);
         $newAsset->appendRemark("Replaced [{$oldAsset?->asset_tag}] in AARF [{$aarf->aarf_reference}] assignment for {$empName} by {$actorName}.");
@@ -253,7 +277,9 @@ class AarfController extends Controller
         // Log to AARF
         $oldTag = $oldAsset ? "[{$oldAsset->asset_tag}] {$oldAsset->asset_name}" : 'previous asset';
         $aarf->appendAssetChange("{$oldTag} — Replaced with [{$newAsset->asset_tag}] {$newAsset->asset_name} for {$empName} by {$actorName}.");
-        if ($oldAsset) $aarf->removePendingAsset($oldAsset->id);
+        if ($oldAsset) {
+            $aarf->removePendingAsset($oldAsset->id);
+        }
         $aarf->addPendingAsset($newAsset->id);
 
         return back()->with('success', "Asset replaced: [{$oldAsset?->asset_tag}] → [{$newAsset->asset_tag}].");
@@ -262,15 +288,17 @@ class AarfController extends Controller
     // ── IT Manager: Remove a single asset from AARF ───────────────────────
     public function itRemoveAsset(Aarf $aarf, AssetAssignment $assignment)
     {
-        if (!Auth::user()->isItManager()) abort(403);
+        if (! Auth::user()->isItManager()) {
+            abort(403);
+        }
         if ($aarf->isLocked()) {
             return back()->with('error', 'This AARF is locked.');
         }
 
-        $asset     = AssetInventory::find($assignment->asset_inventory_id);
-        $actor     = Auth::user();
+        $asset = AssetInventory::find($assignment->asset_inventory_id);
+        $actor = Auth::user();
         $actorName = $actor->name ?? $actor->work_email ?? 'IT Manager';
-        $empName   = $aarf->onboarding?->personalDetail?->full_name ?? 'New Hire';
+        $empName = $aarf->onboarding?->personalDetail?->full_name ?? 'New Hire';
 
         // Close the assignment
         $assignment->update(['status' => 'returned', 'returned_date' => now()->toDateString()]);
@@ -278,9 +306,9 @@ class AarfController extends Controller
         // Free the asset
         if ($asset) {
             $asset->update([
-                'status'               => 'available',
+                'status' => 'available',
                 'assigned_employee_id' => null,
-                'asset_assigned_date'  => null,
+                'asset_assigned_date' => null,
             ]);
             $asset->appendRemark("Removed from AARF [{$aarf->aarf_reference}] assignment for {$empName} by {$actorName}.");
         }
@@ -288,7 +316,9 @@ class AarfController extends Controller
         // Log to AARF
         $tag = $asset ? "[{$asset->asset_tag}] {$asset->asset_name}" : 'Asset';
         $aarf->appendAssetChange("{$tag} — Removed from AARF assignment for {$empName} by {$actorName}.");
-        if ($asset) $aarf->removePendingAsset($asset->id);
+        if ($asset) {
+            $aarf->removePendingAsset($asset->id);
+        }
 
         return back()->with('success', "Asset [{$asset?->asset_tag}] removed from AARF.");
     }
@@ -320,7 +350,7 @@ class AarfController extends Controller
                 || $authUser->isItManager() || $authUser->isItExecutive()
                 || $authUser->isHr() || $authUser->isIt() || $authUser->isSystemAdmin();
 
-            if (!$isPrivileged) {
+            if (! $isPrivileged) {
                 $empId = $authUser->employee?->id;
                 $aarfEmpId = $aarf->employee_id
                     ?? $aarf->onboarding?->employee?->id;
@@ -341,6 +371,27 @@ class AarfController extends Controller
         return view('aarf.view', compact('aarf', 'viewerRole'));
     }
 
+    // ── Public: Stream one asset photo via the AARF token (no auth) ─────────
+    // The token gates access and scopes it to the assets on THIS AARF — the
+    // photos live on the public disk, but /storage is not anonymously reachable
+    // in this deployment, so we serve them through the token instead.
+    public function viewPhoto(string $token, AssetInventory $asset, int $index)
+    {
+        $aarf = Aarf::where('acknowledgement_token', $token)->firstOrFail();
+
+        // The asset must be one assigned on THIS AARF's onboarding — nothing else.
+        $belongs = AssetAssignment::where('onboarding_id', $aarf->onboarding_id)
+            ->where('asset_inventory_id', $asset->id)
+            ->exists();
+        abort_unless($belongs, 404);
+
+        $photos = $asset->asset_photos ?? [];
+        $path = $photos[$index] ?? null;
+        abort_unless($path && Storage::disk('public')->exists($path), 404);
+
+        return Storage::disk('public')->response($path);
+    }
+
     // ── Public: Employee acknowledge via token ─────────────────────────────
     public function acknowledge(string $token)
     {
@@ -356,7 +407,7 @@ class AarfController extends Controller
             ?? 'Employee';
 
         $aarf->update([
-            'acknowledged'    => true,
+            'acknowledged' => true,
             'acknowledged_at' => now(),
         ]);
 
@@ -365,7 +416,7 @@ class AarfController extends Controller
 
         // Log receipt confirmation only on assets pending since the last AARF reset
         $pendingIds = $aarf->pending_asset_ids ?? [];
-        if (!empty($pendingIds)) {
+        if (! empty($pendingIds)) {
             $pendingAssets = \App\Models\AssetInventory::whereIn('id', $pendingIds)->get();
             foreach ($pendingAssets as $asset) {
                 $asset->appendRemark("Asset receipt confirmed by {$empName} via AARF [{$aarf->aarf_reference}] acknowledgement.");
@@ -380,8 +431,11 @@ class AarfController extends Controller
     // ── HR internal view ───────────────────────────────────────────────────
     public function hrView(Aarf $aarf)
     {
-        if (!$this->canViewAllAarfs()) abort(403);
+        if (! $this->canViewAllAarfs()) {
+            abort(403);
+        }
         $aarf->load(['onboarding.personalDetail', 'onboarding.workDetail', 'onboarding.assetAssignments.asset']);
+
         return view('hr.aarf', compact('aarf'));
     }
 }

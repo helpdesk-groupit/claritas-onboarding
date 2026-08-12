@@ -1,6 +1,6 @@
 <?php
 
-if (!function_exists('fmt_date')) {
+if (! function_exists('fmt_date')) {
     /**
      * The system-standard DISPLAY format for a full date: DD-MM-YYYY (e.g. 15-07-2026).
      * Use this for every human-facing date so the whole app reads consistently. Do NOT use it
@@ -23,7 +23,7 @@ if (!function_exists('fmt_date')) {
     }
 }
 
-if (!function_exists('fmt_datetime')) {
+if (! function_exists('fmt_datetime')) {
     /** System-standard date+time display: DD-MM-YYYY, h:mma (e.g. 15-07-2026, 4:26pm). */
     function fmt_datetime($date, string $fallback = '—'): string
     {
@@ -62,7 +62,7 @@ if (! function_exists('asset_onboarding_option_label')) {
     }
 }
 
-if (!function_exists('secure_file_url')) {
+if (! function_exists('secure_file_url')) {
     /**
      * Generate the URL for a stored file.
      *
@@ -70,11 +70,10 @@ if (!function_exists('secure_file_url')) {
      * Non-sensitive files (profile pictures, logos, etc.) are served via the public storage symlink.
      *
      * @param  string|null  $path  The relative storage path (e.g., "nric_documents/abc.pdf")
-     * @return string
      */
     function secure_file_url(?string $path): string
     {
-        if (!$path) {
+        if (! $path) {
             return '#';
         }
 
@@ -88,6 +87,15 @@ if (!function_exists('secure_file_url')) {
             'invoices',
             'rental_contracts',
             'claim_receipts',
+            // Asset Decommissioning module (finance + IT)
+            'ewaste_quotations',
+            'ewaste_receipts',
+            'decommission_reports',
+            // Vendor Management — contracts + billing documents (finance + IT)
+            'vendor_contracts',
+            'vendor_billing',
+            // Signed AARFs (rental asset receipt/return acknowledgements)
+            'rental_acknowledgements',
         ];
 
         $directory = explode('/', $path)[0] ?? '';
@@ -97,6 +105,6 @@ if (!function_exists('secure_file_url')) {
         }
 
         // Non-sensitive files — serve via public storage symlink
-        return asset('storage/' . $path);
+        return asset('storage/'.$path);
     }
 }

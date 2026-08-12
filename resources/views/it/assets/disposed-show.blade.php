@@ -89,7 +89,11 @@
                         <tr><td class="text-muted">Cost</td><td>{{ $asset->purchase_cost ? 'RM '.number_format($asset->purchase_cost,2) : '—' }}</td></tr>
                         <tr><td class="text-muted">Warranty Expiry</td><td>{{ $asset->warranty_expiry_date?->format('d/m/Y') ?? '—' }}</td></tr>
                     @else
-                        <tr><td class="text-muted">Rental Vendor</td><td>{{ $asset->rental_vendor ?? '—' }}</td></tr>
+                        {{-- Vendor COMPANY off the FK; rental_vendor is the PIC. --}}
+                        <tr><td class="text-muted">Rental Vendor</td><td>{{ ($asset->vendor_id ? $asset->vendor?->name : $asset->rental_vendor) ?: '—' }}</td></tr>
+                        @if($asset->vendor_id)
+                        <tr><td class="text-muted">Vendor PIC</td><td>{{ $asset->rental_vendor ?: '—' }}</td></tr>
+                        @endif
                         <tr><td class="text-muted">Monthly Cost</td><td>{{ $asset->rental_cost_per_month ? 'RM '.number_format($asset->rental_cost_per_month,2) : '—' }}</td></tr>
                         <tr><td class="text-muted">Rental Period</td><td>
                             {{ $asset->rental_start_date?->format('d/m/Y') ?? '—' }} — {{ $asset->rental_end_date?->format('d/m/Y') ?? '—' }}
@@ -109,10 +113,24 @@
             </div>
             <div class="card-body">
                 @php
-                    $decommReason = \App\Models\DisposedAsset::where('asset_inventory_id', $asset->id)->value('reason');
+                    $staging      = \App\Models\DisposedAsset::where('asset_inventory_id', $asset->id)->first();
+                    $decommReason = $staging?->reason;
+                    $completeness = $staging?->completenessLabel();
                 @endphp
                 <table class="table table-sm table-borderless mb-0">
                     <tr><td class="text-muted" style="width:45%">Condition</td><td><span class="badge bg-{{ $conditionClass }}">{{ $conditionLabel }}</span></td></tr>
+                    @if($completeness)
+                    <tr><td class="text-muted">Completeness</td><td>
+                        @if($staging->isIncomplete())
+                            <span class="badge bg-warning text-dark">Incomplete — parts removed</span>
+                        @else
+                            <span class="badge bg-success">Complete — all parts intact</span>
+                        @endif
+                    </td></tr>
+                    @endif
+                    @if($staging?->isIncomplete() && $staging->ewaste_parts_removed)
+                    <tr><td class="text-muted">Parts Removed</td><td>{{ $staging->ewaste_parts_removed }}</td></tr>
+                    @endif
                     @if($decommReason)
                     <tr><td class="text-muted">Decommission Reason</td><td>{{ $decommReason }}</td></tr>
                     @endif

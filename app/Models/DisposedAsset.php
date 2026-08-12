@@ -8,12 +8,24 @@ class DisposedAsset extends Model
 {
     protected $table = 'dispose_assets';
 
+    /**
+     * Completeness of a "Not Good" (e-waste) asset — drives the vendor's disposal price.
+     *   complete   → all spare parts intact (battery, RAM, storage, …)
+     *   incomplete → some parts removed
+     */
+    public const COMPLETENESS = [
+        'complete' => 'Complete',
+        'incomplete' => 'Incomplete',
+    ];
+
     protected $fillable = [
         'asset_inventory_id', 'asset_tag', 'asset_type',
         'brand', 'model', 'serial_number',
         'asset_condition', 'reason', 'disposed_by', 'disposed_at', 'remarks',
-        // Decommissioning routing — how this staged asset leaves the inventory
-        'decommission_type',
+        // Decommissioning routing (added 2026-07)
+        'decommission_type', 'decommission_batch_id',
+        // E-waste completeness flag + removed-parts list (added 2026-07-28)
+        'ewaste_completeness', 'ewaste_parts_removed',
     ];
 
     protected $casts = [
@@ -25,21 +37,29 @@ class DisposedAsset extends Model
         return $this->belongsTo(AssetInventory::class, 'asset_inventory_id');
     }
 
-    /** Handed back to the rental vendor it belongs to (condition = Returned). */
+    public function batch()
+    {
+        return $this->belongsTo(AssetDecommissionBatch::class, 'decommission_batch_id');
+    }
+
     public function isVendorReturn(): bool
     {
         return $this->decommission_type === 'vendor_return';
     }
 
-    /** Scrapped / disposed of (condition = Not Good). */
     public function isEwaste(): bool
     {
-        return ! $this->isVendorReturn();
+        return $this->decommission_type === 'e_waste';
     }
 
-    /** Human label for the routing type, for listings and detail pages. */
-    public function decommissionTypeLabel(): string
+    /** Human label for the e-waste completeness flag, or null if not set / not e-waste. */
+    public function completenessLabel(): ?string
     {
-        return AssetInventory::DECOMMISSION_TYPES[$this->decommission_type] ?? 'E-waste';
+        return self::COMPLETENESS[$this->ewaste_completeness] ?? null;
+    }
+
+    public function isIncomplete(): bool
+    {
+        return $this->ewaste_completeness === 'incomplete';
     }
 }

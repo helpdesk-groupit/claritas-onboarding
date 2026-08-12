@@ -13,6 +13,8 @@
         "laravel/framework": "^12.0",
         "laravel/tinker": "^2.10.1",
         "pragmarx/google2fa-laravel": "^3.0",
+        "setasign/fpdf": "^1.9",
+        "setasign/fpdi": "^2.6",
         "webklex/php-imap": "^6.2"
     },
     "require-dev": {

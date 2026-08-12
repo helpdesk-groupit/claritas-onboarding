@@ -192,6 +192,49 @@
 <div class="tab-pane fade {{ $activeTab === 'damaged' ? 'show active' : '' }}" id="pane-damaged" role="tabpanel">
 <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
 
+    {{-- Decommissioning action bar (IT managers + IT executives, per canManageDecommission) --}}
+    @if($canDecommission)
+    <div class="card-body border-bottom d-flex flex-wrap gap-2 align-items-center">
+        <button type="button" class="btn btn-sm btn-primary" id="createBatchBtn" data-bs-toggle="modal" data-bs-target="#createBatchModal" disabled>
+            <i class="bi bi-box-arrow-up me-1"></i>Create Collection Batch
+            <span class="badge bg-light text-dark ms-1" id="batchSelCount">0</span>
+        </button>
+        <form action="{{ route('ewaste.sweep') }}" method="POST" class="js-confirm" data-confirm="Run the e-waste sweep now? This gathers all Not-Good assets into a new quarterly cycle and emails the primary vendor + Finance." data-confirm-title="Run e-waste sweep" data-confirm-ok="Run sweep" data-confirm-variant="success">@csrf
+            <button class="btn btn-sm btn-outline-success"><i class="bi bi-recycle me-1"></i>Run e-waste sweep now</button>
+        </form>
+        <span class="text-muted small ms-auto">
+            Primary e-waste vendor:
+            @if($primaryEwasteVendor)<strong>{{ $primaryEwasteVendor->name }}</strong>@else<span class="text-danger">not set</span> — <a href="{{ route('vendors.index') }}">configure</a>@endif
+        </span>
+    </div>
+    @endif
+
+    {{-- Open batches / cycles / unsigned return forms.
+         An unsigned return form is open work in the same sense a running e-waste cycle is:
+         assets are committed to a document nobody has signed, so they are still ours. --}}
+    @if($openBatches->isNotEmpty() || $openReturnForms->isNotEmpty())
+    <div class="card-body border-bottom py-2">
+        <div class="fw-semibold small text-muted mb-2"><i class="bi bi-collection me-1"></i>Open cycles &amp; unsigned return forms</div>
+        <div class="d-flex flex-wrap gap-2">
+            @foreach($openReturnForms as $rf)
+            <a href="{{ route('vendors.aarf.show', [$rf->vendor_id, $rf]) }}" class="text-decoration-none">
+                <span class="badge bg-light text-dark border">
+                    {{ $rf->reference }} · Return · {{ $rf->vendor?->name ?? '—' }} ·
+                    {{ $rf->items_count }} asset{{ $rf->items_count === 1 ? '' : 's' }} ·
+                    <span class="text-secondary">Awaiting signature</span>
+                </span>
+            </a>
+            @endforeach
+            @foreach($openBatches as $b)
+            @php [$bClass,$bLabel] = $b->statusBadge(); @endphp
+            <a href="{{ route('decommission.show', $b) }}" class="text-decoration-none">
+                <span class="badge bg-light text-dark border">{{ $b->batch_number }} · {{ $b->typeLabel() }} · <span class="text-{{ $bClass }}">{{ $bLabel }}</span></span>
+            </a>
+            @endforeach
+        </div>
+    </div>
+    @endif
+
     {{-- Decommissioning Filters --}}
     <div class="card-body border-bottom pb-3">
         <form action="{{ route('assets.index') }}" method="GET" class="row g-2 align-items-end">
@@ -199,6 +242,13 @@
             <div class="col-md-3">
                 <input type="text" name="d_search" class="form-control form-control-sm"
                        placeholder="Tag, brand, model..." value="{{ request('d_search') }}">
+            </div>
+            <div class="col-md-2">
+                <select name="d_decotype" class="form-select form-select-sm">
+                    <option value="">All Conditions</option>
+                    <option value="vendor_return" {{ request('d_decotype')==='vendor_return'?'selected':'' }}>Returned</option>
+                    <option value="e_waste" {{ request('d_decotype')==='e_waste'?'selected':'' }}>Not Good</option>
+                </select>
             </div>
             <div class="col-md-2">
                 <select name="d_type" class="form-select form-select-sm">
@@ -227,7 +277,7 @@
             </div>
             <div class="col-auto d-flex gap-1">
                 <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-funnel"></i></button>
-                @if(request()->hasAny(['d_search','d_type','d_ownership','d_vendor']))
+                @if(request()->hasAny(['d_search','d_type','d_decotype','d_ownership','d_vendor']))
                     <a href="{{ route('assets.index', ['tab'=>'damaged']) }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-x"></i></a>
                 @endif
             </div>
@@ -238,58 +288,110 @@
         <div class="px-3 pt-3 pb-2">
             <p class="text-muted small mb-0">
                 <i class="bi bi-info-circle me-1"></i>
-                Assets marked as <strong>Not Good</strong> or <strong>Returned</strong> are removed from the active listing and tracked here.
-                <strong>Not Good</strong> assets are decommissioned as e-waste; <strong>Returned</strong> assets go back to the rental vendor.
+                <strong>Not Good</strong> assets are staged for <strong>e-waste</strong>; <strong>Returned</strong> assets are staged for <strong>vendor return</strong>.
+                {{-- The call to action only makes sense for someone who has the button. A viewer
+                     (it_intern, HR) reads this list but cannot act on it. --}}
+                @if($canDecommission)Tick the returned assets below and click <em>Create Collection Batch</em> — the vendor is read off each asset, and one Asset Acceptance &amp; Return Form (AARF) is raised per vendor and company rented to.@else This list is read-only for your role.@endif
             </p>
         </div>
         @if($disposed->isEmpty())
             <div class="text-center py-5 text-muted">
                 <i class="bi bi-check-circle" style="font-size:40px;color:#16a34a;"></i>
-                <p class="mt-2">No decommissioned assets on record.</p>
+                <p class="mt-2">No assets awaiting decommissioning.</p>
             </div>
         @else
         <div class="table-responsive">
             <table class="table table-hover align-middle mb-0" style="font-size:13px;">
                 <thead style="background:#f8fafc;">
                     <tr>
-                        <th class="ps-3">Asset Tag</th>
+                        @if($canDecommission)<th class="ps-3" style="width:34px;"></th>@endif
+                        <th class="{{ $canDecommission ? '' : 'ps-3' }}">Asset Tag</th>
                         <th>Type</th>
                         <th>Brand / Model</th>
                         <th>Serial Number</th>
-                        <th>Ownership</th>
                         <th>Condition</th>
-                        <th>Status</th>
+                        <th>Return To / Batch</th>
                         <th>Reason</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     @foreach($disposed as $d)
+                    @php
+                        $isReturn = $d->decommission_type === 'vendor_return';
+                        // The form an asset already sits on. Selection is gated on its ABSENCE,
+                        // not on decommission_batch_id — a return no longer creates a batch, so
+                        // that column stays null for the whole of its life and would have left
+                        // every returned asset selectable forever, including ones already signed
+                        // for on somebody else's form.
+                        $onForm = $isReturn ? ($returnForms[$d->asset_inventory_id] ?? null) : null;
+                        // Only a RENTAL asset's vendor is a return destination. On a
+                        // company-owned asset the same FK means "purchased from" (since
+                        // 2026-08-06), so reading it here would print the supplier we BOUGHT
+                        // the laptop from as the party it is going back to — and would hide
+                        // the "Not a rental" warning that is the actual problem with the row.
+                        $isRental = $d->asset?->ownership_type === 'rental';
+                        $rtVendor = $isReturn && $isRental ? $d->asset?->vendor : null;
+                        $selectable = $canDecommission && $isReturn && ! $onForm;
+                    @endphp
                     <tr>
-                        <td class="ps-3"><code>{{ $d->asset_tag }}</code></td>
+                        @if($canDecommission)
+                        <td class="ps-3">
+                            @if($selectable)
+                                <input type="checkbox" class="form-check-input js-batch-check"
+                                       value="{{ $d->id }}"
+                                       data-tag="{{ $d->asset_tag }}"
+                                       data-label="{{ trim(($d->brand ?? '').' '.($d->model ?? '')) }}"
+                                       data-vendor="{{ $rtVendor?->name ?? '' }}"
+                                       data-company="{{ $d->asset?->company_supplied_to ?? '' }}"
+                                       data-rental="{{ $d->asset?->ownership_type === 'rental' ? '1' : '0' }}">
+                            @endif
+                        </td>
+                        @endif
+                        <td class="{{ $canDecommission ? '' : 'ps-3' }}"><code>{{ $d->asset_tag }}</code></td>
                         <td>{{ ucfirst(str_replace('_',' ', $d->asset_type)) }}</td>
                         <td>{{ $d->brand }} {{ $d->model }}</td>
                         <td class="text-muted">{{ $d->serial_number ?? '—' }}</td>
                         <td>
-                            @if($d->asset)
-                                <span class="badge bg-{{ $d->asset->ownership_type === 'rental' ? 'warning text-dark' : 'secondary' }}">
-                                    {{ $d->asset->ownership_type === 'rental' ? 'Rental' : 'Company' }}
-                                </span>
+                            @if($d->decommission_type === 'vendor_return')
+                                <span class="badge bg-info text-dark">Returned</span>
                             @else
-                                <span class="text-muted">—</span>
+                                <span class="badge bg-danger">Not Good</span>
+                                @if($d->ewaste_completeness === 'incomplete')
+                                    <span class="badge bg-warning text-dark" title="Parts removed: {{ $d->ewaste_parts_removed ?: 'not specified' }}">Incomplete</span>
+                                @elseif($d->ewaste_completeness === 'complete')
+                                    <span class="badge bg-success" title="All parts intact">Complete</span>
+                                @endif
                             @endif
                         </td>
-                        <td>
-                            {{-- The staging row's own snapshot, not the live asset's current condition. --}}
-                            <span class="badge bg-{{ $d->isVendorReturn() ? 'warning text-dark' : 'danger' }}">
-                                {{ \App\Models\AssetInventory::CONDITIONS[$d->asset_condition] ?? ($d->isVendorReturn() ? 'Returned' : 'Not Good') }}
-                            </span>
-                        </td>
-                        <td>
-                            @if($d->isVendorReturn())
-                                <span class="badge bg-primary"><i class="bi bi-arrow-return-left me-1"></i>Return</span>
+                        {{-- Return To / Batch. For a return this is the vendor the asset goes
+                             back to (read off the FK) plus the form it is on, if any; an asset
+                             with no linked vendor is called out here, because that is the one
+                             thing that stops a form being raised for it. --}}
+                        <td style="max-width:200px;white-space:normal;">
+                            @if($isReturn)
+                                @if(! $isRental)
+                                    <span class="badge bg-warning text-dark" title="Company-owned assets have no rental vendor to go back to — send this one to e-waste instead.">Not a rental</span>
+                                @elseif($rtVendor)
+                                    <div class="small fw-semibold">{{ $rtVendor->name }}</div>
+                                    @if($d->asset?->company_supplied_to)
+                                        <div class="text-muted" style="font-size:11px;">for {{ $d->asset->company_supplied_to }}</div>
+                                    @endif
+                                @else
+                                    <span class="badge bg-warning text-dark" title="Link the rental vendor on the asset record before a return form can be raised.">No vendor linked</span>
+                                @endif
+                                @if($onForm)
+                                    <div class="mt-1">
+                                        <a href="{{ route('vendors.aarf.show', [$onForm->vendor_id, $onForm]) }}" class="text-decoration-none small">
+                                            {{ $onForm->reference }}
+                                        </a>
+                                        <span class="badge bg-{{ $onForm->statusBadge()['color'] }} ms-1">{{ $onForm->statusBadge()['label'] }}</span>
+                                    </div>
+                                @endif
+                            @elseif($d->batch)
+                                <a href="{{ route('decommission.show', $d->batch) }}" class="text-decoration-none">{{ $d->batch->batch_number }}</a>
                             @else
-                                <span class="badge bg-danger"><i class="bi bi-recycle me-1"></i>E-waste</span>
+                                <span class="text-muted small">—</span>
                             @endif
                         </td>
                         <td style="max-width:180px;white-space:normal;">{{ $d->reason ?? '—' }}</td>
@@ -321,6 +423,52 @@
     </div>
 </div>
 </div>{{-- /pane-damaged --}}
+
+{{-- Create Collection Batch modal — raises the return AARFs.
+
+     There is no vendor picker any more, and that is the point. It used to ask IT to choose
+     ONE vendor for the whole selection, so ticking two vendors' assets together filed them
+     all under one of them and mailed the signed copy to the wrong PIC. The vendor is now
+     read off each asset, and the modal shows the resulting split BEFORE the submit, on the
+     page where the mistake would otherwise be made. --}}
+@if($canDecommission)
+<div class="modal fade" id="createBatchModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header" style="background:linear-gradient(135deg,#1e3a5f,#2563eb);">
+                <h6 class="modal-title text-white fw-bold"><i class="bi bi-box-arrow-up me-2"></i>Create Collection Batch</h6>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ route('decommission.returns.generate') }}" method="POST">@csrf
+                <div class="modal-body">
+                    <div id="batchIdsContainer"></div>
+                    <p class="small text-muted">
+                        An <strong>Asset Acceptance &amp; Return Form (AARF)</strong> is raised for each
+                        vendor and company rented to below. The collector then verifies the list and
+                        signs on this device.
+                    </p>
+
+                    <div id="batchGroups"></div>
+
+                    {{-- Assets that cannot become a form are named here rather than dropped, so
+                         nobody submits believing they were included. --}}
+                    <div id="batchUnresolved" class="alert alert-warning py-2 px-3 small d-none">
+                        <div class="fw-semibold mb-1"><i class="bi bi-exclamation-triangle me-1"></i>These will NOT be included:</div>
+                        <div id="batchUnresolvedList"></div>
+                        <div class="mt-1">Link the rental vendor on the asset record first, or send a company-owned asset to e-waste instead.</div>
+                    </div>
+
+                    <div class="small text-muted">Selected assets: <span id="batchSummary">none</span></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="batchSubmitBtn"><i class="bi bi-file-earmark-plus me-1"></i>Generate AARF</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+@endif
 
 </div>{{-- /tab-content --}}
 
@@ -471,7 +619,40 @@
                             @endforeach
                         </select></div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Vendor / Supplier</label>
-                        <input type="text" name="purchase_vendor" class="form-control" value="{{ old('purchase_vendor') }}"></div>
+                        {{-- Both ownership panels carry a select called vendor_id; only the
+                             visible one may submit, so the hidden panel's is disabled (same
+                             device the invoice inputs already use). --}}
+                        <select name="vendor_id" id="companyVendorSelect" class="form-select js-vendor-picker"
+                                data-detail="companyVendorDetail" data-contact=""
+                                {{ old('ownership_type', 'company') === 'company' ? '' : 'disabled' }}>
+                            <option value="">— Not registered / type below —</option>
+                            @foreach(($vendorOptions['purchase'] ?? []) as $vp)
+                                <option value="{{ $vp->id }}"
+                                        data-pic="{{ $vp->pic_name }}"
+                                        data-email="{{ $vp->pic_email }}"
+                                        data-phone="{{ $vp->pic_phone }}"
+                                        data-tel="{{ $vp->contact_number }}"
+                                        data-reg="{{ $vp->company_registration_no }}"
+                                        data-sst="{{ $vp->sst_number }}"
+                                        data-address="{{ $vp->address }}"
+                                        {{ (string) old('vendor_id') === (string) $vp->id ? 'selected' : '' }}>{{ $vp->name }}</option>
+                            @endforeach
+                        </select>
+                        <div id="companyVendorDetail" class="form-text text-muted small mt-1"></div>
+                        <input type="text" name="purchase_vendor" class="form-control mt-2" value="{{ old('purchase_vendor') }}"
+                               placeholder="Or type an unregistered supplier">
+                        <div class="form-text text-muted small">
+                            Registered suppliers come from <a href="{{ route('vendors.index') }}" target="_blank">Vendor Management</a>. Picking one overrides the free text.
+                        </div></div>
+                    <div class="col-md-4">
+                        @include('it.assets._invoice-select', [
+                            'id' => 'companyInvoiceSelect',
+                            'vendorSelect' => 'companyVendorSelect',
+                            'ownership' => 'company',
+                            'selected' => old('origin_billing_document_id', ''),
+                            'disabled' => old('ownership_type', 'company') !== 'company',
+                        ])
+                    </div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Purchase Cost (RM)</label>
                         <input type="number" name="purchase_cost" class="form-control" value="{{ old('purchase_cost') }}" step="0.01"></div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Purchase Date</label>
@@ -485,10 +666,35 @@
 
                 {{-- Rental fields --}}
                 <div id="rentalFields" class="row g-3 mb-4" style="{{ old('ownership_type') === 'rental' ? '' : 'display:none;' }}">
-                    <div class="col-md-4"><label class="form-label fw-semibold">Rental Vendor <span class="text-danger">*</span></label>
-                        <input type="text" name="rental_vendor" class="form-control" value="{{ old('rental_vendor') }}" placeholder="Vendor / leasing company name"></div>
+                    <div class="col-md-4"><label class="form-label fw-semibold">Registered Rental Vendor</label>
+                        <select name="vendor_id" id="rentalVendorSelect" class="form-select js-vendor-picker"
+                                data-detail="rentalVendorDetail" data-contact="addRentalVendorContact"
+                                data-pic-field="addRentalVendorPic"
+                                {{ old('ownership_type') === 'rental' ? '' : 'disabled' }}>
+                            <option value="">— Not registered / type below —</option>
+                            @foreach(($vendorOptions['rental'] ?? []) as $vr)
+                                <option value="{{ $vr->id }}"
+                                        data-pic="{{ $vr->pic_name }}"
+                                        data-email="{{ $vr->pic_email }}"
+                                        data-phone="{{ $vr->pic_phone }}"
+                                        data-tel="{{ $vr->contact_number }}"
+                                        data-reg="{{ $vr->company_registration_no }}"
+                                        data-sst="{{ $vr->sst_number }}"
+                                        data-address="{{ $vr->address }}"
+                                        {{ (string) old('vendor_id') === (string) $vr->id ? 'selected' : '' }}>{{ $vr->name }}</option>
+                            @endforeach
+                        </select>
+                        <div id="rentalVendorDetail" class="form-text text-muted small mt-1"></div>
+                        <div class="form-text text-muted small">
+                            Registered vendors come from <a href="{{ route('vendors.index') }}" target="_blank">Vendor Management</a>.
+                        </div></div>
+                    <div class="col-md-4"><label class="form-label fw-semibold">Rental Vendor</label>
+                        <input type="text" name="rental_vendor" id="addRentalVendorPic" class="form-control" value="{{ old('rental_vendor') }}"
+                               placeholder="Person we deal with">
+                        <div class="form-text text-muted small">Auto-filled with the picked vendor's PIC name. If the vendor isn't registered above, type their name here.</div></div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Vendor Contact</label>
-                        <input type="text" name="rental_vendor_contact" class="form-control" value="{{ old('rental_vendor_contact') }}" placeholder="Phone or email"></div>
+                        <input type="text" name="rental_vendor_contact" id="addRentalVendorContact" class="form-control" value="{{ old('rental_vendor_contact') }}" placeholder="Phone or email">
+                        <div class="form-text text-muted small">Auto-filled with the picked vendor's PIC contact number.</div></div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Monthly Cost (RM)</label>
                         <input type="number" name="rental_cost_per_month" class="form-control" value="{{ old('rental_cost_per_month') }}" step="0.01" placeholder="0.00"></div>
                     <div class="col-md-3"><label class="form-label fw-semibold">Rental Start Date</label>
@@ -496,7 +702,17 @@
                     <div class="col-md-3"><label class="form-label fw-semibold">Rental End Date</label>
                         <input type="date" name="rental_end_date" class="form-control" value="{{ old('rental_end_date') }}"></div>
                     <div class="col-md-3"><label class="form-label fw-semibold">Contract Reference</label>
-                        <input type="text" name="rental_contract_reference" class="form-control" value="{{ old('rental_contract_reference') }}" placeholder="Contract / PO number"></div>
+                        <input type="text" name="rental_contract_reference" class="form-control" value="{{ old('rental_contract_reference') }}" placeholder="Contract / PO number">
+                        <div class="form-text text-muted small">Free text. Groups the assets when no invoice is picked.</div></div>
+                    <div class="col-md-4">
+                        @include('it.assets._invoice-select', [
+                            'id' => 'rentalInvoiceSelect',
+                            'vendorSelect' => 'rentalVendorSelect',
+                            'ownership' => 'rental',
+                            'selected' => old('origin_billing_document_id', ''),
+                            'disabled' => old('ownership_type') !== 'rental',
+                        ])
+                    </div>
                     <div class="col-md-3"><label class="form-label fw-semibold">Invoice(s)</label>
                         <input type="file" name="invoice_documents[]" id="rentalInvoiceInput" class="form-control" accept=".pdf,.jpg,.jpeg,.png" multiple disabled>
                         <div class="form-text text-muted small">PDF or images. Multiple files allowed.</div></div>
@@ -639,6 +855,24 @@
                                placeholder="e.g. Screen cracked beyond repair, Water damage, Hardware failure...">
                         <div class="form-text">This reason will be shown in the Decommissioning Assets table.</div>
                     </div>
+                    {{-- E-waste completeness — Not Good only. Drives the vendor's disposal price. --}}
+                    <div class="col-md-3" id="addEwasteCompletenessWrap" style="display:none;">
+                        <label class="form-label fw-semibold">Completeness <span class="text-danger">*</span></label>
+                        <select name="ewaste_completeness" id="addEwasteCompleteness" class="form-select">
+                            <option value="complete"   {{ old('ewaste_completeness','complete')==='complete' ? 'selected':'' }}>Complete — all parts intact</option>
+                            <option value="incomplete" {{ old('ewaste_completeness')==='incomplete'         ? 'selected':'' }}>Incomplete — parts removed</option>
+                        </select>
+                        <div class="form-text">Incomplete = parts like battery, RAM or hard disk removed.</div>
+                    </div>
+                    {{-- Parts removed — shown only when Completeness = Incomplete. --}}
+                    <div class="col-md-6" id="addEwastePartsWrap" style="display:none;">
+                        <label class="form-label fw-semibold">Parts Removed <span class="text-danger">*</span></label>
+                        <input type="text" name="ewaste_parts_removed" id="addEwasteParts"
+                               class="form-control"
+                               value="{{ old('ewaste_parts_removed') }}"
+                               placeholder="e.g. Battery, RAM, Hard disk, Charger">
+                        <div class="form-text">List the parts removed from this asset. Shown to the e-waste vendor (and Finance) for pricing.</div>
+                    </div>
                     <div class="col-md-3"><label class="form-label fw-semibold">Last Maintenance</label>
                         <input type="date" name="last_maintenance_date" class="form-control" value="{{ old('last_maintenance_date') }}"></div>
                     <div class="col-12">
@@ -680,6 +914,23 @@
 </div>
 @endif
 
+@push('styles')
+<style>
+    /* Decommissioning batch-selection checkboxes — high-contrast so they don't
+       blend into the white row. Bootstrap's default 1px light border is too faint. */
+    .js-batch-check {
+        width: 1.25rem;
+        height: 1.25rem;
+        border: 2px solid #64748b;
+        background-color: #fff;
+        cursor: pointer;
+        vertical-align: middle;
+    }
+    .js-batch-check:hover { border-color: #2563eb; box-shadow: 0 0 0 .15rem rgba(37,99,235,.25); }
+    .js-batch-check:checked { background-color: #2563eb; border-color: #2563eb; }
+</style>
+@endpush
+
 @push('scripts')
 <script nonce="{{ $cspNonce ?? '' }}">
 @if($errors->any())
@@ -714,6 +965,10 @@ if (addCondSelect) {
     syncStatusFromConditionAdd(addCondSelect.value);
     addCondSelect.addEventListener('change', function() { syncStatusFromConditionAdd(this.value); });
 }
+var addCompSelect = document.getElementById('addEwasteCompleteness');
+if (addCompSelect) {
+    addCompSelect.addEventListener('change', toggleAddEwasteParts);
+}
 
 // CSV import file label
 var importFileInput = document.getElementById('assetImportFileInput');
@@ -724,6 +979,8 @@ if (importFileInput) {
 }
 
 // ── Ownership toggle (Add form) ──────────────────────────────────────
+// Both panels carry inputs with the SAME name (invoice_documents[], vendor_id), so the
+// hidden panel's must be disabled or the browser submits two values for one field.
 (function () {
     function toggleOwnership(value) {
         var rentalFields  = document.getElementById('rentalFields');
@@ -734,9 +991,69 @@ if (importFileInput) {
         var rentalInvoice  = document.getElementById('rentalInvoiceInput');
         if (companyInvoice) companyInvoice.disabled = (value !== 'company');
         if (rentalInvoice)  rentalInvoice.disabled  = (value !== 'rental');
+        var companyVendor = document.getElementById('companyVendorSelect');
+        var rentalVendor  = document.getElementById('rentalVendorSelect');
+        if (companyVendor) companyVendor.disabled = (value !== 'company');
+        if (rentalVendor)  rentalVendor.disabled  = (value !== 'rental');
     }
     document.querySelectorAll('.add-ownership-radio').forEach(function (radio) {
         radio.addEventListener('change', function () { toggleOwnership(this.value); });
+    });
+})();
+
+// ── Vendor picker auto-fill (Add form + Edit form) ────────────────────
+// Reads the selected <option>'s data-* attributes — no AJAX, so the page can never show
+// details for a vendor that has since been deactivated or renamed. CSP-safe:
+// addEventListener only, and every value goes in via textContent, never innerHTML.
+(function () {
+    function fill(select, picked) {
+        var opt = select.options[select.selectedIndex];
+        var detail = document.getElementById(select.dataset.detail || '');
+        var contact = select.dataset.contact ? document.getElementById(select.dataset.contact) : null;
+        var picField = select.dataset.picField ? document.getElementById(select.dataset.picField) : null;
+
+        if (detail) { detail.textContent = ''; }
+        // Clearing the picker back to "not registered" leaves the fields alone — the
+        // operator is about to type an unregistered vendor's details there.
+        if (!opt || !opt.value) { return; }
+
+        var pic   = opt.dataset.pic || '';
+        var email = opt.dataset.email || '';
+        var phone = opt.dataset.phone || '';
+        var tel   = opt.dataset.tel || '';
+        var reg   = opt.dataset.reg || '';
+        var sst   = opt.dataset.sst || '';
+        var addr  = opt.dataset.address || '';
+
+        // `picked` = the operator just chose a vendor, which is an explicit act: both
+        // fields are refreshed, because the previous vendor's PIC and number are stale
+        // the moment the vendor changes (and leaving them would attribute the wrong
+        // person to the new vendor). On the initial reflect it is false, so a value
+        // restored by old() after a failed submit is never clobbered.
+        if (picField && (picked || !picField.value)) {
+            picField.value = pic;
+        }
+        if (contact && (picked || !contact.value)) {
+            contact.value = phone || email || tel || '';
+        }
+
+        if (detail) {
+            var bits = [];
+            if (pic)  { bits.push('PIC: ' + pic + (phone ? ' (' + phone + ')' : '')); }
+            if (email) { bits.push(email); }
+            if (tel)  { bits.push('Tel: ' + tel); }
+            if (reg)  { bits.push('Reg: ' + reg); }
+            if (sst)  { bits.push('SST: ' + sst); }
+            if (addr) { bits.push(addr); }
+            detail.textContent = bits.join(' · ');
+        }
+    }
+
+    document.querySelectorAll('.js-vendor-picker').forEach(function (select) {
+        select.addEventListener('change', function () { fill(this, true); });
+        // Reflect a pre-selected vendor (old() after a failed submit) without touching
+        // the PIC/contact fields, which already hold their submitted values.
+        if (select.value) { fill(select, false); }
     });
 })();
 
@@ -830,6 +1147,30 @@ function syncStatusFromConditionAdd(condition) {
         reasonWrap.style.display = condition === 'not_good' ? '' : 'none';
         if (reasonInput) reasonInput.required = condition === 'not_good';
     }
+    const completenessWrap  = document.getElementById('addEwasteCompletenessWrap');
+    const completenessInput = document.getElementById('addEwasteCompleteness');
+    if (completenessWrap) {
+        const isEwaste = condition === 'not_good';
+        completenessWrap.style.display = isEwaste ? '' : 'none';
+        if (completenessInput) {
+            completenessInput.required = isEwaste;
+            // Leaving the e-waste state resets completeness so a stale "incomplete" isn't submitted.
+            if (!isEwaste) completenessInput.value = 'complete';
+        }
+    }
+    toggleAddEwasteParts();
+}
+
+// Parts-removed field (Add form) shows only when Not Good AND Incomplete.
+function toggleAddEwasteParts() {
+    const condEl = document.getElementById('addAssetCondition');
+    const compEl = document.getElementById('addEwasteCompleteness');
+    const wrap   = document.getElementById('addEwastePartsWrap');
+    const input  = document.getElementById('addEwasteParts');
+    if (!wrap) return;
+    const show = !!condEl && condEl.value === 'not_good' && !!compEl && compEl.value === 'incomplete';
+    wrap.style.display = show ? '' : 'none';
+    if (input) input.required = show;
 }
 
 // ── Image compression utility ─────────────────────────────────────────────
@@ -1086,6 +1427,118 @@ document.addEventListener('click', function (e) {
     document.getElementById('releaseForm').action = '/assets/' + btn.dataset.assetId + '/release';
     new bootstrap.Modal(document.getElementById('releaseModal')).show();
 });
+
+// ── Decommissioning: batch selection + Create Collection Batch modal ──────
+//
+// The modal previews the SPLIT the server will make: one AARF per (vendor, company rented
+// to). Doing it here is the whole reason the mixed-vendor mistake stops being silent — the
+// operator sees three forms about to be raised before pressing the button, on the same page
+// where they ticked the boxes.
+//
+// Everything dynamic goes in via textContent. No innerHTML with values in it, per the
+// project-wide rule; the only innerHTML here clears a container.
+(function () {
+    const checks     = document.querySelectorAll('.js-batch-check');
+    const createBtn  = document.getElementById('createBatchBtn');
+    const countBadge = document.getElementById('batchSelCount');
+    const idsBox     = document.getElementById('batchIdsContainer');
+    const summary    = document.getElementById('batchSummary');
+    const groupsBox  = document.getElementById('batchGroups');
+    const unresBox   = document.getElementById('batchUnresolved');
+    const unresList  = document.getElementById('batchUnresolvedList');
+    const submitBtn  = document.getElementById('batchSubmitBtn');
+    if (!checks.length || !createBtn) return;
+
+    function selected() {
+        return Array.from(checks).filter(c => c.checked);
+    }
+    function refresh() {
+        const sel = selected();
+        if (countBadge) countBadge.textContent = sel.length;
+        createBtn.disabled = sel.length === 0;
+    }
+    checks.forEach(c => c.addEventListener('change', refresh));
+    refresh();
+
+    function el(tag, cls, text) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text !== undefined) n.textContent = text;
+        return n;
+    }
+
+    // On modal open, inject the checked ids as hidden inputs + render the preview.
+    const modal = document.getElementById('createBatchModal');
+    if (!modal) return;
+
+    modal.addEventListener('show.bs.modal', function () {
+        const sel = selected();
+        idsBox.innerHTML = '';
+        if (groupsBox) groupsBox.innerHTML = '';
+        if (unresList) unresList.innerHTML = '';
+
+        const labels = [];
+        const groups = new Map();   // JSON [vendor, company] => {vendor, company, tags:[]}
+        const unresolved = [];
+
+        sel.forEach(c => {
+            const input = document.createElement('input');
+            input.type  = 'hidden';
+            input.name  = 'dispose_ids[]';
+            input.value = c.value;
+            idsBox.appendChild(input);
+
+            const tag = c.dataset.tag || ('#' + c.value);
+            labels.push(tag + (c.dataset.label ? ' (' + c.dataset.label + ')' : ''));
+
+            // Mirrors RentalAssetAcknowledgement::planReturns(). The server decides for real
+            // — this only has to agree with it, never to be trusted instead of it.
+            if (c.dataset.rental !== '1') {
+                unresolved.push(tag + ' — not a rental asset');
+                return;
+            }
+            const vendor = (c.dataset.vendor || '').trim();
+            if (!vendor) {
+                unresolved.push(tag + ' — no rental vendor linked');
+                return;
+            }
+            const company = (c.dataset.company || '').trim();
+            // JSON, not string concatenation: "Acme Ltd" + "Kuala Lumpur" and "Acme" +
+            // "Ltd Kuala Lumpur" join to the same key, which would show two forms as one
+            // here while the server (grouping on vendor_id) correctly made two.
+            const key = JSON.stringify([vendor, company]);
+            if (!groups.has(key)) groups.set(key, { vendor: vendor, company: company, tags: [] });
+            groups.get(key).tags.push(tag);
+        });
+
+        if (summary) summary.textContent = labels.length ? labels.join(', ') : 'none';
+
+        if (groupsBox) {
+            if (groups.size) {
+                const head = el('div', 'fw-semibold small mb-2',
+                    groups.size + (groups.size === 1 ? ' form will be created:' : ' forms will be created:'));
+                groupsBox.appendChild(head);
+            }
+            groups.forEach(g => {
+                const row = el('div', 'border rounded p-2 mb-2');
+                row.appendChild(el('div', 'fw-semibold small', g.vendor));
+                row.appendChild(el('div', 'text-muted', 'Company rented to: ' + (g.company || 'not specified')));
+                row.appendChild(el('div', 'small mt-1', g.tags.length + ' asset' + (g.tags.length === 1 ? ': ' : 's: ') + g.tags.join(', ')));
+                groupsBox.appendChild(row);
+            });
+        }
+
+        if (unresBox && unresList) {
+            unresBox.classList.toggle('d-none', unresolved.length === 0);
+            unresolved.forEach(u => unresList.appendChild(el('div', null, u)));
+        }
+
+        // Nothing resolvable means nothing to submit. Leaving the button live would post a
+        // request whose only possible outcome is the error the modal is already showing.
+        if (submitBtn) submitBtn.disabled = groups.size === 0;
+    });
+})();
+
 </script>
 @endpush
 
@@ -1184,4 +1637,6 @@ document.addEventListener('click', function (e) {
 </div>
 @endif
 
+{{-- In-app confirmation dialog (replaces native confirm()) for decommission actions (e.g. Run sweep). --}}
+@include('partials.confirm-modal')
 @endsection

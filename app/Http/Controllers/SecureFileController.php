@@ -27,6 +27,16 @@ class SecureFileController extends Controller
         'rental_contracts' => ['hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
         'claim_receipts' => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
         'claim_supporting' => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
+        // Asset Decommissioning — quotation/receipt/report docs (Finance + IT).
+        'ewaste_quotations' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
+        'ewaste_receipts' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
+        'decommission_reports' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'hr_manager', 'superadmin', 'system_admin'],
+        // Vendor Management — contracts, quotations and invoices. Mirrors User::VENDOR_ROLES;
+        // keep the two in step or a role reaches the page but 403s on every document on it.
+        'vendor_contracts' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
+        'vendor_billing' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
+        // Signed AARFs — same set again: whoever reaches the vendor profile reads its documents.
+        'rental_acknowledgements' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
         // ticket_attachments is intentionally not listed here — it follows
         // ticket-level access (creator / assignee / dept manager / sysadmin),
         // not directory roles, since work-role-gated dept managers (Tech,

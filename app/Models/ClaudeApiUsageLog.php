@@ -20,10 +20,23 @@ class ClaudeApiUsageLog extends Model
      * Every call site that can reach Anthropic, and how it reads on the report.
      * Add a key here when you add a call site, and pass it as the $feature argument
      * — an unmapped key still logs, and falls back to showing its raw slug.
+     *
+     * A RETIRED key stays here forever. This table is a spend ledger: rows written before
+     * a feature was removed are still real money, and dropping the key would degrade them
+     * to a raw slug on every historical report. Nothing writes the three vendor `*_scan`
+     * keys below any more — the per-field OCR they billed was removed on 2026-08-11.
      */
     public const FEATURES = [
         'claim_receipt_scan' => 'eClaim — Receipt / Document Scan',
         'claim_item_verify' => 'eClaim — Reviewer Verification',
+        'ewaste_quotation_scan' => 'Asset Decommissioning — Quotation Scan',
+        'ewaste_receipt_scan' => 'Asset Decommissioning — Receipt Scan',
+        // Retired 2026-08-11 (field OCR removed) — kept so past rows keep their names.
+        'vendor_contract_scan' => 'Vendor Management — Contract Scan',
+        'vendor_quotation_scan' => 'Vendor Management — Quotation Scan',
+        'vendor_invoice_scan' => 'Vendor Management — Invoice Scan',
+        'vendor_document_summary' => 'Vendor Management — Document Summary',
+        'vendor_document_chat' => 'Vendor Management — Document Q&A',
         'accounting_invoice_scan' => 'Accounting — Invoice Scan',
         'accounting_ai_chat' => 'Accounting — AI Assistant',
         'strategist_gap_check' => 'Social Strategist — Gap Check',
@@ -66,6 +79,13 @@ class ClaudeApiUsageLog extends Model
     public const MODULES = [
         'claim_receipt_scan' => 'eClaim (Receipt OCR)',
         'claim_item_verify' => 'eClaim (Receipt OCR)',
+        'ewaste_quotation_scan' => 'Asset Decommissioning',
+        'ewaste_receipt_scan' => 'Asset Decommissioning',
+        'vendor_contract_scan' => 'Vendor Management',
+        'vendor_quotation_scan' => 'Vendor Management',
+        'vendor_invoice_scan' => 'Vendor Management',
+        'vendor_document_summary' => 'Vendor Management',
+        'vendor_document_chat' => 'Vendor Management',
         'accounting_invoice_scan' => 'Accounting (AI)',
         'accounting_ai_chat' => 'Accounting (AI)',
         'strategist_gap_check' => 'Social Strategist',
@@ -94,6 +114,8 @@ class ClaudeApiUsageLog extends Model
         'Accounting (AI)' => '#008300',        // slot 2 — green
         'System / Admin' => '#e87ba4',         // slot 3 — magenta
         'Social Strategist' => '#7c3aed',      // slot 4 — violet (matches the module accent)
+        'Asset Decommissioning' => '#0f766e',  // slot 5 — teal (matches the ewx- recycle chip)
+        'Vendor Management' => '#b45309',      // slot 6 — amber (matches the vnd- vendor accent)
         'Other' => '#898781',                  // muted grey — the catch-all, never a real slot
     ];
 

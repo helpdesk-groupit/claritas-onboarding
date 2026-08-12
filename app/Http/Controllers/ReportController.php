@@ -2,17 +2,20 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Employee;
-use App\Models\Onboarding;
-use App\Models\Offboarding;
+use App\Models\AssetDecommissionBatch;
 use App\Models\AssetInventory;
-use App\Models\AssetAssignment;
-use App\Models\WorkDetail;
 use App\Models\Company;
+use App\Models\DisposedAsset;
+use App\Models\Employee;
+use App\Models\Offboarding;
+use App\Models\Onboarding;
+use App\Models\WorkDetail;
+use App\Services\DecommissionReportRenderer;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Carbon\Carbon;
+use Illuminate\Support\Facades\Storage;
 
 class ReportController extends Controller
 {
@@ -20,7 +23,7 @@ class ReportController extends Controller
     private function authorize(): void
     {
         $user = Auth::user();
-        if (!$user->isSuperadmin() && !$user->isHrManager() && !$user->isSystemAdmin()) {
+        if (! $user->isSuperadmin() && ! $user->isHrManager() && ! $user->isSystemAdmin()) {
             abort(403);
         }
     }
@@ -31,12 +34,13 @@ class ReportController extends Controller
      */
     private function companyResolver(): \Closure
     {
-        $normaliseCo = fn(string $s) => strtolower(str_replace(['.', ','], '', preg_replace('/\s+/', ' ', trim($s))));
+        $normaliseCo = fn (string $s) => strtolower(str_replace(['.', ','], '', preg_replace('/\s+/', ' ', trim($s))));
         $canonMap = [];
         foreach (Company::orderBy('name')->pluck('name') as $name) {
             $canonMap[$normaliseCo($name)] = $name;
         }
-        return fn(?string $raw) => $canonMap[$normaliseCo(trim($raw ?? ''))] ?? (trim($raw ?? '') ?: 'Unspecified');
+
+        return fn (?string $raw) => $canonMap[$normaliseCo(trim($raw ?? ''))] ?? (trim($raw ?? '') ?: 'Unspecified');
     }
 
     /**
@@ -49,12 +53,17 @@ class ReportController extends Controller
         $merged = [];
         foreach ($rows as $row) {
             $key = $resolveCo($row->$field);
-            if (!isset($merged[$key])) {
+            if (! isset($merged[$key])) {
                 $merged[$key] = (object) [$field => $key];
-                foreach ($sumFields as $f) $merged[$key]->$f = 0;
+                foreach ($sumFields as $f) {
+                    $merged[$key]->$f = 0;
+                }
             }
-            foreach ($sumFields as $f) $merged[$key]->$f += ($row->$f ?? 0);
+            foreach ($sumFields as $f) {
+                $merged[$key]->$f += ($row->$f ?? 0);
+            }
         }
+
         return collect($merged)->sortByDesc('total')->values();
     }
 
@@ -72,15 +81,21 @@ class ReportController extends Controller
 
         // ── Workforce KPIs ─────────────────────────────────────────────
         $activeQ = Employee::whereNull('active_until');
-        if ($companyFilter) $activeQ = $activeQ->where('company', $companyFilter);
+        if ($companyFilter) {
+            $activeQ = $activeQ->where('company', $companyFilter);
+        }
         $totalActive = $activeQ->count();
 
         $newHiresYear = WorkDetail::whereYear('start_date', $year);
-        if ($companyFilter) $newHiresYear = $newHiresYear->where('company', $companyFilter);
+        if ($companyFilter) {
+            $newHiresYear = $newHiresYear->where('company', $companyFilter);
+        }
         $totalNewHires = $newHiresYear->count();
 
         $exitsYear = Offboarding::whereNotNull('exit_date')->whereYear('exit_date', $year);
-        if ($companyFilter) $exitsYear = $exitsYear->where('company', $companyFilter);
+        if ($companyFilter) {
+            $exitsYear = $exitsYear->where('company', $companyFilter);
+        }
         $totalExits = $exitsYear->count();
 
         $turnoverRate = $totalActive > 0 ? round(($totalExits / $totalActive) * 100, 1) : 0;
@@ -88,12 +103,12 @@ class ReportController extends Controller
         // Monthly headcount trend (new hires vs exits per month)
         $monthlyHires = WorkDetail::selectRaw('MONTH(start_date) as m, COUNT(*) as total')
             ->whereYear('start_date', $year)
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
             ->groupByRaw('MONTH(start_date)')->pluck('total', 'm')->toArray();
 
         $monthlyExits = Offboarding::selectRaw('MONTH(exit_date) as m, COUNT(*) as total')
             ->whereNotNull('exit_date')->whereYear('exit_date', $year)
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
             ->groupByRaw('MONTH(exit_date)')->pluck('total', 'm')->toArray();
 
         $headcountTrend = [];
@@ -107,7 +122,7 @@ class ReportController extends Controller
 
         // Department distribution
         $deptDistribution = Employee::whereNull('active_until')
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
             ->selectRaw("COALESCE(NULLIF(TRIM(department),''), 'Unspecified') as dept, COUNT(*) as total")
             ->groupBy('dept')->orderByDesc('total')->get();
 
@@ -121,28 +136,34 @@ class ReportController extends Controller
 
         // Employment type breakdown
         $empTypeBreakdown = Employee::whereNull('active_until')
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
             ->selectRaw("COALESCE(employment_type, 'unspecified') as etype, COUNT(*) as total")
             ->groupBy('etype')->get();
 
         // Gender distribution
         $genderDistribution = Employee::whereNull('active_until')
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
             ->selectRaw("COALESCE(sex, 'unspecified') as gender, COUNT(*) as total")
             ->groupBy('gender')->get();
 
         // Tenure distribution (years)
         $tenureBuckets = ['< 1 year' => 0, '1-2 years' => 0, '2-5 years' => 0, '5-10 years' => 0, '10+ years' => 0];
         Employee::whereNull('active_until')
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
             ->whereNotNull('start_date')->chunk(200, function ($employees) use (&$tenureBuckets, $now) {
                 foreach ($employees as $emp) {
                     $years = Carbon::parse($emp->start_date)->diffInYears($now);
-                    if ($years < 1) $tenureBuckets['< 1 year']++;
-                    elseif ($years < 2) $tenureBuckets['1-2 years']++;
-                    elseif ($years < 5) $tenureBuckets['2-5 years']++;
-                    elseif ($years < 10) $tenureBuckets['5-10 years']++;
-                    else $tenureBuckets['10+ years']++;
+                    if ($years < 1) {
+                        $tenureBuckets['< 1 year']++;
+                    } elseif ($years < 2) {
+                        $tenureBuckets['1-2 years']++;
+                    } elseif ($years < 5) {
+                        $tenureBuckets['2-5 years']++;
+                    } elseif ($years < 10) {
+                        $tenureBuckets['5-10 years']++;
+                    } else {
+                        $tenureBuckets['10+ years']++;
+                    }
                 }
             });
 
@@ -150,14 +171,14 @@ class ReportController extends Controller
         $payrollStats = DB::table('pay_runs')
             ->where('year', $year)
             ->whereIn('status', ['approved', 'paid'])
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
             ->selectRaw('SUM(total_gross) as gross, SUM(total_deductions) as deductions, SUM(total_net) as net, SUM(total_employer_cost) as employer_cost, COUNT(*) as run_count')
             ->first();
 
         $monthlyPayroll = DB::table('pay_runs')
             ->where('year', $year)
             ->whereIn('status', ['approved', 'paid'])
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
             ->selectRaw('month as m, SUM(total_gross) as gross, SUM(total_net) as net, SUM(total_employer_cost) as employer_cost')
             ->groupBy('month')->pluck('gross', 'm')->toArray();
 
@@ -165,7 +186,7 @@ class ReportController extends Controller
         for ($m = 1; $m <= 12; $m++) {
             $payrollTrend[] = [
                 'month' => Carbon::create($year, $m, 1)->format('M'),
-                'amount' => round((float)($monthlyPayroll[$m] ?? 0), 2),
+                'amount' => round((float) ($monthlyPayroll[$m] ?? 0), 2),
             ];
         }
 
@@ -174,7 +195,7 @@ class ReportController extends Controller
             ->join('pay_runs', 'payslips.pay_run_id', '=', 'pay_runs.id')
             ->where('pay_runs.year', $year)
             ->whereIn('pay_runs.status', ['approved', 'paid'])
-            ->when($companyFilter, fn($q) => $q->where('pay_runs.company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('pay_runs.company', $companyFilter))
             ->selectRaw('
                 SUM(epf_employee) as epf_ee, SUM(epf_employer) as epf_er,
                 SUM(socso_employee) as socso_ee, SUM(socso_employer) as socso_er,
@@ -185,14 +206,14 @@ class ReportController extends Controller
         // Average salary
         $avgSalary = DB::table('employee_salaries')
             ->where('is_active', true)
-            ->when($companyFilter, fn($q) => $q->join('employees', 'employee_salaries.employee_id', '=', 'employees.id')
+            ->when($companyFilter, fn ($q) => $q->join('employees', 'employee_salaries.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->avg('basic_salary');
 
         // ── Expense Claims KPIs ────────────────────────────────────────
         $claimsStats = DB::table('expense_claims')
             ->where('expense_claims.year', $year)
-            ->when($companyFilter, fn($q) => $q->join('employees', 'expense_claims.employee_id', '=', 'employees.id')
+            ->when($companyFilter, fn ($q) => $q->join('employees', 'expense_claims.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw("
                 COUNT(*) as total_claims,
@@ -214,7 +235,7 @@ class ReportController extends Controller
         // ── Leave KPIs ─────────────────────────────────────────────────
         $leaveStats = DB::table('leave_applications')
             ->whereYear('leave_applications.start_date', $year)
-            ->when($companyFilter, fn($q) => $q->join('employees', 'leave_applications.employee_id', '=', 'employees.id')
+            ->when($companyFilter, fn ($q) => $q->join('employees', 'leave_applications.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw("
                 COUNT(*) as total_applications,
@@ -235,7 +256,7 @@ class ReportController extends Controller
         // ── Attendance KPIs ────────────────────────────────────────────
         $attendanceStats = DB::table('attendance_records')
             ->whereYear('attendance_records.date', $year)
-            ->when($companyFilter, fn($q) => $q->join('employees', 'attendance_records.employee_id', '=', 'employees.id')
+            ->when($companyFilter, fn ($q) => $q->join('employees', 'attendance_records.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw("
                 COUNT(*) as total_records,
@@ -298,8 +319,8 @@ class ReportController extends Controller
         $companies = Company::orderBy('name')->pluck('name')->toArray();
         $companyFilter = $request->input('company');
 
-        $baseQ = fn() => Employee::whereNull('active_until')
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter));
+        $baseQ = fn () => Employee::whereNull('active_until')
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter));
 
         $totalActive = $baseQ()->count();
 
@@ -337,16 +358,24 @@ class ReportController extends Controller
 
         // Age distribution
         $ageBuckets = ['18-25' => 0, '26-30' => 0, '31-35' => 0, '36-40' => 0, '41-50' => 0, '51-60' => 0, '60+' => 0];
-        $baseQ()->whereNotNull('date_of_birth')->chunk(200, function ($employees) use (&$ageBuckets, $now) {
+        $baseQ()->whereNotNull('date_of_birth')->chunk(200, function ($employees) use (&$ageBuckets) {
             foreach ($employees as $emp) {
                 $age = Carbon::parse($emp->date_of_birth)->age;
-                if ($age <= 25) $ageBuckets['18-25']++;
-                elseif ($age <= 30) $ageBuckets['26-30']++;
-                elseif ($age <= 35) $ageBuckets['31-35']++;
-                elseif ($age <= 40) $ageBuckets['36-40']++;
-                elseif ($age <= 50) $ageBuckets['41-50']++;
-                elseif ($age <= 60) $ageBuckets['51-60']++;
-                else $ageBuckets['60+']++;
+                if ($age <= 25) {
+                    $ageBuckets['18-25']++;
+                } elseif ($age <= 30) {
+                    $ageBuckets['26-30']++;
+                } elseif ($age <= 35) {
+                    $ageBuckets['31-35']++;
+                } elseif ($age <= 40) {
+                    $ageBuckets['36-40']++;
+                } elseif ($age <= 50) {
+                    $ageBuckets['41-50']++;
+                } elseif ($age <= 60) {
+                    $ageBuckets['51-60']++;
+                } else {
+                    $ageBuckets['60+']++;
+                }
             }
         });
 
@@ -355,23 +384,29 @@ class ReportController extends Controller
         $baseQ()->whereNotNull('start_date')->chunk(200, function ($employees) use (&$tenureBuckets, $now) {
             foreach ($employees as $emp) {
                 $years = Carbon::parse($emp->start_date)->diffInYears($now);
-                if ($years < 1) $tenureBuckets['< 1 year']++;
-                elseif ($years < 2) $tenureBuckets['1-2 years']++;
-                elseif ($years < 5) $tenureBuckets['2-5 years']++;
-                elseif ($years < 10) $tenureBuckets['5-10 years']++;
-                else $tenureBuckets['10+ years']++;
+                if ($years < 1) {
+                    $tenureBuckets['< 1 year']++;
+                } elseif ($years < 2) {
+                    $tenureBuckets['1-2 years']++;
+                } elseif ($years < 5) {
+                    $tenureBuckets['2-5 years']++;
+                } elseif ($years < 10) {
+                    $tenureBuckets['5-10 years']++;
+                } else {
+                    $tenureBuckets['10+ years']++;
+                }
             }
         });
 
         // Monthly hires & exits for the year
         $monthlyHires = WorkDetail::selectRaw('MONTH(start_date) as m, COUNT(*) as total')
             ->whereYear('start_date', $year)
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
             ->groupByRaw('MONTH(start_date)')->pluck('total', 'm')->toArray();
 
         $monthlyExits = Offboarding::selectRaw('MONTH(exit_date) as m, COUNT(*) as total')
             ->whereNotNull('exit_date')->whereYear('exit_date', $year)
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
             ->groupByRaw('MONTH(exit_date)')->pluck('total', 'm')->toArray();
 
         $hiresExitsTrend = [];
@@ -387,8 +422,8 @@ class ReportController extends Controller
         $resignReasons = Offboarding::whereNotNull('exit_date')
             ->whereYear('exit_date', $year)
             ->whereNotNull('reason')
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
-            ->selectRaw("reason as label, COUNT(*) as total")
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
+            ->selectRaw('reason as label, COUNT(*) as total')
             ->groupBy('label')->orderByDesc('total')->limit(10)->get();
 
         return view('reports.workforce', compact(
@@ -415,17 +450,19 @@ class ReportController extends Controller
         $monthlyPayroll = DB::table('pay_runs')
             ->where('year', $year)
             ->whereIn('status', ['approved', 'paid'])
-            ->when($companyFilter, fn($q) => $q->where('company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('company', $companyFilter))
             ->selectRaw('month as m, SUM(total_gross) as gross, SUM(total_deductions) as deductions, SUM(total_net) as net, SUM(total_employer_cost) as employer_cost')
             ->groupBy('month')->orderBy('month')->get()->keyBy('m');
 
         $payrollTrend = [];
-        $ytdGross = 0; $ytdNet = 0; $ytdEmployerCost = 0;
+        $ytdGross = 0;
+        $ytdNet = 0;
+        $ytdEmployerCost = 0;
         for ($m = 1; $m <= 12; $m++) {
             $row = $monthlyPayroll->get($m);
-            $gross = round((float)($row->gross ?? 0), 2);
-            $net = round((float)($row->net ?? 0), 2);
-            $ec = round((float)($row->employer_cost ?? 0), 2);
+            $gross = round((float) ($row->gross ?? 0), 2);
+            $net = round((float) ($row->net ?? 0), 2);
+            $ec = round((float) ($row->employer_cost ?? 0), 2);
             $ytdGross += $gross;
             $ytdNet += $net;
             $ytdEmployerCost += $ec;
@@ -442,7 +479,7 @@ class ReportController extends Controller
             ->join('pay_runs', 'payslips.pay_run_id', '=', 'pay_runs.id')
             ->where('pay_runs.year', $year)
             ->whereIn('pay_runs.status', ['approved', 'paid'])
-            ->when($companyFilter, fn($q) => $q->where('pay_runs.company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('pay_runs.company', $companyFilter))
             ->selectRaw('pay_runs.month as m,
                 SUM(epf_employee + epf_employer) as epf_total,
                 SUM(socso_employee + socso_employer) as socso_total,
@@ -456,11 +493,11 @@ class ReportController extends Controller
             $row = $monthlyStatutory->get($m);
             $statutoryTrend[] = [
                 'month' => Carbon::create($year, $m, 1)->format('M'),
-                'epf' => round((float)($row->epf_total ?? 0), 2),
-                'socso' => round((float)($row->socso_total ?? 0), 2),
-                'eis' => round((float)($row->eis_total ?? 0), 2),
-                'pcb' => round((float)($row->pcb_total ?? 0), 2),
-                'hrdf' => round((float)($row->hrdf_total ?? 0), 2),
+                'epf' => round((float) ($row->epf_total ?? 0), 2),
+                'socso' => round((float) ($row->socso_total ?? 0), 2),
+                'eis' => round((float) ($row->eis_total ?? 0), 2),
+                'pcb' => round((float) ($row->pcb_total ?? 0), 2),
+                'hrdf' => round((float) ($row->hrdf_total ?? 0), 2),
             ];
         }
 
@@ -469,9 +506,9 @@ class ReportController extends Controller
             ->join('employees', 'employee_salaries.employee_id', '=', 'employees.id')
             ->where('employee_salaries.is_active', true)
             ->whereNull('employees.active_until')
-            ->when($companyFilter, fn($q) => $q->where('employees.company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('employees.company', $companyFilter))
             ->select('employees.full_name', 'employees.designation', 'employees.department',
-                     'employees.company', 'employee_salaries.basic_salary')
+                'employees.company', 'employee_salaries.basic_salary')
             ->orderByDesc('employee_salaries.basic_salary')
             ->limit(10)->get();
 
@@ -480,7 +517,7 @@ class ReportController extends Controller
             ->join('employees', 'employee_salaries.employee_id', '=', 'employees.id')
             ->where('employee_salaries.is_active', true)
             ->whereNull('employees.active_until')
-            ->when($companyFilter, fn($q) => $q->where('employees.company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('employees.company', $companyFilter))
             ->selectRaw("COALESCE(NULLIF(TRIM(employees.department),''), 'Unspecified') as dept,
                          COUNT(*) as headcount,
                          AVG(employee_salaries.basic_salary) as avg_salary,
@@ -493,7 +530,7 @@ class ReportController extends Controller
         $claimsByMonth = DB::table('expense_claims')
             ->where('expense_claims.year', $year)
             ->whereIn('expense_claims.status', ['hr_approved', 'paid'])
-            ->when($companyFilter, fn($q) => $q->join('employees', 'expense_claims.employee_id', '=', 'employees.id')
+            ->when($companyFilter, fn ($q) => $q->join('employees', 'expense_claims.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw('expense_claims.month as m, SUM(expense_claims.total_with_gst) as total, COUNT(*) as count')
             ->groupBy('expense_claims.month')->orderBy('expense_claims.month')->pluck('total', 'm')->toArray();
@@ -502,7 +539,7 @@ class ReportController extends Controller
         for ($m = 1; $m <= 12; $m++) {
             $claimsTrend[] = [
                 'month' => Carbon::create($year, $m, 1)->format('M'),
-                'amount' => round((float)($claimsByMonth[$m] ?? 0), 2),
+                'amount' => round((float) ($claimsByMonth[$m] ?? 0), 2),
             ];
         }
 
@@ -511,7 +548,7 @@ class ReportController extends Controller
             ->join('expense_categories', 'expense_claim_items.expense_category_id', '=', 'expense_categories.id')
             ->where('expense_claims.year', $year)
             ->whereIn('expense_claims.status', ['hr_approved', 'paid'])
-            ->when($companyFilter, fn($q) => $q->join('employees', 'expense_claims.employee_id', '=', 'employees.id')
+            ->when($companyFilter, fn ($q) => $q->join('employees', 'expense_claims.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw('expense_categories.name as category, SUM(expense_claim_items.total_with_gst) as total, COUNT(*) as count')
             ->groupBy('expense_categories.name')
@@ -541,7 +578,7 @@ class ReportController extends Controller
         $monthlyLeave = DB::table('leave_applications')
             ->whereYear('leave_applications.start_date', $year)
             ->where('leave_applications.status', 'approved')
-            ->when($companyFilter, fn($q) => $q->join('employees', 'leave_applications.employee_id', '=', 'employees.id')
+            ->when($companyFilter, fn ($q) => $q->join('employees', 'leave_applications.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw('MONTH(leave_applications.start_date) as m, SUM(leave_applications.total_days) as total_days, COUNT(*) as count')
             ->groupByRaw('MONTH(leave_applications.start_date)')->pluck('total_days', 'm')->toArray();
@@ -550,7 +587,7 @@ class ReportController extends Controller
         for ($m = 1; $m <= 12; $m++) {
             $leaveTrend[] = [
                 'month' => Carbon::create($year, $m, 1)->format('M'),
-                'days' => round((float)($monthlyLeave[$m] ?? 0), 1),
+                'days' => round((float) ($monthlyLeave[$m] ?? 0), 1),
             ];
         }
 
@@ -559,7 +596,7 @@ class ReportController extends Controller
             ->join('leave_types', 'leave_applications.leave_type_id', '=', 'leave_types.id')
             ->whereYear('leave_applications.start_date', $year)
             ->where('leave_applications.status', 'approved')
-            ->when($companyFilter, fn($q) => $q->join('employees', 'leave_applications.employee_id', '=', 'employees.id')
+            ->when($companyFilter, fn ($q) => $q->join('employees', 'leave_applications.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw('leave_types.name as type_name, leave_types.code, SUM(leave_applications.total_days) as total_days, COUNT(*) as count')
             ->groupBy('leave_types.name', 'leave_types.code')
@@ -570,7 +607,7 @@ class ReportController extends Controller
             ->join('employees', 'leave_applications.employee_id', '=', 'employees.id')
             ->whereYear('leave_applications.start_date', $year)
             ->where('leave_applications.status', 'approved')
-            ->when($companyFilter, fn($q) => $q->where('employees.company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('employees.company', $companyFilter))
             ->selectRaw("COALESCE(NULLIF(TRIM(employees.department),''), 'Unspecified') as dept, SUM(leave_applications.total_days) as total_days, COUNT(*) as count")
             ->groupBy('dept')->orderByDesc('total_days')->get();
 
@@ -579,7 +616,7 @@ class ReportController extends Controller
             ->join('employees', 'leave_applications.employee_id', '=', 'employees.id')
             ->whereYear('leave_applications.start_date', $year)
             ->where('leave_applications.status', 'approved')
-            ->when($companyFilter, fn($q) => $q->where('employees.company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('employees.company', $companyFilter))
             ->selectRaw('employees.full_name, employees.department, employees.company, SUM(leave_applications.total_days) as total_days')
             ->groupBy('employees.id', 'employees.full_name', 'employees.department', 'employees.company')
             ->orderByDesc('total_days')->limit(15)->get();
@@ -588,7 +625,7 @@ class ReportController extends Controller
         $balanceUtilization = DB::table('leave_balances')
             ->join('leave_types', 'leave_balances.leave_type_id', '=', 'leave_types.id')
             ->where('leave_balances.year', $year)
-            ->when($companyFilter, fn($q) => $q->join('employees', 'leave_balances.employee_id', '=', 'employees.id')
+            ->when($companyFilter, fn ($q) => $q->join('employees', 'leave_balances.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw('leave_types.name as type_name, SUM(leave_balances.entitled) as total_entitled, SUM(leave_balances.taken) as total_taken, SUM(leave_balances.carry_forward) as total_cf')
             ->groupBy('leave_types.name')
@@ -615,7 +652,7 @@ class ReportController extends Controller
         // Monthly attendance breakdown
         $monthlyAttendance = DB::table('attendance_records')
             ->whereYear('attendance_records.date', $year)
-            ->when($companyFilter, fn($q) => $q->join('employees', 'attendance_records.employee_id', '=', 'employees.id')
+            ->when($companyFilter, fn ($q) => $q->join('employees', 'attendance_records.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw("MONTH(attendance_records.date) as m,
                 SUM(CASE WHEN attendance_records.status = 'present' THEN 1 ELSE 0 END) as present,
@@ -629,15 +666,15 @@ class ReportController extends Controller
         $attendanceTrend = [];
         for ($m = 1; $m <= 12; $m++) {
             $row = $monthlyAttendance->get($m);
-            $total = (int)($row->total ?? 0);
-            $present = (int)($row->present ?? 0);
-            $late = (int)($row->late ?? 0);
+            $total = (int) ($row->total ?? 0);
+            $present = (int) ($row->present ?? 0);
+            $late = (int) ($row->late ?? 0);
             $attendanceTrend[] = [
                 'month' => Carbon::create($year, $m, 1)->format('M'),
                 'rate' => $total > 0 ? round(($present + $late) / $total * 100, 1) : 0,
                 'late_rate' => $total > 0 ? round($late / $total * 100, 1) : 0,
-                'absent' => (int)($row->absent ?? 0),
-                'ot_hours' => round((float)($row->ot_hours ?? 0), 1),
+                'absent' => (int) ($row->absent ?? 0),
+                'ot_hours' => round((float) ($row->ot_hours ?? 0), 1),
             ];
         }
 
@@ -645,7 +682,7 @@ class ReportController extends Controller
         $byDepartment = DB::table('attendance_records')
             ->join('employees', 'attendance_records.employee_id', '=', 'employees.id')
             ->whereYear('attendance_records.date', $year)
-            ->when($companyFilter, fn($q) => $q->where('employees.company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('employees.company', $companyFilter))
             ->selectRaw("COALESCE(NULLIF(TRIM(employees.department),''), 'Unspecified') as dept,
                 COUNT(*) as total,
                 SUM(CASE WHEN attendance_records.status = 'present' THEN 1 ELSE 0 END) as present,
@@ -653,6 +690,7 @@ class ReportController extends Controller
                 SUM(CASE WHEN attendance_records.status = 'absent' THEN 1 ELSE 0 END) as absent")
             ->groupBy('dept')->orderByDesc('total')->get()->map(function ($row) {
                 $row->rate = $row->total > 0 ? round(($row->present + $row->late) / $row->total * 100, 1) : 0;
+
                 return $row;
             });
 
@@ -660,7 +698,7 @@ class ReportController extends Controller
         $overtimeByMonth = DB::table('overtime_requests')
             ->whereYear('overtime_requests.date', $year)
             ->where('overtime_requests.status', 'approved')
-            ->when($companyFilter, fn($q) => $q->join('employees', 'overtime_requests.employee_id', '=', 'employees.id')
+            ->when($companyFilter, fn ($q) => $q->join('employees', 'overtime_requests.employee_id', '=', 'employees.id')
                 ->where('employees.company', $companyFilter))
             ->selectRaw('MONTH(overtime_requests.date) as m, SUM(overtime_requests.hours) as total_hours, COUNT(*) as count')
             ->groupByRaw('MONTH(overtime_requests.date)')->pluck('total_hours', 'm')->toArray();
@@ -669,7 +707,7 @@ class ReportController extends Controller
         for ($m = 1; $m <= 12; $m++) {
             $overtimeTrend[] = [
                 'month' => Carbon::create($year, $m, 1)->format('M'),
-                'hours' => round((float)($overtimeByMonth[$m] ?? 0), 1),
+                'hours' => round((float) ($overtimeByMonth[$m] ?? 0), 1),
             ];
         }
 
@@ -678,7 +716,7 @@ class ReportController extends Controller
             ->join('employees', 'overtime_requests.employee_id', '=', 'employees.id')
             ->whereYear('overtime_requests.date', $year)
             ->where('overtime_requests.status', 'approved')
-            ->when($companyFilter, fn($q) => $q->where('employees.company', $companyFilter))
+            ->when($companyFilter, fn ($q) => $q->where('employees.company', $companyFilter))
             ->selectRaw('employees.full_name, employees.department, employees.company, SUM(overtime_requests.hours) as total_hours, COUNT(*) as count')
             ->groupBy('employees.id', 'employees.full_name', 'employees.department', 'employees.company')
             ->orderByDesc('total_hours')->limit(10)->get();
@@ -722,15 +760,23 @@ class ReportController extends Controller
         $mergedCompany = [];
         foreach ($rawByCompany as $row) {
             $key = $resolveCo($row->label);
-            if (!isset($mergedCompany[$key])) $mergedCompany[$key] = (object) ['label' => $key, 'total' => 0, 'cost' => 0];
+            if (! isset($mergedCompany[$key])) {
+                $mergedCompany[$key] = (object) ['label' => $key, 'total' => 0, 'cost' => 0];
+            }
             $mergedCompany[$key]->total += $row->total;
             $mergedCompany[$key]->cost += $row->cost;
         }
         $byCompanyOwned = collect($mergedCompany)->sortByDesc('total')->values();
 
-        // By rental vendor
+        // By rental vendor. The vendor COMPANY comes off the vendor_id FK — rental_vendor
+        // holds the vendor's PIC (a person) since the asset form started auto-filling it,
+        // so grouping on that column alone would split one vendor across its contacts.
+        // It remains the fallback for assets never linked to a registered vendor.
+        $vendorLabel = "COALESCE(NULLIF(TRIM(vendors.name),''), NULLIF(TRIM(asset_inventories.rental_vendor),''), 'Unspecified')";
+
         $byRentalVendor = AssetInventory::where('ownership_type', 'rental')
-            ->selectRaw("COALESCE(NULLIF(TRIM(rental_vendor),''), 'Unspecified') as label, COUNT(*) as total, SUM(rental_cost_per_month) as monthly_cost")
+            ->leftJoin('vendors', 'vendors.id', '=', 'asset_inventories.vendor_id')
+            ->selectRaw("{$vendorLabel} as label, COUNT(*) as total, SUM(asset_inventories.rental_cost_per_month) as monthly_cost")
             ->groupBy('label')->orderByDesc('total')->get();
 
         // Condition breakdown
@@ -739,16 +785,18 @@ class ReportController extends Controller
 
         // Rental by Vendor → Company Supplied To → Asset Type → Brand (normalized)
         $rawRentalBrand = AssetInventory::where('ownership_type', 'rental')
-            ->selectRaw("COALESCE(NULLIF(TRIM(rental_vendor),''), 'Unspecified') as vendor, COALESCE(NULLIF(TRIM(company_supplied_to),''), 'Unspecified') as supplied_to, COALESCE(NULLIF(TRIM(asset_type),''), 'Unspecified') as asset_type, brand, COUNT(*) as total")
+            ->leftJoin('vendors', 'vendors.id', '=', 'asset_inventories.vendor_id')
+            ->selectRaw("{$vendorLabel} as vendor, COALESCE(NULLIF(TRIM(asset_inventories.company_supplied_to),''), 'Unspecified') as supplied_to, COALESCE(NULLIF(TRIM(asset_inventories.asset_type),''), 'Unspecified') as asset_type, asset_inventories.brand, COUNT(*) as total")
             ->groupBy('vendor', 'supplied_to', 'asset_type', 'brand')->get();
         // Normalize supplied_to company names then re-group
         $rawRentalBrand->transform(function ($row) use ($resolveCo) {
             $row->supplied_to = $resolveCo($row->supplied_to);
+
             return $row;
         });
         $rentalByVendorBrand = $rawRentalBrand
             ->groupBy('vendor')
-            ->map(fn($rows) => $rows->groupBy('supplied_to')->map(fn($cRows) => $cRows->groupBy('asset_type')));
+            ->map(fn ($rows) => $rows->groupBy('supplied_to')->map(fn ($cRows) => $cRows->groupBy('asset_type')));
 
         // Company-Owned by Company & Brand (normalized)
         $rawEntityBrand = AssetInventory::where('ownership_type', 'company')
@@ -756,20 +804,21 @@ class ReportController extends Controller
             ->groupBy('company', 'brand')->get();
         $rawEntityBrand->transform(function ($row) use ($resolveCo) {
             $row->company = $resolveCo($row->company);
+
             return $row;
         });
         // Re-aggregate after normalization (merge duplicate company+brand combos)
         $mergedEntityBrand = [];
         foreach ($rawEntityBrand as $row) {
-            $key = $row->company . '||' . $row->brand;
-            if (!isset($mergedEntityBrand[$key])) {
+            $key = $row->company.'||'.$row->brand;
+            if (! isset($mergedEntityBrand[$key])) {
                 $mergedEntityBrand[$key] = (object) ['company' => $row->company, 'brand' => $row->brand, 'total' => 0];
             }
             $mergedEntityBrand[$key]->total += $row->total;
         }
         $companyByEntityBrand = collect($mergedEntityBrand)->values()
             ->sortBy('company')->groupBy('company')
-            ->map(fn($rows) => $rows->sortByDesc('total'));
+            ->map(fn ($rows) => $rows->sortByDesc('total'));
 
         // Warranty expiring soon (next 90 days)
         $warrantyExpiring = AssetInventory::whereNotNull('warranty_expiry_date')
@@ -779,12 +828,15 @@ class ReportController extends Controller
             ->get(['asset_tag', 'asset_type', 'brand', 'model', 'warranty_expiry_date', 'status']);
 
         // Rental contracts expiring soon (next 90 days)
-        $rentalExpiring = AssetInventory::where('ownership_type', 'rental')
+        $rentalExpiring = AssetInventory::with('vendor')
+            ->where('ownership_type', 'rental')
             ->whereNotNull('rental_end_date')
             ->where('rental_end_date', '>=', now())
             ->where('rental_end_date', '<=', now()->addDays(90))
             ->orderBy('rental_end_date')
-            ->get(['asset_tag', 'asset_type', 'brand', 'model', 'rental_vendor', 'rental_end_date', 'rental_cost_per_month']);
+            // vendor_id must be selected or the eager-loaded vendor is always null and the
+            // Vendor column silently falls back to the PIC name.
+            ->get(['asset_tag', 'asset_type', 'brand', 'model', 'vendor_id', 'rental_vendor', 'rental_end_date', 'rental_cost_per_month']);
 
         return view('reports.assets', compact(
             'companies',
@@ -793,5 +845,89 @@ class ReportController extends Controller
             'warrantyExpiring', 'rentalExpiring',
             'rentalByVendorBrand', 'companyByEntityBrand'
         ));
+    }
+
+    // ── Decommissioning archive (C-Suite + IT managers + Finance) ──────────────
+    /** Widened gate: the reports set (superadmin/hr_manager/system_admin) + it_manager + Finance. */
+    private function authorizeDecommission(): void
+    {
+        if (! Auth::user()->canViewDecommissionReports()) {
+            abort(403);
+        }
+    }
+
+    /**
+     * The C-Suite decommissioning archive — E-WASTE ONLY.
+     *
+     * Vendor returns were listed here until 2026-08-10 and no longer are: a rental return
+     * hands an asset back to its owner rather than disposing of it, and it is now recorded
+     * on an Asset Acceptance & Return Form archived on the vendor's own profile. The Flow
+     * filter and the "Vendor returns" tile came off with it — a permanently-zero tile would
+     * have read as "we returned nothing this year", which is a claim, not an absence.
+     *
+     * Deliberately still filtered to FINISHED cycles, unlike Finance's Disposed listing.
+     * Don't widen it without dealing with `recovered` below, which would otherwise book an
+     * approved-but-uncollected offer as income.
+     */
+    public function decommissionReport(Request $request)
+    {
+        $this->authorizeDecommission();
+
+        $year = $request->integer('year') ?: null;
+
+        $query = AssetDecommissionBatch::with('vendor')->withCount('items')
+            ->where('type', AssetDecommissionBatch::TYPE_EWASTE)
+            ->where(fn ($q) => $q->whereNotNull('finalized_at')->orWhere('status', 'completed'));
+        if ($year) {
+            $query->whereYear('created_at', $year);
+        }
+        // Headline figures are computed over the WHOLE filtered set, before pagination —
+        // summing the current page would silently under-report once there are 25+ cycles.
+        // reportAmount() is receipt ?: quotation, so the SQL mirror is
+        // COALESCE(receipt, quotation, 0).
+        $stats = [
+            'batches' => (clone $query)->count(),
+            'assets' => DisposedAsset::whereIn('decommission_batch_id', (clone $query)->select('asset_decommission_batches.id'))->count(),
+            'recovered' => (float) (clone $query)->sum(DB::raw('COALESCE(receipt_amount, quotation_amount, 0)')),
+        ];
+
+        $batches = $query->latest()->paginate(25)->withQueryString();
+
+        return view('reports.decommission', compact('batches', 'year', 'stats'));
+    }
+
+    public function downloadBatchPdf(AssetDecommissionBatch $batch)
+    {
+        $this->authorizeDecommission();
+
+        // Serve the archived PDF when present; otherwise render fresh.
+        if ($batch->report_pdf_path && Storage::disk('local')->exists($batch->report_pdf_path)) {
+            return Storage::disk('local')->download($batch->report_pdf_path, $batch->batch_number.'.pdf');
+        }
+
+        return response(DecommissionReportRenderer::render($batch), 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="'.$batch->batch_number.'.pdf"',
+        ]);
+    }
+
+    /** Same report, served inline for viewing in the browser (not forced download). */
+    public function viewBatchPdf(AssetDecommissionBatch $batch)
+    {
+        $this->authorizeDecommission();
+
+        // Serve the archived PDF inline when present; otherwise render fresh, inline.
+        if ($batch->report_pdf_path && Storage::disk('local')->exists($batch->report_pdf_path)) {
+            return Storage::disk('local')->response(
+                $batch->report_pdf_path,
+                $batch->batch_number.'.pdf',
+                ['Content-Type' => 'application/pdf']
+            );
+        }
+
+        return response(DecommissionReportRenderer::render($batch), 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="'.$batch->batch_number.'.pdf"',
+        ]);
     }
 }

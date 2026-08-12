@@ -17,6 +17,7 @@ use App\Http\Controllers\Accounting\TaxController;
 use App\Http\Controllers\AccountManagementController;
 use App\Http\Controllers\AnnouncementController;
 use App\Http\Controllers\AssetController;
+use App\Http\Controllers\AssetDecommissionController;
 use App\Http\Controllers\AttendanceController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CompanyController;
@@ -33,11 +34,16 @@ use App\Http\Controllers\OnboardingController;
 use App\Http\Controllers\OnboardingInviteController;
 use App\Http\Controllers\PayrollController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\RentalAssetAcknowledgementController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SecureFileController;
 use App\Http\Controllers\TicketController;
 use App\Http\Controllers\TicketMessageController;
 use App\Http\Controllers\TwoFactorController;
+use App\Http\Controllers\VendorBillingController;
+use App\Http\Controllers\VendorContractController;
+use App\Http\Controllers\VendorController;
+use App\Http\Controllers\VendorInsightController;
 use Illuminate\Support\Facades\Route;
 
 // Root redirect
@@ -67,8 +73,19 @@ Route::post('/two-factor-challenge', [TwoFactorController::class, 'verify'])->na
 
 // ── Public AARF token link (for employee acknowledgement via email) ─────────
 Route::get('/aarf/{token}', [AarfController::class, 'viewAarf'])->name('aarf.view');
+// Token-gated asset-photo stream so the employee sees photos without logging in
+// (asset_photos live on the public disk but /storage is not anonymously reachable here).
+Route::get('/aarf/{token}/photo/{asset}/{index}', [AarfController::class, 'viewPhoto'])
+    ->where('index', '[0-9]+')->name('aarf.photo');
 // Throttle: 10 per minute — CSRF-exempt but still rate-limited
 Route::post('/aarf/{token}/acknowledge', [AarfController::class, 'acknowledge'])->name('aarf.acknowledge')->middleware('throttle:10,1');
+
+// NOTE: there is deliberately no public decommission-collection page any more. A rental
+// return is acknowledged IN-APP, on our own device, by the collector standing at the desk
+// (RentalAssetAcknowledgementController) — so the tokenized emailed form, its CSRF
+// exemption and its photo stream were removed rather than left as a second way to sign one
+// document. The /aarf/{token} block above is unrelated: that is the EMPLOYEE asset
+// acknowledgement, which really does go out by email.
 
 // Public onboarding invite routes (no auth required)
 Route::get('/onboarding-invite/success', [OnboardingInviteController::class, 'success'])->name('onboarding.invite.success');
@@ -249,6 +266,10 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::get('/reports/leave', [ReportController::class, 'leaveReport'])->name('reports.leave');
     Route::get('/reports/attendance', [ReportController::class, 'attendanceReport'])->name('reports.attendance');
     Route::get('/reports/assets', [ReportController::class, 'assetReport'])->name('reports.assets');
+    // Decommissioning archive (C-Suite + IT managers + Finance) — see ReportController gate
+    Route::get('/reports/decommission', [ReportController::class, 'decommissionReport'])->name('reports.decommission');
+    Route::get('/reports/decommission/{batch}/pdf', [ReportController::class, 'downloadBatchPdf'])->name('reports.decommission.pdf');
+    Route::get('/reports/decommission/{batch}/view', [ReportController::class, 'viewBatchPdf'])->name('reports.decommission.view');
 
     Route::get('/superadmin/companies', [CompanyController::class, 'index'])->name('superadmin.companies.index');
     Route::post('/superadmin/companies', [CompanyController::class, 'store'])->name('superadmin.companies.store');
@@ -328,12 +349,100 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::post('/assets/import', [AssetController::class, 'importCsv'])->name('assets.import')->middleware('throttle:uploads');
     Route::get('/assets/disposed', [AssetController::class, 'disposed'])->name('assets.disposed');
     Route::get('/assets/disposed/{asset}', [AssetController::class, 'disposedShow'])->name('assets.disposed.show');
+
+    // ── Asset Decommissioning (IT-side) ─────────────────────────────────────
+    // These sit ABOVE the /assets/{asset} wildcard so their literal segment is not
+    // swallowed by route-model binding.
+    //
+    // "Create Collection Batch" on the Decommissioning tab raises RETURN AARFs, not a
+    // batch: a rental return is an acknowledgement document, and the vendor is detected
+    // from the assets rather than picked. The remaining batch routes are e-waste only.
+    Route::post('/assets/decommission/returns', [RentalAssetAcknowledgementController::class, 'generateReturns'])->name('decommission.returns.generate');
+    Route::get('/assets/decommission/{batch}', [AssetDecommissionController::class, 'show'])->name('decommission.show');
+    Route::post('/assets/decommission/{batch}/cancel', [AssetDecommissionController::class, 'cancel'])->name('decommission.cancel');
+
     Route::get('/assets/{asset}', [AssetController::class, 'show'])->name('assets.show');
     Route::get('/assets/{asset}/edit', [AssetController::class, 'edit'])->name('assets.edit');
     Route::put('/assets/{asset}', [AssetController::class, 'update'])->name('assets.update')->middleware('throttle:uploads');
     Route::post('/assets/{asset}/reassign', [AssetController::class, 'reassign'])->name('assets.reassign');
     Route::post('/assets/{asset}/return', [AssetController::class, 'returnAsset'])->name('assets.return');
     Route::post('/assets/{asset}/release', [AssetController::class, 'releaseAsset'])->name('assets.release');
+
+    // ── Vendor Management (company-wide operational vendor master) ──────────
+    // Literal segments MUST stay registered before /vendors/{vendor}, or "create"
+    // resolves as a vendor id and 404s on route-model binding.
+    Route::get('/vendors', [VendorController::class, 'index'])->name('vendors.index');
+    Route::get('/vendors/create', [VendorController::class, 'create'])->name('vendors.create');
+    Route::post('/vendors', [VendorController::class, 'store'])->name('vendors.store');
+    Route::get('/vendors/{vendor}/edit', [VendorController::class, 'edit'])->name('vendors.edit');
+    Route::put('/vendors/{vendor}', [VendorController::class, 'update'])->name('vendors.update');
+    Route::post('/vendors/{vendor}/toggle-active', [VendorController::class, 'toggleActive'])->name('vendors.toggle-active');
+    // Deleting is for a duplicate/typo'd row only — the controller refuses a vendor that
+    // carries assets, contracts, billing documents, AARFs or e-waste cycles. Retiring a
+    // real vendor is still toggle-active.
+    Route::delete('/vendors/{vendor}', [VendorController::class, 'destroy'])->name('vendors.destroy');
+
+    // Contracts + billing documents live on the vendor profile. Uploads are throttled
+    // (throttle:uploads = 10/min) like every other private-disk upload in the app.
+    //
+    // There is deliberately NO field-scan route here. The per-field OCR that pre-filled
+    // these forms was removed on 2026-08-11: the fields are typed by hand, and the ONLY
+    // AI reading of a vendor document is the whole-document summary + transcription below.
+    Route::post('/vendors/{vendor}/contracts', [VendorContractController::class, 'store'])->name('vendors.contracts.store')->middleware('throttle:uploads');
+    Route::put('/vendors/{vendor}/contracts/{contract}', [VendorContractController::class, 'update'])->name('vendors.contracts.update')->middleware('throttle:uploads');
+    // Re-read the stored document for its summary + transcription. Queued, so this returns
+    // at once — the reading itself is far too long for a web request.
+    Route::post('/vendors/{vendor}/contracts/{contract}/summarise', [VendorInsightController::class, 'summariseContract'])->name('vendors.contracts.summarise')->middleware('throttle:6,1');
+    Route::delete('/vendors/{vendor}/contracts/{contract}', [VendorContractController::class, 'destroy'])->name('vendors.contracts.destroy');
+
+    Route::post('/vendors/{vendor}/billing', [VendorBillingController::class, 'store'])->name('vendors.billing.store')->middleware('throttle:uploads');
+    // File an invoice reference that so far only existed as free text on the asset records,
+    // and link the assets grouped under it. Registered before /billing/{document} so the
+    // literal segment cannot be read as a document id.
+    Route::post('/vendors/{vendor}/billing/register-from-assets', [VendorBillingController::class, 'registerFromAssets'])->name('vendors.billing.register-from-assets');
+    Route::put('/vendors/{vendor}/billing/{document}', [VendorBillingController::class, 'update'])->name('vendors.billing.update')->middleware('throttle:uploads');
+    Route::post('/vendors/{vendor}/billing/{document}/summarise', [VendorInsightController::class, 'summariseBilling'])->name('vendors.billing.summarise')->middleware('throttle:6,1');
+    Route::delete('/vendors/{vendor}/billing/{document}', [VendorBillingController::class, 'destroy'])->name('vendors.billing.destroy');
+
+    // ── Vendor document assistant ───────────────────────────────────────────
+    // Grounded in this vendor's own contracts + billing documents and nothing else.
+    // `insights` is the poll a row sitting at "reading…" uses to fill itself in.
+    Route::get('/vendors/{vendor}/insights', [VendorInsightController::class, 'insights'])->name('vendors.insights');
+    Route::post('/vendors/{vendor}/ask', [VendorInsightController::class, 'ask'])->name('vendors.ask')->middleware('throttle:20,1');
+    Route::post('/vendors/{vendor}/ask/new-topic', [VendorInsightController::class, 'newTopic'])->name('vendors.ask.new-topic');
+
+    // AARF — rental asset receipt/return acknowledgement. In-app only: on a receipt the
+    // collector is us, so there is no public tokenized page like the vendor-return flow.
+    Route::post('/vendors/{vendor}/aarf/generate', [RentalAssetAcknowledgementController::class, 'generate'])->name('vendors.aarf.generate');
+    Route::get('/vendors/{vendor}/aarf/{aarf}', [RentalAssetAcknowledgementController::class, 'show'])->name('vendors.aarf.show');
+    Route::get('/vendors/{vendor}/aarf/{aarf}/pdf', [RentalAssetAcknowledgementController::class, 'pdf'])->name('vendors.aarf.pdf');
+    Route::post('/vendors/{vendor}/aarf/{aarf}/acknowledge', [RentalAssetAcknowledgementController::class, 'acknowledge'])->name('vendors.aarf.acknowledge');
+    // The second party signs their own reply to the condition note, before the closing
+    // signatory locks the form. WHICH party that is flips with the direction, so there is
+    // one action each and each refuses the other's direction: on a receipt the vendor's
+    // delivery rep replies to us; on a return we reply to the vendor's collector.
+    Route::post('/vendors/{vendor}/aarf/{aarf}/vendor-acknowledge', [RentalAssetAcknowledgementController::class, 'vendorAcknowledge'])->name('vendors.aarf.vendor-acknowledge');
+    Route::post('/vendors/{vendor}/aarf/{aarf}/processor-acknowledge', [RentalAssetAcknowledgementController::class, 'processorAcknowledge'])->name('vendors.aarf.processor-acknowledge');
+    Route::delete('/vendors/{vendor}/aarf/{aarf}', [RentalAssetAcknowledgementController::class, 'destroy'])->name('vendors.aarf.destroy');
+
+    // Registered LAST of the /vendors/* GETs so the literal segments above win.
+    Route::get('/vendors/{vendor}', [VendorController::class, 'show'])->name('vendors.show');
+
+    // ── E-waste quarterly cycle (Flow 2) ────────────────────────────────────
+    Route::post('/ewaste/sweep', [AssetDecommissionController::class, 'runSweep'])->name('ewaste.sweep')->middleware('throttle:6,1');
+    Route::post('/ewaste/{batch}/quotation', [AssetDecommissionController::class, 'uploadQuotation'])->name('ewaste.quotation')->middleware('throttle:uploads');
+    Route::post('/ewaste/{batch}/receipt', [AssetDecommissionController::class, 'uploadReceipt'])->name('ewaste.receipt')->middleware('throttle:uploads');
+    Route::post('/ewaste/{batch}/complete', [AssetDecommissionController::class, 'completeCycle'])->name('ewaste.complete');
+    // Correct an OCR-read (or blank) quotation/receipt amount without re-uploading the document.
+    Route::post('/ewaste/{batch}/amount', [AssetDecommissionController::class, 'updateAmount'])->name('ewaste.amount');
+
+    // Finance-gated quotation approval (mirrors the eClaim HR approve/reject shape).
+    // There is NO standalone page: Finance approves/rejects inline on Accounting → Assets →
+    // status "Disposed", which is the single home for everything asset-related. These are the
+    // action endpoints for that page, hence the /accounting/fixed-assets/ prefix. Route NAMES
+    // are unchanged. Four segments, so they never collide with /fixed-assets/{asset}/….
+    Route::post('/accounting/fixed-assets/ewaste/{batch}/approve', [AssetDecommissionController::class, 'financeApprove'])->name('finance.ewaste.approve');
+    Route::post('/accounting/fixed-assets/ewaste/{batch}/reject', [AssetDecommissionController::class, 'financeReject'])->name('finance.ewaste.reject');
 
     // ══════════════════════════════════════════════════════════════════════
     // LEAVE MANAGEMENT

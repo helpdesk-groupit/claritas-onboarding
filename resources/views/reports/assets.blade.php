@@ -262,7 +262,8 @@
                     <tr>
                         <td class="fw-semibold">{{ $asset->asset_tag }}</td>
                         <td>{{ ucwords(str_replace('_',' ',$asset->asset_type)) }}</td>
-                        <td>{{ $asset->rental_vendor }}</td>
+                        {{-- Vendor COMPANY off the FK; rental_vendor now holds the PIC. --}}
+                        <td>{{ ($asset->vendor_id ? $asset->vendor?->name : $asset->rental_vendor) ?: '—' }}</td>
                         <td class="text-end">{{ number_format($asset->rental_cost_per_month, 0) }}</td>
                         <td>
                             <span class="alert-badge" style="background:#fee2e2;color:#dc2626;">

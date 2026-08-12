@@ -847,6 +847,16 @@
         @endif
         @endif
 
+        {{-- No e-waste sidebar section for Finance. The whole cycle — quotation approve/reject
+             and the decommissioning reports — is reached inside the Accounting module:
+             Assets → status "Disposed". Deliberate: Finance asked for one home for this work,
+             not links scattered across the sidebar.
+
+             Vendor Management is the exception and is NOT part of that rule: since 2026-08-06
+             it is the company-wide vendor master (contracts, quotations, invoices, SST
+             identity), not an e-waste sub-screen, so Finance reaches it from the Management
+             section like everyone else — gated by canViewVendors() in sidebar-management. --}}
+
         {{-- ── Account (shared — same for every role) ── --}}
         <div class="sidebar-section">Account</div>
         <div class="nav-item">

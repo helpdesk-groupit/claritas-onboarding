@@ -28,6 +28,9 @@ return Application::configure(basePath: dirname(__DIR__))
         // Exempt the public AARF acknowledgement POST from CSRF verification.
         // This route is accessed via a token link (e.g. from email), often in a fresh
         // browser session where no CSRF token has been set yet.
+        // The rental-return acknowledgement is NOT listed here: it is signed in-app on our
+        // own device by a logged-in operator, so it has a session and a CSRF token like any
+        // other form. Only the employee AARF is a cold email click.
         $middleware->validateCsrfTokens(except: [
             'aarf/*/acknowledge',
         ]);

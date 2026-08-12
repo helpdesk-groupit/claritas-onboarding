@@ -118,7 +118,38 @@
                     @endforeach
                 </select></div>
             <div class="col-md-4"><label class="form-label fw-semibold">Vendor / Supplier</label>
-                <input type="text" name="purchase_vendor" class="form-control" value="{{ old('purchase_vendor',$asset->purchase_vendor) }}"></div>
+                {{-- Both ownership panels carry a select called vendor_id; only the visible
+                     one may submit, so the hidden panel's is disabled (same device the
+                     invoice inputs already use). --}}
+                <select name="vendor_id" id="editCompanyVendorSelect" class="form-select js-vendor-picker"
+                        data-detail="editCompanyVendorDetail" data-contact=""
+                        {{ $ownershipType === 'rental' ? 'disabled' : '' }}>
+                    <option value="">— Not registered / type below —</option>
+                    @foreach(($vendorOptions['purchase'] ?? []) as $vp)
+                        <option value="{{ $vp->id }}"
+                                data-pic="{{ $vp->pic_name }}"
+                                data-email="{{ $vp->pic_email }}"
+                                data-phone="{{ $vp->pic_phone }}"
+                                data-tel="{{ $vp->contact_number }}"
+                                data-reg="{{ $vp->company_registration_no }}"
+                                data-sst="{{ $vp->sst_number }}"
+                                data-address="{{ $vp->address }}"
+                                {{ (string) old('vendor_id', $asset->vendor_id ?? '') === (string) $vp->id ? 'selected' : '' }}>{{ $vp->name }}{{ $vp->is_active ? '' : ' (retired)' }}</option>
+                    @endforeach
+                </select>
+                <div id="editCompanyVendorDetail" class="form-text text-muted small mt-1"></div>
+                <input type="text" name="purchase_vendor" class="form-control mt-2" value="{{ old('purchase_vendor',$asset->purchase_vendor) }}"
+                       placeholder="Or type an unregistered supplier">
+                <div class="form-text text-muted small">Picking a registered supplier overrides the free text.</div></div>
+            <div class="col-md-4">
+                @include('it.assets._invoice-select', [
+                    'id' => 'editCompanyInvoiceSelect',
+                    'vendorSelect' => 'editCompanyVendorSelect',
+                    'ownership' => 'company',
+                    'selected' => old('origin_billing_document_id', $asset->origin_billing_document_id ?? ''),
+                    'disabled' => $ownershipType === 'rental',
+                ])
+            </div>
             <div class="col-md-4"><label class="form-label fw-semibold">Purchase Cost (RM)</label>
                 <input type="number" name="purchase_cost" class="form-control" value="{{ old('purchase_cost',$asset->purchase_cost) }}" step="0.01"></div>
             <div class="col-md-4"><label class="form-label fw-semibold">Purchase Date</label>
@@ -145,10 +176,32 @@
             </div>
         </div>
         <div id="rentalFields" class="row g-3" style="{{ old('ownership_type', $asset->ownership_type) === 'rental' ? '' : 'display:none;' }}">
-            <div class="col-md-4"><label class="form-label fw-semibold">Rental Vendor <span class="text-danger">*</span></label>
-                <input type="text" name="rental_vendor" class="form-control" value="{{ old('rental_vendor',$asset->rental_vendor) }}" placeholder="Vendor / leasing company"></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Registered Rental Vendor</label>
+                <select name="vendor_id" id="editRentalVendorSelect" class="form-select js-vendor-picker"
+                        data-detail="editRentalVendorDetail" data-contact="editRentalVendorContact"
+                        data-pic-field="editRentalVendorPic"
+                        {{ $ownershipType === 'rental' ? '' : 'disabled' }}>
+                    <option value="">— Not registered / use free-text —</option>
+                    @foreach(($vendorOptions['rental'] ?? []) as $rv)
+                        <option value="{{ $rv->id }}"
+                                data-pic="{{ $rv->pic_name }}"
+                                data-email="{{ $rv->pic_email }}"
+                                data-phone="{{ $rv->pic_phone }}"
+                                data-tel="{{ $rv->contact_number }}"
+                                data-reg="{{ $rv->company_registration_no }}"
+                                data-sst="{{ $rv->sst_number }}"
+                                data-address="{{ $rv->address }}"
+                                {{ (string) old('vendor_id', $asset->vendor_id ?? '') === (string) $rv->id ? 'selected' : '' }}>{{ $rv->name }}{{ $rv->is_active ? '' : ' (retired)' }}</option>
+                    @endforeach
+                </select>
+                <div id="editRentalVendorDetail" class="form-text text-muted small mt-1"></div>
+                <div class="form-text text-muted small">Links to Vendor Management — used by the return flow.</div></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Rental Vendor</label>
+                <input type="text" name="rental_vendor" id="editRentalVendorPic" class="form-control" value="{{ old('rental_vendor',$asset->rental_vendor) }}" placeholder="Person we deal with">
+                <div class="form-text text-muted small">Auto-filled with the picked vendor's PIC name. If the vendor isn't registered above, type their name here.</div></div>
             <div class="col-md-4"><label class="form-label fw-semibold">Vendor Contact</label>
-                <input type="text" name="rental_vendor_contact" class="form-control" value="{{ old('rental_vendor_contact',$asset->rental_vendor_contact) }}" placeholder="Phone or email"></div>
+                <input type="text" name="rental_vendor_contact" id="editRentalVendorContact" class="form-control" value="{{ old('rental_vendor_contact',$asset->rental_vendor_contact) }}" placeholder="Phone or email">
+                <div class="form-text text-muted small">Auto-filled with the picked vendor's PIC contact number.</div></div>
             <div class="col-md-4"><label class="form-label fw-semibold">Monthly Cost (RM)</label>
                 <input type="number" name="rental_cost_per_month" class="form-control" value="{{ old('rental_cost_per_month',$asset->rental_cost_per_month) }}" step="0.01"></div>
             <div class="col-md-3"><label class="form-label fw-semibold">Rental Start Date</label>
@@ -156,7 +209,17 @@
             <div class="col-md-3"><label class="form-label fw-semibold">Rental End Date</label>
                 <input type="date" name="rental_end_date" class="form-control" value="{{ old('rental_end_date',$asset->rental_end_date?->format('Y-m-d')) }}"></div>
             <div class="col-md-3"><label class="form-label fw-semibold">Contract Reference</label>
-                <input type="text" name="rental_contract_reference" class="form-control" value="{{ old('rental_contract_reference',$asset->rental_contract_reference) }}" placeholder="Contract / PO number"></div>
+                <input type="text" name="rental_contract_reference" class="form-control" value="{{ old('rental_contract_reference',$asset->rental_contract_reference) }}" placeholder="Contract / PO number">
+                <div class="form-text text-muted small">Free text. Used to group the assets when no invoice is picked below.</div></div>
+            <div class="col-md-4">
+                @include('it.assets._invoice-select', [
+                    'id' => 'editRentalInvoiceSelect',
+                    'vendorSelect' => 'editRentalVendorSelect',
+                    'ownership' => 'rental',
+                    'selected' => old('origin_billing_document_id', $asset->origin_billing_document_id ?? ''),
+                    'disabled' => $ownershipType !== 'rental',
+                ])
+            </div>
             <div class="col-md-3"><label class="form-label fw-semibold">Invoice(s) {{ $asset->invoice_documents ? '— '.count($asset->invoice_documents).' file(s)' : '' }}</label>
                 <input type="file" name="invoice_documents[]" id="editRentalInvoiceInput" class="form-control" accept=".pdf,.jpg,.jpeg,.png" multiple
                     {{ old('ownership_type', $asset->ownership_type) !== 'rental' ? 'disabled' : '' }}>
@@ -208,8 +271,8 @@
 </div>
 
 @if($canAll)
-{{-- Section D — hidden for assets staged for decommissioning (Not Good / Returned) --}}
-@if(! $asset->isStagedForDecommission())
+{{-- Section D — hidden for decommissioning conditions (not_good / returned) --}}
+@if(!in_array($asset->asset_condition, ['not_good', 'returned']))
 <div class="card mb-3">
     <div class="card-header bg-white py-3"><div class="section-header mb-0"><h6><i class="bi bi-person-check me-2 text-primary"></i>Section D — Assignment</h6></div></div>
     <div class="card-body"><div class="row g-3">
@@ -346,19 +409,21 @@
     <div class="card-header bg-white py-3"><div class="section-header mb-0"><h6><i class="bi bi-clipboard-check me-2 text-primary"></i>Section E — Condition & Status</h6></div></div>
     <div class="card-body"><div class="row g-3">
 
-        {{-- Condition: Good / Under Maintenance / Not Good / Returned --}}
+        {{-- Condition: Good / Not Good / Under Maintenance --}}
         <div class="col-md-3">
             <label class="form-label fw-semibold">Condition <span class="text-danger">*</span></label>
             <select name="asset_condition" id="assetCondition" class="form-select" required>
                 @php
-                    // Map any legacy value → the current condition set (drives Decommissioning).
+                    // Map any legacy/new values → the current condition set (drives Decommissioning).
                     $cond = old('asset_condition', $asset->asset_condition);
-                    if (! array_key_exists($cond, \App\Models\AssetInventory::CONDITIONS)) {
-                        $cond = $cond === 'damaged' ? 'not_good' : 'good'; // legacy 'damaged'; else safe fallback
-                    }
+                    if ($cond === 'returned') $cond = 'returned';
+                    elseif ($cond === 'under_maintenance') $cond = 'under_maintenance';
+                    elseif ($cond === 'not_good' || $cond === 'damaged') $cond = 'not_good';
+                    elseif (in_array($cond, ['new', 'good', 'fair'])) $cond = 'good';
+                    else $cond = 'good'; // safe fallback
                 @endphp
-                @foreach(\App\Models\AssetInventory::CONDITIONS as $condValue => $condLabel)
-                    <option value="{{ $condValue }}" {{ $cond === $condValue ? 'selected' : '' }}>{{ $condLabel }}</option>
+                @foreach(\App\Models\AssetInventory::CONDITIONS as $val => $label)
+                    <option value="{{ $val }}" {{ $cond === $val ? 'selected' : '' }}>{{ $label }}</option>
                 @endforeach
             </select>
             <div class="form-text">
@@ -377,10 +442,9 @@
             </select>
         </div>
 
-        {{-- Decommission / Return reason — shown for Not Good (e-waste) and Returned (vendor return).
-             Required only for Not Good; a return is usually just "end of lease". --}}
-        @php $isDecommissioning = in_array($cond, \App\Models\AssetInventory::DECOMMISSION_CONDITIONS); @endphp
-        <div class="col-md-6" id="decommissionReasonWrap" style="{{ $isDecommissioning ? '' : 'display:none;' }}">
+        {{-- Decommission / Return reason — shown for Not Good (e-waste) and Returned (vendor return) --}}
+        @php $decoCond = in_array($cond, ['not_good', 'returned']); @endphp
+        <div class="col-md-6" id="decommissionReasonWrap" style="{{ $decoCond ? '' : 'display:none;' }}">
             <label class="form-label fw-semibold">Decommission / Return Reason @if($cond === 'not_good')<span class="text-danger">*</span>@endif</label>
             @php
                 $existingReason = old('decommission_reason',
@@ -391,7 +455,37 @@
                    value="{{ $existingReason }}"
                    placeholder="e.g. End of lease, Screen cracked beyond repair, Hardware failure..."
                    {{ $cond === 'not_good' ? 'required' : '' }}>
-            <div class="form-text">Shown in the Decommissioning Assets table. Recommended for a returned rental asset (e.g. contract ended).</div>
+            <div class="form-text">Shown in the Decommissioning tab. Recommended for returned rental assets (e.g. contract end).</div>
+        </div>
+
+        {{-- E-waste completeness — shown for Not Good (e-waste) only. Drives the vendor's disposal price. --}}
+        <div class="col-md-3" id="ewasteCompletenessWrap" style="{{ $cond === 'not_good' ? '' : 'display:none;' }}">
+            <label class="form-label fw-semibold">Completeness @if($cond === 'not_good')<span class="text-danger">*</span>@endif</label>
+            @php
+                $existingCompleteness = old('ewaste_completeness',
+                    \App\Models\DisposedAsset::where('asset_inventory_id', $asset->id)->value('ewaste_completeness') ?: 'complete');
+            @endphp
+            <select name="ewaste_completeness" id="ewasteCompleteness" class="form-select" {{ $cond === 'not_good' ? 'required' : '' }}>
+                <option value="complete"   {{ $existingCompleteness === 'complete' ? 'selected' : '' }}>Complete — all parts intact</option>
+                <option value="incomplete" {{ $existingCompleteness === 'incomplete' ? 'selected' : '' }}>Incomplete — parts removed</option>
+            </select>
+            <div class="form-text">Incomplete = parts like battery, RAM or hard disk removed. Affects the e-waste vendor's price.</div>
+        </div>
+
+        {{-- Parts removed — shown only when Completeness = Incomplete (Not Good e-waste). --}}
+        @php
+            $existingPartsRemoved = old('ewaste_parts_removed',
+                \App\Models\DisposedAsset::where('asset_inventory_id', $asset->id)->value('ewaste_parts_removed') ?? '');
+            $showParts = $cond === 'not_good' && $existingCompleteness === 'incomplete';
+        @endphp
+        <div class="col-md-6" id="ewastePartsWrap" style="{{ $showParts ? '' : 'display:none;' }}">
+            <label class="form-label fw-semibold">Parts Removed <span class="text-danger">*</span></label>
+            <input type="text" name="ewaste_parts_removed" id="ewasteParts"
+                   class="form-control"
+                   value="{{ $existingPartsRemoved }}"
+                   placeholder="e.g. Battery, RAM, Hard disk, Charger"
+                   {{ $showParts ? 'required' : '' }}>
+            <div class="form-text">List the parts removed from this asset. Shown to the e-waste vendor (and Finance) for pricing.</div>
         </div>
 
         <div class="col-md-3"><label class="form-label fw-semibold">Last Maintenance Date</label><input type="date" name="last_maintenance_date" class="form-control" value="{{ old('last_maintenance_date',$asset->last_maintenance_date?->format('Y-m-d')) }}"></div>
@@ -587,6 +681,8 @@ function updateBrandField(typeValue, brandSelect, brandText, preselected) {
 })();
 
 // ── Ownership toggle (Edit form) ─────────────────────────────────────
+// Both panels carry inputs with the SAME name (invoice_documents[], vendor_id), so the
+// hidden panel's must be disabled or the browser submits two values for one field.
 (function () {
     function toggleOwnership(value) {
         var rentalFields  = document.getElementById('rentalFields');
@@ -597,9 +693,67 @@ function updateBrandField(typeValue, brandSelect, brandText, preselected) {
         var rentalInvoice  = document.getElementById('editRentalInvoiceInput');
         if (companyInvoice) companyInvoice.disabled = (value !== 'company');
         if (rentalInvoice)  rentalInvoice.disabled  = (value !== 'rental');
+        var companyVendor = document.getElementById('editCompanyVendorSelect');
+        var rentalVendor  = document.getElementById('editRentalVendorSelect');
+        if (companyVendor) companyVendor.disabled = (value !== 'company');
+        if (rentalVendor)  rentalVendor.disabled  = (value !== 'rental');
     }
     document.querySelectorAll('.edit-ownership-radio').forEach(function (radio) {
         radio.addEventListener('change', function () { toggleOwnership(this.value); });
+    });
+})();
+
+// ── Vendor picker auto-fill (Edit form) ──────────────────────────────
+// Reads the selected <option>'s data-* attributes — no AJAX, so the page can never show
+// details for a vendor that has since been deactivated. CSP-safe: addEventListener only,
+// and every value goes in via textContent, never innerHTML.
+(function () {
+    function fill(select, picked) {
+        var opt = select.options[select.selectedIndex];
+        var detail = document.getElementById(select.dataset.detail || '');
+        var contact = select.dataset.contact ? document.getElementById(select.dataset.contact) : null;
+        var picField = select.dataset.picField ? document.getElementById(select.dataset.picField) : null;
+
+        if (detail) { detail.textContent = ''; }
+        // Clearing the picker back to "not registered" leaves the fields alone — the
+        // operator is about to type an unregistered vendor's details there.
+        if (!opt || !opt.value) { return; }
+
+        var pic   = opt.dataset.pic || '';
+        var email = opt.dataset.email || '';
+        var phone = opt.dataset.phone || '';
+        var tel   = opt.dataset.tel || '';
+        var reg   = opt.dataset.reg || '';
+        var sst   = opt.dataset.sst || '';
+        var addr  = opt.dataset.address || '';
+
+        // `picked` = the operator just chose a vendor, which is an explicit act: both
+        // fields are refreshed, because the previous vendor's PIC and number are stale
+        // the moment the vendor changes (and leaving them would attribute the wrong
+        // person to the new vendor). On the initial reflect it is false, so the values
+        // already stored against this asset are never clobbered by merely opening it.
+        if (picField && (picked || !picField.value)) {
+            picField.value = pic;
+        }
+        if (contact && (picked || !contact.value)) {
+            contact.value = phone || email || tel || '';
+        }
+
+        if (detail) {
+            var bits = [];
+            if (pic)  { bits.push('PIC: ' + pic + (phone ? ' (' + phone + ')' : '')); }
+            if (email) { bits.push(email); }
+            if (tel)  { bits.push('Tel: ' + tel); }
+            if (reg)  { bits.push('Reg: ' + reg); }
+            if (sst)  { bits.push('SST: ' + sst); }
+            if (addr) { bits.push(addr); }
+            detail.textContent = bits.join(' · ');
+        }
+    }
+
+    document.querySelectorAll('.js-vendor-picker').forEach(function (select) {
+        select.addEventListener('change', function () { fill(this, true); });
+        if (select.value) { fill(select, false); }
     });
 })();
 
@@ -670,23 +824,54 @@ function syncStatusFromCondition(condition) {
     }
 
     if (reasonWrap) {
-        // Shown for both decommissioning conditions, but only Not Good demands a reason —
-        // a vendor return is usually just "end of lease".
-        const isDecommissioning = (condition === 'not_good' || condition === 'returned');
-        reasonWrap.style.display = isDecommissioning ? '' : 'none';
+        const isDecommission = (condition === 'not_good' || condition === 'returned');
+        reasonWrap.style.display = isDecommission ? '' : 'none';
         if (reasonInput) {
+            // Required only for Not Good (e-waste); optional for Returned (vendor return).
             reasonInput.required = condition === 'not_good';
         }
     }
+
+    // Completeness applies to Not Good (e-waste) only.
+    const completenessWrap  = document.getElementById('ewasteCompletenessWrap');
+    const completenessInput = document.getElementById('ewasteCompleteness');
+    if (completenessWrap) {
+        const isEwaste = condition === 'not_good';
+        completenessWrap.style.display = isEwaste ? '' : 'none';
+        if (completenessInput) {
+            completenessInput.required = isEwaste;
+            // Leaving the e-waste state resets completeness so a stale "incomplete" isn't
+            // submitted from the now-hidden select (which would trip the Parts-Removed rule).
+            if (!isEwaste) completenessInput.value = 'complete';
+        }
+    }
+    toggleEwasteParts();
 }
 
-// Run on page load + bind change listener
+// Parts-removed field shows only when the asset is Not Good AND marked Incomplete.
+function toggleEwasteParts() {
+    const condEl = document.getElementById('assetCondition');
+    const compEl = document.getElementById('ewasteCompleteness');
+    const wrap   = document.getElementById('ewastePartsWrap');
+    const input  = document.getElementById('ewasteParts');
+    if (!wrap) return;
+    const show = !!condEl && condEl.value === 'not_good' && !!compEl && compEl.value === 'incomplete';
+    wrap.style.display = show ? '' : 'none';
+    if (input) input.required = show;
+}
+
+// Run on page load + bind change listeners
 document.addEventListener('DOMContentLoaded', function () {
     const condEl = document.getElementById('assetCondition');
     if (condEl) {
         syncStatusFromCondition(condEl.value);
         condEl.addEventListener('change', function() { syncStatusFromCondition(this.value); });
     }
+    const compEl = document.getElementById('ewasteCompleteness');
+    if (compEl) {
+        compEl.addEventListener('change', toggleEwasteParts);
+    }
+    toggleEwasteParts();
 });
 
 // ── Asset Name auto-fill (same as Add form) ───────────────────────────────

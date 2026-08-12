@@ -10,8 +10,13 @@
     $mCanTicket     = $u->canAccessTicketManagement();
     $mCanTeamLeave  = $u->isSuperadmin();                                                 // Team Leave (approver view)
     $mCanTeamClaims = $u->canViewTeamClaims();
+    $mCanVendors    = $u->canViewVendors();                                               // Vendor Management (IT + Finance + admins)
+    // Decommissioning archive (C-Suite + IT mgr). Finance is excluded on purpose: they reach
+    // the same reports inside Accounting (Assets → status "Disposed") and work the e-waste
+    // cycle at Reports → E-waste Quotations, so a sidebar link would be a third way in.
+    $mCanDecomm     = $u->canViewDecommissionReports() && ! $u->isFinance();
     $mCanCompanyReg = $u->isSuperadmin() || $u->isHrManager() || $u->isHrExecutive();
-    $mShow = $mCanTask || $mCanAutomation || $mCanStrategist || $mCanTicket || $mCanTeamLeave || $mCanTeamClaims || $mCanCompanyReg;
+    $mShow = $mCanTask || $mCanAutomation || $mCanStrategist || $mCanTicket || $mCanTeamLeave || $mCanTeamClaims || $mCanVendors || $mCanDecomm || $mCanCompanyReg;
     $mAutomationOpen = request()->routeIs('it.automation.*');
 @endphp
 @if($mShow)
@@ -80,6 +85,22 @@
             @php $__pendingTeamClaims = \App\Models\ExpenseClaim::where('status', 'submitted')->whereHas('items', fn ($q) => $q->where('approver_id', $u->employee->id))->count(); @endphp
             @if($__pendingTeamClaims > 0)<span class="badge bg-warning text-dark ms-auto" style="font-size:10px;">{{ $__pendingTeamClaims }}</span>@endif
         @endif
+    </a>
+</div>
+@endif
+
+@if($mCanVendors)
+<div class="nav-item">
+    <a href="{{ route('vendors.index') }}" class="nav-link {{ request()->routeIs('vendors.*') ? 'active' : '' }}">
+        <i class="bi bi-shop"></i> Vendor Management
+    </a>
+</div>
+@endif
+
+@if($mCanDecomm)
+<div class="nav-item">
+    <a href="{{ route('reports.decommission') }}" class="nav-link {{ request()->routeIs('reports.decommission') ? 'active' : '' }}">
+        <i class="bi bi-recycle"></i> Decommissioning
     </a>
 </div>
 @endif

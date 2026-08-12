@@ -207,9 +207,10 @@
                 <div class="mt-2">
                     <div class="fw-semibold text-muted mb-1" style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;">Asset Photos</div>
                     <div class="d-flex flex-wrap gap-2">
-                        @foreach($a->asset_photos as $photo)
-                        <a href="{{ asset('storage/'.$photo) }}" target="_blank">
-                            <img src="{{ asset('storage/'.$photo) }}"
+                        @foreach($a->asset_photos as $idx => $photo)
+                        @php $photoUrl = route('aarf.photo', [$aarf->acknowledgement_token, $a->id, $idx]); @endphp
+                        <a href="{{ $photoUrl }}" target="_blank" rel="noopener">
+                            <img src="{{ $photoUrl }}" loading="lazy"
                                  style="height:80px;width:100px;object-fit:cover;border-radius:6px;border:1px solid #dee2e6;">
                         </a>
                         @endforeach

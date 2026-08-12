@@ -2,18 +2,17 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\AssetInventory;
-use App\Models\AssetAssignment;
 use App\Models\Aarf;
+use App\Models\AssetAssignment;
+use App\Models\AssetInventory;
+use App\Models\DisposedAsset;
 use App\Models\Employee;
+use App\Models\Onboarding;
+use App\Models\RentalAssetAcknowledgement;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
-use App\Models\Onboarding;
-use App\Models\DisposedAsset;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rule;
-use App\Mail\AarfAcknowledgementMail;
 
 class AssetController extends Controller
 {
@@ -21,75 +20,134 @@ class AssetController extends Controller
     {
         $this->authorizeItAccess();
 
-        // Exclude assets staged for decommissioning (Not Good / Returned) — they are
-        // shown in the Decommissioning tab instead, never in both places at once.
-        $query = AssetInventory::with('assignedEmployee.onboarding.personalDetail')
+        // Exclude decommissioning conditions (not_good / returned) and soft-archived assets —
+        // the former show in the Decommissioning tab, the latter have left every inventory view.
+        $query = AssetInventory::with(['assignedEmployee.onboarding.personalDetail', 'vendor'])
+            ->whereNull('decommissioned_at')
             ->whereNotIn('asset_condition', AssetInventory::DECOMMISSION_CONDITIONS);
 
         if ($request->filled('search')) {
             $s = $request->search;
             $query->where(function ($q) use ($s) {
                 $q->where('asset_tag', 'like', "%{$s}%")
-                                    ->orWhere('brand', 'like', "%{$s}%")
-                  ->orWhere('model', 'like', "%{$s}%")
-                  ->orWhere('serial_number', 'like', "%{$s}%")
-                  ->orWhere('notes', 'like', "%{$s}%");
+                    ->orWhere('brand', 'like', "%{$s}%")
+                    ->orWhere('model', 'like', "%{$s}%")
+                    ->orWhere('serial_number', 'like', "%{$s}%")
+                    ->orWhere('notes', 'like', "%{$s}%");
             });
         }
-        if ($request->filled('status'))    $query->where('status', $request->status);
-        if ($request->filled('category')) $query->where('asset_category', $request->category);
-        if ($request->filled('type'))      $query->where('asset_type', $request->type);
-        if ($request->filled('ownership')) $query->where('ownership_type', $request->ownership);
-        if ($request->filled('vendor'))    $query->where('rental_vendor', $request->vendor);
-        if ($request->filled('brand'))     $query->where('brand', $request->brand);
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+        if ($request->filled('category')) {
+            $query->where('asset_category', $request->category);
+        }
+        if ($request->filled('type')) {
+            $query->where('asset_type', $request->type);
+        }
+        if ($request->filled('ownership')) {
+            $query->where('ownership_type', $request->ownership);
+        }
+        if ($request->filled('vendor')) {
+            self::applyVendorFilter($query, $request->vendor);
+        }
+        if ($request->filled('brand')) {
+            $query->where('brand', $request->brand);
+        }
         if ($request->filled('company_name')) {
             $coNorm = strtolower(str_replace(['.', ','], '', preg_replace('/\s+/', ' ', trim($request->company_name))));
             $query->where(function ($q) use ($request, $coNorm) {
                 $q->where('company_name', $request->company_name)
-                  ->orWhere('company_supplied_to', $request->company_name)
-                  ->orWhereRaw("LOWER(REPLACE(REPLACE(TRIM(company_name), '.', ''), ',', '')) LIKE ?", ["%{$coNorm}%"])
-                  ->orWhereRaw("LOWER(REPLACE(REPLACE(TRIM(company_supplied_to), '.', ''), ',', '')) LIKE ?", ["%{$coNorm}%"]);
+                    ->orWhere('company_supplied_to', $request->company_name)
+                    ->orWhereRaw("LOWER(REPLACE(REPLACE(TRIM(company_name), '.', ''), ',', '')) LIKE ?", ["%{$coNorm}%"])
+                    ->orWhereRaw("LOWER(REPLACE(REPLACE(TRIM(company_supplied_to), '.', ''), ',', '')) LIKE ?", ["%{$coNorm}%"]);
             });
         }
 
         $assets = $query->latest()->paginate(15)->withQueryString();
 
-        // Stats mirror the listing above, so a staged asset is not counted as active stock.
-        $activeInv = fn () => AssetInventory::whereNotIn('asset_condition', AssetInventory::DECOMMISSION_CONDITIONS);
-
+        $activeInv = fn () => AssetInventory::whereNull('decommissioned_at')
+            ->whereNotIn('asset_condition', AssetInventory::DECOMMISSION_CONDITIONS);
         $stats = [
-            'total_assets'    => $activeInv()->count(),
-            'available'       => $activeInv()->where('status', 'available')->count(),
-            'assigned'        => AssetInventory::where('status', 'assigned')->count(),
-            'unavailable'     => $activeInv()->where('status', 'unavailable')->count(),
+            'total_assets' => $activeInv()->count(),
+            'available' => $activeInv()->where('status', 'available')->count(),
+            'assigned' => $activeInv()->where('status', 'assigned')->count(),
+            'unavailable' => $activeInv()->where('status', 'unavailable')->count(),
         ];
 
         $employees = Employee::with('onboarding.personalDetail')->whereNull('active_until')->get();
         // New hires who can be handed an asset before day one (see pendingOnboardingOptions).
         $pendingOnboardings = self::pendingOnboardingOptions();
 
-        // Decommissioning tab with its own filters
-        $disposedQuery = DisposedAsset::with('asset')->latest('disposed_at');
+        // Decommissioning tab — staged assets not yet soft-archived (a finalized e-waste
+        // cycle or a signed return form sets decommissioned_at, dropping them from this tab
+        // too). `asset.vendor` is eager-loaded because the queue now shows which vendor each
+        // returned asset goes back to — resolved off the FK, never the `rental_vendor` free
+        // text, which holds the PIC's NAME since 2026-08-06.
+        $disposedQuery = DisposedAsset::with(['asset.vendor', 'batch'])
+            ->whereHas('asset', fn ($q) => $q->whereNull('decommissioned_at'))
+            ->latest('disposed_at');
         if ($request->filled('d_search')) {
             $ds = $request->d_search;
-            $disposedQuery->where(fn($q) =>
-                $q->where('asset_tag', 'like', "%{$ds}%")
-                  ->orWhere('brand',   'like', "%{$ds}%")
-                  ->orWhere('model',   'like', "%{$ds}%")
+            $disposedQuery->where(fn ($q) => $q->where('asset_tag', 'like', "%{$ds}%")
+                ->orWhere('brand', 'like', "%{$ds}%")
+                ->orWhere('model', 'like', "%{$ds}%")
             );
         }
-        if ($request->filled('d_type'))      $disposedQuery->where('asset_type', $request->d_type);
-        if ($request->filled('d_ownership')) $disposedQuery->whereHas('asset', fn($q) => $q->where('ownership_type', $request->d_ownership));
-        if ($request->filled('d_vendor'))    $disposedQuery->whereHas('asset', fn($q) => $q->where('rental_vendor',   $request->d_vendor));
+        if ($request->filled('d_type')) {
+            $disposedQuery->where('asset_type', $request->d_type);
+        }
+        if ($request->filled('d_decotype')) {
+            $disposedQuery->where('decommission_type', $request->d_decotype);
+        }
+        if ($request->filled('d_ownership')) {
+            $disposedQuery->whereHas('asset', fn ($q) => $q->where('ownership_type', $request->d_ownership));
+        }
+        if ($request->filled('d_vendor')) {
+            $disposedQuery->whereHas('asset', fn ($q) => self::applyVendorFilter($q, $request->d_vendor));
+        }
 
         $disposed = $disposedQuery->paginate(15, ['*'], 'disposed_page')->withQueryString();
 
-        // Distinct values for filter dropdowns
-        $rentalVendors = AssetInventory::where('ownership_type', 'rental')
-            ->whereNotNull('rental_vendor')
-            ->distinct()->orderBy('rental_vendor')
-            ->pluck('rental_vendor');
-        $filterBrands = AssetInventory::whereNotIn('asset_condition', AssetInventory::DECOMMISSION_CONDITIONS)
+        // asset id => the return AARF it already sits on. One query for the page, so each
+        // row can link to its form instead of offering to raise a second one for the same
+        // asset — which the unique index would reject anyway, but only after the click.
+        $returnForms = RentalAssetAcknowledgement::returnFormsByAsset(
+            $disposed->pluck('asset_inventory_id')
+        );
+        // Registered vendors for the Add-Asset modal's vendor picker (both ownership types).
+        // Split by what they're engaged for so the picker only offers vendors that make
+        // sense for the chosen ownership: rented FROM a rental vendor, bought FROM a supplier.
+        $vendorOptions = self::vendorPickerOptions();
+        // Every vendor's invoices in one list; the form narrows it to the picked vendor
+        // client-side off data-vendor, the same no-AJAX device the vendor auto-fill uses.
+        $invoiceOptions = \App\Models\VendorBillingDocument::invoiceOptions();
+        $primaryEwasteVendor = \App\Models\Vendor::primaryEwaste();
+        // Open (in-progress) e-waste cycles, newest first, for the status panel.
+        //
+        // "Open" is `finalized_at IS NULL`, NOT a status list — a cycle stranded at
+        // `collected` because its auto-finalize threw still has a null finalized_at and
+        // deliberately STAYS here, because it needs the manual finalize fallback and is
+        // therefore genuinely open work.
+        $openBatches = \App\Models\AssetDecommissionBatch::with('vendor')
+            ->whereNull('finalized_at')
+            ->where('status', '!=', 'cancelled')
+            ->latest()->get();
+        // Unsigned return forms are open work in exactly the same sense: assets are
+        // committed to a document nobody has signed yet, and until it is signed they are
+        // still on the books. Listed alongside the cycles so one panel answers "what is
+        // outstanding in decommissioning?" rather than half of it.
+        $openReturnForms = RentalAssetAcknowledgement::with('vendor')
+            ->withCount('items')
+            ->where('type', RentalAssetAcknowledgement::TYPE_RETURN)
+            ->where('status', RentalAssetAcknowledgement::STATUS_DRAFT)
+            ->latest()->get();
+        $canDecommission = Auth::user()->canManageDecommission();
+
+        // Distinct values for filter dropdowns. Vendor COMPANY names, not the PIC now
+        // held in rental_vendor — see rentalVendorFilterOptions()/applyVendorFilter().
+        $rentalVendors = self::rentalVendorFilterOptions();
+        $filterBrands = AssetInventory::where('asset_condition', '!=', 'not_good')
             ->whereNotNull('brand')->where('brand', '!=', '')
             ->distinct()->orderBy('brand')
             ->pluck('brand');
@@ -97,22 +155,27 @@ class AssetController extends Controller
         $registeredCompanies = \App\Models\Company::orderBy('name')->get(['name']);
 
         // Asset overview widget data
-        $normaliseCo = fn(string $s) => strtolower(str_replace(['.', ','], '', preg_replace('/\s+/', ' ', trim($s))));
+        $normaliseCo = fn (string $s) => strtolower(str_replace(['.', ','], '', preg_replace('/\s+/', ' ', trim($s))));
         $canonMap = [];
-        foreach ($registeredCompanies as $co) $canonMap[$normaliseCo($co->name)] = $co->name;
-        $resolveCo = fn(?string $raw) => $canonMap[$normaliseCo(trim($raw ?? ''))] ?? (trim($raw ?? '') ?: 'Unspecified');
+        foreach ($registeredCompanies as $co) {
+            $canonMap[$normaliseCo($co->name)] = $co->name;
+        }
+        $resolveCo = fn (?string $raw) => $canonMap[$normaliseCo(trim($raw ?? ''))] ?? (trim($raw ?? '') ?: 'Unspecified');
 
         // Card 1 & 2: asset_type counts grouped by company (for filter)
         // Structure: [ 'CompanyName' => [ 'type' => count, ... ], ... ]
         $buildCompanyTypeMap = function ($rows, string $companyField = 'company') use ($resolveCo) {
             $map = [];
             foreach ($rows as $row) {
-                $co   = $resolveCo($row->$companyField);
+                $co = $resolveCo($row->$companyField);
                 $type = $row->asset_type;
                 $map[$co][$type] = ($map[$co][$type] ?? 0) + $row->total;
             }
-            foreach ($map as &$types) arsort($types);
+            foreach ($map as &$types) {
+                arsort($types);
+            }
             uksort($map, 'strcasecmp');
+
             return $map;
         };
 
@@ -124,11 +187,13 @@ class AssetController extends Controller
                 ) as company, asset_type, count(*) as total
             ')->groupBy('company', 'asset_type')->get();
         $overviewAllByCompany = $buildCompanyTypeMap($allRows);
-        $overviewAllTotal     = AssetInventory::count();
+        $overviewAllTotal = AssetInventory::count();
         // Flat totals by type (for default "All Companies" view)
         $overviewAllByType = [];
         foreach ($overviewAllByCompany as $types) {
-            foreach ($types as $t => $c) $overviewAllByType[$t] = ($overviewAllByType[$t] ?? 0) + $c;
+            foreach ($types as $t => $c) {
+                $overviewAllByType[$t] = ($overviewAllByType[$t] ?? 0) + $c;
+            }
         }
         arsort($overviewAllByType);
 
@@ -137,10 +202,12 @@ class AssetController extends Controller
             ->selectRaw('COALESCE(NULLIF(TRIM(company_name),""), "Unspecified") as company, asset_type, count(*) as total')
             ->groupBy('company', 'asset_type')->get();
         $overviewCompanyByCompany = $buildCompanyTypeMap($coRows);
-        $overviewCompanyTotal     = AssetInventory::where('ownership_type', 'company')->count();
+        $overviewCompanyTotal = AssetInventory::where('ownership_type', 'company')->count();
         $overviewCompanyByType = [];
         foreach ($overviewCompanyByCompany as $types) {
-            foreach ($types as $t => $c) $overviewCompanyByType[$t] = ($overviewCompanyByType[$t] ?? 0) + $c;
+            foreach ($types as $t => $c) {
+                $overviewCompanyByType[$t] = ($overviewCompanyByType[$t] ?? 0) + $c;
+            }
         }
         arsort($overviewCompanyByType);
 
@@ -151,19 +218,25 @@ class AssetController extends Controller
             ->groupBy('company', 'asset_type', 'brand_name')->get();
         $overviewRentalByCompany = [];
         foreach ($rentalBrandRows as $row) {
-            $co    = $resolveCo($row->company);
-            $type  = $row->asset_type;
+            $co = $resolveCo($row->company);
+            $type = $row->asset_type;
             $brand = $row->brand_name;
-            if (!isset($overviewRentalByCompany[$co])) $overviewRentalByCompany[$co] = ['total' => 0, 'types' => []];
-            if (!isset($overviewRentalByCompany[$co]['types'][$type])) $overviewRentalByCompany[$co]['types'][$type] = ['total' => 0, 'brands' => []];
+            if (! isset($overviewRentalByCompany[$co])) {
+                $overviewRentalByCompany[$co] = ['total' => 0, 'types' => []];
+            }
+            if (! isset($overviewRentalByCompany[$co]['types'][$type])) {
+                $overviewRentalByCompany[$co]['types'][$type] = ['total' => 0, 'brands' => []];
+            }
             $overviewRentalByCompany[$co]['total'] += $row->total;
             $overviewRentalByCompany[$co]['types'][$type]['total'] += $row->total;
             $overviewRentalByCompany[$co]['types'][$type]['brands'][$brand] = ($overviewRentalByCompany[$co]['types'][$type]['brands'][$brand] ?? 0) + $row->total;
         }
-        uasort($overviewRentalByCompany, fn($a, $b) => $b['total'] <=> $a['total']);
+        uasort($overviewRentalByCompany, fn ($a, $b) => $b['total'] <=> $a['total']);
         foreach ($overviewRentalByCompany as &$coData) {
-            uasort($coData['types'], fn($a, $b) => $b['total'] <=> $a['total']);
-            foreach ($coData['types'] as &$typeData) arsort($typeData['brands']);
+            uasort($coData['types'], fn ($a, $b) => $b['total'] <=> $a['total']);
+            foreach ($coData['types'] as &$typeData) {
+                arsort($typeData['brands']);
+            }
         }
         $overviewRentalTotal = AssetInventory::where('ownership_type', 'rental')->count();
 
@@ -171,13 +244,96 @@ class AssetController extends Controller
             'registeredCompanies', 'filterBrands',
             'overviewAllTotal', 'overviewAllByType', 'overviewAllByCompany',
             'overviewCompanyTotal', 'overviewCompanyByType', 'overviewCompanyByCompany',
-            'overviewRentalTotal', 'overviewRentalByCompany'
+            'overviewRentalTotal', 'overviewRentalByCompany',
+            'primaryEwasteVendor', 'openBatches', 'openReturnForms', 'returnForms', 'canDecommission',
+            'vendorOptions', 'invoiceOptions'
         ));
+    }
+
+    /**
+     * Active vendors for the asset forms' vendor picker, split by ownership.
+     *
+     * Rental assets may only be linked to a vendor we actually rent from; purchases to a
+     * supplier. Both lists carry the vendor's contact details as data-* attributes so the
+     * form can auto-fill them without a round trip — one query, no AJAX endpoint, and no
+     * chance of the page showing details for a vendor that no longer exists.
+     *
+     * @return array{rental:\Illuminate\Support\Collection,purchase:\Illuminate\Support\Collection}
+     */
+    private static function vendorPickerOptions(?AssetInventory $asset = null): array
+    {
+        $active = \App\Models\Vendor::query()->where('is_active', true)->orderBy('name')->get();
+
+        $options = [
+            // Rented or leased — both are ownership_type 'rental' on the asset.
+            'rental' => $active->filter(fn ($v) => $v->isRental())->values(),
+            // A supplier may be registered under any of the "we buy things from them"
+            // types; a vendor with no type at all still can't be picked.
+            'purchase' => $active->filter(fn ($v) => $v->isAssetSupplier())->values(),
+        ];
+
+        // An asset already linked to a vendor must ALWAYS see that vendor in its own picker,
+        // even if the vendor has since been deactivated or had its types changed. Without
+        // this the linked vendor has no <option>, the select falls back to "" on the next
+        // save, and an edit to something unrelated (RAM, a note) silently NULLs the link —
+        // destroying exactly the historical reference that deactivating a vendor instead of
+        // deleting it exists to preserve.
+        if ($asset?->vendor_id) {
+            $key = $asset->ownership_type === 'rental' ? 'rental' : 'purchase';
+            if (! $options[$key]->contains('id', $asset->vendor_id)) {
+                if ($linked = \App\Models\Vendor::find($asset->vendor_id)) {
+                    $options[$key] = $options[$key]->push($linked)->sortBy('name')->values();
+                }
+            }
+        }
+
+        return $options;
+    }
+
+    /**
+     * Vendor filter — resolves the vendor COMPANY through the FK, falling back to the
+     * free-text column only for assets that were never linked to a registered vendor.
+     *
+     * `rental_vendor` used to be force-synced to the vendor's company name, so filtering
+     * on that string alone worked. It now holds the vendor's PIC (a person), so the old
+     * `where('rental_vendor', $vendor)` would quietly have become a filter by contact
+     * name — matching nothing, and hiding every rental asset saved since. The FK is the
+     * authoritative link; the free text is only meaningful when there is no FK.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $query  scoped to AssetInventory
+     */
+    private static function applyVendorFilter($query, string $vendor): void
+    {
+        $query->where(function ($q) use ($vendor) {
+            $q->whereHas('vendor', fn ($v) => $v->where('name', $vendor))
+                ->orWhere(fn ($q2) => $q2->whereNull('vendor_id')->where('rental_vendor', $vendor));
+        });
+    }
+
+    /**
+     * Options for the two vendor filter dropdowns — vendor COMPANY names, matching what
+     * applyVendorFilter() searches on: registered vendors that rental assets actually
+     * link to, plus the free-text names of rental assets with no registered vendor.
+     */
+    private static function rentalVendorFilterOptions(): \Illuminate\Support\Collection
+    {
+        $linkedIds = AssetInventory::where('ownership_type', 'rental')
+            ->whereNotNull('vendor_id')->distinct()->pluck('vendor_id');
+
+        return \App\Models\Vendor::whereIn('id', $linkedIds)->pluck('name')
+            ->merge(
+                AssetInventory::where('ownership_type', 'rental')
+                    ->whereNull('vendor_id')
+                    ->whereNotNull('rental_vendor')->where('rental_vendor', '!=', '')
+                    ->distinct()->pluck('rental_vendor')
+            )
+            ->unique()->sort(SORT_NATURAL | SORT_FLAG_CASE)->values();
     }
 
     public function create()
     {
         $this->authorizeCanAdd();
+
         return redirect()->route('assets.index');
     }
 
@@ -185,7 +341,7 @@ class AssetController extends Controller
     {
         $this->authorizeCanAdd();
         $validated = $this->validateAsset($request);
-        $data      = $this->buildAssetData($request, $validated);
+        $data = $this->buildAssetData($request, $validated);
 
         if ($request->hasFile('invoice_document')) {
             $data['invoice_document'] = $request->file('invoice_document')->store('invoices', 'local');
@@ -207,17 +363,20 @@ class AssetController extends Controller
 
         $asset = AssetInventory::create($data);
 
-        // ── Stage for decommissioning if condition = not_good / returned ───
-        if ($decommissionType = $this->decommissionTypeFor($data['asset_condition'] ?? null)) {
-            $actor     = Auth::user();
-            $actorName = $actor->name ?? $actor->work_email ?? 'IT Team';
-            $this->stageForDecommission($asset, $decommissionType, $actorName, $request->input('decommission_reason'));
+        // ── Stage for decommissioning: Not Good → e-waste, Returned → vendor return ──
+        $actor = Auth::user();
+        $actorName = $actor->name ?? $actor->work_email ?? 'IT Team';
+        $decommissionReason = $request->input('decommission_reason');
+        if (($data['asset_condition'] ?? null) === 'not_good') {
+            $this->stageForDecommission($asset, 'e_waste', $actorName, $decommissionReason, $request->input('ewaste_completeness'), $request->input('ewaste_parts_removed'));
+        } elseif (($data['asset_condition'] ?? null) === 'returned') {
+            $this->stageForDecommission($asset, 'vendor_return', $actorName, $decommissionReason);
         }
 
         // Save uploaded photos into asset_photos/{asset_tag}/ folder
         if ($request->hasFile('asset_photos')) {
-            $folder = 'asset_photos/' . \Illuminate\Support\Str::slug($asset->asset_tag);
-            $paths  = [];
+            $folder = 'asset_photos/'.\Illuminate\Support\Str::slug($asset->asset_tag);
+            $paths = [];
             foreach ($request->file('asset_photos') as $photo) {
                 $paths[] = $photo->store($folder, 'public');
             }
@@ -230,18 +389,19 @@ class AssetController extends Controller
         $assignNote = '';
         if ($assignee = $this->requestedAssignee($request)) {
             $actorName = Auth::user()->name ?? Auth::user()->work_email ?? 'IT Team';
-            $line = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
+            $line = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) ".
                     "assigned to {$assignee['name']} by {$actorName} during asset creation.";
 
             $this->createAssignmentForAssignee($assignee, $asset->id, $asset->asset_assigned_date?->toDateString() ?? now()->toDateString());
             $asset->appendRemark($line);
             $assignNote = trim($this->notifyAssigneeOfAarf($assignee, $asset, 'assigned', $line)
-                . ' ' . $this->sameTypeAlreadyHeldNote($assignee, $asset));
+                .' '.$this->sameTypeAlreadyHeldNote($assignee, $asset));
         }
 
-        $tab = $this->decommissionTypeFor($data['asset_condition'] ?? null) ? 'damaged' : null;
+        $tab = in_array($data['asset_condition'] ?? null, ['not_good', 'returned']) ? 'damaged' : null;
+
         return redirect()->route('assets.index', array_filter(['tab' => $tab]))
-            ->with('success', trim('Asset added successfully. ' . $assignNote));
+            ->with('success', trim('Asset added successfully. '.$assignNote));
     }
 
     public function show(AssetInventory $asset)
@@ -252,6 +412,7 @@ class AssetController extends Controller
             ->whereNull('active_until')
             ->where('id', '!=', $asset->assigned_employee_id ?? 0)
             ->get();
+
         return view('it.assets.show', compact('asset', 'employees'));
     }
 
@@ -261,17 +422,53 @@ class AssetController extends Controller
         $employees = Employee::with('onboarding.personalDetail')->whereNull('active_until')->get();
         $pendingOnboardings = self::pendingOnboardingOptions();
         $registeredCompanies = \App\Models\Company::orderBy('name')->get(['name']);
-        return view('it.assets.edit', compact('asset', 'employees', 'pendingOnboardings', 'registeredCompanies'));
+        // Registered vendors for the Section C vendor <select> (Vendor Management), split
+        // by ownership. NOTE the listing page's $rentalVendors is a pluck() of distinct
+        // free-text names for its filter dropdown — a different variable of a different
+        // type. Don't reuse either name across the two views.
+        $vendorOptions = self::vendorPickerOptions($asset);
+        // All vendors' invoices, filtered to the picked vendor client-side. The asset's OWN
+        // linked invoice is always among them, so a save that touches something unrelated
+        // can never blank the link by falling back to "" — the trap vendorPickerOptions()
+        // already guards against on the vendor select.
+        $invoiceOptions = \App\Models\VendorBillingDocument::invoiceOptions();
+
+        return view('it.assets.edit', compact('asset', 'employees', 'pendingOnboardings', 'registeredCompanies', 'vendorOptions', 'invoiceOptions'));
     }
 
     public function update(Request $request, AssetInventory $asset)
     {
         $this->authorizeCanEdit();
-        $user      = Auth::user();
+        $user = Auth::user();
         $actorName = $user->name ?? $user->work_email ?? 'IT Team';
 
         $validated = $this->validateAsset($request, isUpdate: true, user: $user);
-        $data      = $this->buildAssetData($request, $validated, $user);
+        $data = $this->buildAssetData($request, $validated, $user);
+
+        // An asset committed to an UNSIGNED return form must not have its condition changed
+        // out from under the document.
+        //
+        // Until 2026-08-10 a vendor return created a batch, which stamped
+        // `dispose_assets.decommission_batch_id`, and the two branches further down guard on
+        // exactly that column: one refuses to delete a staging row, the other refuses to
+        // re-route it to e-waste. A return AARF stamps nothing, so both guards became
+        // no-ops for returns and two silent corruptions opened up — restore the asset to
+        // Good and its queue row is deleted while it stays an item on the form, so signing
+        // that form later stamps `decommissioned_at` on an in-service, assigned laptop and
+        // states in a signed PDF that it went back to the vendor; or flip it to Not Good and
+        // the same asset is swept into an e-waste cycle while still being returned.
+        //
+        // Refused rather than silently tolerated, because the operator's remedy is one
+        // click (discard the draft form) and any other outcome leaves two documents
+        // disagreeing about where one asset went. Checked BEFORE any upload is stored so a
+        // bounce leaves nothing behind.
+        if (array_key_exists('asset_condition', $data)
+            && $data['asset_condition'] !== $asset->asset_condition
+            && ($openReturn = RentalAssetAcknowledgement::openReturnFormFor($asset->id))) {
+            return back()->withInput()->with('error',
+                "{$asset->asset_tag} is on unsigned return form {$openReturn->reference}, so its condition cannot be changed. "
+                .'Discard that form first if the asset is no longer going back to the vendor.');
+        }
 
         if ($request->hasFile('invoice_document')) {
             $data['invoice_document'] = $request->file('invoice_document')->store('invoices', 'local');
@@ -280,7 +477,7 @@ class AssetController extends Controller
         // Invoices: honor per-file keep/remove, then append new uploads
         $invoicePaths = $asset->invoice_documents ?? [];
         if ($request->has('invoice_keep_submitted')) {
-            $keep    = (array) $request->input('invoice_keep_paths', []);
+            $keep = (array) $request->input('invoice_keep_paths', []);
             $removed = array_diff($invoicePaths, $keep);
             foreach ($removed as $r) {
                 \Illuminate\Support\Facades\Storage::disk('local')->delete($r);
@@ -293,13 +490,13 @@ class AssetController extends Controller
             }
         }
         if ($request->has('invoice_keep_submitted') || $request->hasFile('invoice_documents')) {
-            $data['invoice_documents'] = !empty($invoicePaths) ? $invoicePaths : null;
+            $data['invoice_documents'] = ! empty($invoicePaths) ? $invoicePaths : null;
         }
 
         // Contract docs: honor per-file keep/remove, then append new uploads
         $contractPaths = $asset->rental_contract_documents ?? [];
         if ($request->has('contract_keep_submitted')) {
-            $keep    = (array) $request->input('contract_keep_paths', []);
+            $keep = (array) $request->input('contract_keep_paths', []);
             $removed = array_diff($contractPaths, $keep);
             foreach ($removed as $r) {
                 \Illuminate\Support\Facades\Storage::disk('local')->delete($r);
@@ -312,24 +509,24 @@ class AssetController extends Controller
             }
         }
         if ($request->has('contract_keep_submitted') || $request->hasFile('rental_contract_documents')) {
-            $data['rental_contract_documents'] = !empty($contractPaths) ? $contractPaths : null;
+            $data['rental_contract_documents'] = ! empty($contractPaths) ? $contractPaths : null;
         }
 
         // Handle photo keep/remove + new uploads
         $existing = $asset->asset_photos ?? [];
         if ($request->has('photo_keep_submitted')) {
-            $keep     = (array) $request->input('photo_keep_paths', []);
+            $keep = (array) $request->input('photo_keep_paths', []);
             $existing = array_values(array_intersect($existing, $keep));
         }
         if ($request->hasFile('asset_photos')) {
-            $folder = 'asset_photos/' . \Illuminate\Support\Str::slug($asset->asset_tag);
+            $folder = 'asset_photos/'.\Illuminate\Support\Str::slug($asset->asset_tag);
             foreach ($request->file('asset_photos') as $photo) {
                 $existing[] = $photo->store($folder, 'public');
             }
         }
         if ($request->has('photo_keep_submitted')) {
-            $data['asset_photos'] = !empty($existing) ? $existing : null;
-        } elseif (!empty($existing)) {
+            $data['asset_photos'] = ! empty($existing) ? $existing : null;
+        } elseif (! empty($existing)) {
             $data['asset_photos'] = $existing;
         }
 
@@ -338,28 +535,38 @@ class AssetController extends Controller
         // at all, so touching the assignment here would read "not assigned" from an absent
         // field and silently release the asset from whoever holds it.
         $canEditAssignment = $user->canEditAllAssetSections();
-        $oldAssignee     = $canEditAssignment ? $this->currentAssignee($asset) : null;
-        $newAssignee     = $canEditAssignment ? $this->requestedAssignee($request) : null;
+        $oldAssignee = $canEditAssignment ? $this->currentAssignee($asset) : null;
+        $newAssignee = $canEditAssignment ? $this->requestedAssignee($request) : null;
         $oldAssignedDate = $asset->asset_assigned_date?->toDateString();
 
         // Capture old Section A/B values before saving (for change detection)
-        $sectionABKeys = ['asset_tag','asset_type','brand','model','serial_number',
-                          'processor','ram_size','storage','operating_system','screen_size','spec_others'];
+        $sectionABKeys = ['asset_tag', 'asset_type', 'brand', 'model', 'serial_number',
+            'processor', 'ram_size', 'storage', 'operating_system', 'screen_size', 'spec_others'];
         $oldSectionAB = [];
         foreach ($sectionABKeys as $k) {
-            $oldSectionAB[$k] = (string)($asset->$k ?? '');
+            $oldSectionAB[$k] = (string) ($asset->$k ?? '');
         }
 
         $asset->update($data);
 
-        // ── Stage for decommissioning if condition = not_good / returned ───
-        if ($decommissionType = $this->decommissionTypeFor($data['asset_condition'] ?? null)) {
-            $this->stageForDecommission($asset, $decommissionType, $actorName, $request->input('decommission_reason'));
+        // ── Stage for decommissioning: Not Good → e-waste, Returned → vendor return ──
+        $decommissionReason = $request->input('decommission_reason');
+        if (($data['asset_condition'] ?? null) === 'not_good') {
+            $this->stageForDecommission($asset, 'e_waste', $actorName, $decommissionReason, $request->input('ewaste_completeness'), $request->input('ewaste_parts_removed'));
+        } elseif (($data['asset_condition'] ?? null) === 'returned') {
+            $this->stageForDecommission($asset, 'vendor_return', $actorName, $decommissionReason);
         } elseif (in_array($data['asset_condition'] ?? null, ['good', 'under_maintenance'])) {
-            if (DisposedAsset::where('asset_inventory_id', $asset->id)->exists()) {
-                DisposedAsset::where('asset_inventory_id', $asset->id)->delete();
-                $restoredTo = ucfirst(str_replace('_', ' ', (string) $data['asset_condition']));
-                $asset->appendRemark("Asset condition restored to {$restoredTo} — removed from Decommissioning Assets by {$actorName}.");
+            // Restore — remove from the Decommissioning queue, but never yank an asset
+            // already collected into an e-waste cycle or already soft-archived.
+            //
+            // An asset committed to an unsigned RETURN form never reaches here: the
+            // pre-flight guard at the top of update() bounces the condition change, because
+            // `decommission_batch_id` (the only thing this line tests) is not written by the
+            // return flow and cannot speak for it.
+            $staging = DisposedAsset::where('asset_inventory_id', $asset->id)->first();
+            if ($staging && ! $staging->decommission_batch_id && ! $asset->decommissioned_at) {
+                $staging->delete();
+                $asset->appendRemark('Asset condition restored to '.ucfirst(str_replace('_', ' ', (string) $data['asset_condition'])).' — removed from Decommissioning by '.$actorName.'.');
             }
         }
 
@@ -380,12 +587,12 @@ class AssetController extends Controller
 
             $label = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model})";
 
-            if (!$oldAssignee) {
+            if (! $oldAssignee) {
                 $line = "{$label} assigned to {$newAssignee['name']} by {$actorName}.";
                 $asset->appendRemark($line);
                 $assignNote = trim($this->notifyAssigneeOfAarf($newAssignee, $asset, 'assigned', $line)
-                    . ' ' . $this->sameTypeAlreadyHeldNote($newAssignee, $asset));
-            } elseif (!$newAssignee) {
+                    .' '.$this->sameTypeAlreadyHeldNote($newAssignee, $asset));
+            } elseif (! $newAssignee) {
                 $line = "{$label} unassigned from {$oldAssignee['name']} by {$actorName}.";
                 $asset->appendRemark($line);
                 $this->notifyAssigneeOfAarf($oldAssignee, $asset, 'returned', $line);
@@ -397,7 +604,7 @@ class AssetController extends Controller
                     "{$label} returned — reassigned from {$oldName} to {$newName} by {$actorName}.");
                 $assignNote = trim($this->notifyAssigneeOfAarf($newAssignee, $asset, 'assigned',
                     "{$label} assigned — reassigned to {$newName} from {$oldName} by {$actorName}.")
-                    . ' ' . $this->sameTypeAlreadyHeldNote($newAssignee, $asset));
+                    .' '.$this->sameTypeAlreadyHeldNote($newAssignee, $asset));
             }
 
         } elseif ($canEditAssignment && $newAssignee) {
@@ -406,14 +613,14 @@ class AssetController extends Controller
             // the machine, so a Section A/B edit re-opens the acknowledgement either way.
             $changedFields = [];
             foreach ($sectionABKeys as $field) {
-                if (($oldSectionAB[$field] ?? '') !== (string)($data[$field] ?? '')) {
+                if (($oldSectionAB[$field] ?? '') !== (string) ($data[$field] ?? '')) {
                     $changedFields[] = ucfirst(str_replace('_', ' ', $field));
                 }
             }
 
-            if (!empty($changedFields)) {
+            if (! empty($changedFields)) {
                 $changeList = implode(', ', $changedFields);
-                $remarkText = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
+                $remarkText = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) ".
                               "details updated ({$changeList}) by {$actorName}.";
                 $asset->appendRemark($remarkText);
                 $assignNote = $this->notifyAssigneeOfAarf($newAssignee, $asset, 'assigned', $remarkText, resetAcknowledgement: true, pending: false);
@@ -424,7 +631,7 @@ class AssetController extends Controller
                     ->update(['assigned_date' => $data['asset_assigned_date']]);
 
                 $asset->appendRemark(
-                    "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
+                    "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) ".
                     "assignment date updated for {$newAssignee['name']} by {$actorName}."
                 );
             }
@@ -434,21 +641,27 @@ class AssetController extends Controller
         // detail page's Back button returns to the same filtered/paginated list.
         $filters = $request->query();
 
-        // A staged asset (Not Good / Returned) is no longer in the active listing, so its
-        // detail page is the decommissioning one.
-        if ($asset->isStagedForDecommission()) {
+        if ($asset->asset_condition === 'not_good') {
             return redirect()->route('assets.disposed.show', array_merge($filters, ['asset' => $asset->id]))->with('success', 'Asset updated successfully.');
         }
 
+        if ($asset->asset_condition === 'returned') {
+            return redirect()->route('assets.index', array_merge($filters, ['tab' => 'damaged']))->with('success', 'Asset marked as Returned and moved to Decommissioning.');
+        }
+
         return redirect()->route('assets.show', array_merge($filters, ['asset' => $asset->id]))
-            ->with('success', trim('Asset updated successfully. ' . $assignNote));
+            ->with('success', trim('Asset updated successfully. '.$assignNote));
     }
 
     // ── Damaged Assets page (view-only) ────────────────────────────────────
     public function disposed(Request $request)
     {
         $this->authorizeItAccess();
-        $disposed = DisposedAsset::latest('disposed_at')->paginate(20)->withQueryString();
+        // Hide assets already collected + soft-archived by a completed decommission batch.
+        $disposed = DisposedAsset::where(fn ($q) => $q->whereNull('asset_inventory_id')
+            ->orWhereHas('asset', fn ($qq) => $qq->whereNull('decommissioned_at')))
+            ->latest('disposed_at')->paginate(20)->withQueryString();
+
         return view('it.assets.disposed', compact('disposed'));
     }
 
@@ -456,6 +669,7 @@ class AssetController extends Controller
     public function disposedShow(AssetInventory $asset)
     {
         $this->authorizeItAccess();
+
         return view('it.assets.disposed-show', compact('asset'));
     }
 
@@ -464,23 +678,23 @@ class AssetController extends Controller
     {
         $this->authorizeCanEdit();
 
-        $actor       = Auth::user();
-        $actorName   = $actor->name ?? $actor->work_email ?? 'IT Team';
+        $actor = Auth::user();
+        $actorName = $actor->name ?? $actor->work_email ?? 'IT Team';
 
         // Resolve the holder — an employee, or a new hire who has no employees row yet.
         $oldAssignee = $this->currentAssignee($asset);
-        $oldName     = $oldAssignee['name'] ?? 'previous assignee';
-        $assetLabel  = trim("{$asset->brand} {$asset->model}") ?: $asset->asset_tag;
-        $today       = now()->format('d/m/Y');
+        $oldName = $oldAssignee['name'] ?? 'previous assignee';
+        $assetLabel = trim("{$asset->brand} {$asset->model}") ?: $asset->asset_tag;
+        $today = now()->format('d/m/Y');
 
         AssetAssignment::where('asset_inventory_id', $asset->id)
             ->where('status', 'assigned')
             ->update(['status' => 'returned', 'returned_date' => now()->toDateString()]);
 
         $asset->update([
-            'status'               => 'available',
+            'status' => 'available',
             'assigned_employee_id' => null,
-            'asset_assigned_date'  => null,
+            'asset_assigned_date' => null,
             'expected_return_date' => null,
         ]);
 
@@ -499,30 +713,42 @@ class AssetController extends Controller
     public function export(Request $request)
     {
         $u = Auth::user();
-        if (!$u->isSuperadmin() && !$u->isHrManager() && !$u->isHrExecutive() && !$u->isItManager() && !$u->isItExecutive()) {
+        if (! $u->isSuperadmin() && ! $u->isHrManager() && ! $u->isHrExecutive() && ! $u->isItManager() && ! $u->isItExecutive()) {
             abort(403);
         }
-        $query = AssetInventory::with('assignedEmployee.onboarding.personalDetail');
-        if ($request->filled('status'))       $query->where('status', $request->status);
-        if ($request->filled('category'))     $query->where('asset_category', $request->category);
-        if ($request->filled('type'))         $query->where('asset_type', $request->type);
-        if ($request->filled('ownership'))    $query->where('ownership_type', $request->ownership);
-        if ($request->filled('vendor'))       $query->where('rental_vendor', $request->vendor);
-        if ($request->filled('brand'))        $query->where('brand', $request->brand);
+        $query = AssetInventory::with(['assignedEmployee.onboarding.personalDetail', 'vendor']);
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+        if ($request->filled('category')) {
+            $query->where('asset_category', $request->category);
+        }
+        if ($request->filled('type')) {
+            $query->where('asset_type', $request->type);
+        }
+        if ($request->filled('ownership')) {
+            $query->where('ownership_type', $request->ownership);
+        }
+        if ($request->filled('vendor')) {
+            self::applyVendorFilter($query, $request->vendor);
+        }
+        if ($request->filled('brand')) {
+            $query->where('brand', $request->brand);
+        }
         if ($request->filled('company_name')) {
             $coNorm = strtolower(str_replace(['.', ','], '', preg_replace('/\s+/', ' ', trim($request->company_name))));
             $query->where(function ($q) use ($request, $coNorm) {
                 $q->where('company_name', $request->company_name)
-                  ->orWhere('company_supplied_to', $request->company_name)
-                  ->orWhereRaw("LOWER(REPLACE(REPLACE(TRIM(company_name), '.', ''), ',', '')) LIKE ?", ["%{$coNorm}%"])
-                  ->orWhereRaw("LOWER(REPLACE(REPLACE(TRIM(company_supplied_to), '.', ''), ',', '')) LIKE ?", ["%{$coNorm}%"]);
+                    ->orWhere('company_supplied_to', $request->company_name)
+                    ->orWhereRaw("LOWER(REPLACE(REPLACE(TRIM(company_name), '.', ''), ',', '')) LIKE ?", ["%{$coNorm}%"])
+                    ->orWhereRaw("LOWER(REPLACE(REPLACE(TRIM(company_supplied_to), '.', ''), ',', '')) LIKE ?", ["%{$coNorm}%"]);
             });
         }
 
-        $assets  = $query->latest()->get();
+        $assets = $query->latest()->get();
         $headers = [
-            'Content-Type'        => 'text/csv',
-            'Content-Disposition' => 'attachment; filename="assets_export_' . date('Y-m-d') . '.csv"',
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => 'attachment; filename="assets_export_'.date('Y-m-d').'.csv"',
         ];
 
         $callback = function () use ($assets) {
@@ -533,7 +759,7 @@ class AssetController extends Controller
                 'Processor', 'RAM', 'Storage', 'OS', 'Screen Size', 'Other Specs',
                 'Ownership Type', 'Company Name', 'Supplied To',
                 'Purchase Date', 'Vendor', 'Cost (RM)', 'Warranty Expiry',
-                'Rental Vendor', 'Rental Vendor Contact', 'Rental Cost/Month', 'Rental Start', 'Rental End', 'Contract Ref',
+                'Rental Vendor', 'Rental Vendor PIC', 'Rental Vendor Contact', 'Rental Cost/Month', 'Rental Start', 'Rental End', 'Contract Ref',
                 'Assigned To', 'Assigned Date', 'Expected Return',
                 'Maintenance Status', 'Last Maintenance', 'Notes', 'Remarks',
             ]);
@@ -544,7 +770,12 @@ class AssetController extends Controller
                     $a->processor, $a->ram_size, $a->storage, $a->operating_system, $a->screen_size, $a->spec_others,
                     $a->ownership_type, $a->company_name, $a->company_supplied_to,
                     $a->purchase_date?->format('d/m/Y'), $a->purchase_vendor, $a->purchase_cost, $a->warranty_expiry_date?->format('d/m/Y'),
-                    $a->rental_vendor, $a->rental_vendor_contact, $a->rental_cost_per_month,
+                    // The vendor COMPANY comes off the FK; rental_vendor is the PIC, so the
+                    // two are separate columns (it fell back to the free text only for
+                    // assets never linked to a registered vendor).
+                    $a->vendor_id ? $a->vendor?->name : $a->rental_vendor,
+                    $a->vendor_id ? $a->rental_vendor : null,
+                    $a->rental_vendor_contact, $a->rental_cost_per_month,
                     $a->rental_start_date?->format('d/m/Y'), $a->rental_end_date?->format('d/m/Y'), $a->rental_contract_reference,
                     $a->resolvedAssigneeName(), $a->asset_assigned_date?->format('d/m/Y'), $a->expected_return_date?->format('d/m/Y'),
                     $a->maintenance_status, $a->last_maintenance_date?->format('d/m/Y'), $a->notes, $a->remarks,
@@ -562,20 +793,20 @@ class AssetController extends Controller
         // Either target is accepted, exactly one required: a new hire has no employees row
         // until their start date, so demanding new_employee_id would exclude them.
         $request->validate([
-            'new_employee_id'   => 'required_without:new_onboarding_id|nullable|exists:employees,id',
+            'new_employee_id' => 'required_without:new_onboarding_id|nullable|exists:employees,id',
             'new_onboarding_id' => ['required_without:new_employee_id', 'nullable', self::assignableOnboardingRule()],
         ]);
 
-        $actor     = Auth::user();
+        $actor = Auth::user();
         $actorName = $actor->name ?? $actor->work_email ?? 'IT Team';
 
         $newAssignee = $this->requestedAssignee($request, 'new_employee_id', 'new_onboarding_id');
-        if (!$newAssignee) {
+        if (! $newAssignee) {
             return back()->with('error', 'That person could no longer be resolved — reassignment cancelled.');
         }
-        $newName     = $newAssignee['name'];
+        $newName = $newAssignee['name'];
         $oldAssignee = $this->currentAssignee($asset);
-        $oldName     = $oldAssignee['name'] ?? 'previous assignee';
+        $oldName = $oldAssignee['name'] ?? 'previous assignee';
 
         AssetAssignment::where('asset_inventory_id', $asset->id)
             ->where('status', 'assigned')
@@ -586,8 +817,8 @@ class AssetController extends Controller
         $asset->update([
             // Null for a pre-start hire — the assignment is carried by asset_assignments.
             'assigned_employee_id' => $newAssignee['type'] === 'employee' ? $newAssignee['id'] : null,
-            'asset_assigned_date'  => now()->toDateString(),
-            'status'               => 'assigned',
+            'asset_assigned_date' => now()->toDateString(),
+            'status' => 'assigned',
         ]);
 
         $label = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model})";
@@ -599,33 +830,33 @@ class AssetController extends Controller
         }
         $note = trim($this->notifyAssigneeOfAarf($newAssignee, $asset, 'assigned',
             "{$label} assigned — reassigned to {$newName} from {$oldName} by {$actorName}.")
-            . ' ' . $this->sameTypeAlreadyHeldNote($newAssignee, $asset));
+            .' '.$this->sameTypeAlreadyHeldNote($newAssignee, $asset));
 
         return redirect()->route('assets.show', $asset)
-            ->with('success', trim("Asset successfully reassigned from {$oldName} to {$newName}. " . $note));
+            ->with('success', trim("Asset successfully reassigned from {$oldName} to {$newName}. ".$note));
     }
 
     public function returnAsset(AssetInventory $asset)
     {
         $this->authorizeCanEdit();
 
-        $actor       = Auth::user();
-        $actorName   = $actor->name ?? $actor->work_email ?? 'IT Team';
+        $actor = Auth::user();
+        $actorName = $actor->name ?? $actor->work_email ?? 'IT Team';
         $oldAssignee = $this->currentAssignee($asset);
-        $oldName     = $oldAssignee['name'] ?? 'previous assignee';
+        $oldName = $oldAssignee['name'] ?? 'previous assignee';
 
         AssetAssignment::where('asset_inventory_id', $asset->id)
             ->where('status', 'assigned')
             ->update(['status' => 'returned', 'returned_date' => now()->toDateString()]);
 
         $asset->update([
-            'status'               => 'available',
+            'status' => 'available',
             'assigned_employee_id' => null,
-            'asset_assigned_date'  => null,
+            'asset_assigned_date' => null,
             'expected_return_date' => null,
         ]);
 
-        $line = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) " .
+        $line = "Asset [{$asset->asset_tag}] ({$asset->brand} {$asset->model}) ".
                 "returned by {$oldName} to IT department. Processed by {$actorName}.";
         $asset->appendRemark($line);
 
@@ -634,7 +865,7 @@ class AssetController extends Controller
         }
 
         return redirect()->route('assets.show', $asset)
-            ->with('success', "Asset marked as returned and is now available.");
+            ->with('success', 'Asset marked as returned and is now available.');
     }
 
     // ── Download CSV import template ───────────────────────────────────────
@@ -644,7 +875,7 @@ class AssetController extends Controller
         $this->authorizeCanAdd();
 
         $headers = [
-            'Content-Type'        => 'text/csv',
+            'Content-Type' => 'text/csv',
             'Content-Disposition' => 'attachment; filename="asset_import_template.csv"',
         ];
 
@@ -679,8 +910,8 @@ class AssetController extends Controller
                 'purchase_date',        // optional: DD-MM-YYYY
                 'warranty_expiry_date', // optional: DD-MM-YYYY
                 'rental_vendor',        // optional: required if ownership_type = rental
-                'rental_vendor_contact',// optional
-                'rental_cost_per_month',// optional
+                'rental_vendor_contact', // optional
+                'rental_cost_per_month', // optional
                 'rental_start_date',    // optional: DD-MM-YYYY
                 'rental_end_date',      // optional: DD-MM-YYYY
                 'rental_contract_reference', // optional
@@ -759,31 +990,40 @@ class AssetController extends Controller
             'csv_file' => 'required|file|mimes:csv,txt|max:5120',
         ]);
 
-        $handle    = fopen($request->file('csv_file')->getRealPath(), 'r');
-        $headers   = null;
-        $imported  = 0;
-        $skipped   = 0;
-        $errors    = [];
+        $handle = fopen($request->file('csv_file')->getRealPath(), 'r');
+        $headers = null;
+        $imported = 0;
+        $skipped = 0;
+        $errors = [];
         $rowNumber = 1;
 
         // Sanitise: strip non-breaking spaces (\xA0) and control chars
         $sanitise = function (?string $val): ?string {
-            if ($val === null || $val === '') return null;
+            if ($val === null || $val === '') {
+                return null;
+            }
             $val = str_replace("\xc2\xa0", ' ', $val);
             $val = str_replace("\xa0", ' ', $val);
             $val = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $val);
             $val = mb_convert_encoding($val, 'UTF-8', 'UTF-8');
             $val = preg_replace('/ {2,}/', ' ', $val);
+
             return trim($val) ?: null;
         };
 
         // Date parser: DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD
         $parseDate = function ($val) {
-            if (empty(trim($val ?? ''))) return null;
+            if (empty(trim($val ?? ''))) {
+                return null;
+            }
             $val = trim($val);
-            if (preg_match('/^\d{4}-\d{1,2}-\d{1,2}$/', $val)) return $val;
-            if (preg_match('/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/', $val, $m))
+            if (preg_match('/^\d{4}-\d{1,2}-\d{1,2}$/', $val)) {
+                return $val;
+            }
+            if (preg_match('/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/', $val, $m)) {
                 return sprintf('%04d-%02d-%02d', $m[3], $m[2], $m[1]);
+            }
+
             return null;
         };
 
@@ -799,96 +1039,155 @@ class AssetController extends Controller
             ];
             $lower = strtolower(trim($raw));
             foreach ($map as $key => $type) {
-                if (str_contains($lower, $key)) return $type;
+                if (str_contains($lower, $key)) {
+                    return $type;
+                }
             }
+
             return 'other';
         };
 
         // Specs auto-parser
         $parseSpecs = function (string $raw): array {
             $r = ['brand' => null, 'model' => null, 'processor' => null,
-                  'ram_size' => null, 'storage' => null, 'operating_system' => null, 'screen_size' => null];
-            if (empty(trim($raw))) return $r;
+                'ram_size' => null, 'storage' => null, 'operating_system' => null, 'screen_size' => null];
+            if (empty(trim($raw))) {
+                return $r;
+            }
             $s = trim($raw);
-            $brands = ['Dell','HP','Lenovo','Apple','Asus','Acer','Microsoft','Samsung','LG','MSI','Toshiba','Incite'];
+            $brands = ['Dell', 'HP', 'Lenovo', 'Apple', 'Asus', 'Acer', 'Microsoft', 'Samsung', 'LG', 'MSI', 'Toshiba', 'Incite'];
 
             // MODEL: line
             if (preg_match('/(?:MODEL|LAPTOP)[\:\s]+([^\n\r]+)/i', $s, $m)) {
                 $ml = trim($m[1]);
-                foreach ($brands as $b) { if (stripos($ml, $b) !== false) { $r['brand'] = $b; break; } }
-                if (!$r['brand'] && strlen(explode(' ', $ml)[0] ?? '') >= 2) $r['brand'] = explode(' ', $ml)[0];
+                foreach ($brands as $b) {
+                    if (stripos($ml, $b) !== false) {
+                        $r['brand'] = $b;
+                        break;
+                    }
+                }
+                if (! $r['brand'] && strlen(explode(' ', $ml)[0] ?? '') >= 2) {
+                    $r['brand'] = explode(' ', $ml)[0];
+                }
                 $r['model'] = $ml;
             } else {
-                foreach ($brands as $b) { if (stripos(explode(' ', $s)[0] ?? '', $b) !== false) { $r['brand'] = $b; break; } }
-                if (preg_match('/^([\w\s\-\.]+?)(?:\s+\d{1,3}GB|\s+[Ii][3579]|\s+Ryzen|\s+Win|,|$)/i', $s, $m))
+                foreach ($brands as $b) {
+                    if (stripos(explode(' ', $s)[0] ?? '', $b) !== false) {
+                        $r['brand'] = $b;
+                        break;
+                    }
+                }
+                if (preg_match('/^([\w\s\-\.]+?)(?:\s+\d{1,3}GB|\s+[Ii][3579]|\s+Ryzen|\s+Win|,|$)/i', $s, $m)) {
                     $r['model'] = trim($m[1]);
+                }
             }
             // CPU
-            if (preg_match('/(?:CPU|PROCESSOR)[\:\s]+([^\n\r]+)/i', $s, $m)) $r['processor'] = trim($m[1]);
-            elseif (preg_match('/\b((?:Intel\s+)?(?:Core\s+)?[Ii][3579][\-\s]?\d{3,5}[A-Z0-9]*|Ryzen\s+\d[\s\w]+?(?=\s+\d|,|$)|i[3579][\-]\d+[A-Z]*)/i', $s, $m)) $r['processor'] = trim($m[0]);
+            if (preg_match('/(?:CPU|PROCESSOR)[\:\s]+([^\n\r]+)/i', $s, $m)) {
+                $r['processor'] = trim($m[1]);
+            } elseif (preg_match('/\b((?:Intel\s+)?(?:Core\s+)?[Ii][3579][\-\s]?\d{3,5}[A-Z0-9]*|Ryzen\s+\d[\s\w]+?(?=\s+\d|,|$)|i[3579][\-]\d+[A-Z]*)/i', $s, $m)) {
+                $r['processor'] = trim($m[0]);
+            }
             // RAM
-            if (preg_match('/(?:RAM)[\:\s]+(\d{1,3}\s*GB)/i', $s, $m)) $r['ram_size'] = trim($m[1]);
-            elseif (preg_match('/\b(\d{1,3}\s*GB)\s*(?:DDR\d?|RAM|LPDDR\d?)?/i', $s, $m)) $r['ram_size'] = trim($m[0]);
+            if (preg_match('/(?:RAM)[\:\s]+(\d{1,3}\s*GB)/i', $s, $m)) {
+                $r['ram_size'] = trim($m[1]);
+            } elseif (preg_match('/\b(\d{1,3}\s*GB)\s*(?:DDR\d?|RAM|LPDDR\d?)?/i', $s, $m)) {
+                $r['ram_size'] = trim($m[0]);
+            }
             // Storage
-            if (preg_match('/(?:STORAGE|HDD|SSD)[\:\s]+(\d{1,4}\s*(?:GB|TB)[^\n\r]*)/i', $s, $m)) $r['storage'] = trim($m[1]);
-            elseif (preg_match_all('/\b(\d{1,4}\s*(?:GB|TB))\s*(?:M\.?2|NVMe|SSD|HDD|eMMC)?/i', $s, $all)) {
-                foreach ($all[0] as $c) { if (trim($c) !== $r['ram_size']) { $r['storage'] = trim($c); break; } }
+            if (preg_match('/(?:STORAGE|HDD|SSD)[\:\s]+(\d{1,4}\s*(?:GB|TB)[^\n\r]*)/i', $s, $m)) {
+                $r['storage'] = trim($m[1]);
+            } elseif (preg_match_all('/\b(\d{1,4}\s*(?:GB|TB))\s*(?:M\.?2|NVMe|SSD|HDD|eMMC)?/i', $s, $all)) {
+                foreach ($all[0] as $c) {
+                    if (trim($c) !== $r['ram_size']) {
+                        $r['storage'] = trim($c);
+                        break;
+                    }
+                }
             }
             // OS
-            if (preg_match('/(?:OS|WINDOWS|WIN)[\:\s]+([^\n\r]+)/i', $s, $m)) $r['operating_system'] = trim($m[1]);
-            elseif (preg_match('/\b(Windows\s*\d+(?:\s+(?:Pro|Home|Enterprise))?|Win\s*\d+(?:\s+(?:Pro|Home))?|macOS(?:\s+[\w]+)?|Ventura|Monterey|Sequoia|Big Sur|Sonoma|Ubuntu(?:\s+\d+\.\d+)?)/i', $s, $m)) $r['operating_system'] = trim($m[0]);
+            if (preg_match('/(?:OS|WINDOWS|WIN)[\:\s]+([^\n\r]+)/i', $s, $m)) {
+                $r['operating_system'] = trim($m[1]);
+            } elseif (preg_match('/\b(Windows\s*\d+(?:\s+(?:Pro|Home|Enterprise))?|Win\s*\d+(?:\s+(?:Pro|Home))?|macOS(?:\s+[\w]+)?|Ventura|Monterey|Sequoia|Big Sur|Sonoma|Ubuntu(?:\s+\d+\.\d+)?)/i', $s, $m)) {
+                $r['operating_system'] = trim($m[0]);
+            }
             // Screen size
-            if (preg_match('/\b(\d{1,2}(?:\.\d)?\s*(?:inch|in\b|"))/i', $s, $m)) $r['screen_size'] = trim($m[0]);
-            elseif (preg_match("/\\b(\\d{1,2}(?:\\.\\d)?)(?:''|'|\"|\\x22)/", $s, $m)) $r['screen_size'] = $m[1] . '"';
+            if (preg_match('/\b(\d{1,2}(?:\.\d)?\s*(?:inch|in\b|"))/i', $s, $m)) {
+                $r['screen_size'] = trim($m[0]);
+            } elseif (preg_match("/\\b(\\d{1,2}(?:\\.\\d)?)(?:''|'|\"|\\x22)/", $s, $m)) {
+                $r['screen_size'] = $m[1].'"';
+            }
 
             return $r;
         };
 
         // Employee matcher
         $findEmployee = function (string $name): ?Employee {
-            if (empty(trim($name))) return null;
+            if (empty(trim($name))) {
+                return null;
+            }
             $name = trim($name);
             $emp = Employee::whereNull('active_until')->where('full_name', $name)->first();
-            if ($emp) return $emp;
+            if ($emp) {
+                return $emp;
+            }
             $stripped = trim(preg_replace('/\s*\(.*?\)/', '', $name));
             if ($stripped !== $name) {
                 $emp = Employee::whereNull('active_until')->where('full_name', $stripped)->first();
-                if ($emp) return $emp;
+                if ($emp) {
+                    return $emp;
+                }
             }
             if (preg_match('/\(([^)]+)\)/', $name, $m)) {
                 $emp = Employee::whereNull('active_until')->where('preferred_name', trim($m[1]))->first();
-                if ($emp) return $emp;
+                if ($emp) {
+                    return $emp;
+                }
             }
-            return Employee::whereNull('active_until')->where('full_name', 'like', "%" . $stripped . "%")->first();
+
+            return Employee::whereNull('active_until')->where('full_name', 'like', '%'.$stripped.'%')->first();
         };
 
         // Ensure AARF exists (works for both onboarded and imported employees)
-        $ensureAarf = fn(Employee $emp) => $this->ensureAarfForEmployee($emp);
+        $ensureAarf = fn (Employee $emp) => $this->ensureAarfForEmployee($emp);
 
         // Main import loop
         while (($row = fgetcsv($handle)) !== false) {
             if ($headers === null) {
                 $headers = array_map('trim', $row);
                 $rowNumber++;
+
                 continue;
             }
             $rowNumber++;
-            if (empty(array_filter($row))) continue;
+            if (empty(array_filter($row))) {
+                continue;
+            }
 
             $d = array_combine($headers, array_pad($row, count($headers), ''));
-            $v = fn(string $k) => $sanitise(trim($d[$k] ?? ''));
+            $v = fn (string $k) => $sanitise(trim($d[$k] ?? ''));
 
             // ── Required fields ───────────────────────────────────────────
             $missing = [];
-            if (empty($v('asset_category'))) $missing[] = 'asset_category';
-            if (empty($v('asset_type')))     $missing[] = 'asset_type';
-            if (empty($v('asset_tag')))      $missing[] = 'asset_tag';
-            if (empty($v('specs')) && empty($v('brand')) && empty($v('model'))) $missing[] = 'specs (or brand+model)';
-            if (empty($v('remarks')))        $missing[] = 'remarks';
+            if (empty($v('asset_category'))) {
+                $missing[] = 'asset_category';
+            }
+            if (empty($v('asset_type'))) {
+                $missing[] = 'asset_type';
+            }
+            if (empty($v('asset_tag'))) {
+                $missing[] = 'asset_tag';
+            }
+            if (empty($v('specs')) && empty($v('brand')) && empty($v('model'))) {
+                $missing[] = 'specs (or brand+model)';
+            }
+            if (empty($v('remarks'))) {
+                $missing[] = 'remarks';
+            }
 
             if ($missing) {
-                $errors[] = "Row {$rowNumber}: Missing required field(s): " . implode(', ', $missing) . " — skipped.";
+                $errors[] = "Row {$rowNumber}: Missing required field(s): ".implode(', ', $missing).' — skipped.';
                 $skipped++;
+
                 continue;
             }
 
@@ -897,81 +1196,84 @@ class AssetController extends Controller
             if (AssetInventory::where('asset_tag', $assetTag)->exists()) {
                 $errors[] = "Row {$rowNumber}: Asset tag '{$assetTag}' already exists — skipped (duplicate).";
                 $skipped++;
+
                 continue;
             }
 
             // ── Parse specs + apply column overrides ──────────────────────
             $specsRaw = $sanitise(trim($d['specs'] ?? '')) ?? '';
-            $parsed   = $parseSpecs($specsRaw);
+            $parsed = $parseSpecs($specsRaw);
 
-            $brand     = $v('brand')  ?: ($parsed['brand']  ?? null) ?: 'Unknown';
-            $model     = $v('model')  ?: ($parsed['model']  ?? null) ?: $assetTag;
+            $brand = $v('brand') ?: ($parsed['brand'] ?? null) ?: 'Unknown';
+            $model = $v('model') ?: ($parsed['model'] ?? null) ?: $assetTag;
             $assetType = $normaliseType($v('asset_type') ?? '');
 
             // ── Optional field defaults ───────────────────────────────────
-            $rawCond       = strtolower($v('asset_condition') ?? '');
-            $condition     = in_array($rawCond, ['new','good','fair','damaged']) ? $rawCond : 'good';
-            $rawMaint      = strtolower($v('maintenance_status') ?? '');
-            $maintStatus   = in_array($rawMaint, ['none','under_maintenance','repair_required']) ? $rawMaint : 'none';
-            $ownershipType = in_array(strtolower($v('ownership_type') ?? ''), ['company','rental'])
+            $rawCond = strtolower($v('asset_condition') ?? '');
+            $condition = in_array($rawCond, ['new', 'good', 'fair', 'damaged']) ? $rawCond : 'good';
+            $rawMaint = strtolower($v('maintenance_status') ?? '');
+            $maintStatus = in_array($rawMaint, ['none', 'under_maintenance', 'repair_required']) ? $rawMaint : 'none';
+            $ownershipType = in_array(strtolower($v('ownership_type') ?? ''), ['company', 'rental'])
                            ? strtolower($v('ownership_type') ?? '') : 'company';
 
             // ── Employee assignment ───────────────────────────────────────
             $assignedToName = $sanitise(trim($d['assigned_to'] ?? '')) ?? '';
-            $employee       = $findEmployee($assignedToName);
+            $employee = $findEmployee($assignedToName);
 
-            if (!empty($assignedToName) && !$employee) {
+            if (! empty($assignedToName) && ! $employee) {
                 $errors[] = "Row {$rowNumber}: Employee '{$assignedToName}' not found — asset imported as unassigned.";
             }
 
             // Status: use CSV value if valid, else derive from assignment
             $rawStatus = strtolower($v('status') ?? '');
-            if (in_array($rawStatus, ['available','assigned','under_maintenance','retired'])) {
+            if (in_array($rawStatus, ['available', 'assigned', 'under_maintenance', 'retired'])) {
                 $status = $rawStatus;
             } else {
                 $status = $employee ? 'assigned' : 'available';
             }
-            if ($employee) $status = 'assigned'; // assignment always wins
+            if ($employee) {
+                $status = 'assigned';
+            } // assignment always wins
 
             // ── Remarks ───────────────────────────────────────────────────
-            $remarksInput  = $sanitise(trim($d['remarks'] ?? ''));
-            $initialRemark = trim(($remarksInput ? $remarksInput . "\n" : '') . 'Imported via CSV.');
+            $remarksInput = $sanitise(trim($d['remarks'] ?? ''));
+            $initialRemark = trim(($remarksInput ? $remarksInput."\n" : '').'Imported via CSV.');
 
             // ── Create asset record ───────────────────────────────────────
             $asset = AssetInventory::create([
-                'asset_tag'            => $assetTag,
-                'asset_category'       => $v('asset_category') ?: 'others',
-                'asset_type'           => $assetType,
-                'brand'                => $brand,
-                'model'                => $model,
-                'serial_number'        => $v('serial_number') ?: null,
-                'processor'            => $v('processor')         ?: ($parsed['processor']        ?? null),
-                'ram_size'             => $v('ram_size')          ?: ($parsed['ram_size']         ?? null),
-                'storage'              => $v('storage')           ?: ($parsed['storage']          ?? null),
-                'operating_system'     => $v('operating_system')  ?: ($parsed['operating_system'] ?? null),
-                'screen_size'          => $v('screen_size')       ?: ($parsed['screen_size']      ?? null),
-                'spec_others'          => $v('spec_others') ?: (!empty($specsRaw) ? 'Original: ' . $specsRaw : null),
-                'ownership_type'       => $ownershipType,
-                'company_name'         => $v('company_name') ?: null,
-                'company_supplied_to'  => $v('company_supplied_to') ?: null,
-                'purchase_vendor'      => $v('purchase_vendor') ?: null,
-                'purchase_cost'        => is_numeric($d['purchase_cost'] ?? '') ? $d['purchase_cost'] : null,
-                'purchase_date'        => $parseDate($d['purchase_date'] ?? ''),
+                'asset_tag' => $assetTag,
+                'asset_category' => $v('asset_category') ?: 'others',
+                'asset_type' => $assetType,
+                'brand' => $brand,
+                'model' => $model,
+                'serial_number' => $v('serial_number') ?: null,
+                'processor' => $v('processor') ?: ($parsed['processor'] ?? null),
+                'ram_size' => $v('ram_size') ?: ($parsed['ram_size'] ?? null),
+                'storage' => $v('storage') ?: ($parsed['storage'] ?? null),
+                'operating_system' => $v('operating_system') ?: ($parsed['operating_system'] ?? null),
+                'screen_size' => $v('screen_size') ?: ($parsed['screen_size'] ?? null),
+                'spec_others' => $v('spec_others') ?: (! empty($specsRaw) ? 'Original: '.$specsRaw : null),
+                'ownership_type' => $ownershipType,
+                'company_name' => $v('company_name') ?: null,
+                'company_supplied_to' => $v('company_supplied_to') ?: null,
+                'purchase_vendor' => $v('purchase_vendor') ?: null,
+                'purchase_cost' => is_numeric($d['purchase_cost'] ?? '') ? $d['purchase_cost'] : null,
+                'purchase_date' => $parseDate($d['purchase_date'] ?? ''),
                 'warranty_expiry_date' => $parseDate($d['warranty_expiry_date'] ?? ''),
-                'rental_vendor'              => $ownershipType === 'rental' ? ($v('rental_vendor') ?: null) : null,
-                'rental_vendor_contact'      => $ownershipType === 'rental' ? ($v('rental_vendor_contact') ?: null) : null,
-                'rental_cost_per_month'      => $ownershipType === 'rental' && is_numeric($d['rental_cost_per_month'] ?? '') ? $d['rental_cost_per_month'] : null,
-                'rental_start_date'          => $ownershipType === 'rental' ? $parseDate($d['rental_start_date'] ?? '') : null,
-                'rental_end_date'            => $ownershipType === 'rental' ? $parseDate($d['rental_end_date'] ?? '') : null,
-                'rental_contract_reference'  => $ownershipType === 'rental' ? ($v('rental_contract_reference') ?: null) : null,
-                'status'               => $status,
-                'asset_condition'      => $condition,
-                'maintenance_status'   => $maintStatus,
+                'rental_vendor' => $ownershipType === 'rental' ? ($v('rental_vendor') ?: null) : null,
+                'rental_vendor_contact' => $ownershipType === 'rental' ? ($v('rental_vendor_contact') ?: null) : null,
+                'rental_cost_per_month' => $ownershipType === 'rental' && is_numeric($d['rental_cost_per_month'] ?? '') ? $d['rental_cost_per_month'] : null,
+                'rental_start_date' => $ownershipType === 'rental' ? $parseDate($d['rental_start_date'] ?? '') : null,
+                'rental_end_date' => $ownershipType === 'rental' ? $parseDate($d['rental_end_date'] ?? '') : null,
+                'rental_contract_reference' => $ownershipType === 'rental' ? ($v('rental_contract_reference') ?: null) : null,
+                'status' => $status,
+                'asset_condition' => $condition,
+                'maintenance_status' => $maintStatus,
                 'assigned_employee_id' => $employee?->id,
-                'asset_assigned_date'  => $employee ? ($parseDate($d['asset_assigned_date'] ?? '') ?? now()->toDateString()) : null,
+                'asset_assigned_date' => $employee ? ($parseDate($d['asset_assigned_date'] ?? '') ?? now()->toDateString()) : null,
                 'expected_return_date' => $parseDate($d['expected_return_date'] ?? ''),
-                'asset_location'       => $v('asset_location') ?: null,
-                'remarks'              => $initialRemark,
+                'asset_location' => $v('asset_location') ?: null,
+                'remarks' => $initialRemark,
             ]);
 
             // ── Link to employee + ensure AARF ────────────────────────────
@@ -987,11 +1289,13 @@ class AssetController extends Controller
 
         fclose($handle);
         $message = "{$imported} asset(s) imported successfully.";
-        if ($skipped) $message .= " {$skipped} row(s) skipped.";
+        if ($skipped) {
+            $message .= " {$skipped} row(s) skipped.";
+        }
+
         return back()->with('success', $message)->with('import_errors', $errors);
     }
 
-  
     // ── Assignee resolution ────────────────────────────────────────────────
     //
     // An asset is not always held by an `employees` row. A new hire has no employee record
@@ -1009,10 +1313,10 @@ class AssetController extends Controller
     {
         return [
             'type' => 'employee',
-            'id'   => $emp->id,
+            'id' => $emp->id,
             'name' => $emp->full_name
                 ?: ($emp->onboarding?->personalDetail?->full_name ?: "Employee #{$emp->id}"),
-            'key'  => "employee:{$emp->id}",
+            'key' => "employee:{$emp->id}",
         ];
     }
 
@@ -1020,9 +1324,9 @@ class AssetController extends Controller
     {
         return [
             'type' => 'onboarding',
-            'id'   => $ob->id,
+            'id' => $ob->id,
             'name' => $ob->personalDetail?->full_name ?: "New hire #{$ob->id}",
-            'key'  => "onboarding:{$ob->id}",
+            'key' => "onboarding:{$ob->id}",
         ];
     }
 
@@ -1035,6 +1339,7 @@ class AssetController extends Controller
     {
         if ($asset->assigned_employee_id) {
             $emp = Employee::find($asset->assigned_employee_id);
+
             return $emp ? $this->employeeAssignee($emp) : null;
         }
 
@@ -1045,6 +1350,7 @@ class AssetController extends Controller
 
         if ($assignment?->employee_id) {
             $emp = Employee::find($assignment->employee_id);
+
             return $emp ? $this->employeeAssignee($emp) : null;
         }
 
@@ -1054,6 +1360,7 @@ class AssetController extends Controller
                 return $this->employeeAssignee($emp);
             }
             $ob = Onboarding::with('personalDetail')->find($assignment->onboarding_id);
+
             return $ob ? $this->onboardingAssignee($ob) : null;
         }
 
@@ -1068,6 +1375,7 @@ class AssetController extends Controller
     ): ?array {
         if ($empId = $request->input($employeeField)) {
             $emp = Employee::find($empId);
+
             return $emp ? $this->employeeAssignee($emp) : null;
         }
 
@@ -1079,6 +1387,7 @@ class AssetController extends Controller
                 return $this->employeeAssignee($emp);
             }
             $ob = Onboarding::with('personalDetail')->find($obId);
+
             return $ob ? $this->onboardingAssignee($ob) : null;
         }
 
@@ -1090,10 +1399,11 @@ class AssetController extends Controller
     {
         if ($assignee['type'] === 'employee') {
             $emp = Employee::find($assignee['id']);
+
             return $emp ? $this->ensureAarfForEmployee($emp) : null;
         }
 
-        if (!Onboarding::whereKey($assignee['id'])->exists()) {
+        if (! Onboarding::whereKey($assignee['id'])->exists()) {
             return null;
         }
 
@@ -1102,13 +1412,13 @@ class AssetController extends Controller
         $aarf = Aarf::firstOrCreate(
             ['onboarding_id' => $assignee['id']],
             [
-                'aarf_reference'        => Onboarding::generateAarfReference(),
+                'aarf_reference' => Onboarding::generateAarfReference(),
                 'acknowledgement_token' => Str::random(64),
             ]
         );
 
         // Without a token the emailed link cannot exist, so the form would be unreachable.
-        if (!$aarf->acknowledgement_token) {
+        if (! $aarf->acknowledgement_token) {
             $aarf->update(['acknowledgement_token' => Str::random(64)]);
         }
 
@@ -1122,14 +1432,15 @@ class AssetController extends Controller
             if ($emp) {
                 $this->createAssignmentForEmployee($emp, $assetId, $date);
             }
+
             return;
         }
 
         AssetAssignment::create([
-            'onboarding_id'      => $assignee['id'],
+            'onboarding_id' => $assignee['id'],
             'asset_inventory_id' => $assetId,
-            'assigned_date'      => $date,
-            'status'             => 'assigned',
+            'assigned_date' => $date,
+            'status' => 'assigned',
         ]);
     }
 
@@ -1142,6 +1453,7 @@ class AssetController extends Controller
     {
         if ($assignee['type'] === 'employee') {
             $emp = Employee::with(['onboarding.workDetail', 'onboarding.personalDetail'])->find($assignee['id']);
+
             return $emp?->company_email
                 ?: ($emp?->personal_email
                 ?: ($emp?->onboarding?->workDetail?->company_email
@@ -1149,6 +1461,7 @@ class AssetController extends Controller
         }
 
         $ob = Onboarding::with(['workDetail', 'personalDetail'])->find($assignee['id']);
+
         return $ob?->workDetail?->company_email ?: $ob?->personalDetail?->personal_email;
     }
 
@@ -1169,7 +1482,7 @@ class AssetController extends Controller
         bool $pending = true,
     ): string {
         $aarf = $this->assigneeAarf($assignee);
-        if (!$aarf) {
+        if (! $aarf) {
             return '';
         }
 
@@ -1184,12 +1497,14 @@ class AssetController extends Controller
         }
 
         $to = $this->assigneeAarfEmail($assignee);
-        if (!$to) {
+        if (! $to) {
             \Log::info("AARF email skipped — no address on file for {$assignee['key']} ({$assignee['name']}), AARF #{$aarf->id}");
+
             return "No work or personal email is on file for {$assignee['name']} — the AARF was NOT emailed.";
         }
-        if (!$aarf->acknowledgement_token) {
+        if (! $aarf->acknowledgement_token) {
             \Log::info("AARF email skipped — no acknowledgement_token. AARF #{$aarf->id}");
+
             return '';
         }
 
@@ -1211,14 +1526,14 @@ class AssetController extends Controller
      */
     private function sameTypeAlreadyHeldNote(array $assignee, AssetInventory $asset): string
     {
-        if (!$asset->asset_type) {
+        if (! $asset->asset_type) {
             return '';
         }
 
         // An employee's assignments may be keyed by onboarding_id (see
         // createAssignmentForEmployee), so both keys have to be searched for one person.
         $onboardingIds = [];
-        $employeeIds   = [];
+        $employeeIds = [];
         if ($assignee['type'] === 'onboarding') {
             $onboardingIds[] = $assignee['id'];
         } else {
@@ -1240,7 +1555,7 @@ class AssetController extends Controller
                     $q->orWhereIn('employee_id', $employeeIds);
                 }
             })
-            ->whereHas('asset', fn ($q) => $q->where('asset_type', $asset->asset_type))
+            ->whereHas('asset', fn ($q) => $q->where('asset_type', $asset->asset_type)->whereNull('decommissioned_at'))
             ->get()
             ->pluck('asset.asset_tag')
             ->filter()->unique()->values();
@@ -1251,7 +1566,7 @@ class AssetController extends Controller
 
         $type = str_replace('_', ' ', (string) $asset->asset_type);
 
-        return "Note: {$assignee['name']} already holds another {$type} (" . $tags->implode(', ') .
+        return "Note: {$assignee['name']} already holds another {$type} (".$tags->implode(', ').
                ') — release whichever they are not keeping.';
     }
 
@@ -1268,8 +1583,9 @@ class AssetController extends Controller
             \Illuminate\Support\Facades\Log::info("AARF terminating callback firing — to: {$to}, action: {$action}");
             try {
                 $freshAarf = \App\Models\Aarf::find($aarfId);
-                if (!$freshAarf) {
+                if (! $freshAarf) {
                     \Illuminate\Support\Facades\Log::warning("AARF email aborted — AARF #{$aarfId} not found in DB");
+
                     return;
                 }
 
@@ -1279,7 +1595,7 @@ class AssetController extends Controller
                 \Illuminate\Support\Facades\Log::info("AARF email sent successfully to {$to}");
 
             } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::error("AARF email FAILED to {$to}: " . $e->getMessage());
+                \Illuminate\Support\Facades\Log::error("AARF email FAILED to {$to}: ".$e->getMessage());
             }
         });
     }
@@ -1317,19 +1633,23 @@ class AssetController extends Controller
     {
         // Try direct employee_id link (imported employees)
         $aarf = Aarf::where('employee_id', $emp->id)->first();
-        if ($aarf) return $aarf;
+        if ($aarf) {
+            return $aarf;
+        }
 
         // Try onboarding_id link (onboarded employees)
         if ($emp->onboarding_id) {
             $aarf = Aarf::where('onboarding_id', $emp->onboarding_id)->first();
-            if ($aarf) return $aarf;
+            if ($aarf) {
+                return $aarf;
+            }
         }
 
         // Create new AARF — use employee_id if no onboarding, onboarding_id if available
         return Aarf::create([
-            'onboarding_id'         => $emp->onboarding_id ?? null,
-            'employee_id'           => $emp->onboarding_id ? null : $emp->id,
-            'aarf_reference'        => Onboarding::generateAarfReference(),
+            'onboarding_id' => $emp->onboarding_id ?? null,
+            'employee_id' => $emp->onboarding_id ? null : $emp->id,
+            'aarf_reference' => Onboarding::generateAarfReference(),
             'acknowledgement_token' => Str::random(64),
         ]);
     }
@@ -1341,115 +1661,153 @@ class AssetController extends Controller
     private function createAssignmentForEmployee(Employee $emp, int $assetId, string $date): void
     {
         AssetAssignment::create([
-            'onboarding_id'      => $emp->onboarding_id ?? null,
-            'employee_id'        => $emp->onboarding_id ? null : $emp->id,
+            'onboarding_id' => $emp->onboarding_id ?? null,
+            'employee_id' => $emp->onboarding_id ? null : $emp->id,
             'asset_inventory_id' => $assetId,
-            'assigned_date'      => $date,
-            'status'             => 'assigned',
+            'assigned_date' => $date,
+            'status' => 'assigned',
         ]);
     }
 
     // ── Private helpers ────────────────────────────────────────────────────
 
     /**
-     * Map a Section E condition to the decommissioning flow it belongs to,
-     * or null when the condition keeps the asset in the active listing.
-     */
-    private function decommissionTypeFor(?string $condition): ?string
-    {
-        return match ($condition) {
-            'not_good' => 'e_waste',
-            'returned' => 'vendor_return',
-            default    => null,
-        };
-    }
-
-    /**
-     * Put an asset into the Decommissioning tab, recording which flow it leaves by.
-     * Shared by store() and update() so the two can never drift.
+     * Stage an asset into the Decommissioning queue (dispose_assets).
      *
-     * The type is re-applied on every save, so switching the condition between
-     * Not Good and Returned re-routes an already-staged row rather than leaving
-     * it filed under the flow it was first staged with.
+     * @param  string  $type  'e_waste' (Not Good) | 'vendor_return' (Returned)
      */
-    private function stageForDecommission(AssetInventory $asset, string $type, string $actorName, ?string $reason): void
+    private function stageForDecommission(AssetInventory $asset, string $type, string $actorName, ?string $reason, ?string $completeness = null, ?string $partsRemoved = null): void
     {
+        // Completeness is an e-waste concept only. Default to "complete" (assume all parts
+        // intact) when Not Good but unspecified, so the vendor RFQ always states it.
+        $completeness = $type === 'e_waste'
+            ? (array_key_exists((string) $completeness, DisposedAsset::COMPLETENESS) ? $completeness : 'complete')
+            : null;
+
+        // The removed-parts list is only meaningful for an INCOMPLETE e-waste asset;
+        // cleared otherwise (complete item, or switched to a vendor return).
+        $partsRemoved = $completeness === 'incomplete' ? (trim((string) $partsRemoved) ?: null) : null;
+
         DisposedAsset::firstOrCreate(
             ['asset_inventory_id' => $asset->id],
             [
-                'asset_tag'         => $asset->asset_tag,
-                'asset_type'        => $asset->asset_type,
-                'brand'             => $asset->brand,
-                'model'             => $asset->model,
-                'serial_number'     => $asset->serial_number,
-                'asset_condition'   => $asset->asset_condition,
+                'asset_tag' => $asset->asset_tag,
+                'asset_type' => $asset->asset_type,
+                'brand' => $asset->brand,
+                'model' => $asset->model,
+                'serial_number' => $asset->serial_number,
+                'asset_condition' => $asset->asset_condition,
                 'decommission_type' => $type,
-                'disposed_by'       => $actorName,
-                'disposed_at'       => now(),
-                'remarks'           => $asset->remarks,
+                'ewaste_completeness' => $completeness,
+                'ewaste_parts_removed' => $partsRemoved,
+                'disposed_by' => $actorName,
+                'disposed_at' => now(),
+                'remarks' => $asset->remarks,
             ]
         );
 
+        // Keep the routing type + reason + completeness + parts correct even if the staging
+        // row pre-existed (e.g. condition switched not_good ⇄ returned). Switching to a vendor
+        // return clears the e-waste completeness + parts. Never touch a row already gathered
+        // into an e-waste cycle — and note this column says nothing about a RETURN form, which
+        // stamps nothing here; that case is refused earlier, by update()'s pre-flight guard.
         $update = [
             'decommission_type' => $type,
-            'asset_condition'   => $asset->asset_condition,
+            'asset_condition' => $asset->asset_condition,
+            'ewaste_completeness' => $completeness,
+            'ewaste_parts_removed' => $partsRemoved,
         ];
         if ($reason) {
             $update['reason'] = $reason;
         }
-        DisposedAsset::where('asset_inventory_id', $asset->id)->update($update);
+        DisposedAsset::where('asset_inventory_id', $asset->id)
+            ->whereNull('decommission_batch_id')
+            ->update($update);
 
-        $label      = $type === 'vendor_return' ? 'Returned (to vendor)' : 'Not Good';
+        $label = $type === 'vendor_return' ? 'Returned (to vendor)' : 'Not Good';
+        if ($completeness === 'incomplete') {
+            $completenessNote = $partsRemoved ? " (Incomplete — parts removed: {$partsRemoved})" : ' (Incomplete)';
+        } elseif ($completeness) {
+            $completenessNote = ' ('.(DisposedAsset::COMPLETENESS[$completeness] ?? $completeness).')';
+        } else {
+            $completenessNote = '';
+        }
         $reasonNote = $reason ? " Reason: {$reason}." : '';
-        $asset->appendRemark("Asset flagged as {$label} — moved to Decommissioning Assets by {$actorName}.{$reasonNote}");
+        $asset->appendRemark("Asset flagged as {$label}{$completenessNote} — staged for decommissioning by {$actorName}.{$reasonNote}");
     }
 
     private function buildAssetData(Request $request, array $validated, $user = null): array
     {
-        $canEditAll = !$user || $user->canEditAllAssetSections();
+        $canEditAll = ! $user || $user->canEditAllAssetSections();
 
         $data = [
-            'asset_tag'        => $validated['asset_tag'],
-            'asset_category'   => $validated['asset_category'],
-            'asset_type'       => $validated['asset_type'],
-            'brand'            => $validated['brand'],
-            'model'            => $validated['model'],
-            'asset_name'       => $validated['asset_name'] ?? null,
-            'serial_number'    => $validated['serial_number'],
-            'notes'            => $validated['notes'] ?? null,
-            'processor'        => $validated['processor'] ?? null,
-            'ram_size'         => $validated['ram_size'] ?? null,
-            'storage'          => $validated['storage'] ?? null,
+            'asset_tag' => $validated['asset_tag'],
+            'asset_category' => $validated['asset_category'],
+            'asset_type' => $validated['asset_type'],
+            'brand' => $validated['brand'],
+            'model' => $validated['model'],
+            'asset_name' => $validated['asset_name'] ?? null,
+            'serial_number' => $validated['serial_number'],
+            'notes' => $validated['notes'] ?? null,
+            'processor' => $validated['processor'] ?? null,
+            'ram_size' => $validated['ram_size'] ?? null,
+            'storage' => $validated['storage'] ?? null,
             'operating_system' => $validated['operating_system'] ?? null,
-            'screen_size'      => $validated['screen_size'] ?? null,
-            'spec_others'      => $validated['spec_others'] ?? null,
+            'screen_size' => $validated['screen_size'] ?? null,
+            'spec_others' => $validated['spec_others'] ?? null,
         ];
 
         if ($canEditAll) {
-            $data['purchase_date']        = $validated['purchase_date'] ?? null;
-            $data['purchase_vendor']      = $validated['purchase_vendor'] ?? null;
-            $data['purchase_cost']        = $validated['purchase_cost'] ?? null;
+            $data['purchase_date'] = $validated['purchase_date'] ?? null;
+            $data['purchase_cost'] = $validated['purchase_cost'] ?? null;
             $data['warranty_expiry_date'] = $validated['warranty_expiry_date'] ?? null;
 
             $data['ownership_type'] = $validated['ownership_type'] ?? 'company';
+            // The registered-vendor link survives BOTH branches: an asset bought from a
+            // supplier keeps its vendor exactly as a rented one does.
+            $vendorId = $validated['vendor_id'] ?? null;
+            $data['vendor_id'] = $vendorId;
+            $vendorName = $vendorId ? (\App\Models\Vendor::find($vendorId)?->name) : null;
+
+            // The invoice the asset arrived on. Validation has already refused an id from
+            // another vendor, so the only case left is "the vendor was cleared" — and a link
+            // to an invoice with no vendor beside it would keep grouping this asset under a
+            // company the record no longer claims. Clearing the vendor clears the invoice.
+            $data['origin_billing_document_id'] = $vendorId
+                ? ($validated['origin_billing_document_id'] ?? null)
+                : null;
+
             if ($data['ownership_type'] === 'rental') {
-                $data['company_name']              = null;
-                $data['company_supplied_to']       = $validated['company_supplied_to'] ?? null;
-                $data['rental_vendor']             = $validated['rental_vendor'] ?? null;
-                $data['rental_vendor_contact']     = $validated['rental_vendor_contact'] ?? null;
-                $data['rental_cost_per_month']     = $validated['rental_cost_per_month'] ?? null;
-                $data['rental_start_date']         = $validated['rental_start_date'] ?? null;
-                $data['rental_end_date']           = $validated['rental_end_date'] ?? null;
+                $data['company_name'] = null;
+                $data['company_supplied_to'] = $validated['company_supplied_to'] ?? null;
+                // `rental_vendor` holds the PERSON we deal with, not the vendor company:
+                // picking a registered vendor auto-fills it with that vendor's PIC name
+                // (and rental_vendor_contact with their number). It is deliberately NOT
+                // synced to the vendor's name any more — the company is on vendor_id, and
+                // both vendor filters now resolve through that FK (applyVendorFilter), so
+                // an asset linked only by FK is still found. For an UNREGISTERED vendor
+                // there is no FK, so the free text is all there is and the filter falls
+                // back to it — which is why applyVendorFilter keeps both arms.
+                $data['rental_vendor'] = $validated['rental_vendor'] ?? null;
+                $data['rental_vendor_contact'] = $validated['rental_vendor_contact'] ?? null;
+                $data['rental_cost_per_month'] = $validated['rental_cost_per_month'] ?? null;
+                $data['rental_start_date'] = $validated['rental_start_date'] ?? null;
+                $data['rental_end_date'] = $validated['rental_end_date'] ?? null;
                 $data['rental_contract_reference'] = $validated['rental_contract_reference'] ?? null;
+                // A rental has no purchase vendor; keep the two stories from bleeding.
+                $data['purchase_vendor'] = $validated['purchase_vendor'] ?? null;
             } else {
-                $data['company_name']              = $validated['company_name'] ?? null;
-                $data['company_supplied_to']       = null;
-                $data['rental_vendor']             = null;
-                $data['rental_vendor_contact']     = null;
-                $data['rental_cost_per_month']     = null;
-                $data['rental_start_date']         = null;
-                $data['rental_end_date']           = null;
+                $data['company_name'] = $validated['company_name'] ?? null;
+                $data['company_supplied_to'] = null;
+                $data['rental_vendor'] = null;
+                $data['rental_vendor_contact'] = null;
+                $data['rental_cost_per_month'] = null;
+                $data['rental_start_date'] = null;
+                $data['rental_end_date'] = null;
                 $data['rental_contract_reference'] = null;
+                // Same sync on the purchase side: purchase_vendor is the free-text name
+                // shown across the existing asset views and exports.
+                $data['purchase_vendor'] = $vendorName ?: ($validated['purchase_vendor'] ?? null);
             }
 
             // Section E condition drives availability:
@@ -1457,7 +1815,7 @@ class AssetController extends Controller
             //   under_maintenance→ unavailable
             //   not_good         → unavailable + flagged for disposal on save
             $condition = $validated['asset_condition'];
-            $data['asset_condition']    = $condition;
+            $data['asset_condition'] = $condition;
             $data['maintenance_status'] = ($condition === 'under_maintenance')
                 ? ($validated['maintenance_status'] ?? 'pending')
                 : null;
@@ -1467,10 +1825,10 @@ class AssetController extends Controller
             // FK differs. A pre-start new hire has no employees row, so their assignment is
             // carried by asset_assignments alone and assigned_employee_id stays null — the
             // same shape the onboarding auto-assign has always written.
-            $newEmployeeId   = $validated['assigned_employee_id'] ?? null;
+            $newEmployeeId = $validated['assigned_employee_id'] ?? null;
             $newOnboardingId = $validated['assigned_onboarding_id'] ?? null;
 
-            if (!$newEmployeeId && $newOnboardingId) {
+            if (! $newEmployeeId && $newOnboardingId) {
                 // Activated between page load and submit → the employees row exists now, so
                 // stamp the FK rather than leaving the asset keyed to a superseded identity.
                 $newEmployeeId = Employee::where('onboarding_id', $newOnboardingId)->value('id');
@@ -1478,15 +1836,15 @@ class AssetController extends Controller
 
             if ($newEmployeeId || $newOnboardingId) {
                 // Assigned → 'assigned' internally (AARF logic depends on this value)
-                $data['status']               = 'assigned';
+                $data['status'] = 'assigned';
                 $data['assigned_employee_id'] = $newEmployeeId ?: null;
-                $data['asset_assigned_date']  = $validated['asset_assigned_date'] ?? now()->toDateString();
+                $data['asset_assigned_date'] = $validated['asset_assigned_date'] ?? now()->toDateString();
                 $data['expected_return_date'] = $validated['expected_return_date'] ?? null;
             } else {
                 // Nobody holds it → status driven by condition
-                $data['status']               = ($condition === 'good') ? 'available' : 'unavailable';
+                $data['status'] = ($condition === 'good') ? 'available' : 'unavailable';
                 $data['assigned_employee_id'] = null;
-                $data['asset_assigned_date']  = null;
+                $data['asset_assigned_date'] = null;
                 $data['expected_return_date'] = null;
             }
         }
@@ -1497,73 +1855,111 @@ class AssetController extends Controller
     private function validateAsset(Request $request, bool $isUpdate = false, $user = null): array
     {
         $rules = [
-            'asset_tag'        => 'required|string|max:50' . ($isUpdate ? '' : '|unique:asset_inventories,asset_tag'),
-            'asset_category'   => 'required|string|max:100',
-            'asset_type'       => 'required|string|max:100',
-            'brand'            => 'required|string|max:100',
-            'model'            => 'required|string|max:100',
-            'asset_name'       => 'nullable|string|max:255',
-            'serial_number'    => 'required|string|max:100',
-            'notes'            => 'nullable|string|max:1500',
-            'processor'        => 'nullable|string|max:255',
-            'ram_size'         => 'nullable|string|max:100',
-            'storage'          => 'nullable|string|max:100',
+            'asset_tag' => 'required|string|max:50'.($isUpdate ? '' : '|unique:asset_inventories,asset_tag'),
+            'asset_category' => 'required|string|max:100',
+            'asset_type' => 'required|string|max:100',
+            'brand' => 'required|string|max:100',
+            'model' => 'required|string|max:100',
+            'asset_name' => 'nullable|string|max:255',
+            'serial_number' => 'required|string|max:100',
+            'notes' => 'nullable|string|max:1500',
+            'processor' => 'nullable|string|max:255',
+            'ram_size' => 'nullable|string|max:100',
+            'storage' => 'nullable|string|max:100',
             'operating_system' => 'nullable|string|max:100',
-            'screen_size'      => 'nullable|string|max:50',
-            'spec_others'      => 'nullable|string',
+            'screen_size' => 'nullable|string|max:50',
+            'spec_others' => 'nullable|string',
         ];
 
-        $canEditAll = !$user || $user->canEditAllAssetSections();
+        $canEditAll = ! $user || $user->canEditAllAssetSections();
         if ($canEditAll) {
-            $rules['purchase_date']             = 'nullable|date';
-            $rules['purchase_vendor']           = 'nullable|string|max:255';
-            $rules['purchase_cost']             = 'nullable|numeric|min:0';
-            $rules['warranty_expiry_date']      = 'nullable|date';
-            $rules['invoice_document']          = 'nullable|file|mimes:pdf|max:5120|valid_file_content';
-            $rules['invoice_documents']         = 'nullable|array|max:10';
-            $rules['invoice_documents.*']       = 'file|mimes:pdf,jpg,jpeg,png|max:5120|valid_file_content';
-            $rules['ownership_type']            = 'required|in:company,rental';
-            $rules['company_name']              = 'nullable|string|max:255';
-            $rules['company_supplied_to']       = 'nullable|string|max:255';
-            $rules['rental_vendor']             = 'nullable|string|max:255';
-            $rules['rental_vendor_contact']     = 'nullable|string|max:255';
-            $rules['rental_cost_per_month']     = 'nullable|numeric|min:0';
-            $rules['rental_start_date']         = 'nullable|date';
-            $rules['rental_end_date']           = 'nullable|date|after_or_equal:rental_start_date';
+            $rules['purchase_date'] = 'nullable|date';
+            $rules['purchase_vendor'] = 'nullable|string|max:255';
+            $rules['purchase_cost'] = 'nullable|numeric|min:0';
+            $rules['warranty_expiry_date'] = 'nullable|date';
+            $rules['invoice_document'] = 'nullable|file|mimes:pdf|max:5120|valid_file_content';
+            $rules['invoice_documents'] = 'nullable|array|max:10';
+            $rules['invoice_documents.*'] = 'file|mimes:pdf,jpg,jpeg,png|max:5120|valid_file_content';
+            $rules['ownership_type'] = 'required|in:company,rental';
+            $rules['company_name'] = 'nullable|string|max:255';
+            $rules['company_supplied_to'] = 'nullable|string|max:255';
+            $rules['rental_vendor'] = 'nullable|string|max:255';
+            // One FK for both ownership types — rented-from when ownership_type = rental,
+            // purchased-from when = company. (Was rental_vendor_id until 2026-08-06.)
+            $rules['vendor_id'] = 'nullable|exists:vendors,id';
+            // The billing document this asset arrived on, scoped to the vendor submitted
+            // WITH it. Same guard a billing document's own contract link gets, and for the
+            // same reason: an id from another vendor would file the asset under an invoice
+            // from a company it has nothing to do with, on a page grouped per vendor.
+            //
+            // With NO vendor submitted the field is not invalid, it is INAPPLICABLE — the
+            // operator cleared the vendor, and buildAssetData() drops the invoice with it.
+            // Refusing here instead would bounce that save with an error about a field the
+            // picker was meant to have cleared itself, which reads as a bug in the form.
+            $rules['origin_billing_document_id'] = $request->filled('vendor_id')
+                ? [
+                    'nullable',
+                    Rule::exists('vendor_billing_documents', 'id')
+                        ->where('vendor_id', $request->input('vendor_id')),
+                ]
+                : ['nullable'];
+            $rules['rental_vendor_contact'] = 'nullable|string|max:255';
+            $rules['rental_cost_per_month'] = 'nullable|numeric|min:0';
+            $rules['rental_start_date'] = 'nullable|date';
+            $rules['rental_end_date'] = 'nullable|date|after_or_equal:rental_start_date';
             $rules['rental_contract_reference'] = 'nullable|string|max:255';
-            $rules['rental_contract_documents']   = 'nullable|array|max:10';
+            $rules['rental_contract_documents'] = 'nullable|array|max:10';
             $rules['rental_contract_documents.*'] = 'file|mimes:pdf,jpg,jpeg,png|max:5120|valid_file_content';
-            $rules['status']                    = 'required|in:available,unavailable,assigned';
-            $rules['assigned_employee_id']      = 'nullable|exists:employees,id';
+            $rules['status'] = 'required|in:available,unavailable,assigned';
+            $rules['assigned_employee_id'] = 'nullable|exists:employees,id';
             // A new hire can hold an asset before their start date, when no employees row
             // exists yet — the picker offers them alongside employees and posts this instead.
-            $rules['assigned_onboarding_id']    = ['nullable', self::assignableOnboardingRule()];
-            $rules['asset_assigned_date']       = 'nullable|date';
-            $rules['expected_return_date']      = 'nullable|date';
-            $rules['asset_condition']           = 'required|in:'.implode(',', array_keys(AssetInventory::CONDITIONS));
-            $rules['maintenance_status']        = 'nullable|in:pending,in_progress,done';
-            $rules['last_maintenance_date']     = 'required_if:asset_condition,under_maintenance|nullable|date';
-            $rules['remarks']                   = 'nullable|string';
-            $rules['asset_photos']              = 'nullable|array|min:1|max:15';
-            $rules['asset_photos.*']            = 'image|max:5120|valid_file_content';
-            $rules['decommission_reason']       = 'nullable|string|max:500';
+            $rules['assigned_onboarding_id'] = ['nullable', self::assignableOnboardingRule()];
+            $rules['asset_assigned_date'] = 'nullable|date';
+            $rules['expected_return_date'] = 'nullable|date';
+            $rules['asset_condition'] = 'required|in:'.implode(',', array_keys(AssetInventory::CONDITIONS));
+            $rules['maintenance_status'] = 'nullable|in:pending,in_progress,done';
+            $rules['last_maintenance_date'] = 'required_if:asset_condition,under_maintenance|nullable|date';
+            $rules['remarks'] = 'nullable|string';
+            $rules['asset_photos'] = 'nullable|array|min:1|max:15';
+            $rules['asset_photos.*'] = 'image|max:5120|valid_file_content';
+            $rules['decommission_reason'] = 'nullable|string|max:500';
+            $rules['ewaste_completeness'] = 'nullable|in:'.implode(',', array_keys(DisposedAsset::COMPLETENESS));
+            // Required only when the asset is actually a Not Good (e-waste) item marked Incomplete —
+            // gated on BOTH fields so a stale "incomplete" from a since-hidden completeness select
+            // (e.g. user toggled Not Good→Incomplete then switched back to Good) can't block the save.
+            $rules['ewaste_parts_removed'] = ['nullable', 'string', 'max:500', Rule::requiredIf(
+                fn () => $request->input('asset_condition') === 'not_good'
+                    && $request->input('ewaste_completeness') === 'incomplete'
+            )];
         }
 
-        return $request->validate($rules);
+        return $request->validate($rules, [
+            // The default ("selected origin billing document id is invalid") does not say
+            // WHY, and the reason is nearly always the same one: the invoice belongs to a
+            // different vendor than the one now picked.
+            'origin_billing_document_id.exists' => 'That invoice does not belong to the selected vendor. Pick the vendor first, then its invoice.',
+        ]);
     }
 
     private function authorizeItAccess(): void
     {
-        if (!Auth::user()->canViewAssets()) abort(403);
+        if (! Auth::user()->canViewAssets()) {
+            abort(403);
+        }
     }
 
     private function authorizeCanAdd(): void
     {
-        if (!Auth::user()->canAddAsset()) abort(403, 'No permission to add assets.');
+        if (! Auth::user()->canAddAsset()) {
+            abort(403, 'No permission to add assets.');
+        }
     }
 
     private function authorizeCanEdit(): void
     {
-        if (!Auth::user()->canEditAsset()) abort(403, 'No permission to edit assets.');
+        if (! Auth::user()->canEditAsset()) {
+            abort(403, 'No permission to edit assets.');
+        }
     }
 }

@@ -13,7 +13,7 @@
 
 <div class="alert alert-warning py-2 mb-3">
     <i class="bi bi-exclamation-triangle me-2"></i>
-    Assets listed here were marked as <strong>Not Good</strong> or <strong>Returned</strong> and removed from the active asset listing.
+    Assets listed here were marked as <strong>Not Good</strong> and removed from the active asset listing.
     This page is <strong>view-only</strong>.
 </div>
 
@@ -53,9 +53,16 @@
                         <td>{{ $d->brand }} {{ $d->model }}</td>
                         <td class="text-muted">{{ $d->serial_number ?? '—' }}</td>
                         <td>
-                            <span class="badge bg-{{ $d->isVendorReturn() ? 'warning text-dark' : 'danger' }}">
-                                {{ \App\Models\AssetInventory::CONDITIONS[$d->asset_condition] ?? ($d->isVendorReturn() ? 'Returned' : 'Not Good') }}
-                            </span>
+                            @if($d->decommission_type === 'vendor_return')
+                                <span class="badge bg-info text-dark">Returned</span>
+                            @else
+                                <span class="badge bg-danger">Not Good</span>
+                                @if($d->ewaste_completeness === 'incomplete')
+                                    <span class="badge bg-warning text-dark" title="Parts removed: {{ $d->ewaste_parts_removed ?: 'not specified' }}">Incomplete</span>
+                                @elseif($d->ewaste_completeness === 'complete')
+                                    <span class="badge bg-success">Complete</span>
+                                @endif
+                            @endif
                         </td>
                         <td>{{ $d->disposed_by ?? '—' }}</td>
                         <td>{{ $d->disposed_at?->format('d/m/Y, h:i A') ?? '—' }}</td>
