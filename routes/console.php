@@ -32,6 +32,30 @@ Schedule::command('sweep:pending-weekly')->weeklyOn(3, '00:00'); // Wednesday mi
 // scheduler can't express "first of quarter + config day", so the command does it.
 Schedule::command('ewaste:sweep-quarterly')->dailyAt('00:20')->withoutOverlapping();
 
+// E-waste: chase the inspections in the run-up to that sweep — 1 month / 15 / 5 / 3 days
+// before it, and on the day. Also daily + self-gating, for the same reason: the marks move
+// with `decommission.sweep_day`, and "a calendar month before" is not something the static
+// scheduler can express. Silent unless something is actually outstanding.
+//
+// 08:00 rather than just after midnight because it is a message to people, not a job. On the
+// collection day that puts it AFTER the 00:20 sweep has already decided — which is correct:
+// by then the list is the reason the cycle was postponed, and the mail says so.
+Schedule::command('ewaste:remind-inspection')
+    ->dailyAt('08:00')
+    ->timezone('Asia/Kuala_Lumpur')
+    ->withoutOverlapping();
+
+// Vendor Management: discard documents that were uploaded and scanned in the Add-Document
+// modal but never filed. The file is stored before the record exists, so an abandoned
+// upload leaves a file on the private disk that nothing points at.
+Schedule::command('vendors:prune-document-scans')->dailyAt('00:40')->withoutOverlapping();
+
+// Vendor Management: discard vendor lists uploaded for bulk import but never confirmed.
+// Same reason as the sweep above — the spreadsheet is stored before any vendor exists — but
+// with a cleaner guarantee: an import copies values OUT of the file, so nothing ever points
+// at it and a surviving row is always an unclaimed upload.
+Schedule::command('vendors:prune-import-batches')->dailyAt('00:45')->withoutOverlapping();
+
 // Backup: daily encrypted full backup at 2 AM, retain 30 days
 Schedule::command('backup:run --type=full --encrypt --keep=30')
     ->dailyAt('02:00')

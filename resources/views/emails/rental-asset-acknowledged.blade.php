@@ -24,8 +24,20 @@
     $greeting = match ($audience) {
         \App\Mail\RentalAssetAcknowledgedMail::AUDIENCE_VENDOR => $aarf->vendor?->pic_name ?: ($aarf->vendor?->name ?: 'Sir/Madam'),
         \App\Mail\RentalAssetAcknowledgedMail::AUDIENCE_FINANCE => 'Finance Team',
+        // One send addresses every management person named for the company, so this greets
+        // the group rather than a person — naming one of two would read as a copy meant for
+        // somebody else.
+        \App\Mail\RentalAssetAcknowledgedMail::AUDIENCE_MANAGEMENT => 'Management',
         default => 'IT Team',
     };
+
+    // Management is the one audience addressed per COMPANY, so the opening line says which
+    // entity's kit this is. IT and Finance are group-wide and would only be reading the same
+    // fact twice — it is already in the details box below.
+    $forCompany = $audience === \App\Mail\RentalAssetAcknowledgedMail::AUDIENCE_MANAGEMENT
+        && $aarf->company_rented_to
+            ? ' for '.$aarf->company_rented_to
+            : '';
 @endphp
 <div class="email-wrap">
   <div class="header"><h1>Asset Acceptance &amp; Return Form — {{ $isReturn ? 'Return' : 'Receipt' }} Acknowledged &#10003;</h1></div>
@@ -48,7 +60,7 @@
       @endif
     @else
       <p>
-        The Asset Acceptance &amp; Return Form <strong>{{ $aarf->reference }}</strong> has been
+        The Asset Acceptance &amp; Return Form <strong>{{ $aarf->reference }}</strong>{{ $forCompany }} has been
         acknowledged. The signed form is attached as a PDF.
         @if($isReturn)
           The {{ $aarf->items->count() }} asset{{ $aarf->items->count() === 1 ? ' has' : 's have' }}

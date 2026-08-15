@@ -199,12 +199,12 @@
             <i class="bi bi-box-arrow-up me-1"></i>Create Collection Batch
             <span class="badge bg-light text-dark ms-1" id="batchSelCount">0</span>
         </button>
-        <form action="{{ route('ewaste.sweep') }}" method="POST" class="js-confirm" data-confirm="Run the e-waste sweep now? This gathers all Not-Good assets into a new quarterly cycle and emails the primary vendor + Finance." data-confirm-title="Run e-waste sweep" data-confirm-ok="Run sweep" data-confirm-variant="success">@csrf
+        <form action="{{ route('ewaste.sweep') }}" method="POST" class="js-confirm" data-confirm="Run the e-waste sweep now? This gathers all Not-Good assets into a new quarterly cycle and requests a quotation from every e-waste vendor, then reports to Finance." data-confirm-title="Run e-waste sweep" data-confirm-ok="Run sweep" data-confirm-variant="success">@csrf
             <button class="btn btn-sm btn-outline-success"><i class="bi bi-recycle me-1"></i>Run e-waste sweep now</button>
         </form>
         <span class="text-muted small ms-auto">
-            Primary e-waste vendor:
-            @if($primaryEwasteVendor)<strong>{{ $primaryEwasteVendor->name }}</strong>@else<span class="text-danger">not set</span> — <a href="{{ route('vendors.index') }}">configure</a>@endif
+            E-waste RFQ goes to
+            @if($ewasteRfqVendorCount)<strong>{{ $ewasteRfqVendorCount }}</strong> vendor{{ $ewasteRfqVendorCount === 1 ? '' : 's' }}@else<span class="text-danger">no vendor</span> — <a href="{{ route('vendors.index') }}">configure</a>@endif
         </span>
     </div>
     @endif
@@ -293,6 +293,15 @@
                      (it_intern, HR) reads this list but cannot act on it. --}}
                 @if($canDecommission)Tick the returned assets below and click <em>Create Collection Batch</em> — the vendor is read off each asset, and one Asset Acceptance &amp; Return Form (AARF) is raised per vendor and company rented to.@else This list is read-only for your role.@endif
             </p>
+            @if($canDecommission && $awaitingInspection > 0)
+                {{-- The gate is absolute: one unfinished row postpones the whole quarter, so
+                     the count has to be on the page where it is fixed, not only in an email. --}}
+                <p class="text-danger small mb-0 mt-2">
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    <strong>{{ $awaitingInspection }}</strong> e-waste asset{{ $awaitingInspection === 1 ? '' : 's' }}
+                    still awaiting inspection. The quarterly collection cycle will not run until every one is inspected and its owning company confirmed.
+                </p>
+            @endif
         </div>
         @if($disposed->isEmpty())
             <div class="text-center py-5 text-muted">
@@ -310,6 +319,7 @@
                         <th>Brand / Model</th>
                         <th>Serial Number</th>
                         <th>Condition</th>
+                        <th>Inspection</th>
                         <th>Return To / Batch</th>
                         <th>Reason</th>
                         <th>Actions</th>
@@ -357,10 +367,33 @@
                                 <span class="badge bg-info text-dark">Returned</span>
                             @else
                                 <span class="badge bg-danger">Not Good</span>
-                                @if($d->ewaste_completeness === 'incomplete')
-                                    <span class="badge bg-warning text-dark" title="Parts removed: {{ $d->ewaste_parts_removed ?: 'not specified' }}">Incomplete</span>
-                                @elseif($d->ewaste_completeness === 'complete')
-                                    <span class="badge bg-success" title="All parts intact">Complete</span>
+                            @endif
+                        </td>
+                        {{-- Inspection. E-waste only: a returned rental asset is examined by the
+                             collector when they sign its return form, not here. The quarterly
+                             cycle refuses to run while any row in this column is unfinished, so
+                             it states BOTH halves — the verdict and the confirmed owner. --}}
+                        <td style="max-width:190px;white-space:normal;">
+                            @if($isReturn)
+                                <span class="text-muted small" title="Examined by the collector on the return form.">n/a</span>
+                            @else
+                                @php $insp = $d->inspectionBadge(); @endphp
+                                <span class="badge bg-{{ $insp['color'] }}">{{ $insp['label'] }}</span>
+                                @if($d->isInspected())
+                                    @if($d->isIncomplete() && $d->ewaste_parts_removed)
+                                        <div class="text-muted" style="font-size:11px;">Removed: {{ $d->ewaste_parts_removed }}</div>
+                                    @endif
+                                    <div class="text-muted" style="font-size:11px;">
+                                        {{ fmt_date($d->inspected_at) }}@if($d->inspector) · {{ $d->inspector->name }}@endif
+                                    </div>
+                                @endif
+                                {{-- The owner is half of "ready": without it nobody is authorised
+                                     to approve this asset's disposal, so an inspected-but-
+                                     unresolved row must not read as finished. --}}
+                                @if($d->company)
+                                    <div class="text-muted" style="font-size:11px;"><i class="bi bi-building me-1"></i>{{ $d->company }}</div>
+                                @elseif($d->isInspected())
+                                    <div class="text-danger" style="font-size:11px;">Owner not confirmed</div>
                                 @endif
                             @endif
                         </td>
@@ -397,6 +430,25 @@
                         <td style="max-width:180px;white-space:normal;">{{ $d->reason ?? '—' }}</td>
                         <td>
                             <div class="d-flex gap-1">
+                                {{-- Inspect. Offered while the asset is still e-waste and not yet
+                                     swept into a cycle — after that the vendor has quoted against
+                                     what was recorded. Re-inspecting before then is deliberate:
+                                     correcting a verdict costs nothing until the RFQ goes out. --}}
+                                @if($canDecommission && ! $isReturn && ! $d->decommission_batch_id)
+                                    <button type="button"
+                                            class="btn btn-sm {{ $d->isReadyForCycle() ? 'btn-outline-success' : 'btn-warning' }} js-inspect-btn"
+                                            title="{{ $d->isInspected() ? 'Re-inspect this asset' : 'Record the inspection' }}"
+                                            data-id="{{ $d->id }}"
+                                            data-tag="{{ $d->asset_tag }}"
+                                            data-label="{{ trim(($d->brand ?? '').' '.($d->model ?? '')) }}"
+                                            data-completeness="{{ $d->ewaste_completeness ?? '' }}"
+                                            data-parts="{{ $d->ewaste_parts_removed ?? '' }}"
+                                            data-company="{{ $d->company ?? $d->asset?->company_name ?? '' }}"
+                                            data-reason="{{ $d->reason ?? '' }}"
+                                            data-needs-reason="{{ blank($d->reason) ? '1' : '0' }}">
+                                        <i class="bi bi-clipboard-check"></i>
+                                    </button>
+                                @endif
                                 @if($d->asset)
                                     <a href="{{ route('assets.disposed.show', array_merge(request()->query(), ['asset' => $d->asset->id])) }}"
                                        class="btn btn-sm btn-outline-secondary" title="View">
@@ -423,6 +475,71 @@
     </div>
 </div>
 </div>{{-- /pane-damaged --}}
+
+{{-- Inspection modal (Phase 2). ONE modal for every row, populated from the clicked button's
+     data-* attributes — a modal per row would multiply with the queue, and `old()` is global,
+     so a validation bounce would repopulate all of them with one row's rejected input. --}}
+@if($canDecommission)
+<div class="modal fade" id="inspectModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header" style="background:linear-gradient(135deg,#1e3a5f,#2563eb);">
+                <h6 class="modal-title text-white fw-bold"><i class="bi bi-clipboard-check me-2"></i>Inspect Asset</h6>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST" id="inspectForm" action="">@csrf
+                <input type="hidden" name="_form" value="inspect">
+                <div class="modal-body">
+                    <p class="mb-3">
+                        <code id="inspectTag"></code>
+                        <span class="text-muted small" id="inspectLabel"></span>
+                    </p>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Completeness <span class="text-danger">*</span></label>
+                        <select name="ewaste_completeness" id="inspectCompleteness" class="form-select" required>
+                            <option value="">— select —</option>
+                            @foreach(\App\Models\DisposedAsset::COMPLETENESS as $val => $label)
+                                <option value="{{ $val }}">{{ $label }}{{ $val === 'complete' ? ' — all parts intact' : ' — parts removed' }}</option>
+                            @endforeach
+                        </select>
+                        <div class="form-text">The e-waste vendor prices against this.</div>
+                    </div>
+
+                    <div class="mb-3" id="inspectPartsWrap" style="display:none;">
+                        <label class="form-label fw-semibold">Parts Removed <span class="text-danger">*</span></label>
+                        <input type="text" name="ewaste_parts_removed" id="inspectParts" class="form-control"
+                               placeholder="e.g. Battery, RAM, Hard disk, Charger" maxlength="500">
+                        <div class="form-text">List what came off — "Incomplete" without the list cannot be priced.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Owning Company <span class="text-danger">*</span></label>
+                        <select name="company" id="inspectCompany" class="form-select" required>
+                            <option value="">— select —</option>
+                            @foreach($registeredCompanies as $co)
+                                <option value="{{ $co->name }}">{{ $co->name }}</option>
+                            @endforeach
+                        </select>
+                        <div class="form-text">Decides which company's management approves this disposal.</div>
+                    </div>
+
+                    <div class="mb-1" id="inspectReasonWrap" style="display:none;">
+                        <label class="form-label fw-semibold">Write-off Reason <span class="text-danger">*</span></label>
+                        <input type="text" name="reason" id="inspectReason" class="form-control" maxlength="500"
+                               placeholder="e.g. Motherboard failure, beyond economical repair">
+                        <div class="form-text">This asset was queued before a reason was required.</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-check2 me-1"></i>Record Inspection</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+@endif
 
 {{-- Create Collection Batch modal — raises the return AARFs.
 
@@ -855,23 +972,13 @@
                                placeholder="e.g. Screen cracked beyond repair, Water damage, Hardware failure...">
                         <div class="form-text">This reason will be shown in the Decommissioning Assets table.</div>
                     </div>
-                    {{-- E-waste completeness — Not Good only. Drives the vendor's disposal price. --}}
-                    <div class="col-md-3" id="addEwasteCompletenessWrap" style="display:none;">
-                        <label class="form-label fw-semibold">Completeness <span class="text-danger">*</span></label>
-                        <select name="ewaste_completeness" id="addEwasteCompleteness" class="form-select">
-                            <option value="complete"   {{ old('ewaste_completeness','complete')==='complete' ? 'selected':'' }}>Complete — all parts intact</option>
-                            <option value="incomplete" {{ old('ewaste_completeness')==='incomplete'         ? 'selected':'' }}>Incomplete — parts removed</option>
-                        </select>
-                        <div class="form-text">Incomplete = parts like battery, RAM or hard disk removed.</div>
-                    </div>
-                    {{-- Parts removed — shown only when Completeness = Incomplete. --}}
-                    <div class="col-md-6" id="addEwastePartsWrap" style="display:none;">
-                        <label class="form-label fw-semibold">Parts Removed <span class="text-danger">*</span></label>
-                        <input type="text" name="ewaste_parts_removed" id="addEwasteParts"
-                               class="form-control"
-                               value="{{ old('ewaste_parts_removed') }}"
-                               placeholder="e.g. Battery, RAM, Hard disk, Charger">
-                        <div class="form-text">List the parts removed from this asset. Shown to the e-waste vendor (and Finance) for pricing.</div>
+                    {{-- Completeness / parts-removed are recorded by an INSPECTION from the
+                         Decommissioning tab, not here — see the note in the edit form. --}}
+                    <div class="col-md-6" id="addEwasteInspectNote" style="display:none;">
+                        <div class="form-text">
+                            <i class="bi bi-info-circle me-1"></i>
+                            Completeness and removed parts are recorded when the asset is <strong>inspected</strong>, from the Decommissioning tab.
+                        </div>
                     </div>
                     <div class="col-md-3"><label class="form-label fw-semibold">Last Maintenance</label>
                         <input type="date" name="last_maintenance_date" class="form-control" value="{{ old('last_maintenance_date') }}"></div>
@@ -964,10 +1071,6 @@ var addCondSelect = document.getElementById('addAssetCondition');
 if (addCondSelect) {
     syncStatusFromConditionAdd(addCondSelect.value);
     addCondSelect.addEventListener('change', function() { syncStatusFromConditionAdd(this.value); });
-}
-var addCompSelect = document.getElementById('addEwasteCompleteness');
-if (addCompSelect) {
-    addCompSelect.addEventListener('change', toggleAddEwasteParts);
 }
 
 // CSV import file label
@@ -1147,30 +1250,11 @@ function syncStatusFromConditionAdd(condition) {
         reasonWrap.style.display = condition === 'not_good' ? '' : 'none';
         if (reasonInput) reasonInput.required = condition === 'not_good';
     }
-    const completenessWrap  = document.getElementById('addEwasteCompletenessWrap');
-    const completenessInput = document.getElementById('addEwasteCompleteness');
-    if (completenessWrap) {
-        const isEwaste = condition === 'not_good';
-        completenessWrap.style.display = isEwaste ? '' : 'none';
-        if (completenessInput) {
-            completenessInput.required = isEwaste;
-            // Leaving the e-waste state resets completeness so a stale "incomplete" isn't submitted.
-            if (!isEwaste) completenessInput.value = 'complete';
-        }
+    // Completeness / parts-removed are set by an inspection, not here — just say so.
+    const inspectNote = document.getElementById('addEwasteInspectNote');
+    if (inspectNote) {
+        inspectNote.style.display = condition === 'not_good' ? '' : 'none';
     }
-    toggleAddEwasteParts();
-}
-
-// Parts-removed field (Add form) shows only when Not Good AND Incomplete.
-function toggleAddEwasteParts() {
-    const condEl = document.getElementById('addAssetCondition');
-    const compEl = document.getElementById('addEwasteCompleteness');
-    const wrap   = document.getElementById('addEwastePartsWrap');
-    const input  = document.getElementById('addEwasteParts');
-    if (!wrap) return;
-    const show = !!condEl && condEl.value === 'not_good' && !!compEl && compEl.value === 'incomplete';
-    wrap.style.display = show ? '' : 'none';
-    if (input) input.required = show;
 }
 
 // ── Image compression utility ─────────────────────────────────────────────
@@ -1536,6 +1620,69 @@ document.addEventListener('click', function (e) {
         // Nothing resolvable means nothing to submit. Leaving the button live would post a
         // request whose only possible outcome is the error the modal is already showing.
         if (submitBtn) submitBtn.disabled = groups.size === 0;
+    });
+})();
+
+// ── Inspection modal (Phase 2) ────────────────────────────────────────────
+// One modal serves every row. Bound with addEventListener via delegation — CSP blocks every
+// inline handler, and these buttons are rendered per row, so a delegated listener also
+// survives the table being re-rendered by a filter.
+(function () {
+    const modalEl = document.getElementById('inspectModal');
+    const form    = document.getElementById('inspectForm');
+    if (!modalEl || !form) return;
+
+    const compSel    = document.getElementById('inspectCompleteness');
+    const partsWrap  = document.getElementById('inspectPartsWrap');
+    const partsInput = document.getElementById('inspectParts');
+    const reasonWrap = document.getElementById('inspectReasonWrap');
+    const reasonIn   = document.getElementById('inspectReason');
+
+    // Parts are required exactly when the verdict is Incomplete. Toggling `required` (not just
+    // visibility) matters both ways: a hidden-but-required field makes the browser refuse the
+    // submit with nothing focusable to point at.
+    function syncParts() {
+        const show = compSel && compSel.value === 'incomplete';
+        if (partsWrap) partsWrap.style.display = show ? '' : 'none';
+        if (partsInput) partsInput.required = !!show;
+    }
+    if (compSel) compSel.addEventListener('change', syncParts);
+
+    document.addEventListener('click', function (e) {
+        const btn = e.target.closest('.js-inspect-btn');
+        if (!btn) return;
+
+        form.setAttribute('action', "{{ url('/assets/decommission/inspect') }}/" + btn.dataset.id);
+
+        const tagEl = document.getElementById('inspectTag');
+        const lblEl = document.getElementById('inspectLabel');
+        if (tagEl) tagEl.textContent = btn.dataset.tag || '';
+        if (lblEl) lblEl.textContent = btn.dataset.label ? ' — ' + btn.dataset.label : '';
+
+        if (compSel)  compSel.value  = btn.dataset.completeness || '';
+        if (partsInput) partsInput.value = btn.dataset.parts || '';
+
+        // Pre-select the owner only when the asset's free-text company matches a registered
+        // one exactly. A near-miss is left blank on purpose: this field decides who may
+        // authorise the disposal, so a guess presented as an answer is worse than no answer.
+        const coSel = document.getElementById('inspectCompany');
+        if (coSel) {
+            const want = (btn.dataset.company || '').trim();
+            coSel.value = '';
+            for (const opt of coSel.options) {
+                if (opt.value && opt.value === want) { coSel.value = opt.value; break; }
+            }
+        }
+
+        const needsReason = btn.dataset.needsReason === '1';
+        if (reasonWrap) reasonWrap.style.display = needsReason ? '' : 'none';
+        if (reasonIn) {
+            reasonIn.required = needsReason;
+            reasonIn.value = needsReason ? '' : (btn.dataset.reason || '');
+        }
+
+        syncParts();
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
     });
 })();
 

@@ -84,7 +84,8 @@ class AssetController extends Controller
         // too). `asset.vendor` is eager-loaded because the queue now shows which vendor each
         // returned asset goes back to — resolved off the FK, never the `rental_vendor` free
         // text, which holds the PIC's NAME since 2026-08-06.
-        $disposedQuery = DisposedAsset::with(['asset.vendor', 'batch'])
+        // `inspector` is read by the Inspection column on every e-waste row.
+        $disposedQuery = DisposedAsset::with(['asset.vendor', 'batch', 'inspector'])
             ->whereHas('asset', fn ($q) => $q->whereNull('decommissioned_at'))
             ->latest('disposed_at');
         if ($request->filled('d_search')) {
@@ -122,7 +123,10 @@ class AssetController extends Controller
         // Every vendor's invoices in one list; the form narrows it to the picked vendor
         // client-side off data-vendor, the same no-AJAX device the vendor auto-fill uses.
         $invoiceOptions = \App\Models\VendorBillingDocument::invoiceOptions();
-        $primaryEwasteVendor = \App\Models\Vendor::primaryEwaste();
+        // How many vendors the quarterly sweep can actually ask to quote. There is no
+        // "primary" one — it RFQs the whole active e-waste market so the offers can be
+        // compared — so the number, not a name, is what tells IT the sweep can send.
+        $ewasteRfqVendorCount = \App\Models\Vendor::ewasteRfqRecipients()->count();
         // Open (in-progress) e-waste cycles, newest first, for the status panel.
         //
         // "Open" is `finalized_at IS NULL`, NOT a status list — a cycle stranded at
@@ -240,12 +244,19 @@ class AssetController extends Controller
         }
         $overviewRentalTotal = AssetInventory::where('ownership_type', 'rental')->count();
 
+        // How many queued e-waste assets are still unfinished (uninspected, or inspected but
+        // with no confirmed owner). Counted over the WHOLE queue, not the rendered page — the
+        // gate is absolute, so a row on page 2 postpones the quarter just the same.
+        $awaitingInspection = DisposedAsset::awaitingInspection()
+            ->whereHas('asset', fn ($q) => $q->whereNull('decommissioned_at'))
+            ->count();
+
         return view('it.assets.page', compact('assets', 'stats', 'employees', 'pendingOnboardings', 'disposed', 'rentalVendors',
-            'registeredCompanies', 'filterBrands',
+            'registeredCompanies', 'filterBrands', 'awaitingInspection',
             'overviewAllTotal', 'overviewAllByType', 'overviewAllByCompany',
             'overviewCompanyTotal', 'overviewCompanyByType', 'overviewCompanyByCompany',
             'overviewRentalTotal', 'overviewRentalByCompany',
-            'primaryEwasteVendor', 'openBatches', 'openReturnForms', 'returnForms', 'canDecommission',
+            'ewasteRfqVendorCount', 'openBatches', 'openReturnForms', 'returnForms', 'canDecommission',
             'vendorOptions', 'invoiceOptions'
         ));
     }
@@ -368,7 +379,7 @@ class AssetController extends Controller
         $actorName = $actor->name ?? $actor->work_email ?? 'IT Team';
         $decommissionReason = $request->input('decommission_reason');
         if (($data['asset_condition'] ?? null) === 'not_good') {
-            $this->stageForDecommission($asset, 'e_waste', $actorName, $decommissionReason, $request->input('ewaste_completeness'), $request->input('ewaste_parts_removed'));
+            $this->stageForDecommission($asset, 'e_waste', $actorName, $decommissionReason);
         } elseif (($data['asset_condition'] ?? null) === 'returned') {
             $this->stageForDecommission($asset, 'vendor_return', $actorName, $decommissionReason);
         }
@@ -552,7 +563,7 @@ class AssetController extends Controller
         // ── Stage for decommissioning: Not Good → e-waste, Returned → vendor return ──
         $decommissionReason = $request->input('decommission_reason');
         if (($data['asset_condition'] ?? null) === 'not_good') {
-            $this->stageForDecommission($asset, 'e_waste', $actorName, $decommissionReason, $request->input('ewaste_completeness'), $request->input('ewaste_parts_removed'));
+            $this->stageForDecommission($asset, 'e_waste', $actorName, $decommissionReason);
         } elseif (($data['asset_condition'] ?? null) === 'returned') {
             $this->stageForDecommission($asset, 'vendor_return', $actorName, $decommissionReason);
         } elseif (in_array($data['asset_condition'] ?? null, ['good', 'under_maintenance'])) {
@@ -1676,18 +1687,13 @@ class AssetController extends Controller
      *
      * @param  string  $type  'e_waste' (Not Good) | 'vendor_return' (Returned)
      */
-    private function stageForDecommission(AssetInventory $asset, string $type, string $actorName, ?string $reason, ?string $completeness = null, ?string $partsRemoved = null): void
+    private function stageForDecommission(AssetInventory $asset, string $type, string $actorName, ?string $reason): void
     {
-        // Completeness is an e-waste concept only. Default to "complete" (assume all parts
-        // intact) when Not Good but unspecified, so the vendor RFQ always states it.
-        $completeness = $type === 'e_waste'
-            ? (array_key_exists((string) $completeness, DisposedAsset::COMPLETENESS) ? $completeness : 'complete')
-            : null;
-
-        // The removed-parts list is only meaningful for an INCOMPLETE e-waste asset;
-        // cleared otherwise (complete item, or switched to a vendor return).
-        $partsRemoved = $completeness === 'incomplete' ? (trim((string) $partsRemoved) ?: null) : null;
-
+        // Completeness is NOT set here any more (2026-08-13). It is decided by an inspection,
+        // which is a separate act performed later from the Decommissioning queue — see
+        // AssetDecommissionController::inspect(). It used to default to 'complete' on this
+        // path, which made an asset nobody had looked at indistinguishable from one inspected
+        // and found intact, and left the quarterly gate with nothing to test.
         DisposedAsset::firstOrCreate(
             ['asset_inventory_id' => $asset->id],
             [
@@ -1698,25 +1704,31 @@ class AssetController extends Controller
                 'serial_number' => $asset->serial_number,
                 'asset_condition' => $asset->asset_condition,
                 'decommission_type' => $type,
-                'ewaste_completeness' => $completeness,
-                'ewaste_parts_removed' => $partsRemoved,
                 'disposed_by' => $actorName,
                 'disposed_at' => now(),
                 'remarks' => $asset->remarks,
             ]
         );
 
-        // Keep the routing type + reason + completeness + parts correct even if the staging
-        // row pre-existed (e.g. condition switched not_good ⇄ returned). Switching to a vendor
-        // return clears the e-waste completeness + parts. Never touch a row already gathered
-        // into an e-waste cycle — and note this column says nothing about a RETURN form, which
-        // stamps nothing here; that case is refused earlier, by update()'s pre-flight guard.
+        // Keep the routing type + reason correct even if the staging row pre-existed (e.g.
+        // condition switched not_good ⇄ returned). Never touch a row already gathered into an
+        // e-waste cycle — and note this column says nothing about a RETURN form, which stamps
+        // nothing here; that case is refused earlier, by update()'s pre-flight guard.
         $update = [
             'decommission_type' => $type,
             'asset_condition' => $asset->asset_condition,
-            'ewaste_completeness' => $completeness,
-            'ewaste_parts_removed' => $partsRemoved,
         ];
+        // Completeness, the parts list and the inspection that produced them are e-waste
+        // concepts. Switching the row to a vendor return clears all three — a returned asset
+        // carrying "Inspected — Incomplete" would assert a disposal inspection that no longer
+        // applies to it. Re-saving an asset that is STILL e-waste deliberately leaves them
+        // alone, so an ordinary edit (remarks, photos) cannot wipe a completed inspection.
+        if ($type !== 'e_waste') {
+            $update['ewaste_completeness'] = null;
+            $update['ewaste_parts_removed'] = null;
+            $update['inspected_at'] = null;
+            $update['inspected_by'] = null;
+        }
         if ($reason) {
             $update['reason'] = $reason;
         }
@@ -1724,16 +1736,11 @@ class AssetController extends Controller
             ->whereNull('decommission_batch_id')
             ->update($update);
 
+        // The completeness verdict is no longer known at this point — the inspection logs its
+        // own remark when it happens.
         $label = $type === 'vendor_return' ? 'Returned (to vendor)' : 'Not Good';
-        if ($completeness === 'incomplete') {
-            $completenessNote = $partsRemoved ? " (Incomplete — parts removed: {$partsRemoved})" : ' (Incomplete)';
-        } elseif ($completeness) {
-            $completenessNote = ' ('.(DisposedAsset::COMPLETENESS[$completeness] ?? $completeness).')';
-        } else {
-            $completenessNote = '';
-        }
         $reasonNote = $reason ? " Reason: {$reason}." : '';
-        $asset->appendRemark("Asset flagged as {$label}{$completenessNote} — staged for decommissioning by {$actorName}.{$reasonNote}");
+        $asset->appendRemark("Asset flagged as {$label} — staged for decommissioning by {$actorName}.{$reasonNote}");
     }
 
     private function buildAssetData(Request $request, array $validated, $user = null): array
@@ -1923,15 +1930,22 @@ class AssetController extends Controller
             $rules['remarks'] = 'nullable|string';
             $rules['asset_photos'] = 'nullable|array|min:1|max:15';
             $rules['asset_photos.*'] = 'image|max:5120|valid_file_content';
-            $rules['decommission_reason'] = 'nullable|string|max:500';
-            $rules['ewaste_completeness'] = 'nullable|in:'.implode(',', array_keys(DisposedAsset::COMPLETENESS));
-            // Required only when the asset is actually a Not Good (e-waste) item marked Incomplete —
-            // gated on BOTH fields so a stale "incomplete" from a since-hidden completeness select
-            // (e.g. user toggled Not Good→Incomplete then switched back to Good) can't block the save.
-            $rules['ewaste_parts_removed'] = ['nullable', 'string', 'max:500', Rule::requiredIf(
+            // Mandatory for an e-waste marking: the reason is what the vendor RFQ, the Finance
+            // approval and the final decommissioning report all state as WHY the asset was
+            // written off, and none of them can invent it later. Both asset forms have always
+            // rendered it with an asterisk and toggled `required` in JS — the server rule was
+            // the half that never enforced it, so a direct POST filed an unexplained write-off.
+            // Deliberately NOT required for a vendor return: there the usual reason is "contract
+            // end" and the return AARF carries the narrative with the collector's signature.
+            $rules['decommission_reason'] = ['nullable', 'string', 'max:500', Rule::requiredIf(
                 fn () => $request->input('asset_condition') === 'not_good'
-                    && $request->input('ewaste_completeness') === 'incomplete'
             )];
+            // ewaste_completeness / ewaste_parts_removed are deliberately NOT validated here and
+            // no longer appear on either asset form. They are set by an inspection alone, so a
+            // posted value must be ignored rather than accepted — the same rule the vendor
+            // document forms follow: a value no screen displays must not be settable from the
+            // request. Accepting one would let the completeness a vendor is quoting against be
+            // set by somebody who never looked at the machine.
         }
 
         return $request->validate($rules, [
@@ -1939,6 +1953,8 @@ class AssetController extends Controller
             // WHY, and the reason is nearly always the same one: the invoice belongs to a
             // different vendor than the one now picked.
             'origin_billing_document_id.exists' => 'That invoice does not belong to the selected vendor. Pick the vendor first, then its invoice.',
+            // "The decommission reason field is required" does not say why it matters here.
+            'decommission_reason.required' => 'State why this asset is being written off — the reason is sent to the e-waste vendor and printed on the final decommissioning report.',
         ]);
     }
 

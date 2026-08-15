@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Mail\RentalAssetAcknowledgedMail;
 use App\Models\DisposedAsset;
+use App\Models\EwasteCompanyApprover;
 use App\Models\RentalAssetAcknowledgement;
 use App\Models\RentalAssetAcknowledgementItem;
 use App\Models\User;
@@ -22,15 +23,21 @@ use Illuminate\Support\Facades\Storage;
  * One format, two directions, and the parties swap between them:
  *
  *   RECEIPT (RRA) — the vendor delivers rental kit to us. Generated from the vendor
- *     profile. WE are the collector, we note any damage, and the vendor's delivery
- *     representative signs their own reply. Two submits.
+ *     profile. WE are the collector (Company PIC): we tick, note any damage and type the
+ *     collector details. The vendor's delivery representative (Vendor PIC) signs their own
+ *     acknowledgement, typing their identity because they have no account.
  *
  *   RETURN (RTA) — we hand rental kit back. Generated from the IT Decommissioning queue
  *     once the assets are marked Returned. THE VENDOR'S COURIER is the collector: they
  *     verify the list, tick, note anything they will not accept, type their identity and
- *     acknowledge on our device, while our processor's reply is stamped with the account
- *     that operated it. One submit — and unlike a receipt it takes the assets out of
- *     service.
+ *     acknowledge on our device. Our Company PIC signs the other side, stamped with the
+ *     account that operated it. Unlike a receipt, closing it takes the assets out of service.
+ *
+ * BOTH DIRECTIONS TAKE TWO SIGNATURES, IN EITHER ORDER (2026-08-13). A handover is an
+ * agreement between two parties, so one signature does not close the form and neither party
+ * blocks the other from going first. finalizeIfComplete() is the single place the document
+ * becomes final — status, archiving, the stored PDF and the three emails all happen there,
+ * driven by whichever signature lands second.
  *
  * Everything is IN-APP either way. There is deliberately no tokenized public page: on a
  * receipt the collector is us, and on a return the collector is standing at our desk.
@@ -92,7 +99,7 @@ class RentalAssetAcknowledgementController extends Controller
 
         if ($pending->isEmpty()) {
             return redirect()
-                ->route('vendors.show', [$vendor, 'tab' => 'assets'])
+                ->route('vendors.show', [$vendor, 'tab' => 'report'])
                 ->with('error', 'No rental assets from this vendor are waiting to be acknowledged.');
         }
 
@@ -135,7 +142,7 @@ class RentalAssetAcknowledgementController extends Controller
         }
 
         return redirect()
-            ->route('vendors.show', [$vendor, 'tab' => 'assets'])
+            ->route('vendors.show', [$vendor, 'tab' => 'report'])
             ->with('success', count($created).' AARFs generated, one per company rented to.');
     }
 
@@ -228,7 +235,7 @@ class RentalAssetAcknowledgementController extends Controller
 
         return redirect()
             ->route('assets.index', ['tab' => 'damaged'])
-            ->with('success', count($created).' return forms generated, one per vendor and company rented to: '.$refs.'. Open each from the Asset column below.')
+            ->with('success', count($created).' return forms generated, one per vendor and company rented to: '.$refs.'. Open each from the "Return To / Batch" column below.')
             ->with('warning', $warning);
     }
 
@@ -258,8 +265,11 @@ class RentalAssetAcknowledgementController extends Controller
             // identity there would put our staff's IC number under the vendor's declaration.
             // Only the company is suggested, and only because a courier normally does come
             // from the vendor; it stays editable for the times they do not.
+            // Keyed on the MAIN signature, not on the document being closed: once that party
+            // has signed, their identity is stored and the fields render read-only, whether
+            // or not the other party has got to it yet.
             'prefill' => match (true) {
-                $aarf->isAcknowledged() => [],
+                $aarf->mainAcknowledged() => [],
                 $aarf->isReturn() => ['collector_company' => $aarf->vendor?->name],
                 default => RentalAssetAcknowledgement::prefillCollector(Auth::user()),
             },
@@ -267,23 +277,25 @@ class RentalAssetAcknowledgementController extends Controller
     }
 
     /**
-     * Sign the form. The tick box is REQUIRED to be accepted — it is the whole point of
-     * the document, and anything not covered by it belongs in the condition remarks.
+     * Sign the MAIN declaration — the tick box, the condition note and the collector's
+     * identity. The tick is REQUIRED to be accepted: it is the whole point of the document,
+     * and anything not covered by it belongs in the condition remarks.
      *
-     * On a RETURN this single submit closes the whole document: the vendor's collector has
-     * ticked and typed their identity on our screen, and our processor's reply rides along
-     * because it needs no separate signature — the account stamped into `acknowledged_by`
-     * IS that signature. It also takes the assets out of service, which a receipt never does.
+     * This is ONE OF THE TWO signatures on the form, not the closing one. Either party may
+     * go first and neither blocks the other; the document is finished — and a return's assets
+     * archived — only when both have signed. See finalizeIfComplete().
      */
     public function acknowledge(Request $request, Vendor $vendor, RentalAssetAcknowledgement $aarf)
     {
         $this->authorizeManage();
         $this->assertBelongs($vendor, $aarf);
 
-        if ($aarf->isAcknowledged()) {
+        // Guarded on THIS party's signature, not the document's completion: the other party
+        // may well have signed already, and that must not bar this one from signing.
+        if ($aarf->mainAcknowledged()) {
             return redirect()
                 ->route('vendors.aarf.show', [$vendor, $aarf])
-                ->with('error', 'This AARF has already been acknowledged.');
+                ->with('error', 'The '.$aarf->mainPartyLabel().' has already acknowledged this AARF.');
         }
 
         $isReturn = $aarf->isReturn();
@@ -316,6 +328,9 @@ class RentalAssetAcknowledgementController extends Controller
         // signed statement, submitted through vendorAcknowledge() (receipt) or
         // processorAcknowledge() (return). Letting it ride along on this submit would mean
         // the closing signatory could write words above the other party's name.
+        // `status` is deliberately NOT set here — it is flipped by whichever of the two
+        // signatures lands second, in finalizeIfComplete(). Writing it on this one would
+        // state that the document was agreed by both parties on the strength of one.
         $attributes = [
             'condition_confirmed' => true,
             'condition_remarks' => $validated['condition_remarks'] ?? null,
@@ -323,7 +338,6 @@ class RentalAssetAcknowledgementController extends Controller
             'collector_name' => $validated['collector_name'],
             'collector_ic' => $validated['collector_ic'],
             'collector_phone' => $validated['collector_phone'] ?? null,
-            'status' => RentalAssetAcknowledgement::STATUS_ACKNOWLEDGED,
             'acknowledged_by' => Auth::id(),
             'acknowledged_at' => now(),
         ];
@@ -342,48 +356,86 @@ class RentalAssetAcknowledgementController extends Controller
             unset($attributes['condition_remarks']);
         }
 
-        // Signing a return and taking its assets out of service are ONE act, so they commit
+        $aarf->update($attributes);
+
+        return redirect()
+            ->route('vendors.aarf.show', [$vendor, $aarf])
+            ->with('success', "AARF {$aarf->reference} acknowledged by the {$aarf->mainPartyLabel()}."
+                .$this->finalizeIfComplete($aarf));
+    }
+
+    /**
+     * Close the document once BOTH parties have signed — whichever order they signed in.
+     *
+     * This is the single place the form becomes final, and it is called at the end of all
+     * three signature actions rather than living in the "last" one, because there is no last
+     * one: either party may go first. It is idempotent (it returns immediately if the status
+     * has already flipped), so a re-entry cannot archive the same assets twice or send the
+     * signed copy a second time.
+     *
+     * Returns the sentence to append to the caller's flash message, or '' while the document
+     * is still waiting on somebody — the operator must be able to tell "your signature was
+     * recorded" from "the handover is now closed", since only the second one archives assets
+     * and puts a signed PDF in four inboxes.
+     */
+    private function finalizeIfComplete(RentalAssetAcknowledgement $aarf): string
+    {
+        $aarf->refresh();
+
+        if ($aarf->isAcknowledged()) {
+            return '';
+        }
+
+        if (! $aarf->bothPartiesAcknowledged()) {
+            return " It closes once the {$aarf->awaitingPartyLabel()} has acknowledged it too.";
+        }
+
+        $isReturn = $aarf->isReturn();
+
+        // Closing a return and taking its assets out of service are ONE act, so they commit
         // together. Archiving separately would allow the half-state nobody could see: a
         // signed return whose assets still read as ours, sitting in the queue asking to be
         // returned a second time.
-        DB::transaction(function () use ($aarf, $attributes, $isReturn) {
-            $aarf->update($attributes);
+        DB::transaction(function () use ($aarf, $isReturn) {
+            $aarf->update(['status' => RentalAssetAcknowledgement::STATUS_ACKNOWLEDGED]);
 
             if ($isReturn) {
                 $aarf->archiveAssets();
             }
         });
 
-        // The stored PDF is the snapshot of what was signed. A failure to write it must
-        // not undo the acknowledgement — the record above already IS the acknowledgement,
-        // and the form can be re-printed on demand from the same data.
+        // The stored PDF is the snapshot of what was signed. A failure to write it must not
+        // undo the acknowledgement — the record above already IS the acknowledgement, and
+        // the form can be re-printed on demand from the same data.
+        $relations = ['items', 'vendor', 'creator', 'acknowledger', 'processorAcknowledger'];
+
         try {
-            $path = $this->storePdf($aarf->fresh(['items', 'vendor', 'creator', 'acknowledger', 'processorAcknowledger']));
-            $aarf->update(['pdf_path' => $path]);
+            $aarf->update(['pdf_path' => $this->storePdf($aarf->fresh($relations))]);
         } catch (\Throwable $e) {
             Log::error("AARF PDF generation failed for {$aarf->reference}: ".$e->getMessage());
         }
 
-        $sent = $this->distributeSignedCopy($aarf->fresh(['items', 'vendor', 'creator', 'acknowledger', 'processorAcknowledger']));
+        $sent = $this->distributeSignedCopy($aarf->fresh($relations));
 
-        return redirect()
-            ->route('vendors.aarf.show', [$vendor, $aarf])
-            ->with('success', "AARF {$aarf->reference} acknowledged."
-                .($isReturn ? ' The assets have been archived out of the inventory.' : '')
-                .($sent ? '' : ' The signed copy could not be emailed — see the logs.'));
+        return ' Both parties have now signed'
+            .($isReturn ? ', and the assets have been archived out of the inventory' : '').'.'
+            .($sent ? '' : ' The signed copy could not be emailed — see the logs.');
     }
 
     /**
-     * The VENDOR's delivery representative answers our damage note and signs it.
+     * The VENDOR's delivery representative acknowledges the handover, and answers our damage
+     * note if they have anything to say about it.
      *
-     * Optional — most handovers have nothing to reply to. But the reply and the identity
-     * behind it are validated and written TOGETHER, so "a damage reply nobody signed"
-     * cannot be stored: an anonymous rebuttal of a damage note is worth nothing in the
-     * argument it exists to settle.
+     * REQUIRED, not optional, since 2026-08-13: a handover is an agreement between two
+     * parties and the form is not finished until both have signed. Their REMARKS stay
+     * optional — most handovers have nothing to reply to, and demanding filler text in a box
+     * captioned "Leave remarks if any" would be demanding a sentence nobody meant to write.
+     * The identity is what makes the signature, so it is still required and is written in
+     * the SAME action as the remarks: "a damage reply nobody signed" cannot be stored,
+     * because an anonymous rebuttal is worth nothing in the argument it exists to settle.
      *
      * There is no account behind this person, so the typed identity plus the timestamp IS
-     * the signature. It is captured in person on our screen, which is why it must happen
-     * while the form is still a draft — our acknowledgement closes the document.
+     * the signature, captured in person on our screen. They may sign before or after us.
      */
     public function vendorAcknowledge(Request $request, Vendor $vendor, RentalAssetAcknowledgement $aarf)
     {
@@ -399,20 +451,24 @@ class RentalAssetAcknowledgementController extends Controller
                 ->with('error', "This is a return form — the vendor's collector signs it in the Collector Details section, not as a separate representative.");
         }
 
+        // Unreachable in the normal two-signature flow — the status only flips once BOTH
+        // parties have signed, and the next guard catches this party. It is here for the
+        // forms CLOSED UNDER THE OLD SINGLE-SIGNATURE RULE, which are final with only our
+        // signature on them: nothing may be added to a document already declared complete.
         if ($aarf->isAcknowledged()) {
             return redirect()
                 ->route('vendors.aarf.show', [$vendor, $aarf])
-                ->with('error', 'This AARF is already closed — the vendor representative can no longer sign it.');
+                ->with('error', 'This AARF is already closed and can no longer be signed.');
         }
 
         if ($aarf->vendorRepAcknowledged()) {
             return redirect()
                 ->route('vendors.aarf.show', [$vendor, $aarf])
-                ->with('error', 'The vendor representative has already signed this form.');
+                ->with('error', 'The Vendor PIC has already acknowledged this form.');
         }
 
         $validated = $request->validate([
-            'vendor_rep_remarks' => 'required|string|max:2000',
+            'vendor_rep_remarks' => 'nullable|string|max:2000',
             'vendor_rep_company' => 'nullable|string|max:255',
             'vendor_rep_name' => 'required|string|max:255',
             'vendor_rep_ic' => 'required|string|max:60',
@@ -422,19 +478,28 @@ class RentalAssetAcknowledgementController extends Controller
             'condition_remarks' => 'nullable|string|max:2000',
         ]);
 
-        $aarf->update([
-            'vendor_rep_remarks' => $validated['vendor_rep_remarks'],
+        $attributes = [
+            'vendor_rep_remarks' => $validated['vendor_rep_remarks'] ?? null,
             'vendor_rep_company' => $validated['vendor_rep_company'] ?? null,
             'vendor_rep_name' => $validated['vendor_rep_name'],
             'vendor_rep_ic' => $validated['vendor_rep_ic'],
             'vendor_rep_phone' => $validated['vendor_rep_phone'] ?? null,
             'vendor_rep_acknowledged_at' => now(),
-            // The rep is signing a reply to OUR damage note, which until now existed only
-            // as unsubmitted text in a textarea. Persist it in the same write: a signed
-            // reply whose subject was never saved refers to nothing, and the reply would
-            // read as an answer to whatever got typed there later.
+            // The rep may be answering a damage note that until now existed only as
+            // unsubmitted text in a textarea (we share one form, so it posts with them).
+            // Persist it in the same write: a signed reply whose subject was never saved
+            // refers to nothing, and would read as an answer to whatever got typed later.
             'condition_remarks' => $validated['condition_remarks'] ?? null,
-        ]);
+        ];
+
+        // ...unless WE have already signed, in which case the note is our stored declaration
+        // and the page renders it read-only. Accepting it back from this submit would let
+        // the party answering the note rewrite the note itself.
+        if ($aarf->mainAcknowledged()) {
+            unset($attributes['condition_remarks']);
+        }
+
+        $aarf->update($attributes);
 
         // `condition_confirmed` is deliberately NOT stored here — the tick is our formal
         // declaration and is made by acknowledge(), not carried in on someone else's
@@ -444,24 +509,22 @@ class RentalAssetAcknowledgementController extends Controller
         return redirect()
             ->route('vendors.aarf.show', [$vendor, $aarf])
             ->withInput(['condition_confirmed' => $request->input('condition_confirmed')])
-            ->with('success', "Vendor representative {$validated['vendor_rep_name']} acknowledged the remarks.");
+            ->with('success', "AARF {$aarf->reference} acknowledged by Vendor PIC {$validated['vendor_rep_name']}."
+                .$this->finalizeIfComplete($aarf));
     }
 
     /**
-     * OUR processor answers the return collector's condition remarks and signs the answer.
+     * OUR Company PIC acknowledges the return, and answers the collector's condition remarks
+     * if they have anything to say about them.
      *
-     * The exact mirror of vendorAcknowledge(), with the parties swapped — on a return the
-     * collector is the closing signatory and we are the second party. Optional, like the
-     * rep's block: most handovers have nothing to reply to. But the reply and the identity
-     * behind it are written TOGETHER, so "a rebuttal nobody signed" cannot be stored.
+     * The exact mirror of vendorAcknowledge(), with the parties swapped: on a return the
+     * vendor's collector makes the main declaration and we are the second party. Required
+     * for the form to close, remarks optional, either party may go first.
      *
      * The one legitimate asymmetry is the SHAPE of the signature. The vendor's rep has no
-     * account, so their typed name plus a timestamp is it; our processor is logged in, so
+     * account, so their typed name plus a timestamp is it; our Company PIC is logged in, so
      * the account reference plus the timestamp is it and nothing is typed — the same
      * distinction acknowledge() already draws between the two directions.
-     *
-     * It must happen while the form is still a draft: the collector's acknowledgement closes
-     * the document, and a reply added afterwards would be answering a signed declaration.
      */
     public function processorAcknowledge(Request $request, Vendor $vendor, RentalAssetAcknowledgement $aarf)
     {
@@ -477,37 +540,46 @@ class RentalAssetAcknowledgementController extends Controller
                 ->with('error', 'This is a receipt form — our staff sign the main acknowledgement, and the reply belongs to the vendor representative.');
         }
 
+        // See vendorAcknowledge(): only reachable for a form closed under the old
+        // single-signature rule, which is final with only the collector's signature on it.
         if ($aarf->isAcknowledged()) {
             return redirect()
                 ->route('vendors.aarf.show', [$vendor, $aarf])
-                ->with('error', 'This AARF is already closed — the collector has signed it, so a reply can no longer be added.');
+                ->with('error', 'This AARF is already closed and can no longer be signed.');
         }
 
         if ($aarf->processorAcknowledged()) {
             return redirect()
                 ->route('vendors.aarf.show', [$vendor, $aarf])
-                ->with('error', 'A processor has already signed a reply on this form.');
+                ->with('error', 'The Company PIC has already acknowledged this form.');
         }
 
         $validated = $request->validate([
-            'processor_remarks' => 'required|string|max:2000',
+            'processor_remarks' => 'nullable|string|max:2000',
             // Posted alongside, because both sides share one form. Not ours to declare, but
             // the note we are answering has to be stored with the answer.
             'condition_remarks' => 'nullable|string|max:2000',
-        ], [
-            'processor_remarks.required' => 'Write the reply before signing it — a signature with nothing above it records nothing.',
         ]);
 
-        $aarf->update([
-            'processor_remarks' => $validated['processor_remarks'],
+        $attributes = [
+            'processor_remarks' => $validated['processor_remarks'] ?? null,
             'processor_acknowledged_by' => Auth::id(),
             'processor_acknowledged_at' => now(),
-            // The collector's note existed only as unsubmitted text in a textarea until now
-            // (they submit at the end, we submit first). Persist it in the same write: a
-            // signed reply whose subject was never saved refers to nothing, and would read
-            // as an answer to whatever got typed there later.
+            // The collector's note may still be unsubmitted text in a textarea (we share one
+            // form, so it posts with us). Persist it in the same write: a signed reply whose
+            // subject was never saved refers to nothing, and would read as an answer to
+            // whatever got typed there later.
             'condition_remarks' => $validated['condition_remarks'] ?? null,
-        ]);
+        ];
+
+        // ...unless the collector has already signed, in which case the note is THEIR stored
+        // declaration and the page renders it read-only. Accepting it back here would let us
+        // rewrite what the vendor's collector said about the condition of their own assets.
+        if ($aarf->mainAcknowledged()) {
+            unset($attributes['condition_remarks']);
+        }
+
+        $aarf->update($attributes);
 
         $who = RentalAssetAcknowledgement::actorIdentity(Auth::user())['name'] ?? Auth::user()->name;
 
@@ -524,7 +596,8 @@ class RentalAssetAcknowledgementController extends Controller
                 'condition_confirmed', 'collector_company', 'collector_name',
                 'collector_ic', 'collector_phone',
             ]))
-            ->with('success', "Reply signed by {$who}. The collector can now review it and acknowledge the return.");
+            ->with('success', "AARF {$aarf->reference} acknowledged by Company PIC {$who}."
+                .$this->finalizeIfComplete($aarf));
     }
 
     /** Stream the form as a PDF — the stored copy once signed, rendered live while draft. */
@@ -552,27 +625,34 @@ class RentalAssetAcknowledgementController extends Controller
         $this->authorizeManage();
         $this->assertBelongs($vendor, $aarf);
 
-        if ($aarf->isAcknowledged()) {
+        // EITHER signature, not the completed status. A form waiting on its second party is
+        // still `draft`, so guarding on isAcknowledged() here would let a discard destroy a
+        // signature one of the two parties had already given.
+        if ($aarf->anyPartyAcknowledged()) {
             return redirect()
-                ->route('vendors.show', [$vendor, 'tab' => 'assets'])
-                ->with('error', 'An acknowledged AARF cannot be deleted.');
+                ->route('vendors.show', [$vendor, 'tab' => 'report'])
+                ->with('error', $aarf->isAcknowledged()
+                    ? 'An acknowledged AARF cannot be deleted.'
+                    : 'This AARF has already been acknowledged by the '
+                        .($aarf->mainAcknowledged() ? $aarf->mainPartyLabel() : $aarf->secondPartyLabel())
+                        .' and can no longer be discarded.');
         }
 
         $reference = $aarf->reference;
         $aarf->delete();
 
         return redirect()
-            ->route('vendors.show', [$vendor, 'tab' => 'assets'])
+            ->route('vendors.show', [$vendor, 'tab' => 'report'])
             ->with('success', "Draft AARF {$reference} discarded — its assets are pending again.");
     }
 
     /**
-     * Send the signed form, with the PDF attached, to the three parties that need it:
-     * the vendor's PIC, the IT team and the Finance team.
+     * Send the signed form, with the PDF attached, to the four parties that need it:
+     * the vendor's PIC, the IT team, the Finance team and the company's management.
      *
      * Each leg is sent and caught INDEPENDENTLY. One bad address — a vendor PIC with a
-     * typo'd email is the likely one — must not stop the other two from being told; a
-     * single try/catch around all three would let the first failure silence the rest.
+     * typo'd email is the likely one — must not stop the others from being told; a
+     * single try/catch around all four would let the first failure silence the rest.
      *
      * The whole thing fails open: the acknowledgement is already committed and the PDF is
      * downloadable from the page, so a mail outage must never roll back a signature. The
@@ -594,10 +674,31 @@ class RentalAssetAcknowledgementController extends Controller
             ) && $ok;
         }
 
-        // 2 & 3 ─ IT and Finance: TO the manager(s), CC the executive(s), work email only.
+        // 2, 3 & 4 ─ IT, Finance and Management.
+        //
+        // IT and Finance are addressed by ROLE: TO the manager(s), CC the executive(s), work
+        // email only. Management is addressed by COMPANY — the entity named on the FORM
+        // (company_rented_to), never the signer's own employer, because an IT manager at one
+        // group company routinely signs a handover for another's kit and that document is not
+        // their management's to receive. There is no CC line: the named people are peers, and
+        // ranking a CEO under a CTO (or the reverse) differs per entity.
+        //
+        // The management list is EwasteCompanyApprover — the one place the CEO/CTO of each
+        // entity are named. See that model's docblock for what naming somebody there now
+        // carries with it.
+        $company = $aarf->company_rented_to;
+
         foreach ([
             [RentalAssetAcknowledgedMail::AUDIENCE_IT, User::itEmailRecipients(), 'IT'],
             [RentalAssetAcknowledgedMail::AUDIENCE_FINANCE, User::financeEmailRecipients(), 'Finance'],
+            [
+                RentalAssetAcknowledgedMail::AUDIENCE_MANAGEMENT,
+                ['to' => EwasteCompanyApprover::notificationEmailsFor($company), 'cc' => []],
+                // The company is in the LABEL so the warning below names which entity has
+                // nobody behind it — "no Management recipients" alone would leave whoever
+                // reads the log hunting for which of the group companies it meant.
+                'Management ('.($company ?: 'company not stated on the form').')',
+            ],
         ] as [$audience, $recipients, $label]) {
             if (empty($recipients['to'])) {
                 Log::warning("AARF {$aarf->reference}: no {$label} recipients configured, signed copy not sent.");

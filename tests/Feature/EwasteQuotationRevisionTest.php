@@ -7,7 +7,9 @@ use App\Mail\EwasteQuotationApprovalMail;
 use App\Models\AssetDecommissionBatch;
 use App\Models\AssetInventory;
 use App\Models\DisposedAsset;
+use App\Models\EwasteCompanyApprover;
 use App\Models\User;
+use App\Models\Vendor;
 use App\Services\DecommissionReportRenderer;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -54,6 +56,9 @@ class EwasteQuotationRevisionTest extends TestCase
     {
         $batch = AssetDecommissionBatch::create([
             'batch_number' => 'EWA-2026-Q3', 'type' => 'e_waste', 'status' => 'awaiting_quotation',
+            // A cycle is per company since Phase 4, and the company is what decides which
+            // management approver may authorise it.
+            'company' => 'Claritas Asia Sdn Bhd',
         ]);
         $asset = AssetInventory::factory()->create(['asset_condition' => 'not_good', 'decommission_batch_id' => $batch->id]);
         DisposedAsset::create([
@@ -77,29 +82,71 @@ class EwasteQuotationRevisionTest extends TestCase
         return User::factory()->create(['role' => 'finance_manager', 'name' => 'Priya Ramasamy', 'work_email' => 'fin@claritas.com']);
     }
 
+    /** The one e-waste vendor these tests quote from — offers belong to a vendor since Phase 5. */
+    private function vendor(): Vendor
+    {
+        return Vendor::firstOrCreate(
+            ['name' => 'RecycleCo'],
+            ['vendor_types' => ['ewaste'], 'pic_email' => 'ops@recycleco.com', 'is_active' => true]
+        );
+    }
+
     /** Amounts are typed, so resolveAmount() short-circuits and no OCR call is attempted. */
     private function upload(User $it, AssetDecommissionBatch $batch, string $file, float $amount): void
     {
         $this->actingAs($it)->post(route('ewaste.quotation', $batch), [
+            'vendor_id' => $this->vendor()->id,
             'quotation_file' => $this->quote($file),
             'quotation_amount' => $amount,
         ])->assertRedirect();
     }
 
-    /** offer → rejected (with reason) → revised offer → approved. */
+    /** IT put the offers up for review — nothing is decidable until they do (Phase 5). */
+    private function submit(User $it, AssetDecommissionBatch $batch): void
+    {
+        $current = $batch->fresh()->quotationsForComparison()->first();
+
+        $this->actingAs($it)->post(route('ewaste.submit', $batch), [
+            'recommended_quotation_id' => $current->id,
+        ])->assertRedirect();
+    }
+
+    private function managementApprover(): User
+    {
+        $user = User::factory()->create(['role' => 'employee', 'name' => 'Kelvin Approver']);
+        EwasteCompanyApprover::create(['company' => 'Claritas Asia Sdn Bhd', 'user_id' => $user->id]);
+
+        return $user;
+    }
+
+    /**
+     * offer → refused (with reason) → revised offer → approved.
+     *
+     * Both parties act at each round since Phase 5: Finance record their position, management
+     * make the decision that actually moves the cycle. The rejection reason the assertions
+     * below care about is Finance's, recorded on the revision itself.
+     */
     private function rejectedThenApproved(User $it, User $finance): AssetDecommissionBatch
     {
         $batch = $this->cycle();
+        $mgmt = $this->managementApprover();
 
         $this->upload($it, $batch, 'first.pdf', 1000);
+        $this->submit($it, $batch);
         $this->actingAs($finance)->post(route('finance.ewaste.reject', $batch), [
             'remarks' => 'Offer is below the market rate for 3 laptops.',
         ])->assertRedirect();
+        // Management's rejection is what sends the cycle back for a revised offer.
+        $this->actingAs($mgmt)->post(route('management.ewaste.reject', $batch), [
+            'remarks' => 'Agreed — go back for a better price.',
+        ])->assertRedirect();
 
         $this->upload($it, $batch, 'second.pdf', 1450);
+        $this->submit($it, $batch);
         $this->actingAs($finance)->post(route('finance.ewaste.approve', $batch), [
             'remarks' => 'Revised offer accepted.',
         ])->assertRedirect();
+        $this->actingAs($mgmt)->post(route('management.ewaste.approve', $batch))->assertRedirect();
 
         return $batch->fresh();
     }
@@ -155,11 +202,16 @@ class EwasteQuotationRevisionTest extends TestCase
         $this->assertTrue(Storage::disk('local')->exists($first->path));
         $this->assertTrue(Storage::disk('local')->exists($second->path));
 
-        // The batch columns are a cache of the CURRENT revision — what every other screen reads.
+        // The batch columns cache the offer IN PLAY — the accepted one since Phase 5, which on
+        // a single-vendor cycle is still the current revision.
         $this->assertSame($second->path, $batch->quotation_path);
         $this->assertSame('1450.00', $batch->quotation_amount);
         $this->assertSame('approved', $batch->finance_status);
-        $this->assertSame('finance_approved', $batch->status);
+        // `approved`, not `finance_approved`: management authorise a disposal, so a status
+        // naming Finance as the decider would misstate who signed it off.
+        $this->assertSame('approved', $batch->status);
+        $this->assertSame('approved', $batch->management_status);
+        $this->assertSame($second->id, $batch->selected_quotation_id);
     }
 
     public function test_the_cycle_log_shows_both_offers_with_the_rejection_between_them(): void
@@ -183,19 +235,32 @@ class EwasteQuotationRevisionTest extends TestCase
         $this->assertSame(2, substr_count($response->getContent(), 'view quote'));
     }
 
-    /** Before the re-upload, IT is told which revision this will be and what Finance asked for. */
+    /**
+     * Before the re-upload, IT is told what was refused and why.
+     *
+     * The "this will be revision N" prediction went with the single-vendor form: the upload
+     * form now asks WHICH vendor sent the document, so the next revision number is not known
+     * until that is picked, and the comparison table above states each vendor's current
+     * revision anyway. What still has to be on screen is the reason, which is what IT act on.
+     */
     public function test_the_reupload_form_states_the_rejection_it_is_answering(): void
     {
         $it = $this->itManager();
-        $finance = $this->financeManager();
         $batch = $this->cycle();
+        $mgmt = $this->managementApprover();
 
         $this->upload($it, $batch, 'first.pdf', 1000);
-        $this->actingAs($finance)->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Too low.'])->assertRedirect();
+        $this->submit($it, $batch);
+        $this->actingAs($this->financeManager())
+            ->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Too low.'])->assertRedirect();
+        $this->actingAs($mgmt)->post(route('management.ewaste.reject', $batch), [
+            'remarks' => 'Go back for a better price.',
+        ])->assertRedirect();
 
         $this->actingAs($it)->get(route('decommission.show', $batch))->assertOk()
-            ->assertSee('uploaded as revision 2', false)
-            ->assertSee('revision 1 stays on the log', false)
+            ->assertSee('Management rejected this disposal', false)
+            ->assertSee('Go back for a better price.', false)
+            // Finance's objection stays visible in the cycle log beside the offer it was made about.
             ->assertSee('Too low.', false);
     }
 
@@ -214,7 +279,7 @@ class EwasteQuotationRevisionTest extends TestCase
 
         // The body carries the decision trail: both offers, both outcomes, the reason.
         $html = view('decommission.report-pdf', ['batch' => $batch, 'appendix' => $appendix])->render();
-        $this->assertStringContainsString('Quotation Revisions', $html);
+        $this->assertStringContainsString('Quotations Received', $html);
         $this->assertStringContainsString('1,000.00', $html);
         $this->assertStringContainsString('1,450.00', $html);
         $this->assertStringContainsString('Offer is below the market rate for 3 laptops.', $html);
@@ -256,9 +321,16 @@ class EwasteQuotationRevisionTest extends TestCase
         $finance = $this->financeManager();
         $batch = $this->cycle();
 
+        $mgmt = $this->managementApprover();
+
+        // The ask goes out when IT SUBMIT the comparison, not on every upload — several
+        // vendors are being collected first.
         $this->upload($it, $batch, 'first.pdf', 1000);
+        $this->submit($it, $batch);
         $this->actingAs($finance)->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Below market rate.'])->assertRedirect();
+        $this->actingAs($mgmt)->post(route('management.ewaste.reject', $batch), ['remarks' => 'Re-quote.'])->assertRedirect();
         $this->upload($it, $batch, 'second.pdf', 1450);
+        $this->submit($it, $batch);
 
         Mail::assertSent(EwasteQuotationApprovalMail::class, function ($mail) {
             $html = $mail->render();
@@ -280,13 +352,20 @@ class EwasteQuotationRevisionTest extends TestCase
         $finance = $this->financeManager();
         $batch = $this->cycle();
 
+        $mgmt = $this->managementApprover();
+
         $this->upload($it, $batch, 'first.pdf', 1000);
+        $this->submit($it, $batch);
         $this->actingAs($finance)->post(route('finance.ewaste.reject', $batch), [
             'remarks' => 'Below market rate for 3 laptops.',
         ])->assertRedirect();
+        $this->actingAs($mgmt)->post(route('management.ewaste.reject', $batch), ['remarks' => 'Re-quote.'])->assertRedirect();
         $this->upload($it, $batch, 'second.pdf', 1450);
+        $this->submit($it, $batch);
 
-        $this->actingAs($finance)->get(route('accounting.fixed-assets.index', ['status' => 'disposed']))
+        // Management → Decommissioning since 2026-08-14 — Finance's review moved off
+        // Accounting → Assets → "Disposed" onto the single e-waste review surface.
+        $this->actingAs($finance)->get(route('reports.decommission'))
             ->assertOk()
             ->assertSee('Revision 2', false)
             ->assertSee('you rejected revision 1', false)

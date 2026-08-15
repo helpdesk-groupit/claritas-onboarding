@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Models\Vendor;
 use App\Models\VendorBillingDocument;
 use App\Models\VendorContract;
+use App\Models\VendorDocumentScan;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
@@ -57,6 +58,38 @@ class VendorMasterTest extends TestCase
         );
     }
 
+    /**
+     * A document that has been uploaded and READ but not yet filed.
+     *
+     * Filing a contract or a billing document is a two-request flow since 2026-08-13:
+     * VendorDocumentScanController stores the file and reads it, then the modal posts the
+     * token with whatever the operator corrected. These tests stage the first half directly
+     * so they exercise the save without standing up a fake AI provider — the reading itself
+     * is covered in VendorDocumentInsightTest.
+     *
+     * Requires Storage::fake('local') in the calling test when the file matters.
+     */
+    private function stagedScan(Vendor $vendor, User $actor, string $kind, array $fields = [], array $overrides = []): VendorDocumentScan
+    {
+        $path = VendorDocumentScan::directoryFor($kind, $vendor->id).'/'.fake()->uuid().'.pdf';
+        Storage::disk('local')->put($path, '%PDF-1.4 sample');
+
+        return VendorDocumentScan::create(array_merge([
+            'vendor_id' => $vendor->id,
+            'user_id' => $actor->id,
+            'token' => (string) \Illuminate\Support\Str::uuid(),
+            'kind' => $kind,
+            'file_path' => $path,
+            'original_filename' => 'document.pdf',
+            'status' => 'ok',
+            'summary' => 'A summary read from the uploaded document.',
+            'key_points' => ['Term runs to 31 December 2026'],
+            'text' => 'FULL TRANSCRIPT OF THE DOCUMENT',
+            'companies' => ['Acme Rentals Sdn Bhd', 'Claritas Sdn Bhd'],
+            'fields' => $fields,
+        ], $overrides));
+    }
+
     private function asset(array $attrs = []): AssetInventory
     {
         return AssetInventory::create(array_merge([
@@ -75,7 +108,7 @@ class VendorMasterTest extends TestCase
     // ── SST / B2B exemption ──────────────────────────────────────────────────
     public function test_sst_verdict_is_not_determined_until_our_own_category_is_configured(): void
     {
-        $vendor = $this->vendor(['sst_category' => 'professional', 'sst_number' => 'W10-1']);
+        $vendor = $this->vendor(['sst_categories' => ['professional'], 'sst_number' => 'W10-1']);
 
         $verdict = $vendor->sstVerdict();
 
@@ -89,7 +122,7 @@ class VendorMasterTest extends TestCase
     public function test_same_sst_category_means_the_vendor_cannot_charge_us_sst(): void
     {
         config()->set('vendors.own_sst_category', 'professional');
-        $vendor = $this->vendor(['sst_category' => 'professional', 'sst_number' => 'W10-1']);
+        $vendor = $this->vendor(['sst_categories' => ['professional'], 'sst_number' => 'W10-1']);
 
         $verdict = $vendor->sstVerdict();
 
@@ -100,7 +133,7 @@ class VendorMasterTest extends TestCase
     public function test_a_different_sst_category_may_charge_us_sst(): void
     {
         config()->set('vendors.own_sst_category', 'professional');
-        $vendor = $this->vendor(['sst_category' => 'logistics', 'sst_number' => 'W10-2']);
+        $vendor = $this->vendor(['sst_categories' => ['logistics'], 'sst_number' => 'W10-2']);
 
         $this->assertSame('chargeable', $vendor->sstVerdict()['state']);
         $this->assertFalse($vendor->isSstExemptToUs());
@@ -109,10 +142,108 @@ class VendorMasterTest extends TestCase
     public function test_an_unregistered_vendor_cannot_charge_sst_whatever_our_category_is(): void
     {
         config()->set('vendors.own_sst_category', 'professional');
-        $vendor = $this->vendor(['sst_category' => 'not_registered']);
+        $vendor = $this->vendor(['sst_categories' => ['not_registered']]);
 
         $this->assertSame('not_registered', $vendor->sstVerdict()['state']);
         $this->assertTrue($vendor->isSstExemptToUs());
+    }
+
+    /**
+     * A vendor registered under several groups is exempt as soon as ONE of them is ours —
+     * the exemption is per taxable service, so it cannot require the whole registration to
+     * match. Before the column became a list this vendor could only be filed under one
+     * group, and filing it under the other read as "chargeable".
+     */
+    public function test_one_shared_category_out_of_several_is_enough_to_exempt_the_vendor(): void
+    {
+        config()->set('vendors.own_sst_category', 'professional');
+        $vendor = $this->vendor(['sst_categories' => ['rental_leasing', 'professional']]);
+
+        $verdict = $vendor->sstVerdict();
+
+        $this->assertSame('exempt', $verdict['state']);
+        $this->assertTrue($vendor->isSstExemptToUs());
+    }
+
+    /**
+     * …and the reason must say the exemption is only as wide as the shared group. sstFlag()
+     * quotes it verbatim onto an invoice, so an unqualified "cannot charge us SST" would
+     * assert something false about their Group K work and teach the operator to dismiss it.
+     */
+    public function test_the_exemption_names_the_categories_it_does_not_cover(): void
+    {
+        config()->set('vendors.own_sst_category', 'professional');
+        $vendor = $this->vendor(['sst_categories' => ['professional', 'rental_leasing']]);
+
+        $reason = $vendor->sstVerdict()['reason'];
+
+        $this->assertStringContainsString('Group G', $reason);
+        $this->assertStringContainsString('Group K', $reason);
+        $this->assertStringContainsString('may charge SST on', $reason);
+    }
+
+    public function test_no_shared_category_across_several_is_still_chargeable(): void
+    {
+        config()->set('vendors.own_sst_category', 'professional');
+        $vendor = $this->vendor(['sst_categories' => ['logistics', 'construction']]);
+
+        $this->assertSame('chargeable', $vendor->sstVerdict()['state']);
+        $this->assertFalse($vendor->isSstExemptToUs());
+    }
+
+    /**
+     * A Sales Tax registrant holds no SERVICE tax registration, so nothing they bill us
+     * carries SST — the same verdict as "not registered", reached from a different fact.
+     * It is deliberately NOT exclusive, so it must not suppress a group filed beside it.
+     */
+    public function test_a_sales_tax_registrant_with_no_service_group_cannot_charge_service_tax(): void
+    {
+        config()->set('vendors.own_sst_category', 'professional');
+        $vendor = $this->vendor(['sst_categories' => ['sales_tax']]);
+
+        $this->assertSame('not_registered', $vendor->sstVerdict()['state']);
+        $this->assertTrue($vendor->isSstExemptToUs());
+
+        $vendor->update(['sst_categories' => ['sales_tax', 'logistics']]);
+
+        $this->assertSame('chargeable', $vendor->fresh()->sstVerdict()['state']);
+    }
+
+    /**
+     * "We have not checked" and "they told us they are not registered" are different
+     * answers with different consequences: the first must never make an invoice's SST line
+     * look wrong, and the second must.
+     */
+    public function test_no_category_recorded_is_unknown_not_unregistered(): void
+    {
+        config()->set('vendors.own_sst_category', 'professional');
+        $vendor = $this->vendor(['sst_categories' => null]);
+
+        $this->assertSame('unknown', $vendor->sstVerdict()['state']);
+        $this->assertStringContainsString('not been recorded', $vendor->sstVerdict()['reason']);
+        $this->assertFalse($vendor->isSstExemptToUs());
+    }
+
+    /** Our own side may be a list too, and the exemption turns on the overlap. */
+    public function test_our_own_side_may_hold_several_categories(): void
+    {
+        config()->set('vendors.own_sst_category', ['professional', 'other_services']);
+        $vendor = $this->vendor(['sst_categories' => ['other_services']]);
+
+        $this->assertSame('exempt', $vendor->sstVerdict()['state']);
+    }
+
+    /**
+     * A category the list no longer offers still renders as words. The label is printed on
+     * the profile and quoted into the SST verdict, so degrading it to a raw slug would put
+     * `healthcare` in front of Finance as if it were a code.
+     */
+    public function test_a_retired_category_is_still_readable(): void
+    {
+        $vendor = $this->vendor(['sst_categories' => ['healthcare']]);
+
+        $this->assertNotSame('healthcare', $vendor->sstCategoryLabel(), 'the raw key must not surface as the label');
+        $this->assertStringContainsString('no longer offered', $vendor->sstCategoryLabel());
     }
 
     /**
@@ -124,16 +255,20 @@ class VendorMasterTest extends TestCase
     {
         Storage::fake('local');
         config()->set('vendors.own_sst_category', 'professional');
-        $vendor = $this->vendor(['sst_category' => 'professional']);
+        $vendor = $this->vendor(['sst_categories' => ['professional']]);
 
-        $this->actingAs($this->itManager())->post(route('vendors.billing.store', $vendor), [
+        $actor = $this->itManager();
+        $scan = $this->stagedScan($vendor, $actor, VendorDocumentScan::KIND_BILLING, [
             'doc_type' => 'invoice',
-            'status' => 'received',
             'doc_number' => 'INV-900',
-            'subtotal' => '1000.00',
-            'sst_amount' => '80.00',
-            'total' => '1080.00',
+            'subtotal' => 1000.00,
+            'sst_amount' => 80.00,
+            'total' => 1080.00,
             'currency' => 'MYR',
+        ]);
+
+        $this->actingAs($actor)->post(route('vendors.billing.store', $vendor), [
+            'scan_token' => $scan->token,
         ])->assertSessionHasNoErrors();
 
         $doc = VendorBillingDocument::where('doc_number', 'INV-900')->first();
@@ -145,7 +280,7 @@ class VendorMasterTest extends TestCase
     public function test_no_sst_flag_when_the_document_carries_no_sst(): void
     {
         config()->set('vendors.own_sst_category', 'professional');
-        $vendor = $this->vendor(['sst_category' => 'professional']);
+        $vendor = $this->vendor(['sst_categories' => ['professional']]);
 
         $doc = VendorBillingDocument::create([
             'vendor_id' => $vendor->id, 'doc_type' => 'invoice', 'status' => 'received',
@@ -219,12 +354,11 @@ class VendorMasterTest extends TestCase
                 'quotations' => 0, 'invoices' => 0, 'sst_flags' => 0,
             ],
             'canManage' => false,
-            'sstVerdict' => $vendor->sstVerdict(),
             // Kept in step with VendorController::show() by hand — this render bypasses
             // the controller, so a view variable added there has to be added here too.
             'pendingAssets' => \App\Models\RentalAssetAcknowledgement::pendingAssetsFor($vendor),
             'acknowledgements' => $vendor->rentalAcknowledgements,
-            'assetFormStatus' => collect(),
+            'ewasteCycles' => collect(),
             'askable' => $vendor->askableDocuments(),
             'chatMessages' => $vendor->chatMessages,
             'askFocus' => null,
@@ -248,140 +382,223 @@ class VendorMasterTest extends TestCase
     }
 
     // ── Contracts ────────────────────────────────────────────────────────────
-    public function test_a_contract_can_be_uploaded_and_appears_on_the_profile(): void
+    public function test_a_contract_is_filed_from_a_scanned_document(): void
     {
         Storage::fake('local');
         $vendor = $this->vendor();
+        $actor = $this->itManager();
 
-        $this->actingAs($this->itManager())->post(route('vendors.contracts.store', $vendor), [
+        $scan = $this->stagedScan($vendor, $actor, VendorDocumentScan::KIND_CONTRACT, [
             'title' => 'Laptop Rental Agreement 2026',
-            'status' => 'active',
             'contract_type' => 'rental',
             'start_date' => '2026-01-01',
             'end_date' => '2026-12-31',
-            'contract_value' => '24000.00',
+            'contract_value' => 24000.00,
             'currency' => 'MYR',
-            'document' => $this->pdf('agreement.pdf'),
+        ], ['original_filename' => 'agreement.pdf']);
+
+        $this->actingAs($actor)->post(route('vendors.contracts.store', $vendor), [
+            'scan_token' => $scan->token,
+            'ai_summary' => 'A summary read from the uploaded document.',
+            'companies_involved' => 'Acme Rentals Sdn Bhd, Claritas Sdn Bhd',
         ])->assertRedirect(route('vendors.show', [$vendor, 'tab' => 'contracts']));
 
         $contract = VendorContract::first();
         $this->assertNotNull($contract);
+        // Every one of these was typed by hand until 2026-08-13 and is now read off the
+        // document — the whole point of the change.
         $this->assertSame('Laptop Rental Agreement 2026', $contract->title);
+        $this->assertSame('rental', $contract->contract_type);
+        $this->assertSame('2026-12-31', $contract->end_date->toDateString());
         $this->assertSame('agreement.pdf', $contract->original_filename);
         $this->assertStringStartsWith('vendor_contracts/'.$vendor->id.'/', $contract->file_path);
         Storage::disk('local')->assertExists($contract->file_path);
 
-        $this->actingAs($this->itManager())
+        // The reading travels with it rather than being run a second time.
+        $this->assertSame('ok', $contract->ai_status);
+        $this->assertSame('FULL TRANSCRIPT OF THE DOCUMENT', $contract->ai_text);
+        $this->assertSame(['Acme Rentals Sdn Bhd', 'Claritas Sdn Bhd'], $contract->companies_involved);
+
+        // The staging row is consumed; the FILE it was holding is not.
+        $this->assertSame(0, VendorDocumentScan::count());
+
+        $this->actingAs($actor)
             ->get(route('vendors.show', $vendor))
             ->assertOk()
             ->assertSee('Laptop Rental Agreement 2026');
     }
 
     /**
-     * Document AI must FAIL OPEN. With it switched off the upload still succeeds and the
-     * typed fields survive untouched — a reading is a bonus on top of the record, never a
-     * condition of filing one.
+     * Document AI must FAIL OPEN. A document the reading could not touch is still filed,
+     * still keeps its file, and says on its row why there is no summary — an unreadable
+     * document must never be an unfileable one.
      */
-    public function test_a_contract_uploads_fine_when_document_ai_is_unavailable(): void
+    public function test_a_contract_whose_document_could_not_be_read_is_still_filed(): void
     {
         Storage::fake('local');
         $vendor = $this->vendor();
+        $actor = $this->itManager();
 
-        $this->actingAs($this->itManager())->post(route('vendors.contracts.store', $vendor), [
-            'title' => 'Support Agreement',
-            'status' => 'active',
-            'payment_terms' => '30 days from invoice date',
-            'document' => $this->pdf('support.pdf'),
+        $scan = $this->stagedScan($vendor, $actor, VendorDocumentScan::KIND_CONTRACT, [], [
+            'status' => 'failed',
+            'summary' => null,
+            'key_points' => null,
+            'text' => null,
+            'companies' => null,
+            'original_filename' => 'support.pdf',
+        ]);
+
+        $this->actingAs($actor)->post(route('vendors.contracts.store', $vendor), [
+            'scan_token' => $scan->token,
+            // Nothing was read, so the operator writes the summary themselves.
+            'ai_summary' => 'Support agreement, 30 days from invoice date.',
+            'companies_involved' => 'Acme Rentals Sdn Bhd',
         ])->assertSessionHasNoErrors();
 
         $contract = VendorContract::first();
-        $this->assertSame('30 days from invoice date', $contract->payment_terms);
+        $this->assertSame('failed', $contract->ai_status);
+        // The title has to resolve to something recognisable: the column is NOT NULL and
+        // nobody typed one.
+        $this->assertSame('support', $contract->title);
+        $this->assertSame('Support agreement, 30 days from invoice date.', $contract->ai_summary);
+        $this->assertTrue($contract->summaryIsEdited());
         Storage::disk('local')->assertExists($contract->file_path);
     }
 
-    public function test_a_contract_can_be_recorded_without_a_document(): void
+    /**
+     * The Add form is an upload form: without a document there is no summary, no parties
+     * and no terms — nothing the listing is built to show. Refused rather than filed as an
+     * empty row somebody would have to notice was empty.
+     */
+    public function test_a_document_cannot_be_filed_without_one(): void
     {
         $vendor = $this->vendor();
 
-        $this->actingAs($this->itManager())->post(route('vendors.contracts.store', $vendor), [
-            'title' => 'Verbal SLA, minuted',
-            'status' => 'draft',
-        ])->assertSessionHasNoErrors();
+        $this->actingAs($this->itManager())
+            ->post(route('vendors.contracts.store', $vendor), ['ai_summary' => 'Verbal SLA, minuted'])
+            ->assertSessionHasErrors('scan_token');
 
-        $contract = VendorContract::first();
-        $this->assertNull($contract->file_path);
-        $this->assertNull($contract->ai_status);
+        $this->assertSame(0, VendorContract::count());
     }
 
     /**
-     * The per-field OCR was removed on 2026-08-11: the fields are typed by hand and the
-     * only machine reading is the whole-document summary.
-     *
-     * Pinned because the removal is easy to half-undo — a re-added scan endpoint with no
-     * button, or a button pointing at a route that no longer exists, both look like the
-     * feature works until somebody presses Save. Asserting on the route NAMES rather than
-     * on rendered markup is what makes it fail loudly if the endpoints come back.
+     * A scan token that no longer resolves — swept as abandoned, or belonging to somebody
+     * else — must produce a stated refusal, never a contract with no document under it.
      */
-    public function test_the_per_field_document_scan_is_gone_from_the_routes_and_the_forms(): void
+    public function test_a_stale_or_foreign_scan_token_files_nothing(): void
     {
-        foreach ([
-            'vendors.contracts.scan', 'vendors.contracts.rescan',
-            'vendors.billing.scan', 'vendors.billing.rescan',
-        ] as $name) {
-            $this->assertNull(
-                app('router')->getRoutes()->getByName($name),
-                "Route {$name} should not exist — the per-field scan was removed."
-            );
-        }
-
+        Storage::fake('local');
         $vendor = $this->vendor();
-        $contract = VendorContract::create([
-            'vendor_id' => $vendor->id,
-            'title' => 'Laptop Rental Agreement 2026',
-            'status' => 'active',
-            'file_path' => 'vendor_contracts/'.$vendor->id.'/a.pdf',
-            'original_filename' => 'a.pdf',
+        $mine = $this->itManager();
+        $theirs = $this->itManager();
+
+        // Uploaded by another operator: the token is not a capability.
+        $scan = $this->stagedScan($vendor, $theirs, VendorDocumentScan::KIND_CONTRACT);
+
+        $this->actingAs($mine)
+            ->post(route('vendors.contracts.store', $vendor), ['scan_token' => $scan->token])
+            ->assertSessionHas('error');
+
+        $this->assertSame(0, VendorContract::count());
+
+        // And a token for a BILLING upload cannot be filed as a contract — otherwise an
+        // invoice's due date would be stored as a contract's term.
+        $billing = $this->stagedScan($vendor, $mine, VendorDocumentScan::KIND_BILLING);
+
+        $this->actingAs($mine)
+            ->post(route('vendors.contracts.store', $vendor), ['scan_token' => $billing->token])
+            ->assertSessionHas('error');
+
+        $this->assertSame(0, VendorContract::count());
+    }
+
+    /**
+     * The scan-before-save path came BACK on 2026-08-13, reversing the 2026-08-11 removal
+     * of the per-field OCR — but only on the operator's terms: the reading produces a
+     * SUMMARY they correct, and the record fields ride along as a by-product.
+     *
+     * What the old removal was protecting is pinned here, because it is the part that is
+     * easy to lose again: the field values must NOT be posted from the Add form. A value
+     * the form cannot show is a value nobody checked, and accepting one from the request
+     * would let a crafted submit set a contract value that was never on screen.
+     */
+    public function test_the_add_form_files_the_scan_without_accepting_field_values(): void
+    {
+        Storage::fake('local');
+        $vendor = $this->vendor();
+        $actor = $this->itManager();
+
+        $scan = $this->stagedScan($vendor, $actor, VendorDocumentScan::KIND_CONTRACT, [
+            'title' => 'Read from the document',
+            'contract_value' => 500.00,
         ]);
+
+        $this->actingAs($actor)->post(route('vendors.contracts.store', $vendor), [
+            'scan_token' => $scan->token,
+            // All ignored: the record is built from the stored scan, never from the request.
+            'title' => 'Typed by hand',
+            'contract_value' => '999999.00',
+            'status' => 'terminated',
+        ])->assertSessionHasNoErrors();
+
+        $contract = VendorContract::first();
+        $this->assertSame('Read from the document', $contract->title);
+        $this->assertSame('500.00', (string) $contract->contract_value);
+        $this->assertSame('active', $contract->status);
+    }
+
+    /**
+     * The Add form must not carry a field-entry form. Pinned on the rendered markup because
+     * this is the operator-facing half of the decision: the summary is what they review,
+     * and the figures are met on Edit.
+     */
+    public function test_the_add_form_asks_for_the_document_and_the_summary_only(): void
+    {
+        $vendor = $this->vendor();
 
         $html = $this->actingAs($this->itManager())
             ->get(route('vendors.show', [$vendor, 'tab' => 'contracts']))
             ->assertOk()
             ->getContent();
 
-        $this->assertStringNotContainsString('data-vnd-scan', $html);
-        $this->assertStringNotContainsString('Scan document', $html);
-        $this->assertStringNotContainsString('name="ocr_token"', $html);
-
-        // The summary control is deliberately still there — it is the reading that stayed.
-        $this->assertStringContainsString(
-            route('vendors.contracts.summarise', [$vendor, $contract]),
-            $html
-        );
+        // The Add modal is everything up to the first Edit modal (there are none here, so
+        // the whole page) — assert on the inputs it would have to carry.
+        $this->assertStringContainsString('name="ai_summary"', $html);
+        $this->assertStringContainsString('name="companies_involved"', $html);
+        $this->assertStringContainsString('name="scan_token"', $html);
+        $this->assertStringNotContainsString('name="contract_value"', $html);
+        $this->assertStringNotContainsString('name="start_date"', $html);
+        $this->assertStringNotContainsString('name="notice_period_days"', $html);
     }
 
     /**
-     * Type / Period / Value came off the contracts LISTING on 2026-08-11 — the row's
-     * summary says what the contract is, so the columns were noise.
+     * Type / Period / Value came off the contracts LISTING on 2026-08-11 and off every FORM
+     * on 2026-08-13 — the scan reads them and the summary is what a reader wants.
      *
-     * They are emphatically still stored, and this pins that: the assistant pairs these
+     * They are emphatically still STORED, and this pins that: the assistant pairs these
      * recorded fields with the document text (`recordedFields()`), which is the only reason
-     * "does this invoice match the contract rate?" is answerable and how a mis-keyed value
+     * "does this invoice match the contract rate?" is answerable and how a mis-read value
      * is caught. A later reading of "we removed those fields" that deleted the columns
      * would gut the assistant with nothing on screen to show for it.
      */
     public function test_the_contract_terms_survive_being_dropped_from_the_listing(): void
     {
+        Storage::fake('local');
         $vendor = $this->vendor();
+        $actor = $this->itManager();
 
-        $this->actingAs($this->itManager())->post(route('vendors.contracts.store', $vendor), [
+        $scan = $this->stagedScan($vendor, $actor, VendorDocumentScan::KIND_CONTRACT, [
             'title' => 'Laptop Rental Agreement 2026',
-            'status' => 'active',
             'contract_type' => 'rental',
             'start_date' => '2026-01-01',
             'end_date' => '2026-12-31',
-            'contract_value' => '493.00',
+            'contract_value' => 493.00,
             'billing_cycle' => 'monthly',
             'notice_period_days' => 30,
+        ]);
+
+        $this->actingAs($actor)->post(route('vendors.contracts.store', $vendor), [
+            'scan_token' => $scan->token,
         ])->assertSessionHasNoErrors();
 
         $contract = VendorContract::first();
@@ -391,7 +608,7 @@ class VendorMasterTest extends TestCase
         $this->assertSame(30, $contract->notice_period_days);
         $this->assertSame('2026-12-31', $contract->end_date->toDateString());
 
-        $html = $this->actingAs($this->itManager())
+        $html = $this->actingAs($actor)
             ->get(route('vendors.show', [$vendor, 'tab' => 'contracts']))
             ->assertOk()
             ->getContent();
@@ -401,10 +618,14 @@ class VendorMasterTest extends TestCase
         $this->assertStringNotContainsString('<th>Period</th>', $html);
         $this->assertStringNotContainsString('<th class="text-end">Value</th>', $html);
 
-        // …but still editable, and the expiry signal still reaches the listing via the
-        // derived State badge, which is what the Period column was load-bearing for.
-        $this->assertStringContainsString('name="contract_value"', $html);
-        $this->assertStringContainsString('name="end_date"', $html);
+        // …and gone as inputs too, on every form on the page…
+        $this->assertStringNotContainsString('name="contract_value"', $html);
+        $this->assertStringNotContainsString('name="end_date"', $html);
+        $this->assertStringNotContainsString('name="notice_period_days"', $html);
+
+        // …but the expiry signal still reaches the listing through the derived Status badge,
+        // which is what the Period column was load-bearing for and what "Status determined
+        // by the start and end date" means in practice.
         $this->assertStringContainsString($contract->stateBadge()['label'], $html);
     }
 
@@ -422,7 +643,7 @@ class VendorMasterTest extends TestCase
     public function test_the_billing_row_keeps_its_warnings_after_the_figures_left_the_table(): void
     {
         config()->set('vendors.own_sst_category', 'professional');
-        $vendor = $this->vendor(['sst_category' => 'professional']);
+        $vendor = $this->vendor(['sst_categories' => ['professional']]);
 
         $doc = VendorBillingDocument::create([
             'vendor_id' => $vendor->id,
@@ -456,15 +677,21 @@ class VendorMasterTest extends TestCase
 
         // …the warnings survive on the row…
         $this->assertStringContainsString('Overdue', $html);
-        $this->assertStringContainsString($doc->sstFlag(), $html);
+        // Escaped: the SST category labels carry the group letters and an ampersand, so the
+        // raw verdict string never appears verbatim in rendered HTML.
+        $this->assertStringContainsString(e($doc->sstFlag()), $html);
 
-        // …and every figure is still stored and still editable.
-        $this->assertStringContainsString('name="subtotal"', $html);
-        $this->assertStringContainsString('name="sst_amount"', $html);
-        $this->assertStringContainsString('name="total"', $html);
-        $this->assertStringContainsString('name="due_date"', $html);
-        $this->assertStringContainsString('name="vendor_contract_id"', $html);
+        // …and gone as inputs too: no form on this page types a figure any more.
+        $this->assertStringNotContainsString('name="subtotal"', $html);
+        $this->assertStringNotContainsString('name="sst_amount"', $html);
+        $this->assertStringNotContainsString('name="total"', $html);
+        $this->assertStringNotContainsString('name="due_date"', $html);
+        $this->assertStringNotContainsString('name="doc_number"', $html);
+
+        // …while every figure is still STORED, which is what feeds those two warnings and
+        // the assistant's recorded-fields comparison.
         $this->assertSame('1080.00', (string) $doc->fresh()->total);
+        $this->assertSame('80.00', (string) $doc->fresh()->sst_amount);
     }
 
     // ── Assets tab: only the sections that apply to this vendor ──────────────
@@ -586,55 +813,123 @@ class VendorMasterTest extends TestCase
     }
 
     // ── Billing ──────────────────────────────────────────────────────────────
-    public function test_a_quotation_can_be_uploaded_and_linked_to_a_contract(): void
+    /**
+     * Whether a billing document is a quotation or an invoice is decided by the READING —
+     * the Add form does not ask, because the document says so on its face — and so are its
+     * number, dates and figures.
+     */
+    public function test_a_quotation_is_filed_exactly_as_it_was_read(): void
     {
         Storage::fake('local');
         $vendor = $this->vendor();
-        $contract = VendorContract::create([
-            'vendor_id' => $vendor->id, 'title' => 'Master Agreement', 'status' => 'active',
+        $actor = $this->itManager();
+
+        $scan = $this->stagedScan($vendor, $actor, VendorDocumentScan::KIND_BILLING, [
+            'doc_type' => 'quotation',
+            'doc_number' => 'QT-2026-001',
+            'doc_date' => '2026-03-01',
+            'subtotal' => 900.00,
+            'sst_amount' => 72.00,
+            'total' => 972.00,
+            'currency' => 'MYR',
         ]);
 
-        $this->actingAs($this->itManager())->post(route('vendors.billing.store', $vendor), [
-            'doc_type' => 'quotation',
-            'status' => 'received',
-            'doc_number' => 'QT-2026-001',
-            'vendor_contract_id' => $contract->id,
-            'doc_date' => '2026-03-01',
-            'subtotal' => '900.00',
-            'sst_amount' => '72.00',
-            'total' => '972.00',
-            'currency' => 'MYR',
-            'document' => $this->pdf('quote.pdf'),
+        $this->actingAs($actor)->post(route('vendors.billing.store', $vendor), [
+            'scan_token' => $scan->token,
         ])->assertRedirect(route('vendors.show', [$vendor, 'tab' => 'billing']));
 
         $doc = VendorBillingDocument::first();
         $this->assertSame('quotation', $doc->doc_type);
-        $this->assertSame($contract->id, $doc->vendor_contract_id);
+        $this->assertSame('QT-2026-001', $doc->doc_number);
+        $this->assertSame('2026-03-01', $doc->doc_date->toDateString());
+        $this->assertSame('972.00', (string) $doc->total);
+        $this->assertSame('received', $doc->status);
         $this->assertStringStartsWith('vendor_billing/'.$vendor->id.'/', $doc->file_path);
+    }
+
+    /**
+     * The Edit form sets the SUMMARY and the parties, and nothing else — as of 2026-08-13
+     * not even the lifecycle status.
+     *
+     * Status used to be the one exception here, on the grounds that no reading of the
+     * document could produce it. It is now derived from the payment slip filed against the
+     * invoice, so accepting one from this request would be a second answer to a question the
+     * evidence already answers — and the only one able to assert a bill was settled with no
+     * document behind it. Posting 'paid' must therefore change nothing on a register whose
+     * entire value is provenance.
+     */
+    public function test_the_summary_is_the_only_thing_edit_still_sets(): void
+    {
+        $vendor = $this->vendor();
+        $doc = VendorBillingDocument::create([
+            'vendor_id' => $vendor->id, 'doc_type' => 'invoice', 'status' => 'received',
+            'doc_number' => 'INV-500', 'total' => 250.00, 'currency' => 'MYR',
+        ]);
+
+        $this->actingAs($this->itManager())
+            ->put(route('vendors.billing.update', [$vendor, $doc]), [
+                'ai_summary' => 'Settled in full.',
+                // Ignored — no form displays any of these any more.
+                'status' => 'paid',
+                'doc_number' => 'RENAMED',
+                'total' => '999999.00',
+                'due_date' => '1999-01-01',
+            ])
+            ->assertSessionHasNoErrors();
+
+        $doc->refresh();
+        $this->assertSame('Settled in full.', $doc->ai_summary);
+        $this->assertSame('INV-500', $doc->doc_number);
+        $this->assertSame('250.00', (string) $doc->total);
+        $this->assertNull($doc->due_date);
+
+        // The retired column is untouched, and — the part that matters — the row still
+        // reads Pending, because no payment slip was filed.
+        $this->assertSame('received', $doc->status);
+        $this->assertFalse($doc->isPaid());
+        $this->assertSame('Pending', $doc->paymentState()['label']);
     }
 
     /**
      * A contract belonging to a different vendor would silently file the document under a
      * relationship it has nothing to do with.
      */
-    public function test_a_billing_document_cannot_be_filed_against_another_vendors_contract(): void
+    /**
+     * `vendor_contract_id` has no control on any form as of 2026-08-13 — the forms ask for
+     * nothing but the summary and the parties.
+     *
+     * The column and the relation stay (legacy rows carry it, and the assistant reads
+     * "filed against contract" out of `recordedFields()`), so what has to be pinned is that
+     * a hand-posted id changes nothing. Silently accepting one would file a document under
+     * a relationship it has nothing to do with — and, worse, one belonging to another
+     * vendor — through a field no screen displays.
+     */
+    public function test_a_posted_contract_link_is_ignored_now_that_no_form_offers_one(): void
     {
         $vendor = $this->vendor();
         $other = $this->vendor(['name' => 'Other Vendor']);
         $foreign = VendorContract::create([
             'vendor_id' => $other->id, 'title' => 'Not ours', 'status' => 'active',
         ]);
+        $doc = VendorBillingDocument::create([
+            'vendor_id' => $vendor->id, 'doc_type' => 'invoice', 'status' => 'received',
+        ]);
 
         $this->actingAs($this->itManager())
             ->from(route('vendors.show', $vendor))
-            ->post(route('vendors.billing.store', $vendor), [
-                'doc_type' => 'invoice',
-                'status' => 'received',
+            ->put(route('vendors.billing.update', [$vendor, $doc]), [
                 'vendor_contract_id' => $foreign->id,
             ])
-            ->assertSessionHasErrors('vendor_contract_id');
+            ->assertSessionHasNoErrors();
 
-        $this->assertSame(0, VendorBillingDocument::count());
+        $this->assertNull($doc->fresh()->vendor_contract_id);
+
+        $html = $this->actingAs($this->itManager())
+            ->get(route('vendors.show', [$vendor, 'tab' => 'billing']))
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringNotContainsString('name="vendor_contract_id"', $html);
     }
 
     /**
@@ -646,34 +941,47 @@ class VendorMasterTest extends TestCase
      * rather than by making the column nullable: an amount with no currency beside it is
      * not a meaningful financial record.
      */
-    public function test_clearing_the_currency_field_does_not_break_the_save(): void
+    /**
+     * `currency` is NOT NULL with a DB default, and an explicit null DEFEATS a column
+     * default — the write dies on an integrity violation instead of falling back. Nobody
+     * types a currency any more, so the risk moved: a document whose currency the scan
+     * could not read arrives with the key simply absent, and the save must still land.
+     *
+     * Same for `auto_renew`, which the reading only reports when the document actually says
+     * so — an absent auto-renew clause is not a clause saying it does not renew.
+     */
+    public function test_a_reading_with_no_currency_still_saves(): void
     {
+        Storage::fake('local');
         $vendor = $this->vendor();
         $actor = $this->itManager();
 
-        $this->actingAs($actor)->post(route('vendors.billing.store', $vendor), [
+        $billing = $this->stagedScan($vendor, $actor, VendorDocumentScan::KIND_BILLING, [
             'doc_type' => 'invoice',
-            'status' => 'received',
-            'doc_number' => 'INV-CLEARED',
-            'total' => '250.00',
-            'currency' => '',
+            'doc_number' => 'INV-NO-CCY',
+            'total' => 250.00,
+        ]);
+
+        $this->actingAs($actor)->post(route('vendors.billing.store', $vendor), [
+            'scan_token' => $billing->token,
         ])->assertSessionHasNoErrors();
 
-        $doc = VendorBillingDocument::where('doc_number', 'INV-CLEARED')->first();
+        $doc = VendorBillingDocument::where('doc_number', 'INV-NO-CCY')->first();
         $this->assertNotNull($doc);
         $this->assertSame(VendorBillingDocument::DEFAULT_CURRENCY, $doc->currency);
 
+        $contract = $this->stagedScan($vendor, $actor, VendorDocumentScan::KIND_CONTRACT, [
+            'title' => 'No currency contract',
+        ]);
+
         $this->actingAs($actor)->post(route('vendors.contracts.store', $vendor), [
-            'title' => 'Cleared currency contract',
-            'status' => 'active',
-            'currency' => '',
-            'auto_renew' => '',
+            'scan_token' => $contract->token,
         ])->assertSessionHasNoErrors();
 
-        $contract = VendorContract::where('title', 'Cleared currency contract')->first();
-        $this->assertNotNull($contract);
-        $this->assertSame(VendorContract::DEFAULT_CURRENCY, $contract->currency);
-        $this->assertFalse($contract->auto_renew);
+        $saved = VendorContract::where('title', 'No currency contract')->first();
+        $this->assertNotNull($saved);
+        $this->assertSame(VendorContract::DEFAULT_CURRENCY, $saved->currency);
+        $this->assertFalse($saved->auto_renew);
     }
 
     // ── Asset link ───────────────────────────────────────────────────────────

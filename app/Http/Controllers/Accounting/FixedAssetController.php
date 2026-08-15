@@ -2,13 +2,11 @@
 
 namespace App\Http\Controllers\Accounting;
 
-use App\Http\Controllers\AssetDecommissionController;
 use App\Http\Controllers\Controller;
 use App\Models\Accounting\AccountingAuditTrail;
 use App\Models\Accounting\AssetDepreciationEntry;
 use App\Models\Accounting\FixedAsset;
 use App\Models\Accounting\FixedAssetCategory;
-use App\Models\AssetDecommissionBatch;
 use App\Services\AccountingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -77,49 +75,16 @@ class FixedAssetController extends Controller
             ->paginate(25);
         $companies = \App\Models\Company::orderBy('name')->pluck('name', 'name');
 
-        // Status = Disposed is the SINGLE home for everything e-waste: the quotations awaiting
-        // a Finance decision (approved/rejected inline, right here) and the finished cycles'
-        // reports. There is no separate screen and no extra sub-tab anywhere — asset work
-        // belongs on the Assets tab.
+        // NO e-waste blocks here. Status = "Disposed" was the single home for the quotations
+        // awaiting a Finance decision and the cycles' reports until 2026-08-14; both moved to
+        // Management → Decommissioning, which is now the ONE place Finance and management
+        // review a disposal. Approving there and reading the archive here put two screens
+        // between a quotation and the decision on it.
         //
-        // Deliberate scope:
-        //   • E-WASTE ONLY — a rental return goes back to its owner rather than being
-        //     disposed of, and since 2026-08-10 is not an AssetDecommissionBatch at all
-        //     (it is a RentalAssetAcknowledgement filed on the vendor's profile).
-        //   • REPORT-LEVEL, not asset-level — one row per cycle with its PDF, not the
-        //     individual laptops inside it.
-        //   • EVERY non-cancelled cycle, in-flight ones included, each showing its
-        //     ewasteStageBadge(). This list used to be FINALIZED ONLY on the assumption that
-        //     "in-flight cycles show in the pending-quotation list above it instead" — but
-        //     that list is finance_status = 'pending', so the moment Finance APPROVED a
-        //     quotation the cycle dropped out of it without ever entering this one and went
-        //     invisible on Finance's only surface. That gap is the entire collection window
-        //     (approved → vendor collects → pays → receipt uploaded), which is days or weeks
-        //     and is precisely when someone asks "where is that disposal up to?".
-        //     finance_rejected (awaiting a revised quote) and awaiting_quotation had the same
-        //     hole. Only `cancelled` is excluded — it is not a record of anything.
-        //
-        // These are asset_inventories/dispose_assets rows, NOT acc_fixed_assets: the register
-        // below carries cost and depreciation the IT inventory never captures, and nothing is
-        // posted between the two ledgers.
-        $decommissionBatches = null;
-        $pendingQuotations = null;
-        if ($status === 'disposed' && Auth::user()->canViewDecommissionReports()) {
-            $decommissionBatches = AssetDecommissionBatch::where('type', AssetDecommissionBatch::TYPE_EWASTE)
-                ->where('status', '!=', 'cancelled')
-                ->with('vendor')
-                ->withCount('items')
-                ->latest()
-                ->get();
-
-            // Only the roles that may actually act on a quotation are shown the action list —
-            // same gate AssetDecommissionController::authorizeFinance() enforces on submit.
-            if (Auth::user()->canApproveEwasteQuotation()) {
-                $pendingQuotations = AssetDecommissionController::pendingQuotationsQuery()->get();
-            }
-        }
-
-        return view('accounting.fixed-assets.index', compact('assets', 'company', 'status', 'companies', 'decommissionBatches', 'pendingQuotations'));
+        // Do not re-add them. These are acc_fixed_assets rows — a register carrying cost and
+        // depreciation that the IT inventory never captures, with nothing posted between the
+        // two ledgers — so a disposal cycle was always a guest on this page.
+        return view('accounting.fixed-assets.index', compact('assets', 'company', 'status', 'companies'));
     }
 
     public function create()

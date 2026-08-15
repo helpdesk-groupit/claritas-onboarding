@@ -7,6 +7,7 @@ use App\Mail\RentalAssetAcknowledgedMail;
 use App\Models\AssetDecommissionBatch;
 use App\Models\AssetInventory;
 use App\Models\DisposedAsset;
+use App\Models\EwasteCompanyApprover;
 use App\Models\RentalAssetAcknowledgement;
 use App\Models\RentalAssetAcknowledgementItem;
 use App\Models\User;
@@ -27,8 +28,8 @@ use Tests\TestCase;
  *   →  "Create Collection Batch"  →  one RETURN AARF per (vendor, company rented to),
  *      with the vendor DETECTED from each asset
  *   →  the collector verifies and signs IN-APP on our device
- *   →  assets archived, signed PDF emailed to vendor PIC + IT + Finance, filed on the
- *      vendor profile.
+ *   →  assets archived, signed PDF emailed to vendor PIC + IT + Finance + the management
+ *      named for that company, filed on the vendor profile.
  *
  * The two assertions carried over verbatim from the old suite are the ones that were about
  * the assets rather than the paperwork: acknowledging archives them, and a finished piece of
@@ -52,6 +53,23 @@ class RentalAssetReturnTest extends TestCase
     private function itManager(): User
     {
         return User::factory()->create(['role' => 'it_manager']);
+    }
+
+    /**
+     * Give every leg of the distribution an addressee.
+     *
+     * Management is named PER COMPANY, so it has to match stagedReturn()'s
+     * company_supplied_to — a name against another entity is not a recipient of this form.
+     */
+    private function notifiableTeams(string $company = 'Claritas Asia'): array
+    {
+        $management = User::factory()->create(['role' => 'employee', 'work_email' => 'kelvin.cto@claritas.test']);
+        EwasteCompanyApprover::create(['company' => $company, 'user_id' => $management->id]);
+
+        return [
+            'finance' => User::factory()->create(['role' => 'finance_manager']),
+            'management' => $management,
+        ];
     }
 
     private function vendor(string $name = 'TechLease', array $attrs = []): Vendor
@@ -110,6 +128,27 @@ class RentalAssetReturnTest extends TestCase
         $this->actingAs($it)->post(route('decommission.returns.generate'), ['dispose_ids' => [$row->id]]);
 
         return [RentalAssetAcknowledgement::where('type', 'return')->firstOrFail(), $asset];
+    }
+
+    /**
+     * Sign BOTH sides of a return, which is what closes it and archives its assets.
+     *
+     * A form takes two acknowledgements in either order since 2026-08-13 — the vendor's
+     * collector and our Company PIC — and neither on its own archives anything, stores a PDF
+     * or sends mail. Every test whose subject is "a signed return" goes through here; the
+     * tests whose subject is the ORDER call the two halves themselves.
+     */
+    private function closeReturn(User $it, Vendor $vendor, RentalAssetAcknowledgement $aarf, array $overrides = [])
+    {
+        $this->actingAs($it)->post(
+            route('vendors.aarf.acknowledge', [$vendor, $aarf]),
+            $this->signaturePayload($overrides)
+        );
+
+        return $this->actingAs($it)->post(
+            route('vendors.aarf.processor-acknowledge', [$vendor, $aarf]),
+            ['processor_remarks' => 'Checked against the delivery order.']
+        );
     }
 
     // ── Phase 2: generation from the queue ───────────────────────────────────
@@ -303,18 +342,65 @@ class RentalAssetReturnTest extends TestCase
             ->assertRedirect();
 
         $aarf->refresh();
-        $this->assertSame('acknowledged', $aarf->status);
-        $this->assertNotNull($aarf->acknowledged_at);
-        // The collector is the VENDOR'S courier, and they are the closing signatory: the
-        // moment belongs to them. The account is recorded alongside as the desk it was
-        // processed at, never instead of them.
+        // The collector is the VENDOR'S courier and the declaration is theirs: the moment
+        // belongs to them. The account is recorded alongside as the desk it was processed
+        // at, never instead of them.
         $this->assertSame('Ali Bin Ahmad', $aarf->collector_name);
         $this->assertSame($it->id, $aarf->acknowledged_by);
         $this->assertSame('LT-1 lid scratched.', $aarf->condition_remarks);
 
+        // ONE of the two signatures. The assets are still ours until we have signed too —
+        // archiving on the collector's word alone would take a machine off the books
+        // without anybody on our side having agreed it went back.
+        $this->assertFalse($aarf->isAcknowledged());
+        $this->assertNull($asset->fresh()->decommissioned_at);
+
+        $this->actingAs($it)->post(route('vendors.aarf.processor-acknowledge', [$vendor, $aarf]), [
+            'processor_remarks' => 'Pre-existing; photographed.',
+        ])->assertRedirect();
+
+        $aarf->refresh();
+        $this->assertSame('acknowledged', $aarf->status);
+        $this->assertNotNull($aarf->acknowledged_at);
+
         // Phase 4 — the assets leave the active inventory AND the decommissioning queue.
         $this->assertNotNull($asset->fresh()->decommissioned_at);
         $this->assertFalse(AssetInventory::active()->pluck('id')->contains($asset->id));
+    }
+
+    /**
+     * The order must not matter. Our Company PIC signing first is an ordinary case — the
+     * kit is checked and the paperwork prepared before the courier turns up — and it must
+     * not archive the assets before the courier has actually acknowledged taking them.
+     */
+    public function test_our_company_pic_may_sign_first_and_nothing_is_archived_until_the_collector_does(): void
+    {
+        Mail::fake();
+        Storage::fake('local');
+
+        $vendor = $this->vendor();
+        $it = $this->itManager();
+        $this->notifiableTeams();   // so all four legs have an addressee
+        [$aarf, $asset] = $this->draftReturn($vendor, $it);
+
+        $this->actingAs($it)->post(route('vendors.aarf.processor-acknowledge', [$vendor, $aarf]), [
+            'processor_remarks' => 'Checked against the delivery order.',
+        ])->assertRedirect();
+
+        $aarf->refresh();
+        $this->assertNotNull($aarf->processor_acknowledged_at);
+        $this->assertFalse($aarf->isAcknowledged());
+        $this->assertSame('Awaiting Collector', $aarf->statusBadge()['label']);
+        $this->assertNull($asset->fresh()->decommissioned_at);
+        Mail::assertNothingSent();
+
+        $this->actingAs($it)
+            ->post(route('vendors.aarf.acknowledge', [$vendor, $aarf]), $this->signaturePayload())
+            ->assertRedirect();
+
+        $this->assertTrue($aarf->fresh()->isAcknowledged());
+        $this->assertNotNull($asset->fresh()->decommissioned_at);
+        Mail::assertSent(RentalAssetAcknowledgedMail::class, 4);
     }
 
     public function test_the_confirmation_tick_is_mandatory_and_nothing_is_archived_without_it(): void
@@ -397,9 +483,9 @@ class RentalAssetReturnTest extends TestCase
 
         $this->actingAs($it)->get(route('vendors.aarf.show', [$vendor, $aarf]))
             ->assertOk()
-            ->assertSee('Processor&rsquo;s Remarks', false)
-            ->assertSee('Acknowledge as Processor')
-            ->assertDontSee('Acknowledge as Vendor Representative');
+            ->assertSee('Company PIC')
+            ->assertSee('Acknowledged by Company PIC')
+            ->assertDontSee('Acknowledged by Vendor PIC');
 
         $this->actingAs($it)
             ->post(route('vendors.aarf.vendor-acknowledge', [$vendor, $aarf]), [
@@ -463,10 +549,10 @@ class RentalAssetReturnTest extends TestCase
             ->assertRedirect();
 
         $aarf->refresh();
-        $this->assertSame('acknowledged', $aarf->status);
+        $this->assertTrue($aarf->mainAcknowledged());
         $this->assertNull(
             $aarf->processor_remarks,
-            "The closing submit must not author the other party's statement."
+            "The collector's submit must not author the other party's statement."
         );
         $this->assertNull($aarf->processor_acknowledged_at);
     }
@@ -553,7 +639,13 @@ class RentalAssetReturnTest extends TestCase
         $this->assertNull($receipt->processor_remarks);
     }
 
-    public function test_our_processor_cannot_sign_a_reply_after_the_collector_has_closed_the_form(): void
+    /**
+     * A return CLOSED UNDER THE OLD SINGLE-SIGNATURE RULE is final with only the collector's
+     * signature on it, and the live database holds such rows. Nothing may be added to a
+     * document already declared complete — so the guard stays, even though the normal
+     * two-signature flow can never reach it (the status only flips once both are on it).
+     */
+    public function test_a_return_closed_under_the_old_rule_can_no_longer_be_signed(): void
     {
         Mail::fake();
         Storage::fake('local');
@@ -563,18 +655,25 @@ class RentalAssetReturnTest extends TestCase
         [$aarf] = $this->draftReturn($vendor, $it);
 
         $this->actingAs($it)->post(route('vendors.aarf.acknowledge', [$vendor, $aarf]), $this->signaturePayload());
+        // Exactly the shape those rows are in: acknowledged, with no second signature.
+        $aarf->fresh()->update(['status' => RentalAssetAcknowledgement::STATUS_ACKNOWLEDGED]);
 
         $this->actingAs($it)
             ->post(route('vendors.aarf.processor-acknowledge', [$vendor, $aarf]), [
-                'processor_remarks' => 'Answering a declaration that is already signed.',
+                'processor_remarks' => 'Answering a declaration that is already closed.',
             ])
             ->assertRedirect();
 
         $this->assertNull($aarf->fresh()->processor_acknowledged_at);
     }
 
-    /** A signature with nothing above it records nothing. */
-    public function test_a_reply_cannot_be_signed_with_nothing_above_it(): void
+    /**
+     * The signature acknowledges the HANDOVER, not the paragraph above it, so remarks are
+     * optional — most returns have nothing to reply to, and the box is captioned "Leave
+     * remarks if any". This reverses "a signature with nothing above it records nothing",
+     * which was written when this block was only a reply to a damage note.
+     */
+    public function test_our_signature_stands_without_remarks(): void
     {
         $vendor = $this->vendor();
         $it = $this->itManager();
@@ -582,15 +681,24 @@ class RentalAssetReturnTest extends TestCase
 
         $this->actingAs($it)
             ->post(route('vendors.aarf.processor-acknowledge', [$vendor, $aarf]), ['processor_remarks' => ''])
-            ->assertSessionHasErrors('processor_remarks');
+            ->assertSessionHasNoErrors();
 
-        $this->assertNull($aarf->fresh()->processor_acknowledged_at);
+        $aarf->refresh();
+        $this->assertNotNull($aarf->processor_acknowledged_at);
+        $this->assertSame($it->id, $aarf->processor_acknowledged_by);
+        $this->assertNull($aarf->processor_remarks);
     }
 
     /**
      * The form must state BOTH facts: who acknowledged (the vendor's collector) and whose
      * account it was processed under. Printing only the account — which is what the
      * single-signature return did — credits our staff with the vendor's declaration.
+     *
+     * Since 2026-08-14 they are stated in two different places rather than two cells: the
+     * sign-off panel names the SIGNATORY, and section 7's sentence carries the account. The
+     * panel's own account cell came off at the operator's instruction, in both directions —
+     * so the sentence is now the only thing standing between this document and the collapse
+     * described above, which is why it is asserted here and not merely assumed.
      */
     public function test_the_signed_return_records_the_collector_and_the_account_it_was_processed_under(): void
     {
@@ -601,14 +709,65 @@ class RentalAssetReturnTest extends TestCase
         $it = $this->itManager();
         [$aarf] = $this->draftReturn($vendor, $it);
 
-        $this->actingAs($it)->post(route('vendors.aarf.acknowledge', [$vendor, $aarf]), $this->signaturePayload());
+        $this->closeReturn($it, $vendor, $aarf);
 
         $this->actingAs($it)->get(route('vendors.aarf.show', [$vendor, $aarf]))
             ->assertOk()
             ->assertSee('Acknowledged By ('.$vendor->name.')')
             ->assertSee('Ali Bin Ahmad')
-            ->assertSee('Processed Under Account')
+            ->assertDontSee('Processed Under Account')
+            ->assertSee('processed under the account of')
             ->assertSee($it->name);
+    }
+
+    /**
+     * The process log reads in the order the steps HAPPENED, not the order the form stores
+     * them in — and on a return it has one more thing to account for than a receipt does.
+     *
+     * Both signatures are order-free, so a log built in column order would state that the
+     * collector signed first on every form our own PIC prepared ahead of the courier turning
+     * up. And closing a return takes the assets out of service: that is the consequence
+     * somebody reads this panel to confirm, so it is recorded as part of the closing step
+     * rather than left to be inferred from the inventory.
+     */
+    public function test_the_return_log_reads_in_the_order_the_signatures_were_given(): void
+    {
+        Mail::fake();
+        Storage::fake('local');
+
+        $vendor = $this->vendor();
+        $it = $this->itManager();
+        User::factory()->create(['role' => 'finance_manager']);   // so all three legs have an addressee
+        [$aarf] = $this->draftReturn($vendor, $it);
+
+        // Our side first — the ordinary case, and the one a column-ordered log gets wrong.
+        $this->actingAs($it)->post(route('vendors.aarf.processor-acknowledge', [$vendor, $aarf]), [
+            'processor_remarks' => 'Checked against the delivery order.',
+        ])->assertRedirect();
+
+        // The two signatures land in the same second otherwise, and a datetime column cannot
+        // tell them apart — which would make this test pass on the build order it is here to
+        // rule out.
+        $this->travel(2)->minutes();
+        $this->actingAs($it)
+            ->post(route('vendors.aarf.acknowledge', [$vendor, $aarf]), $this->signaturePayload())
+            ->assertRedirect();
+        $this->travelBack();
+
+        $this->actingAs($it)->get(route('vendors.aarf.show', [$vendor, $aarf]));   // burn the flash
+        $html = $this->actingAs($it)->get(route('vendors.aarf.show', [$vendor, $aarf]))->assertOk()->getContent();
+        $log = substr($html, strpos($html, 'aarf-sect">Process Log'));
+
+        $ours = strpos($log, 'Acknowledged by the Company PIC');
+        $theirs = strpos($log, 'Acknowledged by the Collector');
+        $this->assertNotFalse($ours, 'The log must record our signature.');
+        $this->assertNotFalse($theirs, "The log must record the collector's signature.");
+        $this->assertTrue($ours < $theirs, 'The log must read in the order the parties signed.');
+
+        // The collector is named as the signatory, and the closing step accounts for the kit.
+        $this->assertStringContainsString('Ali Bin Ahmad', $log);
+        $this->assertStringContainsString('Form closed', $log);
+        $this->assertStringContainsString('1 asset archived out of the inventory', $log);
     }
 
     public function test_a_signed_return_cannot_be_signed_again(): void
@@ -619,12 +778,12 @@ class RentalAssetReturnTest extends TestCase
         $vendor = $this->vendor();
         [, $row] = $this->stagedReturn($vendor);
         $it = $this->itManager();
-        User::factory()->create(['role' => 'finance_manager']);   // so all three legs have an addressee
+        $this->notifiableTeams();   // so all four legs have an addressee
 
         $this->actingAs($it)->post(route('decommission.returns.generate'), ['dispose_ids' => [$row->id]]);
         $aarf = RentalAssetAcknowledgement::where('type', 'return')->first();
 
-        $this->actingAs($it)->post(route('vendors.aarf.acknowledge', [$vendor, $aarf]), $this->signaturePayload());
+        $this->closeReturn($it, $vendor, $aarf);
         $firstAt = $aarf->fresh()->acknowledged_at;
 
         $this->actingAs($it)->post(route('vendors.aarf.acknowledge', [$vendor, $aarf]), $this->signaturePayload([
@@ -633,12 +792,12 @@ class RentalAssetReturnTest extends TestCase
 
         $this->assertEquals($firstAt, $aarf->fresh()->acknowledged_at);
         $this->assertSame('Ali Bin Ahmad', $aarf->fresh()->collector_name);
-        Mail::assertSent(RentalAssetAcknowledgedMail::class, 3);   // not six
+        Mail::assertSent(RentalAssetAcknowledgedMail::class, 4);   // not eight
     }
 
     // ── Phase 4: distribution, archive, and leaving the lists ────────────────
 
-    public function test_the_signed_return_reaches_the_vendor_pic_it_and_finance(): void
+    public function test_the_signed_return_reaches_the_vendor_pic_it_finance_and_management(): void
     {
         Mail::fake();
         Storage::fake('local');
@@ -646,20 +805,62 @@ class RentalAssetReturnTest extends TestCase
         $vendor = $this->vendor();
         [, $row] = $this->stagedReturn($vendor);
         $it = $this->itManager();
-        // Give the IT and Finance legs a real addressee each.
-        User::factory()->create(['role' => 'finance_manager']);
+        // Give the Finance and Management legs a real addressee each.
+        $teams = $this->notifiableTeams();
 
         $this->actingAs($it)->post(route('decommission.returns.generate'), ['dispose_ids' => [$row->id]]);
         $aarf = RentalAssetAcknowledgement::where('type', 'return')->first();
 
-        $this->actingAs($it)->post(route('vendors.aarf.acknowledge', [$vendor, $aarf]), $this->signaturePayload());
+        $this->closeReturn($it, $vendor, $aarf);
 
-        Mail::assertSent(RentalAssetAcknowledgedMail::class, 3);
+        Mail::assertSent(RentalAssetAcknowledgedMail::class, 4);
         Mail::assertSent(
             RentalAssetAcknowledgedMail::class,
             fn ($mail) => $mail->hasTo($vendor->pic_email)
                 && $mail->audience === RentalAssetAcknowledgedMail::AUDIENCE_VENDOR
         );
+
+        // A return is the one direction that takes assets off the books, which is exactly the
+        // event management is being copied on.
+        Mail::assertSent(
+            RentalAssetAcknowledgedMail::class,
+            fn ($mail) => $mail->hasTo($teams['management']->work_email)
+                && $mail->audience === RentalAssetAcknowledgedMail::AUDIENCE_MANAGEMENT
+        );
+    }
+
+    /**
+     * The management copy follows the company on the FORM, not the account that signed it.
+     *
+     * Our processor is an IT manager who may sit at any group company — routing the copy by
+     * their employer would send Enlinea's handover to whoever happens to be on shift's
+     * management.
+     */
+    public function test_the_management_copy_follows_the_company_on_the_form(): void
+    {
+        Mail::fake();
+        Storage::fake('local');
+
+        $vendor = $this->vendor();
+        [, $row] = $this->stagedReturn($vendor, ['company_supplied_to' => 'Enlinea Sdn Bhd']);
+        $it = $this->itManager();
+        User::factory()->create(['role' => 'finance_manager']);
+
+        $enlinea = User::factory()->create(['role' => 'employee', 'work_email' => 'petrina.ceo@enlinea.test']);
+        EwasteCompanyApprover::create(['company' => 'Enlinea Sdn Bhd', 'user_id' => $enlinea->id]);
+
+        $claritas = User::factory()->create(['role' => 'employee', 'work_email' => 'kelvin.cto@claritas.test']);
+        EwasteCompanyApprover::create(['company' => 'Claritas Asia', 'user_id' => $claritas->id]);
+
+        $this->actingAs($it)->post(route('decommission.returns.generate'), ['dispose_ids' => [$row->id]]);
+        $aarf = RentalAssetAcknowledgement::where('type', 'return')->first();
+        $this->assertSame('Enlinea Sdn Bhd', $aarf->company_rented_to);
+
+        $this->closeReturn($it, $vendor, $aarf);
+
+        Mail::assertSent(RentalAssetAcknowledgedMail::class, fn ($mail) => $mail->hasTo($enlinea->work_email)
+            && $mail->audience === RentalAssetAcknowledgedMail::AUDIENCE_MANAGEMENT);
+        Mail::assertNotSent(RentalAssetAcknowledgedMail::class, fn ($mail) => $mail->hasTo($claritas->work_email));
     }
 
     public function test_the_signed_pdf_is_stored_and_downloadable(): void
@@ -673,7 +874,7 @@ class RentalAssetReturnTest extends TestCase
 
         $this->actingAs($it)->post(route('decommission.returns.generate'), ['dispose_ids' => [$row->id]]);
         $aarf = RentalAssetAcknowledgement::where('type', 'return')->first();
-        $this->actingAs($it)->post(route('vendors.aarf.acknowledge', [$vendor, $aarf]), $this->signaturePayload());
+        $this->closeReturn($it, $vendor, $aarf);
 
         $aarf->refresh();
         $this->assertNotNull($aarf->pdf_path);
@@ -695,7 +896,7 @@ class RentalAssetReturnTest extends TestCase
 
         $this->actingAs($it)->post(route('decommission.returns.generate'), ['dispose_ids' => [$row->id]]);
         $aarf = RentalAssetAcknowledgement::where('type', 'return')->first();
-        $this->actingAs($it)->post(route('vendors.aarf.acknowledge', [$vendor, $aarf]), $this->signaturePayload());
+        $this->closeReturn($it, $vendor, $aarf);
 
         $this->actingAs($it)->get(route('vendors.show', [$vendor, 'tab' => 'assets']))
             ->assertOk()
@@ -705,7 +906,7 @@ class RentalAssetReturnTest extends TestCase
 
     /**
      * Carried over from DecommissionVendorReturnTest: a finished piece of work must leave the
-     * "open" panel. It used to be keyed on a status list, which never released a finished
+     * 'open' panel. It used to be keyed on a status list, which never released a finished
      * vendor return; now an unsigned return form is the open item and a signed one is gone.
      */
     public function test_the_open_panel_lists_unsigned_return_forms_and_releases_signed_ones(): void
@@ -724,7 +925,7 @@ class RentalAssetReturnTest extends TestCase
 
         $open = RentalAssetAcknowledgement::where('company_rented_to', 'Claritas Asia')->first();
         $done = RentalAssetAcknowledgement::where('company_rented_to', 'Enlinea')->first();
-        $this->actingAs($it)->post(route('vendors.aarf.acknowledge', [$vendor, $done]), $this->signaturePayload());
+        $this->closeReturn($it, $vendor, $done);
         $this->assertSame('acknowledged', $done->fresh()->status);
 
         // Burn one request first: the acknowledgement's success flash names the reference it
@@ -752,7 +953,7 @@ class RentalAssetReturnTest extends TestCase
 
         $this->actingAs($it)->post(route('decommission.returns.generate'), ['dispose_ids' => [$row->id]]);
         $aarf = RentalAssetAcknowledgement::where('type', 'return')->first();
-        $this->actingAs($it)->post(route('vendors.aarf.acknowledge', [$vendor, $aarf]), $this->signaturePayload());
+        $this->closeReturn($it, $vendor, $aarf);
 
         $this->actingAs($it)->get(route('assets.index', ['tab' => 'damaged']))->assertDontSee('QUEUE-EXIT');
     }

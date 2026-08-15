@@ -32,16 +32,33 @@ class AssetDecommissionBatch extends Model
 
     public const TYPE_EWASTE = 'e_waste';
 
-    /** The one status lifecycle. */
+    /**
+     * The one status lifecycle.
+     *
+     * `pending_approval` / `approved` / `rejected` replaced `finance_approved` /
+     * `finance_rejected` in Phase 5: the decision that moves a cycle is MANAGEMENT's, so a
+     * status naming Finance as the decider would misstate who authorised the disposal. The old
+     * two are kept in the list because cycles decided under the previous rule still carry them
+     * and must keep rendering as decided — nothing writes them any more.
+     */
     public const STATUSES = [
-        'e_waste' => ['awaiting_quotation', 'quotation_uploaded', 'finance_approved', 'finance_rejected', 'collected', 'completed', 'cancelled'],
+        'e_waste' => [
+            'awaiting_quotation', 'quotation_uploaded', 'pending_approval', 'approved', 'rejected',
+            'collected', 'completed', 'cancelled',
+            'finance_approved', 'finance_rejected',   // legacy, read-only
+        ],
     ];
 
+    /** Statuses that mean "this cycle has been authorised and may proceed to collection". */
+    public const APPROVED_STATUSES = ['approved', 'finance_approved'];
+
     protected $fillable = [
-        'batch_number', 'type', 'vendor_id', 'status', 'report_pdf_path', 'created_by', 'finalized_at', 'notes',
+        'batch_number', 'type', 'company', 'vendor_id', 'status', 'report_pdf_path', 'created_by', 'finalized_at', 'notes',
         'rfq_sent_at', 'finance_report_sent_at',
         'quotation_path', 'quotation_amount', 'quotation_uploaded_at', 'quotation_uploaded_by',
         'finance_status', 'finance_reviewed_by', 'finance_reviewed_at', 'finance_remarks',
+        'management_status', 'management_reviewed_by', 'management_reviewed_at', 'management_remarks',
+        'recommended_quotation_id', 'recommendation_note', 'selected_quotation_id', 'submitted_for_approval_at',
         'receipt_path', 'receipt_amount', 'receipt_uploaded_at', 'receipt_uploaded_by',
     ];
 
@@ -51,6 +68,8 @@ class AssetDecommissionBatch extends Model
         'finance_report_sent_at' => 'datetime',
         'quotation_uploaded_at' => 'datetime',
         'finance_reviewed_at' => 'datetime',
+        'management_reviewed_at' => 'datetime',
+        'submitted_for_approval_at' => 'datetime',
         'receipt_uploaded_at' => 'datetime',
         'quotation_amount' => 'decimal:2',
         'receipt_amount' => 'decimal:2',
@@ -82,6 +101,51 @@ class AssetDecommissionBatch extends Model
     public function financeReviewer()
     {
         return $this->belongsTo(User::class, 'finance_reviewed_by');
+    }
+
+    /** Who in management decided. Null on a legacy cycle settled under the single-approval rule. */
+    public function managementReviewer()
+    {
+        return $this->belongsTo(User::class, 'management_reviewed_by');
+    }
+
+    /** IT's proposal — normally the best offer, with recommendation_note saying why. */
+    public function recommendedQuotation()
+    {
+        return $this->belongsTo(AssetDecommissionQuotation::class, 'recommended_quotation_id');
+    }
+
+    /** What management actually authorised. May be a different vendor's offer. */
+    public function selectedQuotation()
+    {
+        return $this->belongsTo(AssetDecommissionQuotation::class, 'selected_quotation_id');
+    }
+
+    /** The management approvers for this cycle's company. */
+    public function managementApprovers()
+    {
+        return EwasteCompanyApprover::approversFor($this->company);
+    }
+
+    /**
+     * The entity this cycle's paperwork is issued in the name of — the company that OWNS
+     * the assets, confirmed at inspection against the registered companies list.
+     *
+     * Every vendor-facing surface (the RFQ email, the report PDF's letterhead) must read
+     * this rather than config('decommission.org_name'): a cycle has been per-company since
+     * Phase 4, so the fixed group name asked a vendor to quote on one entity's assets while
+     * naming another as the party they would pay. Same reasoning that took the letterhead off
+     * the rental AARF — the document concerns whoever owns the assets, not whoever hosts the
+     * portal.
+     *
+     * The config value survives only as the fallback for a company-less legacy batch, and as
+     * the sender identity on emails that belong to no single cycle.
+     */
+    public function issuingCompany(): string
+    {
+        return filled($this->company)
+            ? $this->company
+            : (string) config('decommission.org_name');
     }
 
     /** Who uploaded the vendor's quotation (null on rows created before the actor was captured). */
@@ -195,12 +259,61 @@ class AssetDecommissionBatch extends Model
         }
 
         return match ($this->status) {
-            'awaiting_quotation' => ['secondary', 'Awaiting vendor quotation'],
-            'quotation_uploaded' => ['warning', 'Pending Finance approval'],
-            'finance_approved' => ['primary', 'Awaiting collection & payment'],
-            'finance_rejected' => ['danger', 'Rejected — awaiting revised quote'],
+            'awaiting_quotation' => ['secondary', 'Awaiting vendor quotations'],
+            'quotation_uploaded' => ['secondary', 'Quotations in — not yet submitted'],
+            'pending_approval' => ['warning', 'Pending approval'],
+            'approved', 'finance_approved' => ['primary', 'Awaiting collection & payment'],
+            'rejected', 'finance_rejected' => ['danger', 'Rejected — awaiting revised quote'],
             'collected' => ['info', 'Payment received — finalising'],
             default => $this->statusBadge(),
+        };
+    }
+
+    // ── Approval state (Phase 5) ──────────────────────────────────────────────
+
+    public function isApproved(): bool
+    {
+        return in_array($this->status, self::APPROVED_STATUSES, true);
+    }
+
+    public function isAwaitingDecision(): bool
+    {
+        return $this->status === 'pending_approval';
+    }
+
+    /**
+     * Management's decision is the one that moves the cycle. Finance's is recorded beside it
+     * and shown on every screen, but a Finance approval alone releases nothing — which is what
+     * keeps a later management rejection able to stop something that has not happened yet.
+     */
+    public function managementDecided(): bool
+    {
+        return in_array($this->management_status, ['approved', 'rejected'], true);
+    }
+
+    public function financeDecided(): bool
+    {
+        return in_array($this->finance_status, ['approved', 'rejected'], true);
+    }
+
+    /** Badge for Finance's position — "recorded", never "decided the cycle". */
+    public function financeDecisionBadge(): array
+    {
+        return match ($this->finance_status) {
+            'approved' => ['success', 'Finance approved'],
+            'rejected' => ['danger', 'Finance objected'],
+            'pending' => ['warning', 'Finance not yet reviewed'],
+            default => ['secondary', 'Not submitted'],
+        };
+    }
+
+    public function managementDecisionBadge(): array
+    {
+        return match ($this->management_status) {
+            'approved' => ['success', 'Management approved'],
+            'rejected' => ['danger', 'Management rejected'],
+            'pending' => ['warning', 'Awaiting management'],
+            default => ['secondary', 'Not submitted'],
         };
     }
 
@@ -277,35 +390,69 @@ class AssetDecommissionBatch extends Model
     public function addQuotationRevision(array $attributes): AssetDecommissionQuotation
     {
         return DB::transaction(function () use ($attributes) {
-            // Locked like generateBatchNumber(): two concurrent uploads must not both claim
-            // the same revision number (the unique index would reject the loser outright).
-            $next = (int) $this->quotations()->lockForUpdate()->max('revision') + 1;
+            $vendorId = $attributes['vendor_id'] ?? null;
+
+            // Revisions run per VENDOR since Phase 5: vendor A's revision 2 answers vendor A's
+            // rejected revision 1 and has nothing to do with vendor B's first offer. Locked
+            // like generateBatchNumber() — two concurrent uploads must not claim the same
+            // number, which the unique index would reject outright.
+            $next = (int) $this->quotations()
+                ->where('vendor_id', $vendorId)
+                ->lockForUpdate()->max('revision') + 1;
 
             $revision = $this->quotations()->create([
+                'vendor_id' => $vendorId,
                 'revision' => $next,
                 'path' => $attributes['path'],
                 'amount' => $attributes['amount'] ?? null,
                 'uploaded_at' => $attributes['uploaded_at'] ?? now(),
                 'uploaded_by' => $attributes['uploaded_by'] ?? null,
-                'finance_status' => 'pending',
+                'finance_status' => null,   // not "pending" — nothing is under review until IT submits
             ]);
 
-            $this->update([
-                'quotation_path' => $revision->path,
-                'quotation_amount' => $revision->amount,
-                'quotation_uploaded_at' => $revision->uploaded_at,
-                'quotation_uploaded_by' => $revision->uploaded_by,
-                'status' => 'quotation_uploaded',
-                'finance_status' => 'pending',
-                'finance_reviewed_by' => null,
-                'finance_reviewed_at' => null,
-                'finance_remarks' => null,
-            ]);
+            // Uploading an offer no longer submits it: several vendors are being collected and
+            // compared first. It only moves the cycle off "awaiting quotations".
+            if ($this->status === 'awaiting_quotation') {
+                $this->update(['status' => 'quotation_uploaded']);
+            }
 
             $this->unsetRelation('quotations');
 
             return $revision;
         });
+    }
+
+    /**
+     * The comparison set: each vendor's CURRENT offer, best price first.
+     *
+     * "Best" is the highest amount, because the vendor pays US for scrap — the sign of this
+     * comparison is the opposite of a purchase, and getting it backwards would recommend the
+     * vendor offering the least money.
+     *
+     * @return \Illuminate\Support\Collection<int, AssetDecommissionQuotation>
+     */
+    public function quotationsForComparison()
+    {
+        $all = $this->relationLoaded('quotations') ? $this->quotations : $this->quotations()->get();
+
+        return $all->groupBy(fn ($q) => $q->vendor_id ?? 0)
+            ->map(fn ($perVendor) => $perVendor->sortBy('revision')->last())
+            ->sortByDesc(fn ($q) => $q->amount === null ? -1 : (float) $q->amount)
+            ->values();
+    }
+
+    /** The offer that pays us most, or null when nothing has been quoted with an amount. */
+    public function bestOffer(): ?AssetDecommissionQuotation
+    {
+        return $this->quotationsForComparison()->first(fn ($q) => $q->amount !== null);
+    }
+
+    /** Every vendor's current offer carries a figure — the precondition for comparing them. */
+    public function everyQuotationHasAnAmount(): bool
+    {
+        $set = $this->quotationsForComparison();
+
+        return $set->isNotEmpty() && $set->every(fn ($q) => $q->amount !== null);
     }
 
     /**
@@ -317,28 +464,31 @@ class AssetDecommissionBatch extends Model
      */
     public function recordFinanceDecision(string $status, ?int $reviewerId, ?string $remarks): void
     {
-        $batchStatus = match ($status) {
-            'approved' => 'finance_approved',
-            'rejected' => 'finance_rejected',
-            default => throw new \InvalidArgumentException("Unsupported finance decision [{$status}]."),
-        };
+        if (! in_array($status, ['approved', 'rejected'], true)) {
+            throw new \InvalidArgumentException("Unsupported finance decision [{$status}].");
+        }
 
-        DB::transaction(function () use ($status, $batchStatus, $reviewerId, $remarks) {
+        DB::transaction(function () use ($status, $reviewerId, $remarks) {
             $at = now();
 
-            $this->currentQuotation()?->update([
+            // Stamped on the quotation under review, so the decision travels with the document
+            // it was made about rather than with whatever is current later.
+            $this->quotationUnderReview()?->update([
                 'finance_status' => $status,
                 'finance_reviewed_by' => $reviewerId,
                 'finance_reviewed_at' => $at,
                 'finance_remarks' => $remarks,
             ]);
 
+            // NOTE: `status` is deliberately NOT touched. Finance's position is recorded, not
+            // acted on — only management's decision moves the cycle. Writing finance_approved
+            // here (as this did before Phase 5) would let a Finance approval release assets to
+            // a vendor before the authority that actually signs had looked at it.
             $this->update([
                 'finance_status' => $status,
                 'finance_reviewed_by' => $reviewerId,
                 'finance_reviewed_at' => $at,
                 'finance_remarks' => $remarks,
-                'status' => $batchStatus,
             ]);
 
             $this->unsetRelation('quotations');
@@ -346,15 +496,141 @@ class AssetDecommissionBatch extends Model
     }
 
     /**
+     * The quotation a decision applies to: what management selected, else what IT recommended.
+     * Distinct from currentQuotation(), which answers "the newest document on file".
+     */
+    public function quotationUnderReview(): ?AssetDecommissionQuotation
+    {
+        return $this->selectedQuotation ?? $this->recommendedQuotation ?? $this->currentQuotation();
+    }
+
+    /**
+     * IT put the comparison up for approval, naming the offer they recommend and why.
+     *
+     * This is the moment the cycle becomes reviewable — before it, quotations are still being
+     * gathered, and a half-collected comparison shown to an approver invites a decision on a
+     * field of one.
+     */
+    public function submitForApproval(AssetDecommissionQuotation $recommended, ?string $note, ?int $actorId): void
+    {
+        DB::transaction(function () use ($recommended, $note) {
+            $this->update([
+                'recommended_quotation_id' => $recommended->id,
+                'recommendation_note' => $note,
+                'selected_quotation_id' => null,
+                'status' => 'pending_approval',
+                'submitted_for_approval_at' => now(),
+                // Both sides are asked at the same time; either may answer first.
+                'finance_status' => 'pending',
+                'finance_reviewed_by' => null,
+                'finance_reviewed_at' => null,
+                'finance_remarks' => null,
+                'management_status' => 'pending',
+                'management_reviewed_by' => null,
+                'management_reviewed_at' => null,
+                'management_remarks' => null,
+            ]);
+
+            $this->quotations()->where('id', $recommended->id)->update(['finance_status' => 'pending']);
+            $this->syncQuotationCache($recommended);
+            $this->unsetRelation('quotations');
+        });
+
+        $this->refresh();
+    }
+
+    /**
+     * The decision that moves the cycle.
+     *
+     * $selected lets management authorise a DIFFERENT vendor's offer than the one IT put
+     * forward — "or go with other company choices". Both are kept on the row, because what we
+     * recommended and what was approved are different facts and the gap between them is
+     * exactly what the final report has to show.
+     */
+    public function recordManagementDecision(
+        string $status,
+        ?int $reviewerId,
+        ?string $remarks,
+        ?AssetDecommissionQuotation $selected = null,
+    ): void {
+        if (! in_array($status, ['approved', 'rejected'], true)) {
+            throw new \InvalidArgumentException("Unsupported management decision [{$status}].");
+        }
+
+        DB::transaction(function () use ($status, $reviewerId, $remarks, $selected) {
+            $at = now();
+            $winner = $status === 'approved'
+                ? ($selected ?? $this->recommendedQuotation ?? $this->currentQuotation())
+                : null;
+
+            $this->update([
+                'management_status' => $status,
+                'management_reviewed_by' => $reviewerId,
+                'management_reviewed_at' => $at,
+                'management_remarks' => $remarks,
+                'selected_quotation_id' => $winner?->id,
+                'status' => $status === 'approved' ? 'approved' : 'rejected',
+            ]);
+
+            if ($winner) {
+                $this->syncQuotationCache($winner);
+            }
+
+            $this->unsetRelation('quotations');
+        });
+
+        $this->refresh();
+    }
+
+    /**
+     * Point the batch's cache columns at one quotation.
+     *
+     * Those columns are read by the Finance listing, the report renderer, both mailables and
+     * reportAmount(); with several vendors on a cycle they must follow the offer that is
+     * actually in play (selected, else recommended) — never simply "the newest upload", which
+     * after a re-quote by a losing vendor would be an offer nobody chose.
+     */
+    protected function syncQuotationCache(AssetDecommissionQuotation $quotation): void
+    {
+        $this->update([
+            'quotation_path' => $quotation->path,
+            'quotation_amount' => $quotation->amount,
+            'quotation_uploaded_at' => $quotation->uploaded_at,
+            'quotation_uploaded_by' => $quotation->uploaded_by,
+            'vendor_id' => $quotation->vendor_id ?? $this->vendor_id,
+        ]);
+    }
+
+    /**
      * Correct (or clear) the quotation amount on the current revision and the cache together.
      * A null means "see the attached document" — never 0.00, which would state that the
      * vendor pays us nothing.
      */
-    public function setQuotationAmount(?float $amount): void
+    public function setQuotationAmount(?float $amount, ?AssetDecommissionQuotation $quotation = null): void
     {
-        DB::transaction(function () use ($amount) {
-            $this->currentQuotation()?->update(['amount' => $amount]);
-            $this->update(['quotation_amount' => $amount]);
+        DB::transaction(function () use ($amount, $quotation) {
+            $target = $quotation ?? $this->quotationUnderReview();
+            $target?->update(['amount' => $amount]);
+
+            // The copy filed on the vendor's Contracts tab carries the same figure, so a
+            // correction here has to reach it or the two records state different offers for
+            // one document. Only the FIGURE travels — the stored PDF is what the vendor
+            // actually sent and is never rewritten; the filed row's STATE is derived from this
+            // cycle on every read, so there is nothing else to keep in step.
+            $target?->filedContract?->update(['contract_value' => $amount]);
+
+            // The cache only follows when the corrected offer is the one in play. Correcting a
+            // losing vendor's figure must not rewrite the amount on the report, which states
+            // what the SELECTED vendor is paying us.
+            //
+            // With NO revision row at all the cache IS the record — a cycle whose quotation
+            // predates the revision table keeps its figure only there, and refusing to write
+            // it would make those amounts uncorrectable.
+            $inPlay = $this->selected_quotation_id ?? $this->recommended_quotation_id;
+            if (! $target || $inPlay === null || $inPlay === $target->id) {
+                $this->update(['quotation_amount' => $amount]);
+            }
+
             $this->unsetRelation('quotations');
         });
     }
@@ -369,13 +645,21 @@ class AssetDecommissionBatch extends Model
      * site. Rental returns are numbered separately by
      * RentalAssetAcknowledgement::generateReference() (RTA-YYYY-NNNN).
      */
-    public static function generateBatchNumber(string $type = self::TYPE_EWASTE, ?Carbon $date = null): string
+    public static function generateBatchNumber(string $type = self::TYPE_EWASTE, ?Carbon $date = null, ?string $company = null): string
     {
         $date = $date ?? now();
         $prefix = config('decommission.batch_prefixes.e_waste', 'EWA');
 
-        return DB::transaction(function () use ($date, $prefix) {
+        return DB::transaction(function () use ($date, $prefix, $company) {
             $base = sprintf('%s-%d-Q%d', $prefix, $date->year, $date->quarter);
+
+            // One cycle per company since Phase 4, so the reference says WHICH entity's assets
+            // it covers — EWA-2026-Q3-CLA vs EWA-2026-Q3-ENL. A company-less batch (legacy, or
+            // a fixture) keeps the original numbering rather than growing a meaningless token.
+            if ($token = static::companyToken($company)) {
+                $base .= '-'.$token;
+            }
+
             if (! static::where('batch_number', $base)->lockForUpdate()->exists()) {
                 return $base;
             }
@@ -387,5 +671,33 @@ class AssetDecommissionBatch extends Model
 
             return $base.'-'.$n;
         });
+    }
+
+    /**
+     * A short alphabetic token for the company, for the batch reference.
+     *
+     * Legal-form words are dropped so "Claritas Asia Sdn Bhd" reads CLA rather than the same
+     * SDN as everyone else. Two companies CAN still collide (two "Claritas …" entities both
+     * give CLA); that is fine and deliberate — the numeric suffix in generateBatchNumber()
+     * keeps the reference unique, and `company` on the row is what actually identifies the
+     * entity. The token is a convenience for humans reading a reference, never the source
+     * of truth, so nothing may branch on it.
+     */
+    public static function companyToken(?string $company): ?string
+    {
+        $clean = preg_replace('/[^a-z0-9 ]/i', ' ', (string) $company);
+        $legalForms = ['sdn', 'bhd', 'berhad', 'pte', 'ltd', 'limited', 'plc', 'inc',
+            'corp', 'corporation', 'company', 'co', 'group', 'holdings', 'enterprise', 'enterprises'];
+
+        $words = array_values(array_filter(
+            preg_split('/\s+/', strtolower(trim($clean))) ?: [],
+            fn ($w) => $w !== '' && ! in_array($w, $legalForms, true)
+        ));
+
+        if (! $words) {
+            return null;
+        }
+
+        return strtoupper(substr($words[0], 0, 3));
     }
 }

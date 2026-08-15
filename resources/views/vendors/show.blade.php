@@ -15,8 +15,36 @@
     // over whichever tab is open, so ?tab=ask leaves the tabs alone and is read by the
     // panel's own auto-open instead (see _ask-js). Every redirect that carried it still
     // lands in the assistant; it just no longer moves the page underneath.
-    $activeTab = in_array(request('tab'), ['profile', 'contracts', 'billing', 'assets'], true)
+    //
+    // The Report tab is CONDITIONAL — it exists only for a vendor that has AARF business,
+    // which is why it is resolved before $activeTab rather than beside it. A ?tab=report
+    // that lands on a vendor with no forms and nothing pending must fall back to Profile:
+    // marking a pane active that was never rendered leaves every pane inactive and the card
+    // body blank, which reads as a page that failed to load.
+    $showReportTab = $pendingAssets->isNotEmpty() || $acknowledgements->isNotEmpty() || $ewasteCycles->isNotEmpty();
+
+    // Whether the tab carries the AARF register at all. An e-waste-only vendor rents us
+    // nothing, so the two acknowledgement sections could never fill on their profile and
+    // read as forms that had gone missing rather than a vendor that signs none — the same
+    // failure the E-Waste Collections block produced on a rental vendor's profile.
+    //
+    // Hidden only when it is BOTH irrelevant by type AND empty, the rule the two asset
+    // sections follow: `vendor_types` is editable at any time, so keying purely off the tag
+    // would bury a form this vendor really did sign, on the only page that files it per
+    // vendor. Resolved here rather than inside the partial because the Assets tab's pointer
+    // must read the SAME flag — a pointer to a register that is not rendered is worse than
+    // no pointer at all.
+    //
+    // The pane can never come out blank: the tab exists only for pending assets, forms, or
+    // cycles, and each of those forces one of the two blocks on.
+    $showAarfRegister = $vendor->isRental()
+        || $pendingAssets->isNotEmpty()
+        || $acknowledgements->isNotEmpty();
+    $activeTab = in_array(request('tab'), ['profile', 'contracts', 'billing', 'assets', 'report'], true)
         ? request('tab') : 'profile';
+    if ($activeTab === 'report' && ! $showReportTab) {
+        $activeTab = 'profile';
+    }
     $rented = $assets->where('ownership_type', 'rental');
     $purchased = $assets->where('ownership_type', 'company');
     $quotations = $vendor->billingDocuments->where('doc_type', 'quotation');
@@ -41,9 +69,6 @@
                         @if(! $vendor->is_active)
                             <span class="badge bg-secondary ms-2">Inactive</span>
                         @endif
-                        @if($vendor->is_primary_ewaste)
-                            <span class="vnd-primary-star ms-2"><i class="bi bi-star-fill me-1"></i>Primary e-waste</span>
-                        @endif
                     </h5>
                     <div>
                         @foreach($vendor->vendor_types ?? [] as $t)
@@ -52,52 +77,16 @@
                     </div>
                 </div>
             </div>
-            @if($canManage)
-            <div class="d-flex gap-2">
-                <a href="{{ route('vendors.edit', $vendor) }}" class="btn btn-light btn-sm fw-semibold"><i class="bi bi-pencil me-1"></i>Edit</a>
-                <form action="{{ route('vendors.toggle-active', $vendor) }}" method="POST" class="js-confirm"
-                      data-confirm="{{ $vendor->is_active ? 'Deactivate' : 'Activate' }} vendor &quot;{{ $vendor->name }}&quot;?"
-                      data-confirm-title="{{ $vendor->is_active ? 'Deactivate vendor' : 'Activate vendor' }}"
-                      data-confirm-ok="{{ $vendor->is_active ? 'Deactivate' : 'Activate' }}"
-                      data-confirm-variant="{{ $vendor->is_active ? 'danger' : 'success' }}">
-                    @csrf
-                    <button class="btn btn-sm {{ $vendor->is_active ? 'btn-outline-light' : 'btn-success' }}">
-                        <i class="bi bi-{{ $vendor->is_active ? 'toggle-on' : 'toggle-off' }} me-1"></i>{{ $vendor->is_active ? 'Deactivate' : 'Activate' }}
-                    </button>
-                </form>
-
-                {{-- Same guarded delete as the directory. Disabled-with-a-reason rather than
-                     hidden: this is the page that lists the very records blocking it. --}}
-                @php $vndBlockers = $vendor->deletionBlockers(); @endphp
-                @if($vndBlockers)
-                    <button type="button" class="btn btn-sm btn-outline-light disabled" tabindex="-1" aria-disabled="true"
-                            title="Cannot delete — {{ implode(', ', $vndBlockers) }} on record. Deactivate instead.">
-                        <i class="bi bi-trash me-1"></i>Delete
-                    </button>
-                @else
-                    <form action="{{ route('vendors.destroy', $vendor) }}" method="POST" class="js-confirm"
-                          data-confirm="Permanently delete vendor &quot;{{ $vendor->name }}&quot;? Nothing is filed against them, so nothing else is affected — but this cannot be undone."
-                          data-confirm-title="Delete vendor"
-                          data-confirm-ok="Delete"
-                          data-confirm-variant="danger">
-                        @csrf
-                        @method('DELETE')
-                        <button class="btn btn-sm btn-danger"><i class="bi bi-trash me-1"></i>Delete</button>
-                    </form>
-                @endif
-            </div>
-            @endif
+            {{-- No actions in the hero. Edit sits on the Profile tab, beside the fields it
+                 changes; Deactivate and Delete stay on the directory, which is where a vendor
+                 is retired or a duplicate row is cleared without opening it first. --}}
         </div>
     </div>
 
-    {{-- ── SST verdict ─────────────────────────────────────────────────────── --}}
-    <div class="vnd-sst vnd-sst-{{ $sstVerdict['state'] }} mb-3">
-        <i class="bi bi-{{ in_array($sstVerdict['state'], ['exempt','not_registered'], true) ? 'shield-check' : ($sstVerdict['state'] === 'chargeable' ? 'receipt' : 'question-circle') }} mt-1"></i>
-        <div>
-            <strong>SST: {{ $sstVerdict['label'] }}</strong>
-            <div>{{ $sstVerdict['reason'] }}</div>
-        </div>
-    </div>
+    {{-- The standing SST verdict banner was removed on 2026-08-13. The verdict itself is NOT
+         gone and must not be: it still marks the directory row, warns on the Add-Document
+         modal, and backs VendorBillingDocument::sstFlag(), which is where a document charging
+         SST an exempt vendor may not charge actually gets caught. --}}
 
     {{-- ── Summary tiles ───────────────────────────────────────────────────── --}}
     <div class="row g-3 mb-3">
@@ -192,6 +181,20 @@
                         <span class="badge rounded-pill bg-secondary ms-1">{{ $assets->count() }}</span>
                     </button>
                 </li>
+                @if($showReportTab)
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link {{ $activeTab === 'report' ? 'active' : '' }}" data-bs-toggle="tab" data-bs-target="#vndReport" type="button" role="tab">
+                        <i class="bi bi-clipboard-check me-1"></i>Report
+                        {{-- Both kinds of document the tab files, not just the AARFs: an
+                             e-waste-only vendor has no forms, so counting those alone put a
+                             0 on a tab holding their collections. --}}
+                        <span class="badge rounded-pill bg-secondary ms-1">{{ $acknowledgements->count() + $ewasteCycles->count() }}</span>
+                        @if($pendingAssets->isNotEmpty())
+                            <span class="badge rounded-pill bg-warning text-dark ms-1" title="Rental assets awaiting acknowledgement">{{ $pendingAssets->count() }}</span>
+                        @endif
+                    </button>
+                </li>
+                @endif
             </ul>
         </div>
         <div class="card-body">
@@ -208,6 +211,11 @@
                 <div class="tab-pane fade {{ $activeTab === 'assets' ? 'show active' : '' }}" id="vndAssets" role="tabpanel">
                     @include('vendors.partials._assets')
                 </div>
+                @if($showReportTab)
+                <div class="tab-pane fade {{ $activeTab === 'report' ? 'show active' : '' }}" id="vndReport" role="tabpanel">
+                    @include('vendors.partials._reports')
+                </div>
+                @endif
             </div>
         </div>
     </div>
@@ -219,6 +227,13 @@
 @if($canManage)
     @include('vendors.partials._contract-modals')
     @include('vendors.partials._billing-modals')
+    {{-- Proof of payment for the invoices above. Manager-only, like the other two: it files,
+         corrects and REMOVES slips, and removing one takes an invoice back to Pending. A
+         read-only viewer opens the slip document straight from its row instead. --}}
+    @include('vendors.partials._payment-slip-modals')
+    {{-- Drives upload → read → review → Save in all three sets of modals. Inside the
+         canManage block because it binds to those forms and nobody else is served them. --}}
+    @include('vendors.partials._scan-js')
 
     @push('scripts')
     <script nonce="{{ $cspNonce ?? '' }}">
@@ -249,14 +264,29 @@
      the reason a document cannot be asked about is stated, and a button that disappears
      when the AI is off reads as a broken feature rather than a switched-off one. --}}
 @php
-    $vndAskReadable = $askable->filter->hasAiText()->count();
+    $vndAskUsable = $askable->filter->hasAiText();
+    $vndAskReadable = $vndAskUsable->count();
+
+    // The one document this page was opened ABOUT, resolved once and handed to the panel.
+    // A ?focus= naming a document that cannot be asked about resolves to null and the scope
+    // falls back to everything — ticking nothing would read as an empty scope rather than
+    // as an unreadable document.
+    $vndFocusDoc = $askFocus
+        ? $vndAskUsable->first(fn ($d) => $d->askKey() === $askFocus)
+        : null;
+
     // Built here, not glued into the attribute: the count is the badge, and a screen
     // reader gets it in the label rather than as a bare number after the button's name.
     $vndFabLabel = 'Ask AI about this vendor\'s contracts and billing documents'
         .($vndAskReadable ? ' — '.$vndAskReadable.' document'.($vndAskReadable === 1 ? '' : 's').' readable' : '');
 @endphp
 
+{{-- data-vnd-ask-all-docs is what makes this button mean ONE thing: pressed, it puts every
+     readable document back in scope, so it is always the whole-page assistant even when the
+     panel was last opened about a single row. The per-row buttons narrow it again; the panel
+     says in words which of the two is in force. --}}
 <button class="vnd-fab" type="button" data-bs-toggle="offcanvas" data-bs-target="#vndAskPanel"
+        data-vnd-ask-all-docs
         aria-controls="vndAskPanel" title="{{ $vndFabLabel }}" aria-label="{{ $vndFabLabel }}">
     <i class="bi bi-robot"></i>
     <span class="vnd-fab-text">Ask AI</span>
@@ -279,7 +309,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
     </div>
     <div class="offcanvas-body">
-        @include('vendors.partials._ask')
+        @include('vendors.partials._ask', ['focusDoc' => $vndFocusDoc])
     </div>
 </div>
 

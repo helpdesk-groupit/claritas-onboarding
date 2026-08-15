@@ -20,7 +20,7 @@ class AssetDecommissionQuotation extends Model
     protected $table = 'asset_decommission_quotations';
 
     protected $fillable = [
-        'asset_decommission_batch_id', 'revision', 'path', 'amount', 'uploaded_at', 'uploaded_by',
+        'asset_decommission_batch_id', 'vendor_id', 'revision', 'path', 'amount', 'uploaded_at', 'uploaded_by',
         'finance_status', 'finance_reviewed_by', 'finance_reviewed_at', 'finance_remarks',
     ];
 
@@ -37,6 +37,23 @@ class AssetDecommissionQuotation extends Model
         return $this->belongsTo(AssetDecommissionBatch::class, 'asset_decommission_batch_id');
     }
 
+    /**
+     * The vendor whose offer this is.
+     *
+     * Null only on a legacy revision from a cycle that had no vendor on file — the RFQ was
+     * skipped because no e-waste vendor could be reached. It is deliberately not guessed:
+     * nothing in the data says who sent that document.
+     */
+    public function vendor()
+    {
+        return $this->belongsTo(Vendor::class, 'vendor_id');
+    }
+
+    public function vendorName(): string
+    {
+        return $this->vendor?->name ?? 'Vendor not recorded';
+    }
+
     /** Who uploaded this revision (null on the revision backfilled from a legacy batch). */
     public function uploader()
     {
@@ -46,6 +63,17 @@ class AssetDecommissionQuotation extends Model
     public function financeReviewer()
     {
         return $this->belongsTo(User::class, 'finance_reviewed_by');
+    }
+
+    /**
+     * The copy filed onto the vendor's Contracts tab, if one was made.
+     *
+     * hasOne rather than hasMany: the column carries a UNIQUE index, so one revision can only
+     * ever have produced one filed document.
+     */
+    public function filedContract()
+    {
+        return $this->hasOne(VendorContract::class, 'asset_decommission_quotation_id');
     }
 
     // ── State helpers ─────────────────────────────────────────────────────────
@@ -100,5 +128,72 @@ class AssetDecommissionQuotation extends Model
         }
 
         return $line.($this->finance_remarks ? ' — '.$this->finance_remarks : '');
+    }
+
+    /**
+     * Replaced by a later offer from the SAME vendor — i.e. this document is history because
+     * they re-quoted, not because somebody else won.
+     *
+     * Deliberately distinct from "not selected": a competing vendor's offer that lost is still
+     * the last thing that vendor said, and labelling it "Superseded" would suggest they sent a
+     * revision they never sent.
+     */
+    public function isSupersededByOwnVendor(): bool
+    {
+        $siblings = $this->relationLoaded('batch') && $this->batch?->relationLoaded('quotations')
+            ? $this->batch->quotations
+            : static::where('asset_decommission_batch_id', $this->asset_decommission_batch_id)->get();
+
+        return $siblings->contains(
+            fn ($q) => $q->vendor_id === $this->vendor_id && (int) $q->revision > (int) $this->revision
+        );
+    }
+
+    /**
+     * Where this document stands in its cycle — the badge the vendor's Contracts tab shows.
+     *
+     * DERIVED on every read rather than stored on the filed contract. The filed row is a copy
+     * of a document whose real state lives here, and a stored status would be one more thing
+     * that can fall out of step with the cycle it describes; there is nothing to sync because
+     * there is nothing duplicated.
+     *
+     * Returns the ASSOCIATIVE shape VendorContract::stateBadge() speaks, not decisionBadge()'s
+     * positional pair — the two feed different templates and are not interchangeable.
+     *
+     * @return array{color:string, label:string}
+     */
+    public function lifecycleBadge(): array
+    {
+        $batch = $this->batch;
+
+        if (! $batch) {
+            return ['color' => 'secondary', 'label' => 'Cycle not found'];
+        }
+
+        // Checked before anything else: a cancelled cycle makes every question below moot, and
+        // a document filed under one must never read as an offer still in play.
+        if ($batch->status === 'cancelled') {
+            return ['color' => 'secondary', 'label' => 'Cancelled cycle'];
+        }
+
+        if ($this->isSupersededByOwnVendor()) {
+            return ['color' => 'secondary', 'label' => 'Superseded'];
+        }
+
+        if ($batch->management_status === 'rejected') {
+            return ['color' => 'danger', 'label' => 'Rejected'];
+        }
+
+        if ($batch->isApproved() || in_array($batch->status, ['collected', 'completed'], true)) {
+            return $batch->selected_quotation_id === $this->id
+                ? ['color' => 'success', 'label' => 'Approved']
+                : ['color' => 'secondary', 'label' => 'Not selected'];
+        }
+
+        if ($batch->status === 'pending_approval') {
+            return ['color' => 'warning', 'label' => 'Under review'];
+        }
+
+        return ['color' => 'info', 'label' => 'Submitted'];
     }
 }

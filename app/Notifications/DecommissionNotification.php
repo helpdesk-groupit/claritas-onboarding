@@ -19,7 +19,10 @@ class DecommissionNotification extends Notification
 
     public function __construct(
         public string $event,
-        public string $batchNumber,
+        // Nullable since 2026-08-13: the inspection reminders fire while assets are still in
+        // the queue, before any cycle exists, so there is genuinely no batch to name. Kept as
+        // a required argument (no default) so every caller still states it one way or another.
+        public ?string $batchNumber,
         public string $subject,
         public string $message,
         public string $url,

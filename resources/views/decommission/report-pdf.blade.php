@@ -9,7 +9,11 @@
             return 'data:'.$mime.';base64,'.base64_encode(Storage::disk('public')->get($path));
         } catch (\Throwable $e) { return null; }
     };
-    $org      = config('decommission.org_name');
+    // The entity the report is issued for — the company that OWNS the assets, not the group's
+    // fixed name. A cycle has been per-company since Phase 4, and this PDF is also the asset
+    // list attached to the vendor's RFQ, so a fixed letterhead names the wrong party on
+    // another entity's paperwork.
+    $org      = $batch->issuingCompany();
     $isEwaste = $batch->isEwaste();
     // The Finance approval is a system action with no document to attach, so it is
     // signed off here — name + designation + timestamp, mirroring the eClaim convention.
@@ -26,6 +30,17 @@
     // decision is still signed off in the Finance Approval stamp below, from the batch's
     // own columns).
     $quotationHistory = $isEwaste ? $batch->quotations : collect();
+
+    // Phase 5/6 — the authorisation trail. Management's decision is what authorised the
+    // disposal; Finance's is the position recorded beside it. Both are printed, and so is the
+    // accepted offer, because the report is the only place the choice made on price is
+    // evidenced once the cycle is closed.
+    $mgmtReviewer = \App\Models\AssetDecommissionBatch::actorIdentity($batch->managementReviewer);
+    $selectedQuotation = $isEwaste ? $batch->selectedQuotation : null;
+    $overrodeRecommendation = $isEwaste
+        && $batch->recommended_quotation_id
+        && $batch->selected_quotation_id
+        && $batch->recommended_quotation_id !== $batch->selected_quotation_id;
 @endphp
 <!DOCTYPE html>
 <html>
@@ -183,17 +198,23 @@
          Finance refused the first, and the amount each one offered is what makes the
          sequence mean anything. A single-quotation cycle prints nothing here. --}}
     @if($quotationHistory->count() > 1)
-    <div class="section-title">Quotation Revisions &amp; Finance Decisions</div>
+    <div class="section-title">Quotations Received &amp; Decisions</div>
     <table class="items">
-        <thead><tr><th>Rev</th><th>Offer (RM)</th><th>Uploaded</th><th>Finance decision</th><th>Reason given</th></tr></thead>
+        <thead><tr><th>Vendor</th><th>Rev</th><th>Offer (RM)</th><th>Uploaded</th><th>Outcome</th><th>Reason given</th></tr></thead>
         <tbody>
             @foreach($quotationHistory as $q)
             @php
                 $qUploader = \App\Models\AssetDecommissionBatch::actorIdentity($q->uploader);
                 $qReviewer = \App\Models\AssetDecommissionBatch::actorIdentity($q->financeReviewer);
+                $isWinner = $batch->selected_quotation_id && $q->id === $batch->selected_quotation_id;
+                $isRec = $batch->recommended_quotation_id && $q->id === $batch->recommended_quotation_id;
             @endphp
             <tr>
-                <td>{{ $q->revision }}{{ $loop->last ? ' (current)' : '' }}</td>
+                <td>
+                    {{ $q->vendorName() }}
+                    @if($isRec)<br><span class="muted" style="font-size:8px;">recommended by IT</span>@endif
+                </td>
+                <td>{{ $q->revision }}</td>
                 {{-- Never 0.00 for an uncaptured amount: that would state the vendor
                      offered nothing, instead of "the figure is in the document". --}}
                 <td>{{ $q->amount !== null ? number_format((float) $q->amount, 2) : 'stated in the document' }}</td>
@@ -202,14 +223,19 @@
                     @if($qUploader)<br>by {{ $qUploader['name'] }}@endif
                 </td>
                 <td>
-                    @if($q->isApproved())
-                        Approved
+                    {{-- The outcome that matters here is whether this offer was the one
+                         ACCEPTED, not what Finance thought of it — Finance's position is a
+                         recommendation to management, whose decision is stamped below. --}}
+                    @if($isWinner)
+                        Accepted
+                    @elseif($batch->selected_quotation_id)
+                        Not selected
                     @elseif($q->isRejected())
                         Rejected
                     @elseif($q->isPending())
                         Awaiting review
                     @else
-                        Not submitted
+                        Not selected
                     @endif
                     @if($q->finance_reviewed_at)<br>{{ fmt_datetime($q->finance_reviewed_at) }}@endif
                     @if($qReviewer)<br>by {{ $qReviewer['name'] }}@endif
@@ -219,37 +245,91 @@
             @endforeach
         </tbody>
     </table>
-    <div class="muted" style="font-size:9px;">Every revision listed above is reproduced in full on the following pages, each captioned with the decision made on it.</div>
+    <div class="muted" style="font-size:9px;">
+        Every quotation listed above is reproduced in full on the following pages, including the
+        offers that were not accepted &mdash; they are what evidences the choice made on price.
+    </div>
     @endif
 
     {{-- The Quotation and Payment Receipt sections used to sit here, restating an amount
          and a filename. Both documents are now reproduced in full as captioned pages at
          the end of the report (DecommissionReportRenderer), which carry their own uploaded
-         timestamp + uploader — so a summary block here would only duplicate them. Finance
-         Approval stays: it is a system action with no document of its own to attach. --}}
-    <div class="section-title">Finance Approval</div>
+         timestamp + uploader — so a summary block here would only duplicate them. The
+         sign-offs stay: they are system actions with no document of their own to attach. --}}
+    <div class="section-title">Authorisation</div>
+
+    {{-- TWO sign-offs since Phase 5, and the order is deliberate: management's decision is
+         what authorises the disposal, Finance's is the position recorded alongside it. A
+         report showing only the Finance stamp — as this did — would name the wrong authority
+         on the one page an audit reads to find out who approved writing the assets off. --}}
     <div class="stamp">
-        @if($batch->financeApproved())
-            <div class="ok">✓ Approved by Finance</div>
-        @elseif($batch->financeRejected())
-            <div style="color:#b91c1c;font-weight:bold;">✗ Rejected by Finance</div>
+        @if($batch->management_status === 'approved')
+            <div class="ok">✓ Approved by {{ $batch->company ?: 'company' }} management</div>
+        @elseif($batch->management_status === 'rejected')
+            <div style="color:#b91c1c;font-weight:bold;">✗ Rejected by {{ $batch->company ?: 'company' }} management</div>
         @else
-            <div class="muted">Pending finance review.</div>
+            <div class="muted">Awaiting management decision.</div>
+        @endif
+        @if($mgmtReviewer)
+            <div style="margin-top:4px;">
+                {{ $batch->management_status === 'rejected' ? 'Rejected' : 'Approved' }} by:
+                <strong>{{ $mgmtReviewer['name'] }}</strong>
+            </div>
+            @if($mgmtReviewer['details'])<div class="muted">{{ $mgmtReviewer['details'] }}</div>@endif
+        @endif
+        @if($batch->management_reviewed_at)
+            <div class="muted">Decided {{ fmt_datetime($batch->management_reviewed_at) }}</div>
+        @endif
+        @if($batch->management_remarks)<div>Remarks: {{ $batch->management_remarks }}</div>@endif
+
+        @if($selectedQuotation)
+            <div style="margin-top:4px;">
+                Accepted offer: <strong>{{ $selectedQuotation->vendorName() }}</strong>
+                @if($selectedQuotation->amount !== null) &mdash; RM {{ number_format((float) $selectedQuotation->amount, 2) }}@endif
+            </div>
+            @if($overrodeRecommendation)
+                {{-- The gap between what IT proposed and what was authorised is a fact the
+                     report has to state; it is invisible from the table alone. --}}
+                <div class="muted">Management selected a different vendor from the one IT recommended ({{ $batch->recommendedQuotation?->vendorName() }}).</div>
+            @endif
+        @endif
+
+        @if($mgmtReviewer)
+            {{-- Deliberately NOT italic: dompdf embeds a whole extra DejaVu face for a
+                 single styled line, which added ~370 KB to every report. --}}
+            <div class="muted" style="margin-top:5px;font-size:9px;">Digital sign-off — the recorded system action (name + timestamp) held in this batch's audit trail. No physical signature is required.</div>
+        @endif
+    </div>
+
+    <div class="stamp" style="margin-top:6px;">
+        @if($batch->financeApproved())
+            <div class="ok">✓ Finance concurred</div>
+        @elseif($batch->financeRejected())
+            <div style="color:#b91c1c;font-weight:bold;">✗ Finance objected</div>
+        @else
+            <div class="muted">No Finance position recorded.</div>
         @endif
         @if($reviewer)
-            <div style="margin-top:4px;">{{ $batch->financeRejected() ? 'Rejected' : 'Approved' }} by: <strong>{{ $reviewer['name'] }}</strong></div>
+            <div style="margin-top:4px;">Reviewed by: <strong>{{ $reviewer['name'] }}</strong></div>
             @if($reviewer['details'])<div class="muted">{{ $reviewer['details'] }}</div>@endif
         @endif
         @if($batch->finance_reviewed_at)
             <div class="muted">Reviewed {{ fmt_datetime($batch->finance_reviewed_at) }}</div>
         @endif
         @if($batch->finance_remarks)<div>Remarks: {{ $batch->finance_remarks }}</div>@endif
-        @if($reviewer)
-            {{-- Deliberately NOT italic: dompdf embeds a whole extra DejaVu face for a
-                 single styled line, which added ~370 KB to every report. --}}
-            <div class="muted" style="margin-top:5px;font-size:9px;">Digital sign-off — the recorded system action (name + timestamp) held in this batch's audit trail. No physical signature is required.</div>
+        @if($batch->financeRejected() && $batch->management_status === 'approved')
+            {{-- An approval over an objection is the single most audit-relevant thing this
+                 report can contain. It must be stated, not left to be inferred from two
+                 stamps that disagree. --}}
+            <div style="margin-top:4px;">The disposal was authorised by management notwithstanding this objection.</div>
         @endif
     </div>
+
+    @if($batch->recommendation_note)
+    <div class="stamp" style="margin-top:6px;">
+        <div>IT's recommendation: {{ $batch->recommendation_note }}</div>
+    </div>
+    @endif
 
     {{-- A document we could not reproduce must still be accounted for. Omitting it
          silently would read as "there was no quotation", which is a different claim. --}}

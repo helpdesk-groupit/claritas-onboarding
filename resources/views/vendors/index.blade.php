@@ -20,7 +20,12 @@
                 </div>
             </div>
             @if($canManage)
-            <a href="{{ route('vendors.create') }}" class="btn btn-light btn-sm fw-semibold"><i class="bi bi-plus-lg me-1"></i>Register Vendor</a>
+            <div class="d-flex align-items-center gap-2">
+                <a href="{{ route('vendors.create') }}" class="btn btn-light btn-sm fw-semibold"><i class="bi bi-plus-lg me-1"></i>Register Vendor</a>
+                <button type="button" class="btn btn-outline-light btn-sm fw-semibold" data-bs-toggle="modal" data-bs-target="#vendorImportModal">
+                    <i class="bi bi-file-earmark-arrow-up me-1"></i>Import Vendors
+                </button>
+            </div>
             @endif
         </div>
     </div>
@@ -92,19 +97,48 @@
         </div>
     </div>
 
-    {{-- The quarterly sweep RFQs the PRIMARY e-waste vendor. With none set it can't send,
-         only bells IT — so the cycle stalls quietly. Say so on the page that fixes it. --}}
-    @if($stats['primary'])
+    {{-- What the last import actually did, row by row. The flash banner gives the totals;
+         this is the record of WHICH vendors those totals were, which is the only way to
+         check an import did what the preview said it would. --}}
+    @if(session('import_report'))
+    <div class="alert alert-light border mb-3">
+        <div class="d-flex align-items-center gap-2 mb-2 fw-semibold" style="font-size:13px;">
+            <i class="bi bi-list-check"></i>Import result
+        </div>
+        <div style="max-height:220px;overflow-y:auto;font-size:12px;" class="text-muted">
+            @foreach(session('import_report') as $line)
+                <div>{{ $line }}</div>
+            @endforeach
+        </div>
+    </div>
+    @endif
+
+    {{-- The quarterly sweep RFQs EVERY active e-waste vendor that has a PIC email, so the
+         offers can be compared. There is no primary vendor to pick. With nobody reachable it
+         can't send at all, only bells IT — the cycle then stalls quietly, so say so here, on
+         the page that fixes it. --}}
+    @if($stats['rfq_recipients'] > 0)
     <div class="alert alert-success d-flex align-items-center gap-2 py-2 mb-3" style="font-size:13px;">
-        <i class="bi bi-star-fill"></i>
-        <div>Quarterly e-waste RFQs go to <strong>{{ $stats['primary']->name }}</strong>@if($stats['primary']->pic_email) ({{ $stats['primary']->pic_email }})@endif.</div>
+        <i class="bi bi-envelope-check-fill"></i>
+        <div>
+            Quarterly e-waste RFQs go to all <strong>{{ $stats['rfq_recipients'] }}</strong>
+            active e-waste vendor{{ $stats['rfq_recipients'] === 1 ? '' : 's' }} with a PIC email.
+            @if($stats['ewaste_no_pic'])
+                <span class="text-danger">{{ $stats['ewaste_no_pic'] }} more
+                {{ $stats['ewaste_no_pic'] === 1 ? 'is' : 'are' }} tagged e-waste but
+                {{ $stats['ewaste_no_pic'] === 1 ? 'has' : 'have' }} no PIC email, so
+                {{ $stats['ewaste_no_pic'] === 1 ? 'it is' : 'they are' }} never asked to quote.</span>
+            @endif
+        </div>
     </div>
     @else
     <div class="alert alert-warning d-flex align-items-center gap-2 py-2 mb-3" style="font-size:13px;">
         <i class="bi bi-exclamation-triangle-fill"></i>
         <div>
-            <strong>No primary e-waste vendor set.</strong>
-            The quarterly sweep cannot send an RFQ and will only notify IT&nbsp;— flag one e-waste vendor as primary to restart the cycle.
+            <strong>No e-waste vendor can be sent an RFQ.</strong>
+            The quarterly sweep asks every active e-waste vendor for a quotation, but none
+            {{ $stats['ewaste_no_pic'] ? 'of the '.$stats['ewaste_no_pic'].' registered has a PIC email' : 'is registered and active' }}&nbsp;—
+            so it will only notify IT. Fix that below to restart the cycle.
         </div>
     </div>
     @endif
@@ -185,7 +219,6 @@
                                         <div class="vnd-pic-meta">
                                             @if($vendor->company_registration_no)Reg. {{ $vendor->company_registration_no }}@endif
                                             @if($vendor->industry)<span class="ms-2">{{ $vendor->industryLabel() }}</span>@endif
-                                            @if($vendor->is_primary_ewaste)<span class="vnd-primary-star ms-2"><i class="bi bi-star-fill me-1"></i>RFQ</span>@endif
                                         </div>
                                     </div>
                                 </div>
@@ -278,4 +311,8 @@
 
 {{-- In-app confirmation dialog (replaces native confirm()) for activate/deactivate. --}}
 @include('partials.confirm-modal')
+
+@if($canManage)
+    @include('vendors.partials._import-modal')
+@endif
 @endsection

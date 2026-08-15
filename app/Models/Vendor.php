@@ -29,21 +29,56 @@ class Vendor extends Model
      * keep their exact keys: EwasteSweepService, the batch modal and the asset pickers
      * all filter on them with whereJsonContains. Everything below them was added when
      * the master widened; add freely, never rename.
+     *
+     * Widened to the operator's full service list on 2026-08-14. Every pre-existing KEY
+     * survived — a stored `vendor_types` array never needed rewriting — but three labels
+     * NARROWED, because the new list separates what they used to cover and a token must
+     * not read as two things at once:
+     *
+     *   utilities  'Utilities & Telco'   → 'Utilities'                (telco is now `telco`)
+     *   marketing  'Marketing & Media'   → 'Marketing & Advertising'  (PR is now `media_pr`)
+     *   facilities 'Facilities & Office' → 'Facilities Management'    (supplies/furniture split out)
+     *
+     * Nothing re-tags existing rows for those three: which half a vendor was tagged under
+     * is not derivable from the token, and guessing would file a telco under Utilities or
+     * a PR agency under Advertising. Re-tag them by hand when their profile is next opened.
      */
     public const TYPES = [
         'rental' => 'Asset Rental',
         'leasing' => 'Leasing',
+        'purchase' => 'Asset Supply / Purchase',
         'repair' => 'Repair & Maintenance',
         'ewaste' => 'E-waste Disposal',
-        'purchase' => 'Asset Supply / Purchase',
         'it_services' => 'IT Services',
         'software' => 'Software / Subscription',
-        'professional' => 'Professional Services',
-        'facilities' => 'Facilities & Office',
+        'cloud_hosting' => 'Cloud & Hosting Services',
+        'cybersecurity' => 'Cybersecurity Services',
+        'telco' => 'Telecommunications & Internet',
+        'professional' => 'Professional / Consultancy Services',
+        'legal' => 'Legal Services',
+        'audit_accounting' => 'Audit & Accounting Services',
+        'banking_financial' => 'Banking & Financial Services',
+        'insurance' => 'Insurance Services',
+        'recruitment' => 'Recruitment & Staffing',
+        'payroll_hr' => 'Payroll & HR Services',
+        'training' => 'Training & Development',
+        'employee_benefits' => 'Employee Benefits & Welfare',
+        'facilities' => 'Facilities Management',
+        'cleaning' => 'Cleaning Services',
+        'security' => 'Security Services',
+        'office_supplies' => 'Office Supplies & Stationery',
+        'furniture_equipment' => 'Furniture & Office Equipment',
+        'utilities' => 'Utilities',
         'logistics' => 'Logistics & Courier',
-        'marketing' => 'Marketing & Media',
-        'training' => 'Training',
-        'utilities' => 'Utilities & Telco',
+        'transportation' => 'Transportation Services',
+        'travel' => 'Travel & Accommodation',
+        'marketing' => 'Marketing & Advertising',
+        'media_pr' => 'Media & Public Relations',
+        'printing_design' => 'Printing & Design Services',
+        'events' => 'Event Management',
+        'catering' => 'Food & Catering',
+        'construction' => 'Construction & Renovation',
+        'waste_management' => 'Waste Management / Disposal',
         'other' => 'Other',
     ];
 
@@ -57,7 +92,15 @@ class Vendor extends Model
      */
     public const RENTAL_ASSET_TYPES = ['rental', 'leasing'];
 
-    public const PURCHASE_ASSET_TYPES = ['purchase', 'it_services', 'software', 'other'];
+    /**
+     * Types whose vendors are offered when registering a company-OWNED asset.
+     *
+     * `furniture_equipment` joined them in the 2026-08-14 expansion: office equipment is
+     * registered in the asset inventory like any other kit, so a supplier tagged only that
+     * would otherwise be missing from the picker built to find who we bought it from. The
+     * rest of the new tokens are services, which nothing is purchased as an asset from.
+     */
+    public const PURCHASE_ASSET_TYPES = ['purchase', 'it_services', 'software', 'furniture_equipment', 'other'];
 
     /**
      * Bank names offered as autocomplete SUGGESTIONS on the registration form.
@@ -96,19 +139,20 @@ class Vendor extends Model
     ];
 
     /**
-     * The taxable-service category a vendor is registered under, plus the two
+     * The taxable-service groups a vendor is registered under, plus the two
      * non-service-tax answers.
      *
      * This is the field the B2B exemption turns on: a registered person acquiring a
-     * taxable service from another registered person in the SAME category is exempt
-     * from paying service tax on it.
+     * taxable service from another registered person in the SAME group is exempt from
+     * paying service tax on it. A vendor may hold SEVERAL groups at once (a consultancy
+     * that also leases equipment is Group G and Group K), which is why the column is a
+     * list — see the 2026-08-14 migration.
      *
-     * Keys are deliberately DESCRIPTIVE rather than the statutory group letters. The
-     * First Schedule has been re-lettered and extended more than once (logistics in
-     * 2024; rental/leasing, construction, financial, healthcare, education and beauty
-     * in the 2025 expansion), so hard-coding "Group G" here would date badly and the
-     * rule only needs the two sides to match, not the legal letter. Override the whole
-     * list in config/vendors.php when Finance wants the statutory wording.
+     * Keys are deliberately DESCRIPTIVE, not the statutory letters, even though the
+     * LABELS now carry them at the operator's request. The First Schedule has been
+     * re-lettered and extended more than once, so a re-gazette becomes a label edit here
+     * instead of a data migration — changing a KEY orphans every vendor row holding it.
+     * Override the whole list in config/vendors.php when Finance wants different wording.
      *
      * @return array<string,string>
      */
@@ -120,40 +164,62 @@ class Vendor extends Model
     }
 
     public const DEFAULT_SST_CATEGORIES = [
-        'accommodation' => 'Accommodation',
-        'food_beverage' => 'Food & Beverage',
-        'wellness' => 'Health, wellness & recreation clubs',
-        'betting_gaming' => 'Betting & gaming',
-        'professional' => 'Professional services (legal, accounting, engineering, consultancy, IT)',
-        'credit_card' => 'Credit & charge cards',
-        'other_services' => 'Other service providers (telco, insurance, advertising, parking, cleaning…)',
-        'logistics' => 'Logistics & delivery services',
-        'rental_leasing' => 'Rental or leasing services',
-        'construction' => 'Construction work services',
-        'financial' => 'Financial services',
-        'healthcare' => 'Private healthcare services',
-        'education' => 'Education services',
-        'beauty' => 'Beauty & personal care services',
+        'accommodation' => 'Group A — Accommodation (hotels, inns, lodging houses, homestays)',
+        'food_beverage' => 'Group B — Food & beverage (restaurants, cafés, bars, food courts, catering)',
+        'wellness' => 'Group C — Night clubs, dance halls & wellness centres',
+        'private_clubs' => 'Group D — Private clubs (members\' clubs run on subscription)',
+        'golf_clubs' => 'Group E — Golf clubs & driving ranges',
+        'betting_gaming' => 'Group F — Betting & gaming (casinos, sweepstakes, lotteries, racing)',
+        'professional' => 'Group G — Professional services (legal, accounting, engineering, architecture, consultancy, IT & digital)',
+        'credit_card' => 'Group H — Credit cards, charge cards & financial services',
+        'other_services' => 'Group I — Other service providers (advertising, insurance/takaful, motor repair, parking, telecommunications)',
+        'logistics' => 'Group J — Logistics services (logistics, warehousing, forwarding, courier)',
+        'rental_leasing' => 'Group K — Rental or leasing services (commercial property, equipment)',
+        'construction' => 'Group L — Construction works (renovation, civil, electrical, mechanical)',
         'sales_tax' => 'Sales Tax registrant (manufacturer / importer)',
         'not_registered' => 'Not SST-registered',
     ];
 
-    /** The vendor is telling us they cannot charge service tax at all. */
+    /**
+     * Categories the form no longer offers, kept solely so a row that still holds one
+     * renders as words rather than a raw slug.
+     *
+     * They were guesses at the 2025 expansion made before the statutory list was to hand;
+     * the groups above are the operator's own. Nothing rewrites a stored value to a new
+     * group — where `healthcare` now belongs is a tax question, and answering it silently
+     * in a migration would change what the B2B exemption says about that vendor's bills.
+     * The registration form shows such a value ticked, so an ordinary save cannot drop it
+     * and whoever knows the answer can re-tick it deliberately.
+     */
+    public const LEGACY_SST_CATEGORIES = [
+        'financial' => 'Financial services (no longer offered — see Group H)',
+        'healthcare' => 'Private healthcare services (no longer offered)',
+        'education' => 'Education services (no longer offered)',
+        'beauty' => 'Beauty & personal care services (no longer offered)',
+    ];
+
+    /**
+     * The vendor is telling us they hold no SERVICE tax registration.
+     *
+     * `not_registered` is exclusive — it cannot be combined with anything, which
+     * VendorController enforces. `sales_tax` deliberately is not: a manufacturer can also
+     * be registered for a taxable service, and the two facts are both worth recording.
+     */
     public const NON_SERVICE_TAX_CATEGORIES = ['sales_tax', 'not_registered'];
 
     protected $fillable = [
         'name', 'vendor_types', 'industry',
         'pic_name', 'pic_email', 'pic_phone',
         'technical_person_name', 'technical_person_phone', 'technical_person_email',
-        'company_registration_no', 'sst_number', 'sst_category', 'tin_number',
+        'company_registration_no', 'sst_number', 'sst_categories', 'tin_number',
         'bank_name', 'bank_account_name', 'bank_account_number', 'bank_branch', 'bank_swift',
         'address', 'contact_number', 'email', 'website',
-        'is_primary_ewaste', 'notes', 'is_active',
+        'notes', 'is_active',
     ];
 
     protected $casts = [
         'vendor_types' => 'array',
-        'is_primary_ewaste' => 'boolean',
+        'sst_categories' => 'array',
         'is_active' => 'boolean',
     ];
 
@@ -179,14 +245,24 @@ class Vendor extends Model
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-    /** The single active vendor flagged to receive the quarterly e-waste RFQ. */
-    public static function primaryEwaste(): ?self
+    /**
+     * Every vendor the quarterly e-waste sweep can send an RFQ to: active, tagged
+     * `ewaste`, and carrying a PIC email to send it to.
+     *
+     * There is deliberately no "primary" among them — the sweep asks the whole market so
+     * the offers can be compared, and singling one out is what made a cycle able to show
+     * only ever one price. This is the single definition of "can be asked to quote":
+     * EwasteSweepService reads it to send, and the vendor directory reads it to warn when
+     * the answer is nobody. Two copies of the query is how the banner starts disagreeing
+     * with what the sweep actually does — which is the bug this replaced.
+     */
+    public static function ewasteRfqRecipients()
     {
         return static::query()
             ->where('is_active', true)
-            ->where('is_primary_ewaste', true)
             ->whereJsonContains('vendor_types', 'ewaste')
-            ->first();
+            ->whereNotNull('pic_email')
+            ->where('pic_email', '!=', '');
     }
 
     public function hasType(string $type): bool
@@ -247,9 +323,60 @@ class Vendor extends Model
         return self::INDUSTRIES[$this->industry] ?? ($this->industry ?: '—');
     }
 
+    /**
+     * The categories this vendor is registered under, as a clean list of keys.
+     * Every read goes through here so a null column, an empty array and a legacy
+     * single string all answer the same question the same way.
+     *
+     * @return list<string>
+     */
+    public function sstCategoryList(): array
+    {
+        $stored = $this->sst_categories;
+
+        if (is_string($stored)) {
+            $stored = [$stored];
+        }
+
+        return array_values(array_filter(array_map('strval', (array) $stored), 'strlen'));
+    }
+
+    public function hasSstCategory(string $key): bool
+    {
+        return in_array($key, $this->sstCategoryList(), true);
+    }
+
+    /**
+     * Their taxable-SERVICE groups — the categories minus the two answers that say they
+     * hold no service tax registration. This, not the raw list, is what the B2B exemption
+     * compares: "Sales Tax registrant" is a real answer but it is not a group we can match.
+     *
+     * @return list<string>
+     */
+    public function sstServiceGroups(): array
+    {
+        return array_values(array_diff($this->sstCategoryList(), self::NON_SERVICE_TAX_CATEGORIES));
+    }
+
+    /** @return list<string> */
+    public function sstCategoryLabels(): array
+    {
+        return array_map([self::class, 'sstLabelFor'], $this->sstCategoryList());
+    }
+
+    /** Every category as one readable string, e.g. "Group G — …, Group K — …". */
     public function sstCategoryLabel(): string
     {
-        return self::sstCategories()[$this->sst_category] ?? ($this->sst_category ?: '—');
+        return implode(', ', $this->sstCategoryLabels()) ?: '—';
+    }
+
+    /**
+     * One category's label. Falls back through the retired list to the raw key, so a value
+     * stored before the list changed is still readable instead of surfacing as a slug.
+     */
+    public static function sstLabelFor(string $key): string
+    {
+        return self::sstCategories()[$key] ?? self::LEGACY_SST_CATEGORIES[$key] ?? $key;
     }
 
     /**
@@ -267,7 +394,7 @@ class Vendor extends Model
 
     // ── SST / B2B exemption ───────────────────────────────────────────────────
     /**
-     * Our own registered taxable-service group, or null when it has not been set.
+     * Our own registered taxable-service group(s), or [] when nothing has been set.
      *
      * Deliberately read from config rather than a column: where our SST identity should
      * live (per legal entity on `companies`, or once for the group) is an open decision,
@@ -275,38 +402,42 @@ class Vendor extends Model
      * Set VENDOR_OWN_SST_CATEGORY (or config/vendors.php) and the verdict goes live
      * everywhere at once; leave it unset and every vendor honestly reads "not determined"
      * instead of quietly asserting that SST is chargeable.
+     *
+     * Accepts a single key or a list, because we can be registered under more than one
+     * group for the same reason a vendor can.
+     *
+     * @return list<string>
      */
-    public static function ownSstCategory(): ?string
+    public static function ownSstCategories(): array
     {
         $own = config('vendors.own_sst_category');
 
-        return is_string($own) && $own !== '' ? $own : null;
+        return array_values(array_filter(array_map('strval', (array) $own), 'strlen'));
     }
 
     /**
      * Can this vendor charge us service tax?
      *
      *   'not_registered' — they hold no service-tax registration, so no SST on their bill
-     *   'exempt'         — same taxable group as us ⇒ B2B exemption applies
-     *   'chargeable'     — different group ⇒ SST is properly charged
+     *   'exempt'         — they share a taxable group with us ⇒ B2B exemption applies
+     *   'chargeable'     — no group in common ⇒ SST is properly charged
      *   'unknown'        — we don't know one side of the comparison yet
+     *
+     * With several groups on either side the comparison is an INTERSECTION, and `exempt`
+     * consequently means "may not charge us on services in the group we share" — not that
+     * every line they bill is exempt. The reason says so whenever they hold groups outside
+     * the overlap, because VendorBillingDocument::sstFlag() quotes it verbatim onto an
+     * invoice, and a flag that overstates its case is one an operator learns to dismiss.
      *
      * @return array{state:string,label:string,reason:string}
      */
     public function sstVerdict(): array
     {
-        $theirs = $this->sst_category;
-        $ours = self::ownSstCategory();
+        $theirs = $this->sstCategoryList();
+        $theirGroups = $this->sstServiceGroups();
+        $ours = self::ownSstCategories();
 
-        if ($theirs && in_array($theirs, self::NON_SERVICE_TAX_CATEGORIES, true)) {
-            return [
-                'state' => 'not_registered',
-                'label' => 'No SST chargeable',
-                'reason' => 'Vendor is not registered for service tax ('.$this->sstCategoryLabel().').',
-            ];
-        }
-
-        if (! $theirs) {
+        if ($theirs === []) {
             return [
                 'state' => 'unknown',
                 'label' => 'Not determined',
@@ -314,7 +445,15 @@ class Vendor extends Model
             ];
         }
 
-        if (! $ours) {
+        if ($theirGroups === []) {
+            return [
+                'state' => 'not_registered',
+                'label' => 'No SST chargeable',
+                'reason' => 'Vendor is not registered for service tax ('.$this->sstCategoryLabel().').',
+            ];
+        }
+
+        if ($ours === []) {
             return [
                 'state' => 'unknown',
                 'label' => 'Not determined',
@@ -322,20 +461,35 @@ class Vendor extends Model
             ];
         }
 
-        if ($theirs === $ours) {
+        $shared = array_values(array_intersect($theirGroups, $ours));
+
+        if ($shared !== []) {
+            $others = array_values(array_diff($theirGroups, $shared));
+
             return [
                 'state' => 'exempt',
                 'label' => 'Cannot charge us SST',
-                'reason' => 'Same taxable category as ours ('.$this->sstCategoryLabel().') — the B2B exemption applies.',
+                'reason' => 'Same taxable category as ours ('.self::labelList($shared).') — the B2B exemption applies'
+                    .($others === []
+                        ? '.'
+                        : ' to services in that category. They are also registered under '
+                            .self::labelList($others).', which they may charge SST on.'),
             ];
         }
 
         return [
             'state' => 'chargeable',
             'label' => 'May charge SST',
-            'reason' => 'Their category ('.$this->sstCategoryLabel().') differs from ours ('
-                .(self::sstCategories()[$ours] ?? $ours).').',
+            'reason' => 'Their '.(count($theirGroups) === 1 ? 'category' : 'categories').' ('
+                .self::labelList($theirGroups).') '.(count($theirGroups) === 1 ? 'differs' : 'differ')
+                .' from ours ('.self::labelList($ours).').',
         ];
+    }
+
+    /** @param  list<string>  $keys */
+    private static function labelList(array $keys): string
+    {
+        return implode(', ', array_map([self::class, 'sstLabelFor'], $keys));
     }
 
     /** True only when we are certain SST must not appear on their bill. */

@@ -847,8 +847,11 @@ class ReportController extends Controller
         ));
     }
 
-    // ── Decommissioning archive (C-Suite + IT managers + Finance) ──────────────
-    /** Widened gate: the reports set (superadmin/hr_manager/system_admin) + it_manager + Finance. */
+    // ── Decommissioning: the single e-waste review surface + archive ───────────
+    /**
+     * The reports set (superadmin/hr_manager/system_admin) + it_manager + Finance, plus
+     * anybody NAMED as a management approver — see User::canViewDecommissionReports().
+     */
     private function authorizeDecommission(): void
     {
         if (! Auth::user()->canViewDecommissionReports()) {
@@ -857,48 +860,115 @@ class ReportController extends Controller
     }
 
     /**
-     * The C-Suite decommissioning archive — E-WASTE ONLY.
+     * Decommissioning — E-WASTE ONLY, and since 2026-08-14 the ONE place Finance and
+     * management review a disposal as well as the archive of finished ones.
+     *
+     * It reviews and archives on one page deliberately. Finance used to approve inline on
+     * Accounting → Assets → status "Disposed" and management on the IT cycle page, which put
+     * three screens between a quotation and the decision on it; the cycle page is now purely
+     * IT's working surface and both decisions live here. Do NOT re-add a quotation-review
+     * block anywhere else — that is the arrangement this replaced.
      *
      * Vendor returns were listed here until 2026-08-10 and no longer are: a rental return
      * hands an asset back to its owner rather than disposing of it, and it is now recorded
      * on an Asset Acceptance & Return Form archived on the vendor's own profile. The Flow
      * filter and the "Vendor returns" tile came off with it — a permanently-zero tile would
      * have read as "we returned nothing this year", which is a claim, not an absence.
-     *
-     * Deliberately still filtered to FINISHED cycles, unlike Finance's Disposed listing.
-     * Don't widen it without dealing with `recovered` below, which would otherwise book an
-     * approved-but-uncollected offer as income.
      */
     public function decommissionReport(Request $request)
     {
         $this->authorizeDecommission();
 
+        $user = Auth::user();
         $year = $request->integer('year') ?: null;
 
-        $query = AssetDecommissionBatch::with('vendor')->withCount('items')
-            ->where('type', AssetDecommissionBatch::TYPE_EWASTE)
-            ->where(fn ($q) => $q->whereNotNull('finalized_at')->orWhere('status', 'completed'));
+        // Null = every company. A user who reaches this page only as a named approver is
+        // scoped to their own entities — another company's disposal is not theirs to read.
+        $companies = $user->reachableDecommissionCompanies();
+
+        $scoped = fn ($q) => $companies === null ? $q : $q->whereIn('company', $companies->all());
+
+        // Every non-cancelled cycle, in-flight ones included: this is the review surface now,
+        // so a cycle awaiting a decision has to appear on it. `cancelled` stays out — it is
+        // not a record of anything. Each row is labelled by ewasteStageBadge().
+        $query = $scoped(
+            AssetDecommissionBatch::with('vendor')->withCount('items')
+                ->where('type', AssetDecommissionBatch::TYPE_EWASTE)
+                ->where('status', '!=', 'cancelled')
+        );
         if ($year) {
             $query->whereYear('created_at', $year);
         }
-        // Headline figures are computed over the WHOLE filtered set, before pagination —
-        // summing the current page would silently under-report once there are 25+ cycles.
-        // reportAmount() is receipt ?: quotation, so the SQL mirror is
-        // COALESCE(receipt, quotation, 0).
+
+        // ── Headline figures: FINISHED CYCLES ONLY, and that is load-bearing ──
+        // Computed over the whole filtered set before pagination (summing the current page
+        // would under-report past 25 cycles), but ALSO restricted to cycles that actually
+        // completed. Admitting in-flight ones to `recovered` — the SQL mirror of
+        // reportAmount(), COALESCE(receipt, quotation, 0) — would book an approved-but-
+        // uncollected offer as money received, which is a figure nobody has been paid.
+        // The tiles say "completed" for the same reason.
+        $finished = (clone $query)->where(fn ($q) => $q->whereNotNull('finalized_at')->orWhere('status', 'completed'));
         $stats = [
-            'batches' => (clone $query)->count(),
-            'assets' => DisposedAsset::whereIn('decommission_batch_id', (clone $query)->select('asset_decommission_batches.id'))->count(),
-            'recovered' => (float) (clone $query)->sum(DB::raw('COALESCE(receipt_amount, quotation_amount, 0)')),
+            'batches' => (clone $finished)->count(),
+            'assets' => DisposedAsset::whereIn('decommission_batch_id', (clone $finished)->select('asset_decommission_batches.id'))->count(),
+            'recovered' => (float) (clone $finished)->sum(DB::raw('COALESCE(receipt_amount, quotation_amount, 0)')),
         ];
 
         $batches = $query->latest()->paginate(25)->withQueryString();
 
-        return view('reports.decommission', compact('batches', 'year', 'stats'));
+        // ── The cycles awaiting THIS user's decision ──
+        // Loaded separately from the paginated archive: an approver must reach a pending cycle
+        // whatever page of the list it would fall on, and the comparison is only rendered for
+        // the handful that need one rather than for every row.
+        $awaiting = $scoped(
+            AssetDecommissionBatch::where('type', AssetDecommissionBatch::TYPE_EWASTE)
+                ->where('status', 'pending_approval')
+                ->with([
+                    'vendor', 'items', 'creator', 'financeReviewer', 'managementReviewer',
+                    'quotations.uploader', 'quotations.financeReviewer', 'quotations.vendor',
+                    'recommendedQuotation.vendor', 'selectedQuotation.vendor',
+                ])
+                ->withCount('items')
+        )->latest()->get();
+
+        // Per cycle, because management authority is per company: a group CFO may sign nothing
+        // while a named CEO signs only their own entity's. Finance's gate is role-wide, but it
+        // is still evaluated per row so both flags read the same way in the view.
+        $canFinance = $user->canApproveEwasteQuotation();
+        $awaiting = $awaiting->filter(
+            fn ($b) => ($canFinance && $b->finance_status === 'pending')
+                || ($b->management_status === 'pending' && $user->canApproveEwasteAsManagement($b->company))
+        )->values();
+
+        return view('reports.decommission', [
+            'batches' => $batches,
+            'year' => $year,
+            'stats' => $stats,
+            'awaiting' => $awaiting,
+            'canFinance' => $canFinance,
+            // Who may be named as the sender of a filed quotation — unused here (IT does not
+            // upload from this page), but the shared comparison partial expects the variable.
+            'ewasteVendors' => collect(),
+        ]);
+    }
+
+    /**
+     * A named approver reaches this page scoped to their own companies, so the PDF routes have
+     * to honour the same scope — the id is in the URL, and without this the listing would be
+     * filtered while the document behind it stayed open to anybody who could guess a batch.
+     */
+    private function authorizeBatch(AssetDecommissionBatch $batch): void
+    {
+        $this->authorizeDecommission();
+
+        $companies = Auth::user()->reachableDecommissionCompanies();
+
+        abort_if($companies !== null && ! $companies->contains($batch->company), 403);
     }
 
     public function downloadBatchPdf(AssetDecommissionBatch $batch)
     {
-        $this->authorizeDecommission();
+        $this->authorizeBatch($batch);
 
         // Serve the archived PDF when present; otherwise render fresh.
         if ($batch->report_pdf_path && Storage::disk('local')->exists($batch->report_pdf_path)) {
@@ -914,7 +984,7 @@ class ReportController extends Controller
     /** Same report, served inline for viewing in the browser (not forced download). */
     public function viewBatchPdf(AssetDecommissionBatch $batch)
     {
-        $this->authorizeDecommission();
+        $this->authorizeBatch($batch);
 
         // Serve the archived PDF inline when present; otherwise render fresh, inline.
         if ($batch->report_pdf_path && Storage::disk('local')->exists($batch->report_pdf_path)) {

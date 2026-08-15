@@ -104,9 +104,87 @@ class RentalAssetAcknowledgement extends Model
     }
 
     // ── State ───────────────────────────────────────────────────────────────
+
+    /**
+     * Is the document FINISHED — meaning BOTH parties have signed it?
+     *
+     * The handover is an agreement between two parties, so one signature does not close it.
+     * `status` is flipped by whichever acknowledgement lands SECOND, in either order, and
+     * that moment is what archives a return's assets, stores the PDF and mails the signed
+     * copy. Neither party is blocked by the other having gone first.
+     *
+     * It was one signature until 2026-08-13: the "closing signatory" (our staff on a
+     * receipt, the vendor's collector on a return) locked the form, and the second party's
+     * reply had to be squeezed in beforehand or not at all — a document signed by one side
+     * asserting that both sides agreed.
+     *
+     * Everything that asks "is this piece of work finished?" reads this, and everything that
+     * asks "is this form still open?" reads `status = draft` — including openReturnFormFor()
+     * and the asset listing's open panel, which therefore keep protecting a half-signed
+     * form's assets without needing to know about the two-signature rule at all.
+     */
     public function isAcknowledged(): bool
     {
         return $this->status === self::STATUS_ACKNOWLEDGED;
+    }
+
+    /**
+     * Has the MAIN declaration been signed — the tick box, the condition note and the
+     * collector's identity?
+     *
+     * Deliberately separate from isAcknowledged(): this is one party's act, and it locks
+     * that party's own fields and nothing else. On a receipt it is us; on a return it is the
+     * vendor's collector.
+     */
+    public function mainAcknowledged(): bool
+    {
+        return $this->acknowledged_at !== null;
+    }
+
+    /** Both signatures present — the condition status flips on. */
+    public function bothPartiesAcknowledged(): bool
+    {
+        return $this->mainAcknowledged() && $this->secondPartyAcknowledged();
+    }
+
+    /**
+     * Has EITHER party signed?
+     *
+     * The delete guard reads this, not isAcknowledged(). A half-signed form is still `draft`,
+     * so guarding deletion on the status alone would let a discard destroy a signature that
+     * one of the two parties had already given.
+     */
+    public function anyPartyAcknowledged(): bool
+    {
+        return $this->mainAcknowledged() || $this->secondPartyAcknowledged();
+    }
+
+    /**
+     * What each side is called on this form, in the words the buttons and messages use.
+     *
+     * The parties swap with the direction, so every user-facing sentence about "the other
+     * party" resolves through these rather than hard-coding a role that is only right in one
+     * direction.
+     */
+    public function mainPartyLabel(): string
+    {
+        return $this->isReturn() ? 'Collector' : 'Company PIC';
+    }
+
+    public function secondPartyLabel(): string
+    {
+        return $this->isReturn() ? 'Company PIC' : 'Vendor PIC';
+    }
+
+    /** Whoever has not signed yet, for an "Awaiting …" badge. Null once both have. */
+    public function awaitingPartyLabel(): ?string
+    {
+        return match (true) {
+            ! $this->mainAcknowledged() && ! $this->secondPartyAcknowledged() => null,
+            ! $this->mainAcknowledged() => $this->mainPartyLabel(),
+            ! $this->secondPartyAcknowledged() => $this->secondPartyLabel(),
+            default => null,
+        };
     }
 
     /** A signed form is evidence — it is never edited, only read or re-printed. */
@@ -192,11 +270,147 @@ class RentalAssetAcknowledgement extends Model
         return $this->isReturn() ? $this->processor_acknowledged_at : $this->vendor_rep_acknowledged_at;
     }
 
+    /**
+     * Three states, not two — because a form with one of its two signatures on it is
+     * neither a draft nor acknowledged, and calling it either would be a false statement
+     * about a document whose whole purpose is to record who agreed to what.
+     */
     public function statusBadge(): array
     {
-        return $this->isAcknowledged()
-            ? ['label' => 'Acknowledged', 'color' => 'success']
-            : ['label' => 'Draft', 'color' => 'secondary'];
+        if ($this->isAcknowledged()) {
+            return ['label' => 'Acknowledged', 'color' => 'success'];
+        }
+
+        if ($awaiting = $this->awaitingPartyLabel()) {
+            return ['label' => 'Awaiting '.$awaiting, 'color' => 'warning'];
+        }
+
+        return ['label' => 'Draft', 'color' => 'secondary'];
+    }
+
+    /**
+     * The process log — what happened to this form, oldest first.
+     *
+     * SCREEN ONLY. It is a record of the system's own handling of the document, not part of
+     * the document: `vendors/aarf/pdf.blade.php` deliberately does not render it, so neither
+     * the downloaded copy nor the one emailed to the vendor's PIC carries it.
+     *
+     * DERIVED from the columns the lifecycle already writes — there is deliberately no event
+     * table behind this. Two reasons, and the second is the one that decided it: everything
+     * in scope (raised → both signatures → closed) is already stored WITH its actor and its
+     * timestamp, so a table would duplicate it and could then disagree with it; and a table
+     * would start EMPTY, so every form signed before today would show a blank log — a
+     * complete document reading as though nothing had ever happened to it. Backfilling rows
+     * to cover that is the same fabrication the un-backfilled `quotation_uploaded_by`
+     * refuses: we would be inventing an audit trail nobody recorded.
+     *
+     * The line that follows from it: this can only ever show what a column records. An event
+     * with nowhere to live — a PDF downloaded, a copy emailed, a send that failed — is NOT
+     * in here and must not be faked into it. Wanting one of those is a reason to add a real
+     * event table, not a reason to guess here.
+     *
+     * Sorted by TIMESTAMP, never by the order the entries are built: both signatures are
+     * order-free, so building order says nothing about what happened first.
+     *
+     * @return array<int, array{at: ?Carbon, title: string, by: ?string, by_meta: ?string, notes: array<int, string>, state: string}>
+     */
+    public function activityLog(): array
+    {
+        $assets = $this->items->count();
+        $plural = fn (int $n) => $n.' asset'.($n === 1 ? '' : 's');
+        $preparer = self::actorIdentity($this->creator);
+
+        $entries = [[
+            'at' => $this->created_at,
+            'title' => 'Form raised',
+            'by' => $preparer['name'] ?? null,
+            'by_meta' => $preparer['details'] ?? null,
+            'notes' => array_values(array_filter([
+                $this->typeLabel(),
+                $plural($assets).' listed on the form',
+            ])),
+            'state' => 'done',
+        ]];
+
+        if ($this->mainAcknowledged()) {
+            $account = self::actorIdentity($this->acknowledger);
+
+            $entries[] = [
+                'at' => $this->acknowledged_at,
+                'title' => 'Acknowledged by the '.$this->mainPartyLabel(),
+                // The SIGNATORY — whoever the collector details name, which is not always the
+                // account holder. That distinction is the whole reason section 6 is editable.
+                'by' => $this->collector_name ?: null,
+                'by_meta' => $this->collector_company ?: null,
+                'notes' => array_values(array_filter([
+                    $this->condition_confirmed ? 'Condition of the assets confirmed' : null,
+                    // The account is a fact about the SYSTEM's handling, not about who signed,
+                    // which is exactly why it reads here — it is the log's own subject matter,
+                    // and the sign-off panel it used to sit in was cut back to the parties on
+                    // 2026-08-14. Section 7's sentence still carries it on the document itself.
+                    $account ? 'Processed under the account of '.$account['name'] : null,
+                    filled($this->condition_remarks) ? 'Condition remarks recorded' : null,
+                ])),
+                'state' => 'done',
+            ];
+        }
+
+        if ($this->secondPartyAcknowledged()) {
+            $ours = self::actorIdentity($this->processorAcknowledger);
+
+            $entries[] = [
+                'at' => $this->secondPartyAcknowledgedAt(),
+                'title' => 'Acknowledged by the '.$this->secondPartyLabel(),
+                // The two signatures have different SHAPES because only one party ever has an
+                // account: the vendor's representative types their identity, ours signs with
+                // theirs. Reading one column for both would print an empty name on one
+                // direction or the other.
+                'by' => $this->isReturn() ? ($ours['name'] ?? null) : ($this->vendor_rep_name ?: null),
+                'by_meta' => $this->isReturn() ? ($ours['details'] ?? null) : ($this->vendor_rep_company ?: null),
+                'notes' => array_values(array_filter([
+                    filled($this->secondPartyRemarks()) ? 'Remarks recorded in reply' : null,
+                ])),
+                'state' => 'done',
+            ];
+        }
+
+        usort($entries, fn ($a, $b) => ($a['at']?->getTimestamp() ?? 0) <=> ($b['at']?->getTimestamp() ?? 0));
+
+        $entries[] = $this->isAcknowledged()
+            ? [
+                // The later of the two signatures — the moment the document became final.
+                // Never `updated_at`: that moves whenever anything is written to the row,
+                // including the PDF path stored a moment afterwards.
+                //
+                // Deliberately does NOT say "both parties signed": a form closed under the
+                // old single-signature rule is final with one signature on it, and this log
+                // may not state something the record does not show.
+                'at' => collect([$this->acknowledged_at, $this->secondPartyAcknowledgedAt()])->filter()->max(),
+                'title' => 'Form closed',
+                'by' => null,
+                'by_meta' => null,
+                'notes' => array_values(array_filter([
+                    'The document is final and can no longer be edited',
+                    $this->isReturn() ? $plural($assets).' archived out of the inventory' : null,
+                ])),
+                'state' => 'done',
+            ]
+            : [
+                'at' => null,
+                'title' => match (true) {
+                    // awaitingPartyLabel() answers null for BOTH "nobody has signed" and
+                    // "everybody has", so it cannot be the whole answer on its own.
+                    $this->bothPartiesAcknowledged() => 'Awaiting closure',
+                    ! $this->anyPartyAcknowledged() => 'Awaiting both parties',
+                    default => 'Awaiting the '.$this->awaitingPartyLabel(),
+                },
+                'by' => null,
+                'by_meta' => null,
+                'notes' => ['The form closes once both parties have acknowledged it'],
+                'state' => 'pending',
+            ];
+
+        return $entries;
     }
 
     /**

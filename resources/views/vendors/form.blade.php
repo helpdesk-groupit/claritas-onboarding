@@ -6,9 +6,20 @@
 @include('partials.vendor-ui-style')
 @php
     $selectedTypes = old('vendor_types', $vendor->vendor_types ?? []);
-    $ewasteChecked = in_array('ewaste', (array) $selectedTypes, true);
+
     $sstCategories = \App\Models\Vendor::sstCategories();
-    $ownSst = \App\Models\Vendor::ownSstCategory();
+    $selectedSst = (array) old('sst_categories', isset($vendor) ? $vendor->sstCategoryList() : []);
+    $nonServiceSst = \App\Models\Vendor::NON_SERVICE_TAX_CATEGORIES;
+    // The 12 taxable-service groups, then the two answers that say the vendor holds no
+    // service tax registration — they are not groups and must not read as one.
+    $sstGroups = array_diff_key($sstCategories, array_flip($nonServiceSst));
+    $sstNonService = array_intersect_key($sstCategories, array_flip($nonServiceSst));
+    // Anything this vendor already holds that the list no longer offers, rendered ticked so
+    // an ordinary save cannot silently drop a category nobody looked at.
+    $sstRetired = collect(array_diff($selectedSst, array_keys($sstCategories)))
+        ->mapWithKeys(fn ($k) => [$k => \App\Models\Vendor::sstLabelFor($k)])->all();
+
+    $ownSst = \App\Models\Vendor::ownSstCategories();
 @endphp
 <div class="card" style="max-width:960px;">
     <div class="card-header" style="background:linear-gradient(135deg,#1e3a5f,#2563eb);">
@@ -120,16 +131,69 @@
                            value="{{ old('sst_number', $vendor->sst_number ?? '') }}" placeholder="Service tax registration number">
                     @error('sst_number')<div class="invalid-feedback">{{ $message }}</div>@enderror
                 </div>
-                <div class="col-md-7">
+
+                <div class="col-12">
                     <label class="form-label fw-semibold">SST Category</label>
-                    <select name="sst_category" class="form-select @error('sst_category') is-invalid @enderror">
-                        <option value="">— Not recorded —</option>
-                        @foreach($sstCategories as $key => $label)
-                            <option value="{{ $key }}" {{ old('sst_category', $vendor->sst_category ?? '') === $key ? 'selected' : '' }}>{{ $label }}</option>
+                    <div class="form-text text-muted small mt-0 mb-2">
+                        Tick <strong>every</strong> service tax group the vendor is registered under &mdash; a vendor can hold
+                        more than one. Leave them all blank if it has not been checked yet; that reads as
+                        <em>not recorded</em>, which is not the same as telling us they are not registered.
+                    </div>
+
+                    <div class="row g-2">
+                        @foreach($sstGroups as $key => $label)
+                            <div class="col-12 col-lg-6">
+                                <div class="form-check">
+                                    <input class="form-check-input js-sst-cat" type="checkbox" name="sst_categories[]"
+                                           value="{{ $key }}" id="sst_{{ $key }}"
+                                           {{ in_array($key, $selectedSst, true) ? 'checked' : '' }}>
+                                    <label class="form-check-label" for="sst_{{ $key }}">{{ $label }}</label>
+                                </div>
+                            </div>
                         @endforeach
-                    </select>
-                    @error('sst_category')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    </div>
+
+                    @if($sstNonService)
+                        <div class="vnd-label mt-3 mb-1">Not a service tax group</div>
+                        <div class="row g-2">
+                            @foreach($sstNonService as $key => $label)
+                                <div class="col-12 col-lg-6">
+                                    <div class="form-check">
+                                        {{-- "Not SST-registered" is exclusive: it is the absence of a
+                                             registration, so it clears and locks the rest. --}}
+                                        <input class="form-check-input js-sst-cat" type="checkbox" name="sst_categories[]"
+                                               value="{{ $key }}" id="sst_{{ $key }}"
+                                               @if($key === 'not_registered') data-sst-exclusive="1" @endif
+                                               {{ in_array($key, $selectedSst, true) ? 'checked' : '' }}>
+                                        <label class="form-check-label" for="sst_{{ $key }}">{{ $label }}</label>
+                                    </div>
+                                </div>
+                            @endforeach
+                        </div>
+                    @endif
+
+                    @if($sstRetired)
+                        <div class="vnd-label mt-3 mb-1">Recorded previously</div>
+                        <div class="row g-2">
+                            @foreach($sstRetired as $key => $label)
+                                <div class="col-12 col-lg-6">
+                                    <div class="form-check">
+                                        <input class="form-check-input js-sst-cat" type="checkbox" name="sst_categories[]"
+                                               value="{{ $key }}" id="sst_{{ $key }}" checked>
+                                        <label class="form-check-label text-muted" for="sst_{{ $key }}">{{ $label }}</label>
+                                    </div>
+                                </div>
+                            @endforeach
+                        </div>
+                        <div class="form-text text-muted small">
+                            Kept so nothing is lost. Untick it and tick the group it belongs to now.
+                        </div>
+                    @endif
+
+                    @error('sst_categories')<div class="invalid-feedback d-block">{{ $message }}</div>@enderror
+                    @error('sst_categories.*')<div class="invalid-feedback d-block">{{ $message }}</div>@enderror
                 </div>
+
                 {{-- Only the CONFIGURED case gets a note. The "our own SST category isn't set yet"
                      banner was removed at the operator's request: it is a deployment detail aimed
                      at whoever edits config/vendors.php, and it sat on a form used by people who
@@ -138,9 +202,10 @@
                     <div class="col-12">
                         <div class="alert alert-info py-2 mb-0" style="font-size:12.5px;">
                             <i class="bi bi-info-circle me-1"></i>
-                            Our own SST category is <strong>{{ $sstCategories[$ownSst] ?? $ownSst }}</strong>.
-                            A vendor registered under the same category <strong>cannot charge us SST</strong> (B2B exemption) &mdash;
-                            the vendor profile says so, and any invoice carrying an SST line is flagged.
+                            Our own SST {{ count($ownSst) === 1 ? 'category is' : 'categories are' }}
+                            <strong>{{ implode(', ', array_map([\App\Models\Vendor::class, 'sstLabelFor'], $ownSst)) }}</strong>.
+                            A vendor registered under the same category <strong>cannot charge us SST</strong> on services in it
+                            (B2B exemption) &mdash; the vendor profile says so, and any invoice carrying an SST line is flagged.
                         </div>
                     </div>
                 @endif
@@ -238,15 +303,9 @@
                 <textarea name="notes" rows="2" class="form-control">{{ old('notes', $vendor->notes ?? '') }}</textarea>
             </div>
 
-            {{-- Primary e-waste — only meaningful when e-waste is ticked --}}
-            <div class="form-check mb-2 js-ewaste-only" style="{{ $ewasteChecked ? '' : 'display:none;' }}">
-                <input class="form-check-input" type="checkbox" name="is_primary_ewaste" value="1" id="is_primary_ewaste"
-                       {{ old('is_primary_ewaste', $vendor->is_primary_ewaste ?? false) ? 'checked' : '' }}>
-                <label class="form-check-label" for="is_primary_ewaste">
-                    <strong>Primary e-waste vendor</strong> — receives the quarterly RFQ (only one vendor may hold this).
-                </label>
-            </div>
-
+            {{-- There is deliberately no "primary e-waste vendor" toggle: the quarterly sweep
+                 RFQs EVERY active e-waste vendor with a PIC email so the offers can be
+                 compared, and nominating one is what made a cycle only ever show one price. --}}
             <div class="form-check mb-3">
                 <input class="form-check-input" type="checkbox" name="is_active" value="1" id="is_active"
                        {{ old('is_active', $vendor->is_active ?? true) ? 'checked' : '' }}>
@@ -264,20 +323,29 @@
 
 @push('scripts')
 <script nonce="{{ $cspNonce ?? '' }}">
-    // Show/hide the e-waste-only primary toggle when the e-waste type checkbox changes.
-    // CSP-safe: addEventListener, no inline handlers.
+    // The e-waste type checkbox no longer reveals anything: the "primary e-waste vendor"
+    // toggle it used to show/hide was retired when the sweep started RFQ'ing the whole
+    // market, so the .js-ewaste-only block and its listener went with it.
+
+    // "Not SST-registered" is the absence of a registration, so it cannot sit beside a
+    // group: ticking it clears and locks the others. The server refuses the combination
+    // as well — a disabled checkbox is a courtesy, not a rule.
     (function () {
-        const ewasteBox = document.getElementById('vtype_ewaste');
-        const blocks = document.querySelectorAll('.js-ewaste-only');
+        const boxes = Array.from(document.querySelectorAll('.js-sst-cat'));
+        const exclusive = boxes.filter(b => b.dataset.sstExclusive === '1');
+        if (!exclusive.length) return;
+
         function sync() {
-            const on = ewasteBox && ewasteBox.checked;
-            blocks.forEach(b => { b.style.display = on ? '' : 'none'; });
-            if (!on) {
-                const primary = document.getElementById('is_primary_ewaste');
-                if (primary) primary.checked = false;
-            }
+            const on = exclusive.some(b => b.checked);
+            boxes.forEach(b => {
+                if (exclusive.includes(b)) return;
+                if (on) b.checked = false;
+                b.disabled = on;
+                const label = b.closest('.form-check')?.querySelector('.form-check-label');
+                if (label) label.classList.toggle('text-muted', on);
+            });
         }
-        document.querySelectorAll('.js-vendor-type').forEach(cb => cb.addEventListener('change', sync));
+        boxes.forEach(b => b.addEventListener('change', sync));
         sync();
     })();
 </script>

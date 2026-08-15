@@ -18,7 +18,10 @@ return [
     | vendor. While it is null the verdict honestly reads "not determined"; set it
     | (here or via VENDOR_OWN_SST_CATEGORY) and every vendor page goes live at once.
     |
-    | Must be one of the keys in `sst_categories` below.
+    | Must be one of the keys in `sst_categories` below. May also be an ARRAY of keys
+    | (edit this file rather than the env var) — we can be registered under more than
+    | one group for the same reason a vendor can, and the exemption then applies to
+    | whichever group is shared.
     |
     */
     'own_sst_category' => env('VENDOR_OWN_SST_CATEGORY'),
@@ -28,11 +31,13 @@ return [
     | SST categories
     |--------------------------------------------------------------------------
     |
-    | Leave empty to use Vendor::DEFAULT_SST_CATEGORIES. Override with the exact
-    | statutory wording (including group letters) when Finance wants the form to
-    | match the Service Tax First Schedule as currently gazetted — the letters have
-    | been re-assigned by more than one amendment, so they are not hard-coded in the
-    | model. Keys are what gets stored; changing a KEY orphans existing vendor rows.
+    | Leave empty to use Vendor::DEFAULT_SST_CATEGORIES — Groups A to L of the Service
+    | Tax First Schedule, plus the two answers that are not groups (Sales Tax registrant
+    | and Not SST-registered). Override the whole list when Finance wants different
+    | wording. The letters live in the LABELS only: they have been re-assigned by more
+    | than one amendment, so a re-gazette is a label edit here rather than a data
+    | migration. Keys are what gets stored; changing a KEY orphans existing vendor rows
+    | (Vendor::LEGACY_SST_CATEGORIES exists so the last such change stayed readable).
     |
     */
     'sst_categories' => [],
@@ -80,6 +85,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Bulk import
+    |--------------------------------------------------------------------------
+    |
+    | Registering vendors from a spreadsheet the company already keeps. The uploaded file
+    | is parked on the private disk between the preview and the confirmation, so that the
+    | operator can correct the column mapping without re-uploading and so that the import
+    | is always derived from the document rather than from a payload posted back.
+    |
+    | `retention_hours` is how long an UNCONFIRMED upload waits before the nightly sweep
+    | (`vendors:prune-import-batches`) discards it with its file. Long enough to survive an
+    | operator being interrupted mid-review; short enough that abandoned lists — which carry
+    | real vendor contact and banking details — do not accumulate.
+    |
+    | Confirming or cancelling an import discards its file immediately either way, so this
+    | window only ever applies to a browser tab that was closed.
+    |
+    */
+    'import' => [
+        'retention_hours' => env('VENDOR_IMPORT_RETENTION_HOURS', 24),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Document summaries + the vendor Q&A assistant
     |--------------------------------------------------------------------------
     |
@@ -108,6 +136,17 @@ return [
         // back truncated, which is recorded as ai_status = 'partial' and announced —
         // never quietly presented as the whole document.
         'summary_max_tokens' => env('VENDOR_AI_SUMMARY_MAX_TOKENS', 8000),
+
+        // Caps the second, text-only pass that reads the parties and the record fields off
+        // the transcript. Small on purpose: it returns a handful of values, and a ceiling
+        // sized for prose would only buy room for the model to pad.
+        'detail_max_tokens' => env('VENDOR_AI_DETAIL_MAX_TOKENS', 1500),
+
+        // How long an uploaded-but-unfiled document waits in `vendor_document_scans`
+        // before the nightly sweep discards it and its file. Long enough to survive an
+        // operator being interrupted mid-upload, short enough that abandoned files do not
+        // accumulate on the private disk.
+        'scan_retention_hours' => env('VENDOR_AI_SCAN_RETENTION_HOURS', 24),
 
         'chat_max_tokens' => env('VENDOR_AI_CHAT_MAX_TOKENS', 2000),
 

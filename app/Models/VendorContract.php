@@ -36,8 +36,19 @@ class VendorContract extends Model
         'subscription' => 'Subscription',
         'nda' => 'NDA',
         'sla' => 'SLA',
+        'ewaste_quotation' => 'E-waste Quotation',
         'other' => 'Other',
     ];
+
+    /**
+     * Filed automatically from an e-waste cycle, not entered here.
+     *
+     * A row of this type is a RECORD of a document that lives on a disposal cycle — it has no
+     * term, its figure is the cycle's, and its state is the cycle's decision. The Contracts tab
+     * renders it read-only for that reason: editing it would alter what a vendor is recorded as
+     * having offered on a disposal that may already have been decided on the strength of it.
+     */
+    public const TYPE_EWASTE_QUOTATION = 'ewaste_quotation';
 
     public const BILLING_CYCLES = [
         'one_off' => 'One-off',
@@ -54,12 +65,13 @@ class VendorContract extends Model
     public const DEFAULT_CURRENCY = 'MYR';
 
     protected $fillable = [
-        'vendor_id', 'title', 'contract_reference', 'contract_type', 'status',
+        'vendor_id', 'asset_decommission_quotation_id', 'title', 'contract_reference', 'contract_type', 'status',
         'start_date', 'end_date', 'auto_renew', 'notice_period_days',
         'contract_value', 'currency', 'billing_cycle', 'payment_terms',
         'scope_summary', 'notes',
         'file_path', 'original_filename', 'created_by',
         'ai_status', 'ai_summary', 'ai_key_points', 'ai_text', 'ai_at',
+        'companies_involved',
     ];
 
     protected $casts = [
@@ -70,6 +82,8 @@ class VendorContract extends Model
         'notice_period_days' => 'integer',
         'ai_key_points' => 'array',
         'ai_at' => 'datetime',
+        'companies_involved' => 'array',
+        'ai_summary_edited_at' => 'datetime',
     ];
 
     public function vendor(): BelongsTo
@@ -85,6 +99,20 @@ class VendorContract extends Model
     public function billingDocuments()
     {
         return $this->hasMany(VendorBillingDocument::class);
+    }
+
+    /**
+     * The e-waste quotation revision this row was filed from. Null for every ordinary contract.
+     */
+    public function assetDecommissionQuotation(): BelongsTo
+    {
+        return $this->belongsTo(AssetDecommissionQuotation::class, 'asset_decommission_quotation_id');
+    }
+
+    /** Filed from a disposal cycle rather than entered on this tab. */
+    public function isEwasteQuotation(): bool
+    {
+        return $this->contract_type === self::TYPE_EWASTE_QUOTATION;
     }
 
     public function statusLabel(): string
@@ -130,6 +158,16 @@ class VendorContract extends Model
      */
     public function stateBadge(): array
     {
+        // A filed e-waste quotation has no term, so every date-based test below is inapplicable
+        // and the method would fall all the way through to a green "Active" — asserting that a
+        // one-off scrap offer is a live agreement, forever. Its real state is the cycle's
+        // decision, so that is what it reports.
+        if ($this->isEwasteQuotation()) {
+            return $this->assetDecommissionQuotation
+                ? $this->assetDecommissionQuotation->lifecycleBadge()
+                : ['color' => 'secondary', 'label' => 'Filed from a disposal cycle'];
+        }
+
         if ($this->status === 'terminated') {
             return ['color' => 'secondary', 'label' => 'Terminated'];
         }

@@ -6,6 +6,7 @@ use App\Http\Middleware\EnforceTwoFactor;
 use App\Models\AssetDecommissionBatch;
 use App\Models\AssetInventory;
 use App\Models\DisposedAsset;
+use App\Models\EwasteCompanyApprover;
 use App\Models\User;
 use App\Models\Vendor;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -13,19 +14,30 @@ use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
 /**
- * Accounting → Assets → status "Disposed" is the ONLY place Finance touches e-waste:
- * quotations are approved/rejected there, and finished cycles' reports are listed there.
- * No sidebar entries, no Assets sub-tabs, nothing under the Reports tab.
+ * Management → Decommissioning is the ONLY place Finance and management touch e-waste:
+ * the comparison is reviewed there, both decisions are cast there, and the cycles' reports
+ * are listed there.
+ *
+ * It was Accounting → Assets → status "Disposed" (Finance) plus the IT cycle page
+ * (management) until 2026-08-14. Those two surfaces are gone, and several tests below exist
+ * to keep them gone — a second place to approve one disposal is what this replaced.
  */
 class FinanceDecommissionAccessTest extends TestCase
 {
     use RefreshDatabase;
+
+    private const COMPANY = 'Claritas Asia Sdn Bhd';
 
     protected function setUp(): void
     {
         parent::setUp();
         $this->withoutMiddleware(EnforceTwoFactor::class);
         Mail::fake();
+    }
+
+    private function reviewUrl(): string
+    {
+        return route('reports.decommission');
     }
 
     private function disposedUrl(): string
@@ -40,6 +52,7 @@ class FinanceDecommissionAccessTest extends TestCase
             'type' => $type,
             'status' => $finalized ? ($type === 'e_waste' ? 'completed' : 'acknowledged') : 'draft',
             'finalized_at' => $finalized ? now() : null,
+            'company' => self::COMPANY,
             'vendor_id' => Vendor::create(['name' => 'Vendor '.$number, 'vendor_types' => ['ewaste'], 'is_active' => true])->id,
         ]);
 
@@ -62,8 +75,11 @@ class FinanceDecommissionAccessTest extends TestCase
     private function pendingQuotation(string $number = 'EWA-2026-Q4'): AssetDecommissionBatch
     {
         return AssetDecommissionBatch::create([
+            // `pending_approval` since Phase 5 — `quotation_uploaded` now means offers are
+            // still being collected and nothing has been put up for review.
             'batch_number' => $number, 'type' => 'e_waste',
-            'status' => 'quotation_uploaded', 'finance_status' => 'pending',
+            'status' => 'pending_approval', 'finance_status' => 'pending', 'management_status' => 'pending',
+            'company' => self::COMPANY,
             'vendor_id' => Vendor::create(['name' => 'Quoting Vendor', 'vendor_types' => ['ewaste'], 'is_active' => true])->id,
         ]);
     }
@@ -73,25 +89,24 @@ class FinanceDecommissionAccessTest extends TestCase
      * The list is every e-waste cycle, in flight or finished — it is the record. Only vendor
      * returns are excluded (a rental going back to its owner is not a disposal).
      */
-    public function test_disposed_status_lists_every_ewaste_cycle_not_just_finished_ones(): void
+    public function test_decommissioning_lists_every_ewaste_cycle_not_just_finished_ones(): void
     {
         $finance = User::factory()->create(['role' => 'finance_executive']);
         $this->batchWithAsset('EWA-2026-Q1', 'e_waste', true);
         $this->batchWithAsset('RET-2026-0001', 'vendor_return', true);   // rental going back — not a disposal
         $this->batchWithAsset('EWA-2026-Q2', 'e_waste', false);          // still in flight
 
-        $this->actingAs($finance)->get($this->disposedUrl())
+        $this->actingAs($finance)->get($this->reviewUrl())
             ->assertOk()
-            ->assertSee('E-waste Decommissioning Reports')
             ->assertSee('EWA-2026-Q1')
             ->assertSee('EWA-2026-Q2')
             ->assertDontSee('RET-2026-0001');
     }
 
     /**
-     * Regression: approving a quotation moved finance_status off 'pending', which dropped the
-     * cycle out of the pending-approval block — and the reports list was finalized-only, so it
-     * never entered that either. The cycle was invisible on Finance's ONLY surface for the whole
+     * Regression, carried over from the Accounting page: approving a quotation moves
+     * finance_status off 'pending', which drops the cycle out of the awaiting-decision block.
+     * If the list below it were finalized-only the cycle would be invisible for the whole
      * collection window (approved → collected → paid), which reads as "my approval did nothing".
      */
     public function test_an_approved_cycle_awaiting_collection_is_still_listed(): void
@@ -106,10 +121,8 @@ class FinanceDecommissionAccessTest extends TestCase
             'finance_reviewed_at' => now(),
         ]);
 
-        $response = $this->actingAs($finance)->get($this->disposedUrl())->assertOk();
-
-        // It is in neither the pending-approval block nor "completed" — so the record must show it.
-        $response->assertSee('No quotations awaiting approval.')
+        $this->actingAs($finance)->get($this->reviewUrl())
+            ->assertOk()
             ->assertSee('EWA-2026-Q2')
             ->assertSee('Awaiting collection &amp; payment', false);
     }
@@ -127,7 +140,7 @@ class FinanceDecommissionAccessTest extends TestCase
             'status' => 'finance_approved', 'finance_status' => 'approved', 'quotation_amount' => 900,
         ]);
 
-        $this->actingAs($finance)->get($this->disposedUrl())
+        $this->actingAs($finance)->get($this->reviewUrl())
             ->assertOk()
             ->assertSee('RM 500.00')          // the completed cycle only
             ->assertDontSee('RM 1,400.00');   // never completed + the outstanding offer
@@ -147,61 +160,49 @@ class FinanceDecommissionAccessTest extends TestCase
             'disposed_by' => 'IT', 'disposed_at' => now(),
         ]);
 
-        $this->actingAs($finance)->get($this->disposedUrl())
+        $this->actingAs($finance)->get($this->reviewUrl())
             ->assertOk()
             ->assertSee('EWA-2026-Q1')
             ->assertDontSee('EXTRA-LAPTOP')
             ->assertDontSee('ASSET-EWA-2026-Q1');
     }
 
-    public function test_other_statuses_leave_the_assets_page_untouched(): void
-    {
-        $finance = User::factory()->create(['role' => 'finance_manager']);
-        $this->batchWithAsset('EWA-2026-Q1', 'e_waste', true);
-        $this->pendingQuotation();
-
-        foreach ([[], ['status' => 'active']] as $params) {
-            $this->actingAs($finance)->get(route('accounting.fixed-assets.index', $params))
-                ->assertOk()
-                ->assertDontSee('E-waste Decommissioning Reports')
-                ->assertDontSee('Awaiting Approval')
-                ->assertDontSee('EWA-2026-Q1');
-        }
-    }
-
-    // ── The quotation workflow, inline on the same page ──────────────────────
+    // ── The quotation workflow, on the review page ───────────────────────────
     public function test_pending_quotations_render_with_approve_and_reject_controls(): void
     {
         $finance = User::factory()->create(['role' => 'finance_executive']);
         $batch = $this->pendingQuotation();
 
-        $this->actingAs($finance)->get($this->disposedUrl())
+        $this->actingAs($finance)->get($this->reviewUrl())
             ->assertOk()
-            ->assertSee('E-waste Quotations Awaiting Approval')
+            ->assertSee('Awaiting your decision')
             ->assertSee('EWA-2026-Q4')
             ->assertSee(route('finance.ewaste.approve', $batch), false)
-            ->assertSee('rejectModal'.$batch->id, false);
+            ->assertSee(route('finance.ewaste.reject', $batch), false);
     }
 
-    public function test_approving_from_the_assets_page_works_and_returns_there(): void
+    public function test_approving_from_the_review_page_works_and_returns_there(): void
     {
         $finance = User::factory()->create(['role' => 'finance_manager']);
         $batch = $this->pendingQuotation();
 
         $this->actingAs($finance)
             ->post(route('finance.ewaste.approve', $batch), ['remarks' => 'Offer accepted'])
-            ->assertRedirect($this->disposedUrl());
+            ->assertRedirect($this->reviewUrl());
 
         $this->assertSame('approved', $batch->fresh()->finance_status);
-        $this->assertSame('finance_approved', $batch->fresh()->status);
+        // Their approval is a recorded position, not the release: management authorise the
+        // disposal, so the cycle is still awaiting a decision.
+        $this->assertSame('pending_approval', $batch->fresh()->status);
 
-        // Approved, so it drops off the pending list.
-        $this->actingAs($finance)->get($this->disposedUrl())
+        // Decided, so it drops out of the awaiting-decision block — but stays in the list.
+        $this->actingAs($finance)->get($this->reviewUrl())
             ->assertOk()
-            ->assertSee('No quotations awaiting approval.');
+            ->assertDontSee('Awaiting your decision')
+            ->assertSee('EWA-2026-Q4');
     }
 
-    public function test_rejecting_from_the_assets_page_requires_a_reason_then_returns_there(): void
+    public function test_rejecting_from_the_review_page_requires_a_reason_then_returns_there(): void
     {
         $finance = User::factory()->create(['role' => 'finance_manager']);
         $batch = $this->pendingQuotation();
@@ -213,37 +214,139 @@ class FinanceDecommissionAccessTest extends TestCase
 
         $this->actingAs($finance)
             ->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Offer too low'])
-            ->assertRedirect($this->disposedUrl());
+            ->assertRedirect($this->reviewUrl());
         $this->assertSame('rejected', $batch->fresh()->finance_status);
     }
 
-    public function test_a_viewer_who_cannot_approve_sees_reports_but_no_quotation_controls(): void
+    public function test_a_viewer_who_cannot_approve_sees_the_record_but_no_controls(): void
     {
-        // hr_manager reaches Accounting and the decommission archive, but may not approve.
+        // hr_manager reads the decommission archive but may approve nothing.
         $hr = User::factory()->create(['role' => 'hr_manager']);
         $this->batchWithAsset('EWA-2026-Q1', 'e_waste', true);
-        $this->pendingQuotation();
+        $batch = $this->pendingQuotation();
 
-        $this->actingAs($hr)->get($this->disposedUrl())
+        $this->actingAs($hr)->get($this->reviewUrl())
             ->assertOk()
             ->assertSee('EWA-2026-Q1')
-            // The pending-approval ACTION block is what they must not get.
-            ->assertDontSee('E-waste Quotations Awaiting Approval')
-            ->assertDontSee('Reject Quotation')
+            // The decision block is what they must not get.
+            ->assertDontSee('Awaiting your decision')
+            ->assertDontSee(route('finance.ewaste.approve', $batch), false)
+            ->assertDontSee(route('management.ewaste.approve', $batch), false)
             // But the cycle itself belongs in the record they are allowed to read — they
             // simply can't act on it. Hiding it would tell them the disposal doesn't exist.
             ->assertSee('EWA-2026-Q4')
-            ->assertSee('Pending Finance approval');
+            ->assertSee('Pending approval');
     }
 
-    // ── Everything else is gone ──────────────────────────────────────────────
-    public function test_finance_sidebar_has_no_decommissioning_or_pending_quotations_entries(): void
+    // ── Management: named approvers, scoped per company ──────────────────────
+    /**
+     * A named approver holds none of the report roles, so the page they are emailed a link to
+     * has to admit them on the strength of being named — otherwise the approval request lands
+     * on a 403.
+     */
+    public function test_a_named_approver_with_no_other_role_can_reach_the_page_and_decide(): void
     {
+        $ceo = User::factory()->create(['role' => 'employee']);
+        EwasteCompanyApprover::create(['company' => self::COMPANY, 'user_id' => $ceo->id]);
+        $batch = $this->pendingQuotation();
+
+        $this->actingAs($ceo)->get($this->reviewUrl())
+            ->assertOk()
+            ->assertSee('Awaiting your decision')
+            ->assertSee(route('management.ewaste.approve', $batch), false)
+            // Finance's controls are not theirs.
+            ->assertDontSee(route('finance.ewaste.approve', $batch), false);
+
+        $this->actingAs($ceo)
+            ->post(route('management.ewaste.approve', $batch), ['remarks' => 'Approved'])
+            ->assertRedirect(route('decommission.show', $batch));
+
+        $this->assertSame('approved', $batch->fresh()->management_status);
+        $this->assertSame('approved', $batch->fresh()->status);
+    }
+
+    /**
+     * Another entity's disposal is not theirs to read — the same rule that decides who a signed
+     * AARF is copied to. Their authority is per-company, so the list must match it.
+     */
+    public function test_a_named_approver_sees_only_their_own_companys_cycles(): void
+    {
+        $ceo = User::factory()->create(['role' => 'employee']);
+        EwasteCompanyApprover::create(['company' => 'Enlinea Sdn Bhd', 'user_id' => $ceo->id]);
+
+        $theirs = $this->batchWithAsset('EWA-2026-Q1', 'e_waste', true);
+        $theirs->update(['company' => 'Enlinea Sdn Bhd']);
+        $others = $this->batchWithAsset('EWA-2026-Q2', 'e_waste', true);   // Claritas
+
+        $this->actingAs($ceo)->get($this->reviewUrl())
+            ->assertOk()
+            ->assertSee('EWA-2026-Q1')
+            ->assertDontSee('EWA-2026-Q2');
+
+        // The listing is filtered, so the document behind it must be too — the id is in the URL.
+        $this->actingAs($ceo)->get(route('reports.decommission.pdf', $others))->assertForbidden();
+    }
+
+    /** A role-holder is not scoped: Finance and IT own the process across the group. */
+    public function test_finance_still_sees_every_companys_cycles(): void
+    {
+        $finance = User::factory()->create(['role' => 'finance_manager']);
+        $this->batchWithAsset('EWA-2026-Q1', 'e_waste', true)->update(['company' => 'Enlinea Sdn Bhd']);
+        $this->batchWithAsset('EWA-2026-Q2', 'e_waste', true);
+
+        $this->actingAs($finance)->get($this->reviewUrl())
+            ->assertOk()
+            ->assertSee('EWA-2026-Q1')
+            ->assertSee('EWA-2026-Q2');
+    }
+
+    // ── The displaced surfaces stay gone ─────────────────────────────────────
+    /**
+     * Accounting → Assets → "Disposed" reverts to a plain asset listing. A second place to
+     * review a quotation is exactly what moving it here was undoing.
+     */
+    public function test_the_disposed_assets_page_carries_no_ewaste_blocks(): void
+    {
+        $finance = User::factory()->create(['role' => 'finance_manager']);
+        $this->batchWithAsset('EWA-2026-Q1', 'e_waste', true);
+        $batch = $this->pendingQuotation();
+
+        $this->actingAs($finance)->get($this->disposedUrl())
+            ->assertOk()
+            ->assertDontSee('E-waste Decommissioning Reports')
+            ->assertDontSee('E-waste Quotations Awaiting Approval')
+            ->assertDontSee('EWA-2026-Q1')
+            ->assertDontSee('EWA-2026-Q4')
+            ->assertDontSee(route('finance.ewaste.approve', $batch), false);
+    }
+
+    /** The IT cycle page is IT's working surface — management decide on Decommissioning. */
+    public function test_the_cycle_page_offers_management_no_decision_control(): void
+    {
+        $ceo = User::factory()->create(['role' => 'employee']);
+        EwasteCompanyApprover::create(['company' => self::COMPANY, 'user_id' => $ceo->id]);
+        $batch = $this->pendingQuotation();
+
+        $this->actingAs($ceo)->get(route('decommission.show', $batch))
+            ->assertOk()
+            // Readable — it is the cycle their decision concerns…
+            ->assertSee('EWA-2026-Q4')
+            // …but the control is not here. Asserted on the form action, not prose: the page
+            // legitimately mentions the decision in its timeline.
+            ->assertDontSee(route('management.ewaste.approve', $batch), false)
+            ->assertDontSee(route('management.ewaste.reject', $batch), false)
+            // Instead it says where to go.
+            ->assertSee('Review on Decommissioning');
+    }
+
+    public function test_finance_now_has_the_decommissioning_sidebar_link(): void
+    {
+        // Reversed on 2026-08-14: this page is Finance's only route to a quotation decision,
+        // so hiding the link would leave the approval email pointing somewhere unreachable.
         $this->actingAs(User::factory()->create(['role' => 'finance_executive']))
             ->get(route('accounting.fixed-assets.index'))
             ->assertOk()
-            ->assertDontSee('Pending Quotations')
-            ->assertDontSee('Decommissioning');
+            ->assertSee(route('reports.decommission'), false);
     }
 
     public function test_non_finance_roles_keep_their_decommissioning_sidebar_link(): void
@@ -264,10 +367,9 @@ class FinanceDecommissionAccessTest extends TestCase
     }
 
     /**
-     * The status filter is the ONLY way to reach the e-waste listing, so it must actually
-     * submit. It used to carry `onchange="this.form.submit()"`, which the CSP blocks outright
-     * — the policy ships 'unsafe-hashes' but lists no script hashes — so the select changed
-     * and the page never reloaded, making the reports look permanently absent.
+     * The status filter must actually submit. It used to carry `onchange="this.form.submit()"`,
+     * which the CSP blocks outright — the policy ships 'unsafe-hashes' but lists no script
+     * hashes — so the select changed and the page never reloaded.
      */
     public function test_status_filter_submits_via_a_csp_safe_listener_not_an_inline_handler(): void
     {

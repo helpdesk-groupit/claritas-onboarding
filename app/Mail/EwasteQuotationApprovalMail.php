@@ -28,7 +28,7 @@ class EwasteQuotationApprovalMail extends Mailable
     {
         return new Content(view: 'emails.ewaste-quotation-approval', with: [
             'batch' => $this->batch,
-            'approveUrl' => route('accounting.fixed-assets.index', ['status' => 'disposed']),
+            'approveUrl' => route('reports.decommission'),
         ]);
     }
 }

@@ -252,6 +252,28 @@ class AssetInventory extends Model
     }
 
     /**
+     * Section B as ONE line, for the listings that give the specification a single column.
+     *
+     * Ordered widest-to-narrowest (what it runs on, then what it holds, then what it looks
+     * like), because a truncated cell should lose the trailing detail rather than the CPU.
+     * Empty fields are dropped rather than printed as dashes: six placeholders read as a
+     * machine with no specification recorded, when in fact only one field was filled in.
+     *
+     * Returns '' when nothing is recorded — the caller decides what an empty cell says.
+     */
+    public function specSummary(): string
+    {
+        return collect([
+            $this->processor,
+            $this->ram_size,
+            $this->storage,
+            $this->operating_system,
+            $this->screen_size,
+            $this->spec_others,
+        ])->map(fn ($v) => trim((string) $v))->filter()->implode(' · ');
+    }
+
+    /**
      * Resolve the assigned person's name for display.
      * Covers: direct assignment (assigned_employee_id set),
      * and auto-assigned via onboarding (assigned_employee_id may be null).

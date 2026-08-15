@@ -1,4 +1,18 @@
-{{-- Vendor profile details. Read-only; editing goes through vendors.edit. --}}
+{{-- Vendor profile details. Read-only; editing goes through vendors.edit, reached from the
+     Edit button below — it sits here rather than in the page header so it is next to the
+     fields it changes, matching the Add control each of the other tabs carries. --}}
+<div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+    <div>
+        <div class="fw-semibold">Vendor Details</div>
+        <div class="text-muted small">Identity, tax registration, contacts and how we pay them.</div>
+    </div>
+    @if($canManage)
+    <a href="{{ route('vendors.edit', $vendor) }}" class="btn btn-sm btn-primary" id="editVendorBtn">
+        <i class="bi bi-pencil me-1"></i>Edit
+    </a>
+    @endif
+</div>
+
 <div class="row g-4">
     <div class="col-lg-6">
         <div class="vnd-label">Company</div>
@@ -52,7 +66,16 @@
             </div>
             <div class="col-12">
                 <div class="vnd-label">SST Category</div>
-                <div class="vnd-value {{ $vendor->sst_category ? '' : 'vnd-value-muted' }}">{{ $vendor->sst_category ? $vendor->sstCategoryLabel() : 'Not recorded' }}</div>
+                {{-- One chip per group: a vendor can be registered under several, and joining
+                     them into a sentence makes it read as one long category name. --}}
+                @php $vndSstLabels = $vendor->sstCategoryLabels(); @endphp
+                <div class="vnd-value {{ $vndSstLabels ? '' : 'vnd-value-muted' }}">
+                    @forelse($vndSstLabels as $vndSstLabel)
+                        <span class="vnd-type vnd-type-wrap">{{ $vndSstLabel }}</span>
+                    @empty
+                        Not recorded
+                    @endforelse
+                </div>
             </div>
         </div>
 

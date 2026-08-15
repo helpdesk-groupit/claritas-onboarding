@@ -15,13 +15,21 @@
 </style>
 </head>
 <body>
-@php $org = config('decommission.org_name'); @endphp
+{{-- The entity whose assets these are, NOT the group's fixed name: the vendor is being asked
+     to quote on one company's assets and told who will be paid, and a cycle has been
+     per-company since Phase 4. --}}
+@php $org = $batch->issuingCompany(); @endphp
 <div class="email-wrap">
   <div class="header"><h1>Request for Quotation — E-Waste Disposal</h1></div>
   <div class="body">
-    <p>Dear {{ $batch->vendor?->pic_name ?: ($batch->vendor?->name ?? 'Sir/Madam') }},</p>
+    {{-- $recipient, not $batch->vendor: the RFQ goes to every e-waste vendor, and the batch's
+         vendor is only a default until management pick a winner. --}}
+    <p>Dear {{ $recipient?->pic_name ?: ($recipient?->name ?? 'Sir/Madam') }},</p>
     <p>{{ config('decommission.copy.rfq_intro') }}</p>
-    <p><strong>Reference:</strong> {{ $batch->batch_number }} &nbsp;|&nbsp; <strong>Assets:</strong> {{ $batch->items->count() }}</p>
+    {{-- Company is stated, not implied by the reference token: the sweep raises one cycle per
+         company, so a vendor can receive several of these in one morning differing only by
+         the -CLA / -ENL suffix. --}}
+    <p><strong>Reference:</strong> {{ $batch->batch_number }} &nbsp;|&nbsp; <strong>Company:</strong> {{ $org }} &nbsp;|&nbsp; <strong>Assets:</strong> {{ $batch->items->count() }}</p>
 
     <table class="assets">
       <thead><tr><th>Asset Tag</th><th>Type</th><th>Brand / Model</th><th>Serial No.</th></tr></thead>

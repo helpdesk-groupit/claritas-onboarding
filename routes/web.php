@@ -24,6 +24,7 @@ use App\Http\Controllers\CompanyController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DepartmentSettingsController;
 use App\Http\Controllers\EmployeeController;
+use App\Http\Controllers\EwasteApproverController;
 use App\Http\Controllers\ExpenseClaimController;
 use App\Http\Controllers\ItTaskController;
 use App\Http\Controllers\KnowledgeBaseController;
@@ -43,7 +44,10 @@ use App\Http\Controllers\TwoFactorController;
 use App\Http\Controllers\VendorBillingController;
 use App\Http\Controllers\VendorContractController;
 use App\Http\Controllers\VendorController;
+use App\Http\Controllers\VendorDocumentScanController;
+use App\Http\Controllers\VendorImportController;
 use App\Http\Controllers\VendorInsightController;
+use App\Http\Controllers\VendorPaymentSlipController;
 use Illuminate\Support\Facades\Route;
 
 // Root redirect
@@ -358,6 +362,9 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     // batch: a rental return is an acknowledgement document, and the vendor is detected
     // from the assets rather than picked. The remaining batch routes are e-waste only.
     Route::post('/assets/decommission/returns', [RentalAssetAcknowledgementController::class, 'generateReturns'])->name('decommission.returns.generate');
+    // Phase 2 — record an inspection against a queued e-waste asset. Bound to the staging row
+    // (dispose_assets), not the asset: the inspection belongs to this trip through the queue.
+    Route::post('/assets/decommission/inspect/{disposedAsset}', [AssetDecommissionController::class, 'inspect'])->name('decommission.inspect');
     Route::get('/assets/decommission/{batch}', [AssetDecommissionController::class, 'show'])->name('decommission.show');
     Route::post('/assets/decommission/{batch}/cancel', [AssetDecommissionController::class, 'cancel'])->name('decommission.cancel');
 
@@ -374,6 +381,18 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::get('/vendors', [VendorController::class, 'index'])->name('vendors.index');
     Route::get('/vendors/create', [VendorController::class, 'create'])->name('vendors.create');
     Route::post('/vendors', [VendorController::class, 'store'])->name('vendors.store');
+
+    // Bulk registration from the spreadsheet the company already keeps. Three steps, and the
+    // middle one is the feature: upload → check what the importer made of every column and
+    // every row → confirm. Nothing reaches `vendors` before that confirmation, which is what
+    // makes a mis-read column a thing the operator corrects rather than a thing they discover
+    // months later on an invoice. `import` and `import/template` are literal segments and so
+    // sit above /vendors/{vendor} with the rest.
+    Route::get('/vendors/import/template', [VendorImportController::class, 'template'])->name('vendors.import.template');
+    Route::post('/vendors/import', [VendorImportController::class, 'upload'])->name('vendors.import.upload')->middleware('throttle:uploads');
+    Route::get('/vendors/import/{token}', [VendorImportController::class, 'preview'])->name('vendors.import.preview');
+    Route::post('/vendors/import/{token}/commit', [VendorImportController::class, 'commit'])->name('vendors.import.commit');
+    Route::post('/vendors/import/{token}/discard', [VendorImportController::class, 'discard'])->name('vendors.import.discard');
     Route::get('/vendors/{vendor}/edit', [VendorController::class, 'edit'])->name('vendors.edit');
     Route::put('/vendors/{vendor}', [VendorController::class, 'update'])->name('vendors.update');
     Route::post('/vendors/{vendor}/toggle-active', [VendorController::class, 'toggleActive'])->name('vendors.toggle-active');
@@ -382,12 +401,22 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     // real vendor is still toggle-active.
     Route::delete('/vendors/{vendor}', [VendorController::class, 'destroy'])->name('vendors.destroy');
 
+    // Read an uploaded document BEFORE it is filed, so the Add-Document modal can show its
+    // summary for correction rather than the operator meeting it afterwards on the row.
+    // ONE endpoint for both kinds — `kind` says which table the upload is destined for —
+    // because the reading is identical and two routes would be two places to keep the
+    // staging rules in step. `scan-status` collects a read whose response the browser lost
+    // (the read runs inline and a long PDF can outlive the edge timeout).
+    //
+    // This is NOT the per-field scan removed on 2026-08-11: that one pre-filled a form of
+    // inputs from its own strict-JSON reply. The fields here are a by-product of a SECOND,
+    // small call over the transcript, so a transcription running past max_tokens can never
+    // take the record values down with it — which was that removal's stated reason.
+    Route::post('/vendors/{vendor}/document-scan', [VendorDocumentScanController::class, 'scan'])->name('vendors.documents.scan')->middleware('throttle:uploads');
+    Route::get('/vendors/{vendor}/document-scan', [VendorDocumentScanController::class, 'status'])->name('vendors.documents.scan-status');
+
     // Contracts + billing documents live on the vendor profile. Uploads are throttled
     // (throttle:uploads = 10/min) like every other private-disk upload in the app.
-    //
-    // There is deliberately NO field-scan route here. The per-field OCR that pre-filled
-    // these forms was removed on 2026-08-11: the fields are typed by hand, and the ONLY
-    // AI reading of a vendor document is the whole-document summary + transcription below.
     Route::post('/vendors/{vendor}/contracts', [VendorContractController::class, 'store'])->name('vendors.contracts.store')->middleware('throttle:uploads');
     Route::put('/vendors/{vendor}/contracts/{contract}', [VendorContractController::class, 'update'])->name('vendors.contracts.update')->middleware('throttle:uploads');
     // Re-read the stored document for its summary + transcription. Queued, so this returns
@@ -403,6 +432,15 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::put('/vendors/{vendor}/billing/{document}', [VendorBillingController::class, 'update'])->name('vendors.billing.update')->middleware('throttle:uploads');
     Route::post('/vendors/{vendor}/billing/{document}/summarise', [VendorInsightController::class, 'summariseBilling'])->name('vendors.billing.summarise')->middleware('throttle:6,1');
     Route::delete('/vendors/{vendor}/billing/{document}', [VendorBillingController::class, 'destroy'])->name('vendors.billing.destroy');
+
+    // Proof of payment for an invoice above — a bank slip or receipt, not the payroll
+    // payslip. Filing one is what marks its invoice Paid on the Billing tab and removing one
+    // is what marks it Pending again, so `destroy` is a real control here rather than
+    // tidying: without it a slip filed against the wrong invoice would leave that bill
+    // reading Paid with nothing able to say otherwise.
+    Route::post('/vendors/{vendor}/payment-slips', [VendorPaymentSlipController::class, 'store'])->name('vendors.payment-slips.store')->middleware('throttle:uploads');
+    Route::put('/vendors/{vendor}/payment-slips/{slip}', [VendorPaymentSlipController::class, 'update'])->name('vendors.payment-slips.update');
+    Route::delete('/vendors/{vendor}/payment-slips/{slip}', [VendorPaymentSlipController::class, 'destroy'])->name('vendors.payment-slips.destroy');
 
     // ── Vendor document assistant ───────────────────────────────────────────
     // Grounded in this vendor's own contracts + billing documents and nothing else.
@@ -433,16 +471,30 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::post('/ewaste/{batch}/quotation', [AssetDecommissionController::class, 'uploadQuotation'])->name('ewaste.quotation')->middleware('throttle:uploads');
     Route::post('/ewaste/{batch}/receipt', [AssetDecommissionController::class, 'uploadReceipt'])->name('ewaste.receipt')->middleware('throttle:uploads');
     Route::post('/ewaste/{batch}/complete', [AssetDecommissionController::class, 'completeCycle'])->name('ewaste.complete');
+    // Phase 5 — IT submit the collected offers for approval, naming the one they recommend.
+    Route::post('/ewaste/{batch}/submit', [AssetDecommissionController::class, 'submitForApproval'])->name('ewaste.submit');
     // Correct an OCR-read (or blank) quotation/receipt amount without re-uploading the document.
     Route::post('/ewaste/{batch}/amount', [AssetDecommissionController::class, 'updateAmount'])->name('ewaste.amount');
 
-    // Finance-gated quotation approval (mirrors the eClaim HR approve/reject shape).
-    // There is NO standalone page: Finance approves/rejects inline on Accounting → Assets →
-    // status "Disposed", which is the single home for everything asset-related. These are the
-    // action endpoints for that page, hence the /accounting/fixed-assets/ prefix. Route NAMES
-    // are unchanged. Four segments, so they never collide with /fixed-assets/{asset}/….
-    Route::post('/accounting/fixed-assets/ewaste/{batch}/approve', [AssetDecommissionController::class, 'financeApprove'])->name('finance.ewaste.approve');
-    Route::post('/accounting/fixed-assets/ewaste/{batch}/reject', [AssetDecommissionController::class, 'financeReject'])->name('finance.ewaste.reject');
+    // Finance records its POSITION on the comparison (mirrors the eClaim HR approve/reject
+    // shape). It does not move the cycle — only management's decision does.
+    //
+    // These lived under /accounting/fixed-assets/ until 2026-08-14, when Finance's review moved
+    // off Accounting → Assets → "Disposed" onto Management → Decommissioning, which is now the
+    // ONE surface where both Finance and management review a disposal. Route NAMES are
+    // unchanged (the module's convention) — only the URIs followed the page.
+    Route::post('/reports/decommission/ewaste/{batch}/approve', [AssetDecommissionController::class, 'financeApprove'])->name('finance.ewaste.approve');
+    Route::post('/reports/decommission/ewaste/{batch}/reject', [AssetDecommissionController::class, 'financeReject'])->name('finance.ewaste.reject');
+
+    // Phase 5 — the MANAGEMENT decision, which is the one that authorises a disposal. Gated
+    // per-company inside the controller against the named approvers, not by role. Submitted
+    // from the Decommissioning page; the IT cycle page no longer offers the control.
+    Route::post('/ewaste/{batch}/management/approve', [AssetDecommissionController::class, 'managementApprove'])->name('management.ewaste.approve');
+    Route::post('/ewaste/{batch}/management/reject', [AssetDecommissionController::class, 'managementReject'])->name('management.ewaste.reject');
+
+    // Superadmin: who in management may authorise a disposal, per company.
+    Route::get('/superadmin/ewaste-approvers', [EwasteApproverController::class, 'index'])->name('superadmin.ewaste-approvers');
+    Route::post('/superadmin/ewaste-approvers', [EwasteApproverController::class, 'update'])->name('superadmin.ewaste-approvers.update');
 
     // ══════════════════════════════════════════════════════════════════════
     // LEAVE MANAGEMENT

@@ -22,9 +22,9 @@
     <div class="info-box">
       <div><strong>Cycle:</strong> {{ $batch->batch_number }}</div>
       <div><strong>Assets awaiting decommissioning:</strong> {{ $batch->items->count() }}</div>
-      <div><strong>Primary e-waste vendor:</strong> {{ $batch->vendor?->name ?? 'Not set — RFQ not sent' }}</div>
+      <div><strong>Quotations requested from:</strong> {{ $batch->rfq_sent_at ? 'every active e-waste vendor on file' : 'nobody yet — no e-waste vendor has a PIC email on file' }}</div>
     </div>
-    <p>The vendor has been sent a Request for Quotation. Once IT uploads the vendor's quotation, you will be asked to approve it in the system.</p>
+    <p>Every e-waste vendor we hold has been sent the same Request for Quotation, so their offers can be compared. Once IT uploads the quotations and recommends one, you will be asked to approve it in the system.</p>
   </div>
   <div class="footer">This is an automated message from {{ $org }}. Please do not reply directly to this email.</div>
 </div>

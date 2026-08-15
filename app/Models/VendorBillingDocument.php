@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Models\Concerns\HasDocumentInsight;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * A quotation or invoice received from a vendor.
@@ -14,10 +15,13 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * made for the e-waste cycle. The value is provenance — what they quoted, what they
  * billed, whether SST was on it, and the file itself.
  *
- * The `ai_*` columns (HasDocumentInsight) hold the ONLY machine reading of the file: the
- * summary shown on the row and the transcription the vendor Q&A assistant answers from.
- * The figures are typed by hand — the per-field OCR that pre-filled them (`ocr_*`) was
- * removed on 2026-08-11.
+ * The `ai_*` columns (HasDocumentInsight) hold the machine reading of the file: the summary
+ * shown on the row and the transcription the vendor Q&A assistant answers from. The figures
+ * beside them are read off the same document by a second, separate call and are never typed
+ * — see VendorDocumentScanController for why the two readings must stay two calls.
+ *
+ * Whether an invoice has been PAID is not a field on this record and not a dropdown: it is
+ * the presence of a VendorPaymentSlip filed against it. See paymentState().
  */
 class VendorBillingDocument extends Model
 {
@@ -32,8 +36,18 @@ class VendorBillingDocument extends Model
     public const DEFAULT_CURRENCY = 'MYR';
 
     /**
-     * Deliberately one lifecycle covering both document types — a quotation is
-     * accepted/declined, an invoice is paid/disputed, and both start at 'received'.
+     * The hand-set lifecycle this register used until 2026-08-13. RETIRED: nothing reads it
+     * for display and no form writes it any more.
+     *
+     * Status is now DERIVED from evidence — an invoice reads Paid when a payment slip is
+     * filed against it and Pending when none is, and no one can mark a bill settled without
+     * attaching the proof. `status` was the opposite: a dropdown anybody could set to Paid,
+     * on a register whose whole value is provenance.
+     *
+     * The column and this map both stay. Nothing is gained by dropping them — it needs an
+     * enum-altering migration — and rows filed before the change still carry a value here
+     * that would otherwise become an unlabelled slug if the state is ever wanted back. New
+     * rows are seeded 'received' by the controller purely because the column is NOT NULL.
      */
     public const STATUSES = [
         'received' => 'Received',
@@ -51,6 +65,7 @@ class VendorBillingDocument extends Model
         'description', 'notes',
         'file_path', 'original_filename', 'created_by',
         'ai_status', 'ai_summary', 'ai_key_points', 'ai_text', 'ai_at',
+        'companies_involved',
     ];
 
     protected $casts = [
@@ -61,6 +76,8 @@ class VendorBillingDocument extends Model
         'total' => 'decimal:2',
         'ai_key_points' => 'array',
         'ai_at' => 'datetime',
+        'companies_involved' => 'array',
+        'ai_summary_edited_at' => 'datetime',
     ];
 
     public function vendor(): BelongsTo
@@ -140,27 +157,88 @@ class VendorBillingDocument extends Model
         return self::TYPES[$this->doc_type] ?? ucfirst((string) $this->doc_type);
     }
 
-    public function statusLabel(): string
+    /**
+     * The proof that this invoice was paid — at most one, guaranteed by a unique index on
+     * the slip's side rather than by this relation.
+     */
+    public function paymentSlip(): HasOne
     {
-        return self::STATUSES[$this->status] ?? ucfirst((string) $this->status);
+        return $this->hasOne(VendorPaymentSlip::class, 'vendor_billing_document_id');
     }
 
-    public function statusColor(): string
+    /**
+     * Only an invoice has a payment status.
+     *
+     * A quotation is an offer: it is accepted or it is not, and it is never "pending
+     * payment". Reading Pending against one for the rest of its life would state that we
+     * owe money on a document nobody has acted on — which is why the payment-slip picker
+     * offers invoices only, and why the Status cell says nothing at all for a quotation.
+     */
+    public function carriesPaymentStatus(): bool
     {
-        return match ($this->status) {
-            'accepted', 'paid' => 'success',
-            'declined', 'disputed' => 'danger',
-            'under_review' => 'warning',
-            default => 'secondary',
-        };
+        return $this->doc_type === 'invoice';
     }
 
+    /**
+     * Settled, on the evidence — a payment slip is filed against it.
+     *
+     * Deliberately the ONLY definition of paid. The old hand-set `status` column could say
+     * 'paid' with nothing attached, which on a register whose entire value is provenance is
+     * an assertion with no document behind it.
+     */
+    public function isPaid(): bool
+    {
+        return $this->carriesPaymentStatus() && $this->paymentSlip !== null;
+    }
+
+    /**
+     * How the Status cell reads: Paid, Pending, or nothing at all for a quotation.
+     *
+     * One place, because the cell, the flash messages and the assistant's recorded-fields
+     * block all have to describe one document the same way.
+     *
+     * @return array{label:string,color:?string,note:string}
+     */
+    public function paymentState(): array
+    {
+        if (! $this->carriesPaymentStatus()) {
+            return [
+                'label' => '—',
+                'color' => null,
+                'note' => 'A quotation is an offer, not a bill — only invoices carry a payment status.',
+            ];
+        }
+
+        if ($slip = $this->paymentSlip) {
+            $when = $slip->paid_on ? ' on '.fmt_date($slip->paid_on) : '';
+
+            return [
+                'label' => 'Paid',
+                'color' => 'success',
+                'note' => 'A payment slip is filed against this invoice'.$when.'.',
+            ];
+        }
+
+        return [
+            'label' => 'Pending',
+            'color' => 'secondary',
+            'note' => 'No payment slip has been filed against this invoice yet.',
+        ];
+    }
+
+    /**
+     * Past its due date with nothing paid against it.
+     *
+     * Reads the payment slip rather than the retired `status` column, so an invoice stops
+     * being overdue at the moment its proof of payment is filed — the one event that can
+     * settle it.
+     */
     public function isOverdue(): bool
     {
-        return $this->doc_type === 'invoice'
+        return $this->carriesPaymentStatus()
             && $this->due_date !== null
             && $this->due_date->isPast()
-            && ! in_array($this->status, ['paid', 'declined'], true);
+            && ! $this->isPaid();
     }
 
     /**

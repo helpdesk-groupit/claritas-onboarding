@@ -84,6 +84,74 @@ class VendorDocumentInsightTest extends TestCase
         ], $attrs));
     }
 
+    /** A contract that has been READ, so the assistant can genuinely be asked about it. */
+    private function readContract(Vendor $vendor, array $attrs = []): VendorContract
+    {
+        return $this->storedContract($vendor, array_merge([
+            'ai_status' => 'ok',
+            'ai_summary' => 'Five laptops rented at RM 4,500 per month.',
+            'ai_text' => 'Clause 1. The term is 24 months.',
+            'ai_at' => now(),
+        ], $attrs));
+    }
+
+    /** Its billing twin, so a scope test has two documents of different kinds to separate. */
+    private function readInvoice(Vendor $vendor, array $attrs = []): VendorBillingDocument
+    {
+        return VendorBillingDocument::create(array_merge([
+            'vendor_id' => $vendor->id,
+            'doc_type' => 'invoice',
+            'doc_number' => 'INV-8821',
+            'status' => 'received',
+            'file_path' => $this->pdf('invoice.pdf')->store('vendor_billing/'.$vendor->id, 'local'),
+            'original_filename' => 'invoice.pdf',
+            'ai_status' => 'ok',
+            'ai_summary' => 'Two months of laptop rental.',
+            'ai_text' => 'Amount due RM 9,000.',
+            'ai_at' => now(),
+        ], $attrs));
+    }
+
+    /**
+     * Whether the assistant's scope chip for a document is TICKED in the rendered page —
+     * i.e. whether an answer would actually be grounded in it.
+     */
+    private function scopeTicked(string $html, string $key): bool
+    {
+        $at = strpos($html, 'value="'.$key.'"');
+        if ($at === false) {
+            return false;
+        }
+
+        // Only as far as the end of that one <input>; the next chip along may well be ticked.
+        return str_contains(substr($html, $at, strpos($html, '>', $at) - $at), 'checked');
+    }
+
+    /**
+     * A document uploaded and READ but not yet filed — the first half of the two-request
+     * save the Add/Edit modals do (VendorDocumentScanController stores and reads, then the
+     * modal posts the token with whatever the operator corrected).
+     */
+    private function stagedScan(Vendor $vendor, User $actor, string $kind, array $overrides = []): \App\Models\VendorDocumentScan
+    {
+        $path = $this->pdf('staged.pdf')->store(\App\Models\VendorDocumentScan::directoryFor($kind, $vendor->id), 'local');
+
+        return \App\Models\VendorDocumentScan::create(array_merge([
+            'vendor_id' => $vendor->id,
+            'user_id' => $actor->id,
+            'token' => (string) \Illuminate\Support\Str::uuid(),
+            'kind' => $kind,
+            'file_path' => $path,
+            'original_filename' => 'staged.pdf',
+            'status' => 'ok',
+            'summary' => 'A summary read from the uploaded document.',
+            'key_points' => [],
+            'text' => 'FULL TRANSCRIPT',
+            'companies' => [],
+            'fields' => [],
+        ], $overrides));
+    }
+
     /**
      * Everything `vendors.show` needs, for the branches no role can reach through the
      * controller (every role that reaches the page can also manage it today).
@@ -106,10 +174,9 @@ class VendorDocumentInsightTest extends TestCase
                 'quotations' => 0, 'invoices' => 0, 'sst_flags' => 0,
             ],
             'canManage' => $canManage,
-            'sstVerdict' => $vendor->sstVerdict(),
             'pendingAssets' => \App\Models\RentalAssetAcknowledgement::pendingAssetsFor($vendor),
             'acknowledgements' => $vendor->rentalAcknowledgements,
-            'assetFormStatus' => collect(),
+            'ewasteCycles' => collect(),
             'askable' => $vendor->askableDocuments(),
             'chatMessages' => $vendor->chatMessages,
             'askFocus' => null,
@@ -143,8 +210,8 @@ class VendorDocumentInsightTest extends TestCase
      */
     public function test_replacing_a_document_clears_the_reading_of_the_one_it_replaced(): void
     {
-        Queue::fake();
         $vendor = $this->vendor();
+        $actor = $this->itManager();
 
         $contract = $this->storedContract($vendor, [
             'ai_status' => 'ok',
@@ -152,24 +219,155 @@ class VendorDocumentInsightTest extends TestCase
             'ai_key_points' => ['60 days notice'],
             'ai_text' => 'Clause 8: sixty (60) days notice.',
             'ai_at' => now()->subDay(),
+            'companies_involved' => ['A Party That Signed The FIRST Document'],
+        ]);
+        $oldPath = $contract->file_path;
+
+        // A replacement arrives the same way a new document does: scanned first, so its
+        // summary can be reviewed before it is saved.
+        $scan = $this->stagedScan($vendor, $actor, \App\Models\VendorDocumentScan::KIND_CONTRACT, [
+            'status' => 'ok',
+            'summary' => 'A summary of the SECOND document.',
+            'key_points' => ['30 days notice'],
+            'text' => 'Clause 8: thirty (30) days notice.',
+            'companies' => ['Acme Rentals Sdn Bhd'],
         ]);
 
-        $this->actingAs($this->itManager())
+        $this->actingAs($actor)
             ->put(route('vendors.contracts.update', [$vendor, $contract]), [
+                'scan_token' => $scan->token,
                 'title' => 'Equipment Rental Agreement',
                 'status' => 'active',
-                'document' => $this->pdf('replacement.pdf'),
+                'ai_summary' => 'A summary of the SECOND document.',
+                'companies_involved' => 'Acme Rentals Sdn Bhd',
             ])
             ->assertRedirect();
 
         $contract->refresh();
 
-        $this->assertSame('pending', $contract->ai_status);
-        $this->assertNull($contract->ai_summary, 'The previous document\'s summary survived the replacement.');
-        $this->assertNull($contract->ai_text, 'The previous document\'s transcription survived the replacement.');
-        $this->assertNull($contract->ai_key_points);
+        // Nothing of the first document's reading may survive under the second's name.
+        $this->assertSame('A summary of the SECOND document.', $contract->ai_summary);
+        $this->assertSame('Clause 8: thirty (30) days notice.', $contract->ai_text);
+        $this->assertSame(['30 days notice'], $contract->ai_key_points);
+        $this->assertSame(['Acme Rentals Sdn Bhd'], $contract->companies_involved);
+        $this->assertStringNotContainsString('FIRST', (string) $contract->ai_summary);
 
-        Queue::assertPushed(SummariseVendorDocument::class);
+        // And the file it described is gone, with the record pointing at the new one.
+        $this->assertSame($scan->file_path, $contract->file_path);
+        Storage::disk('local')->assertMissing($oldPath);
+        Storage::disk('local')->assertExists($contract->file_path);
+        $this->assertSame(0, \App\Models\VendorDocumentScan::count());
+    }
+
+    /**
+     * A save that does not replace the document must not throw away its reading — the
+     * summary is expensive, and re-reading a file that has not changed would replace
+     * wording somebody may have corrected with a fresh opinion nobody asked for.
+     */
+    public function test_saving_without_a_new_document_leaves_the_reading_alone(): void
+    {
+        Queue::fake();
+        $vendor = $this->vendor();
+
+        $contract = $this->storedContract($vendor, [
+            'ai_status' => 'ok',
+            'ai_summary' => 'The summary as read.',
+            'ai_text' => 'Clause 8: sixty (60) days notice.',
+            'notice_period_days' => 60,
+        ]);
+
+        $this->actingAs($this->itManager())
+            ->put(route('vendors.contracts.update', [$vendor, $contract]), [
+                'ai_summary' => 'The summary as read.',
+                'companies_involved' => 'Acme Rentals Sdn Bhd',
+            ])
+            ->assertRedirect();
+
+        $contract->refresh();
+
+        $this->assertSame('The summary as read.', $contract->ai_summary);
+        $this->assertSame('Clause 8: sixty (60) days notice.', $contract->ai_text);
+        $this->assertSame(60, $contract->notice_period_days, 'A term the form no longer shows must survive a save.');
+        $this->assertFalse($contract->summaryIsEdited(), 'An unchanged summary must not be stamped as edited.');
+        Queue::assertNotPushed(SummariseVendorDocument::class);
+    }
+
+    /**
+     * There is no field-entry form anywhere any more — not on Add, not on Edit. A submit
+     * carrying terms must therefore change nothing: no form displays them, so accepting one
+     * from the request would be a way to set a contract value that was never on screen.
+     */
+    public function test_terms_posted_to_the_edit_form_are_ignored(): void
+    {
+        $vendor = $this->vendor();
+
+        $contract = $this->storedContract($vendor, [
+            'ai_status' => 'ok',
+            'ai_summary' => 'As read.',
+            'contract_value' => 493.00,
+            'notice_period_days' => 30,
+            'status' => 'active',
+        ]);
+
+        $this->actingAs($this->itManager())
+            ->put(route('vendors.contracts.update', [$vendor, $contract]), [
+                'ai_summary' => 'As read.',
+                'title' => 'Renamed by hand',
+                'contract_value' => '999999.00',
+                'notice_period_days' => 1,
+                'status' => 'terminated',
+                'end_date' => '1999-01-01',
+            ])
+            ->assertRedirect();
+
+        $contract->refresh();
+
+        $this->assertSame('Equipment Rental Agreement', $contract->title);
+        $this->assertSame('493.00', (string) $contract->contract_value);
+        $this->assertSame(30, $contract->notice_period_days);
+        $this->assertSame('active', $contract->status);
+        $this->assertNull($contract->end_date);
+    }
+
+    /**
+     * The summary is editable, and the row has to say who stands behind it. Printing
+     * "Generated by AI" over wording a person typed is how a correction gets dismissed as a
+     * machine's guess — and how a machine's guess gets trusted as a correction.
+     */
+    public function test_an_edited_summary_is_attributed_to_the_person_who_wrote_it(): void
+    {
+        $vendor = $this->vendor();
+        $actor = $this->itManager();
+
+        $contract = $this->storedContract($vendor, [
+            'ai_status' => 'ok',
+            'ai_summary' => 'What the model wrote.',
+        ]);
+
+        $this->actingAs($actor)
+            ->put(route('vendors.contracts.update', [$vendor, $contract]), [
+                'title' => 'Equipment Rental Agreement',
+                'status' => 'active',
+                'ai_summary' => 'What the operator corrected it to.',
+            ])
+            ->assertRedirect();
+
+        $contract->refresh();
+
+        $this->assertSame('What the operator corrected it to.', $contract->ai_summary);
+        $this->assertTrue($contract->summaryIsEdited());
+        $this->assertSame($actor->id, $contract->ai_summary_edited_by);
+        $this->assertStringContainsString('Edited by', $contract->summaryProvenance());
+        $this->assertStringNotContainsString('Generated by AI', $contract->summaryProvenance());
+
+        // And a re-reading hands it back to the model, stamp and all — the wording it
+        // replaces is not that person's any more.
+        $this->fakeSummary(['summary' => 'Read again.', 'key_points' => [], 'text' => 'TEXT']);
+        (new SummariseVendorDocument('contract', $contract->id))->handle();
+
+        $contract->refresh();
+        $this->assertFalse($contract->summaryIsEdited());
+        $this->assertNull($contract->ai_summary_edited_by);
     }
 
     /** A stale transcription must not be askable while it is being replaced, either. */
@@ -823,6 +1021,109 @@ class VendorDocumentInsightTest extends TestCase
             $html
         );
         $this->assertStringNotContainsString('tab=ask', $html);
+    }
+
+    /**
+     * One assistant, one icon.
+     *
+     * A document row's button and the floating one open the same panel, and giving the row
+     * a different mark said they were two different features. What separates them is the
+     * SCOPE, which the panel states in words — not the icon on the button.
+     */
+    public function test_the_row_button_carries_the_assistants_own_icon(): void
+    {
+        $vendor = $this->vendor();
+        $contract = $this->readContract($vendor);
+
+        $html = $this->actingAs($this->itManager())
+            ->get(route('vendors.show', [$vendor, 'tab' => 'contracts']))
+            ->assertOk()
+            ->getContent();
+
+        // Sliced to the row's OWN button. A loose search for the icon would pass on the
+        // floating button further down the page, which is exactly the one it has to match.
+        $at = strpos($html, 'data-vnd-ask-focus="'.$contract->askKey().'"');
+        $this->assertNotFalse($at, 'The contract row has no Ask AI button.');
+
+        $button = substr($html, $at, strpos($html, '</a>', $at) - $at);
+        $this->assertStringContainsString('bi bi-robot', $button);
+        $this->assertStringNotContainsString('bi-chat-dots', $html);
+    }
+
+    /**
+     * Asking from a row asks about THAT document.
+     *
+     * And the panel has to say which, in words. "1 of 2 in scope" is true and useless: it
+     * gives the reader no way to tell which document an answer came from, so one grounded
+     * in the wrong contract reads exactly like one grounded in the right one.
+     */
+    public function test_opening_the_assistant_from_a_row_scopes_it_to_that_document_alone(): void
+    {
+        $vendor = $this->vendor();
+        $contract = $this->readContract($vendor);
+        $invoice = $this->readInvoice($vendor);
+
+        $html = $this->actingAs($this->itManager())
+            ->get(route('vendors.show', [$vendor, 'tab' => 'contracts', 'ask' => 1, 'focus' => $contract->askKey()]))
+            ->assertOk()
+            ->assertSee('Asking about: '.$contract->aiLabel())
+            ->getContent();
+
+        $this->assertTrue($this->scopeTicked($html, $contract->askKey()));
+        $this->assertFalse($this->scopeTicked($html, $invoice->askKey()),
+            'The invoice would have been read for an answer about the contract.');
+
+        // And the box the question is typed into names it too — someone who came from a
+        // row is looking there, not at the toolbar, when they decide what to ask. Asserted
+        // on the opening of the label, which a long one is clipped after.
+        $this->assertStringContainsString('placeholder="Ask about Contract — Equipment Rental', $html);
+    }
+
+    /**
+     * The floating button is the whole-page assistant, and means that every time it is
+     * pressed — including on a page opened about a single row.
+     */
+    public function test_the_floating_button_covers_every_readable_document(): void
+    {
+        $vendor = $this->vendor();
+        $contract = $this->readContract($vendor);
+        $invoice = $this->readInvoice($vendor);
+
+        $html = $this->actingAs($this->itManager())
+            ->get(route('vendors.show', $vendor))
+            ->assertOk()
+            ->assertSee('Asking about all 2 documents')
+            ->getContent();
+
+        $this->assertTrue($this->scopeTicked($html, $contract->askKey()));
+        $this->assertTrue($this->scopeTicked($html, $invoice->askKey()));
+    }
+
+    /**
+     * A focus naming a document that cannot be asked about falls back to everything.
+     *
+     * Ticking nothing would read as an empty scope — a panel that says it has nothing to
+     * answer from — rather than as the one document that has not been read, which the
+     * blocked list below states with its reason.
+     */
+    public function test_a_focus_on_an_unreadable_document_falls_back_to_every_document(): void
+    {
+        $vendor = $this->vendor();
+        $contract = $this->readContract($vendor);
+        $invoice = $this->readInvoice($vendor);
+        $unread = $this->storedContract($vendor, ['title' => 'Never Read Agreement']);
+
+        $html = $this->actingAs($this->itManager())
+            ->get(route('vendors.show', [$vendor, 'tab' => 'contracts', 'ask' => 1, 'focus' => $unread->askKey()]))
+            ->assertOk()
+            ->assertSee('Asking about all 2 documents')
+            ->getContent();
+
+        $this->assertTrue($this->scopeTicked($html, $contract->askKey()));
+        $this->assertTrue($this->scopeTicked($html, $invoice->askKey()));
+
+        // Not silently dropped either: it is listed with the reason it cannot be asked about.
+        $this->assertStringContainsString('Never Read Agreement', $html);
     }
 
     /**

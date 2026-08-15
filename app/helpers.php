@@ -91,9 +91,11 @@ if (! function_exists('secure_file_url')) {
             'ewaste_quotations',
             'ewaste_receipts',
             'decommission_reports',
-            // Vendor Management — contracts + billing documents (finance + IT)
+            // Vendor Management — contracts, billing documents and the payment slips
+            // proving those bills were settled (finance + IT)
             'vendor_contracts',
             'vendor_billing',
+            'vendor_payment_slips',
             // Signed AARFs (rental asset receipt/return acknowledgements)
             'rental_acknowledgements',
         ];

@@ -129,11 +129,18 @@ class DecommissionReportDocumentsTest extends TestCase
         // The dead-end wording the appended pages replaced must not come back either.
         $this->assertStringNotContainsString('non-image, not embedded', $html);
 
-        // Finance Approval is a system action with no document to attach — it stays.
-        $this->assertStringContainsString('Finance Approval', $html);
+        // The sign-offs are system actions with no document to attach — they stay. The section
+        // is "Authorisation" since Phase 5, because it now carries BOTH management's decision
+        // (which authorises the disposal) and Finance's position beside it.
+        $this->assertStringContainsString('Authorisation', $html);
     }
 
-    /** Finance approval is the report's sign-off: who approved, their role, and when. */
+    /**
+     * Finance's position on the report: who reviewed, their role, and when.
+     *
+     * "Concurred" rather than "Approved by Finance" since Phase 5 — Finance no longer
+     * authorise a disposal, and a stamp saying they did would name the wrong authority.
+     */
     public function test_finance_approval_names_the_approver_with_details_and_timestamp(): void
     {
         Storage::fake('local');
@@ -155,7 +162,7 @@ class DecommissionReportDocumentsTest extends TestCase
 
         $html = view('decommission.report-pdf', ['batch' => $batch->load('financeReviewer.employee')])->render();
 
-        $this->assertStringContainsString('Approved by Finance', $html);
+        $this->assertStringContainsString('Finance concurred', $html);
         $this->assertStringContainsString('Priya Ramasamy', $html);
         $this->assertStringContainsString('Finance Manager', $html);
         $this->assertStringContainsString(fmt_datetime($batch->finance_reviewed_at), $html);

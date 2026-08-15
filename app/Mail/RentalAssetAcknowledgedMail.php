@@ -15,10 +15,11 @@ use Illuminate\Support\Facades\Storage;
 /**
  * The completed AARF, sent once the receipt is acknowledged.
  *
- * One mailable for all three audiences — IT, Finance and the vendor's PIC — because they
- * are all being told the same fact and handed the same signed document. `$audience` only
- * changes the opening line; it must never change the FIGURES or the attachment, or the
- * three parties would end up holding different versions of one signed record.
+ * One mailable for all four audiences — IT, Finance, the company's management and the
+ * vendor's PIC — because they are all being told the same fact and handed the same signed
+ * document. `$audience` only changes the opening line; it must never change the FIGURES or
+ * the attachment, or the four parties would end up holding different versions of one signed
+ * record.
  */
 class RentalAssetAcknowledgedMail extends Mailable
 {
@@ -29,6 +30,15 @@ class RentalAssetAcknowledgedMail extends Mailable
     public const AUDIENCE_IT = 'it';
 
     public const AUDIENCE_FINANCE = 'finance';
+
+    /**
+     * The CEO/CTO named for the company on the form — see EwasteCompanyApprover.
+     *
+     * Addressed per COMPANY rather than as a fixed group management line, because the
+     * management of one group entity is not the management of another: a handover of
+     * Enlinea's kit is not Claritas management's document.
+     */
+    public const AUDIENCE_MANAGEMENT = 'management';
 
     public function __construct(
         public RentalAssetAcknowledgement $aarf,

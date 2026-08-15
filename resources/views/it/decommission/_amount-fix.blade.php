@@ -6,15 +6,23 @@
     the report then points at the reproduced document rather than stating RM 0.00.
 
     Requires: $batch, $field ('quotation'|'receipt'), $value (float|null).
+    Optional: $quotationId — WHICH quotation to correct. With several vendors on a cycle there
+    is no single "the" quotation, and omitting it would silently correct whichever offer is
+    currently in play rather than the row the operator is looking at.
+
     Plain form POST — no inline handlers (CSP blocks them project-wide).
 --}}
+@php $rowKey = ($quotationId ?? null) ? 'q'.$quotationId : $batch->id; @endphp
 <form action="{{ route('ewaste.amount', $batch) }}" method="POST" class="d-flex align-items-center gap-1 mt-1">
     @csrf
     <input type="hidden" name="field" value="{{ $field }}">
-    <label class="visually-hidden" for="amt-{{ $field }}-{{ $batch->id }}">{{ ucfirst($field) }} amount in RM</label>
+    @if($quotationId ?? null)
+        <input type="hidden" name="quotation_id" value="{{ $quotationId }}">
+    @endif
+    <label class="visually-hidden" for="amt-{{ $field }}-{{ $rowKey }}">{{ ucfirst($field) }} amount in RM</label>
     <span class="small text-muted">RM</span>
     <input type="number" step="0.01" min="0.01" name="amount"
-           id="amt-{{ $field }}-{{ $batch->id }}"
+           id="amt-{{ $field }}-{{ $rowKey }}"
            value="{{ $value !== null ? number_format((float) $value, 2, '.', '') : '' }}"
            placeholder="not set"
            class="form-control form-control-sm" style="max-width:130px;">

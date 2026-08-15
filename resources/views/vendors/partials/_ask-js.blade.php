@@ -66,35 +66,71 @@
         return scope ? Array.prototype.slice.call(scope.querySelectorAll('input[type="checkbox"]')) : [];
     }
 
-    function selected() {
-        return boxes().filter(function (b) { return b.checked; }).map(function (b) { return b.value; });
+    function checkedBoxes() {
+        return boxes().filter(function (b) { return b.checked; });
     }
 
-    /** The bar is collapsed most of the time, so its count IS the scope for most reads. */
-    function refreshCount() {
-        var label = document.querySelector('[data-vnd-ask-count]');
-        if (label) { label.textContent = String(selected().length); }
+    function selected() {
+        return checkedBoxes().map(function (b) { return b.value; });
+    }
+
+    function labelOf(box) {
+        return box.getAttribute('data-vnd-doc-label') || 'this document';
+    }
+
+    function clip(text, max) {
+        return text.length > max ? text.slice(0, max - 1) + '…' : text;
+    }
+
+    /**
+     * The scope, in words.
+     *
+     * The bar is collapsed most of the time, so this sentence IS the scope for most reads —
+     * and a bare count is exactly what it must not be. Opened from a document row the panel
+     * answers about that document alone, and "1 of 3" gives the reader no way to tell WHICH,
+     * so an answer grounded in the wrong document reads identically to one grounded in the
+     * right one. Mirrors what _ask.blade.php renders on load, so the first change never
+     * corrects the server's own sentence.
+     */
+    function refreshScope() {
+        var all = boxes();
+        var picked = checkedBoxes();
+
+        var subject = document.querySelector('[data-vnd-ask-subject]');
+        if (subject && all.length) {
+            subject.textContent = picked.length === 0 ? 'No document selected'
+                : (picked.length === 1 ? 'Asking about: ' + labelOf(picked[0])
+                : (picked.length === all.length ? 'Asking about all ' + all.length + ' documents'
+                : 'Asking about ' + picked.length + ' of ' + all.length + ' documents'));
+        }
+
+        // Named in the box the question is typed into as well — someone who came from a row
+        // is looking there, not at the toolbar, when they decide what to ask.
+        var input = document.querySelector('[data-vnd-ask-input]');
+        if (input) {
+            input.placeholder = picked.length === 1
+                ? 'Ask about ' + clip(labelOf(picked[0]), 44)
+                : (input.getAttribute('data-vnd-ask-placeholder-all') || input.placeholder);
+        }
+    }
+
+    /** Tick exactly these keys (all of them when passed null). */
+    function setScope(keys) {
+        boxes().forEach(function (b) {
+            b.checked = keys === null || keys.indexOf(b.value) !== -1;
+        });
+        refreshScope();
     }
 
     if (scope) {
-        scope.addEventListener('change', refreshCount);
+        scope.addEventListener('change', refreshScope);
 
         // Select all/none set .checked programmatically, which fires no change event — so
-        // each one refreshes the count itself rather than relying on the listener above.
+        // each one refreshes the sentence itself rather than relying on the listener above.
         var all = document.querySelector('[data-vnd-ask-all]');
         var none = document.querySelector('[data-vnd-ask-none]');
-        if (all) {
-            all.addEventListener('click', function () {
-                boxes().forEach(function (b) { b.checked = true; });
-                refreshCount();
-            });
-        }
-        if (none) {
-            none.addEventListener('click', function () {
-                boxes().forEach(function (b) { b.checked = false; });
-                refreshCount();
-            });
-        }
+        if (all) { all.addEventListener('click', function () { setScope(null); }); }
+        if (none) { none.addEventListener('click', function () { setScope([]); }); }
     }
 
     // ── Opening the panel ─────────────────────────────────────────────────────
@@ -123,6 +159,34 @@
         if (new URLSearchParams(window.location.search).get('ask')) {
             window.bootstrap.Offcanvas.getOrCreateInstance(panel).show();
         }
+
+        // ── The two ways in, and what each one MEANS ──────────────────────────
+        // One assistant, one icon, two scopes: the floating button asks about the whole
+        // page, a document row's button asks about that document alone. Both are set here
+        // rather than left to whatever was ticked last, because a control that sometimes
+        // means "this document" and sometimes means "whatever was selected before" gives an
+        // answer no one can tell apart from the other.
+        var fab = document.querySelector('[data-vnd-ask-all-docs]');
+        if (fab) {
+            fab.addEventListener('click', function () { setScope(null); });
+        }
+
+        document.querySelectorAll('[data-vnd-ask-focus]').forEach(function (link) {
+            link.addEventListener('click', function (e) {
+                var key = link.getAttribute('data-vnd-ask-focus');
+                var known = boxes().some(function (b) { return b.value === key; });
+
+                // Not among the chips = not readable, so there is nothing to scope to. Let
+                // the href navigate instead: the reloaded panel lists that document under
+                // "Not available to the assistant" with the reason and a Read now beside
+                // it, which is the answer to why it cannot be asked about.
+                if (!known) { return; }
+
+                e.preventDefault();
+                setScope([key]);
+                window.bootstrap.Offcanvas.getOrCreateInstance(panel).show();
+            });
+        });
     })();
 
     // ── The assistant ─────────────────────────────────────────────────────────

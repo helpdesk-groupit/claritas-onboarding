@@ -110,7 +110,10 @@ class DecommissionReportRenderer
             return [];
         }
 
-        $batch->loadMissing(['quotations.uploader', 'quotations.financeReviewer']);
+        $batch->loadMissing([
+            'quotations.uploader', 'quotations.financeReviewer', 'quotations.vendor',
+            'selectedQuotation', 'recommendedQuotation.vendor', 'managementReviewer',
+        ]);
 
         $out = [];
 
@@ -160,28 +163,101 @@ class DecommissionReportRenderer
             ]] : [];
         }
 
+        // Grouped by vendor, oldest revision first inside each — the reading order a person
+        // checking "who offered what" expects. Since Phase 5 a cycle holds several vendors'
+        // offers, and the LOSING ones are reproduced too: they are the only evidence that the
+        // accepted price was the best one available, which is the whole point of asking round.
+        $ordered = $revisions
+            ->sortBy([
+                fn ($q) => strtolower($q->vendor?->name ?? '~'),   // unnamed vendors last
+                fn ($q) => $q->revision,
+            ])
+            ->values();
+
+        $selectedId = $batch->selected_quotation_id;
+        $multiVendor = $revisions->pluck('vendor_id')->unique()->count() > 1;
+        // Revisions are numbered per vendor, so "of N" must be that vendor's count — a total
+        // across every vendor would print "revision 1 of 4" on a vendor who quoted once.
+        $perVendorTotals = $revisions->groupBy(fn ($q) => $q->vendor_id ?? 0)->map->count();
         $out = [];
 
-        foreach ($revisions as $i => $revision) {
-            $isCurrent = $i === $total - 1;
+        foreach ($ordered as $revision) {
+            $isWinner = $selectedId && $revision->id === $selectedId;
 
-            $out[$isCurrent ? 'quotation' : 'quotation_rev'.$revision->revision] = [
-                // A single-quotation cycle reads exactly as it always did — the revision
-                // numbering only appears once there is more than one document to tell apart.
-                'label' => $total > 1
-                    ? 'Quotation (revision '.$revision->revision.' of '.$total.')'
-                    : 'Quotation',
+            // The accepted offer keeps the plain `quotation` key it has always had — the
+            // batch's quotation_* columns are its cache and callers read that slot by name.
+            // With no selection recorded (a legacy or still-open cycle) the newest document
+            // takes the slot, which is what it meant before Phase 5.
+            $isSlotHolder = $selectedId
+                ? $isWinner
+                : $revision->id === $revisions->last()->id;
+
+            // A single-vendor cycle keeps the original `quotation_rev{N}` keys, so a cycle
+            // that predates the multi-vendor comparison is described exactly as it was.
+            $key = $isSlotHolder
+                ? 'quotation'
+                : ($multiVendor
+                    ? 'quotation_v'.($revision->vendor_id ?? 0).'_r'.$revision->revision
+                    : 'quotation_rev'.$revision->revision);
+
+            $out[$key] = [
+                // A single-quotation cycle reads exactly as it always did — the vendor name
+                // and revision numbering only appear once there is more than one document to
+                // tell apart.
+                'label' => self::quotationLabel(
+                    $revision,
+                    $total,
+                    (int) ($perVendorTotals[$revision->vendor_id ?? 0] ?? 1),
+                    $multiVendor,
+                    $isWinner,
+                    (bool) $selectedId,
+                ),
                 'path' => $revision->path,
                 'uploaded_at' => $revision->uploaded_at,
                 'uploader' => AssetDecommissionBatch::actorIdentity($revision->uploader),
                 // Truncated: the reason can run to 1000 characters, and the caption band
                 // grows downwards into the space the document itself is scaled into. The
-                // full text is in the report body's revision table.
+                // full text is in the report body's quotation table.
                 'note' => $total > 1 ? Str::limit((string) $revision->decisionLine(), 240) ?: null : null,
             ];
         }
 
         return $out;
+    }
+
+    /**
+     * The caption on a reproduced quotation page.
+     *
+     * States whose offer it is and whether it was the accepted one, because a reader looking
+     * at page 9 of a merged PDF has no other way to tell — and an unlabelled losing offer
+     * sitting next to the accepted one reads as a contradiction rather than as evidence.
+     */
+    private static function quotationLabel(
+        $revision,
+        int $total,
+        int $vendorTotal,
+        bool $multiVendor,
+        bool $isWinner,
+        bool $hasSelection,
+    ): string {
+        if ($total === 1) {
+            return 'Quotation';
+        }
+
+        $label = 'Quotation';
+        if ($multiVendor) {
+            $label .= ' — '.$revision->vendorName();
+        }
+        if ($vendorTotal > 1) {
+            $label .= ' (revision '.$revision->revision.' of '.$vendorTotal.')';
+        }
+        // Only once a winner exists: before that, "not accepted" would describe an offer
+        // nobody has decided against yet.
+        if ($hasSelection && $multiVendor) {
+            $label .= $isWinner ? ' — ACCEPTED' : ' — not accepted';
+        }
+
+        return $label;
     }
 
     /**

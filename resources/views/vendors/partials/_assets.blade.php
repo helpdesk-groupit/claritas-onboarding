@@ -2,10 +2,6 @@
      link: rental = we rent it from them, company = we bought it from them. --}}
 
 @php
-    // Assets with no acknowledgement yet, as an id set — the rented table below flags
-    // each row from this rather than re-querying per row.
-    $pendingIds = $pendingAssets->pluck('id')->flip();
-
     // Which of the two asset sections apply. A rental vendor has no "purchased from them"
     // story and a supplier has no "rented from them" one, so showing both put an empty
     // panel on every profile that could never fill.
@@ -16,7 +12,26 @@
     // them per vendor. An asset on the "wrong" side is a data problem to see, not to bury.
     $showRented = $vendor->isRental() || $rented->isNotEmpty();
     $showPurchased = $vendor->isAssetSupplier() || $purchased->isNotEmpty();
-    $showAarf = $pendingAssets->isNotEmpty() || $acknowledgements->isNotEmpty();
+
+    // The AARF forms themselves moved to the Report tab on 2026-08-13. What is left of them
+    // here is a pointer, and it reads the SAME flag the page used to decide whether the
+    // register is rendered — re-deriving the condition would eventually point at something
+    // that is not there.
+    //
+    // That flag is $showAarfRegister, NOT $showReportTab: since the Report tab also carries
+    // e-waste collections, an e-waste-only vendor reaches the tab with no AARF register on
+    // it, and pointing them at forms that are not there is worse than not pointing at all.
+    //
+    // The per-asset acknowledgement column went with them when this tab was cut to six
+    // columns, so this pointer and its count are now the ONLY thing on the tab that says
+    // anything is unsigned. That is why it carries the count rather than just the link.
+    $showAarf = $showAarfRegister;
+    // Built here rather than glued onto the link: the sentence continues straight after
+    // the </a>, and a directive stuck to the end of a word compiles through as literal
+    // text (the Blade gotcha in CLAUDE.md).
+    $aarfPointerTail = $pendingAssets->isNotEmpty()
+        ? ' — '.$pendingAssets->count().' rental asset'.($pendingAssets->count() === 1 ? ' is' : 's are').' awaiting acknowledgement.'
+        : '.';
 
     // Both tables group through the SAME function — the difference between them is which
     // row partial renders and which total the header prints, not how they are organised.
@@ -24,119 +39,16 @@
     $purchasedGroups = \App\Models\AssetInventory::groupByOriginInvoice($purchased);
 @endphp
 
-{{-- ── AARF — rental asset acknowledgement ──────────────────────────────────
-     Only meaningful for vendors we actually rent from. Hidden entirely when there is
-     nothing to acknowledge and nothing has ever been acknowledged, so a pure supplier's
-     profile does not carry a panel that will never apply to it. --}}
+{{-- ── Where the acknowledgement forms went ─────────────────────────────────────
+     One line, not the panel that used to be here. The Generate Receipt AARF button moved
+     with the forms, so an operator who came to this tab for it would otherwise find no
+     trace of either — and a control that vanishes without explanation reads as a feature
+     that broke. The pending count comes along because it is the call to action. --}}
 @if($showAarf)
-<div class="mb-4">
-    <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
-        <div>
-            <div class="fw-semibold">
-                <i class="bi bi-clipboard-check me-1 text-success"></i>Rental Asset Acknowledgement (AARF)
-            </div>
-            <div class="text-muted small">
-                Confirms rental assets physically changed hands, in both directions &mdash; one
-                form per company rented to. <strong>Receipts</strong> are raised here when kit
-                arrives; <strong>returns</strong> are raised from the IT asset listing&rsquo;s
-                Decommissioning tab once the assets are marked Returned, and are archived here
-                when signed.
-            </div>
-        </div>
-        @if($canManage && $pendingAssets->isNotEmpty())
-        <form action="{{ route('vendors.aarf.generate', $vendor) }}" method="POST" class="js-confirm"
-              data-confirm="Generate a RECEIPT AARF for the {{ $pendingAssets->count() }} rental asset{{ $pendingAssets->count() === 1 ? '' : 's' }} not yet acknowledged? One form is created per company rented to. (Returns are raised from the Decommissioning tab instead.)"
-              data-confirm-title="Generate receipt AARF"
-              data-confirm-ok="Generate"
-              data-confirm-variant="success">
-            @csrf
-            <button type="submit" class="btn btn-success btn-sm fw-semibold">
-                <i class="bi bi-file-earmark-plus me-1"></i>Generate Receipt AARF
-                <span class="badge bg-white text-success ms-1">{{ $pendingAssets->count() }}</span>
-            </button>
-        </form>
-        @endif
-    </div>
-
-    @if($pendingAssets->isNotEmpty())
-    <div class="alert alert-warning py-2 px-3 small mb-2">
-        <i class="bi bi-exclamation-circle me-1"></i>
-        <strong>{{ $pendingAssets->count() }}</strong> rental asset{{ $pendingAssets->count() === 1 ? ' is' : 's are' }}
-        awaiting acknowledgement
-        @php $pendingCompanies = $pendingAssets->pluck('company_supplied_to')->map(fn ($c) => $c ?: 'Unspecified')->unique()->values(); @endphp
-        @if($pendingCompanies->count() > 1)
-            across {{ $pendingCompanies->count() }} companies ({{ $pendingCompanies->implode(', ') }}) &mdash;
-            generating will create {{ $pendingCompanies->count() }} separate forms.
-        @else
-            for {{ $pendingCompanies->first() }}.
-        @endif
-        @if(! $canManage)
-            <span class="text-muted">You do not have permission to generate one.</span>
-        @endif
-    </div>
-    @endif
-
-    @if($acknowledgements->isEmpty())
-        <div class="ewx-empty"><i class="bi bi-clipboard"></i>No AARF has been generated for this vendor yet.</div>
-    @else
-    <div class="table-responsive">
-        <table class="table table-sm table-hover ewx-table align-middle">
-            <thead>
-                <tr>
-                    <th class="ps-3">Report No.</th>
-                    <th>Type</th>
-                    <th>Company Rented To</th>
-                    <th class="text-center">Assets</th>
-                    <th>Acknowledged</th>
-                    <th class="text-center">Status</th>
-                    <th class="text-end pe-3">Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-            @foreach($acknowledgements as $aarf)
-                @php $badge = $aarf->statusBadge(); @endphp
-                <tr>
-                    <td class="ps-3">
-                        <a href="{{ route('vendors.aarf.show', [$vendor, $aarf]) }}" class="ewx-code text-decoration-none">{{ $aarf->reference }}</a>
-                    </td>
-                    <td class="small">{{ $aarf->typeLabel() }}</td>
-                    <td class="small">{{ $aarf->company_rented_to ?: '—' }}</td>
-                    <td class="text-center small">{{ $aarf->items_count ?? $aarf->items->count() }}</td>
-                    <td class="small">
-                        @if($aarf->isAcknowledged())
-                            {{ $aarf->acknowledger?->name ?: '—' }}
-                            <div class="vnd-pic-meta">{{ fmt_datetime($aarf->acknowledged_at) }}</div>
-                        @else
-                            <span class="text-muted">Not yet</span>
-                        @endif
-                    </td>
-                    <td class="text-center">
-                        <span class="badge rounded-pill bg-{{ $badge['color'] }}">{{ $badge['label'] }}</span>
-                    </td>
-                    <td class="text-end pe-3 text-nowrap">
-                        <a href="{{ route('vendors.aarf.show', [$vendor, $aarf]) }}" class="btn btn-sm btn-outline-primary" title="Open AARF">
-                            <i class="bi bi-eye"></i>
-                        </a>
-                        <a href="{{ route('vendors.aarf.pdf', [$vendor, $aarf]) }}" class="btn btn-sm btn-outline-secondary ms-1" title="Download PDF">
-                            <i class="bi bi-file-earmark-pdf"></i>
-                        </a>
-                        @if($canManage && ! $aarf->isAcknowledged())
-                        <form action="{{ route('vendors.aarf.destroy', [$vendor, $aarf]) }}" method="POST" class="d-inline js-confirm ms-1"
-                              data-confirm="Discard draft AARF {{ $aarf->reference }}? Its assets go back to awaiting acknowledgement."
-                              data-confirm-title="Discard draft AARF"
-                              data-confirm-ok="Discard"
-                              data-confirm-variant="danger">
-                            @csrf @method('DELETE')
-                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Discard draft"><i class="bi bi-trash"></i></button>
-                        </form>
-                        @endif
-                    </td>
-                </tr>
-            @endforeach
-            </tbody>
-        </table>
-    </div>
-    @endif
+<div class="small text-muted mb-3">
+    <i class="bi bi-clipboard-check me-1 text-success"></i>
+    Acknowledgement forms (AARF) for this vendor are on the
+    <a href="{{ route('vendors.show', [$vendor, 'tab' => 'report']) }}" class="fw-semibold text-decoration-none">Report tab</a>{{ $aarfPointerTail }}
 </div>
 @endif
 
@@ -186,8 +98,10 @@
 @endif
 
 {{-- Both sections can be hidden at once — an e-waste or repair-only vendor with nothing
-     linked either way. Say so, rather than leaving the tab blank as if it had failed. --}}
-@if(! $showAarf && ! $showRented && ! $showPurchased)
+     linked either way. Say so, rather than leaving the tab blank as if it had failed.
+     The AARF pointer above is deliberately not part of this test: it is a signpost, not
+     content, and a tab holding only a link to another tab is still an empty tab. --}}
+@if(! $showRented && ! $showPurchased)
 <div class="ewx-empty">
     <i class="bi bi-box-seam"></i>
     No assets are linked to this vendor, and they are not registered for asset rental or supply.

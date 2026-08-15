@@ -11,10 +11,12 @@
     $mCanTeamLeave  = $u->isSuperadmin();                                                 // Team Leave (approver view)
     $mCanTeamClaims = $u->canViewTeamClaims();
     $mCanVendors    = $u->canViewVendors();                                               // Vendor Management (IT + Finance + admins)
-    // Decommissioning archive (C-Suite + IT mgr). Finance is excluded on purpose: they reach
-    // the same reports inside Accounting (Assets → status "Disposed") and work the e-waste
-    // cycle at Reports → E-waste Quotations, so a sidebar link would be a third way in.
-    $mCanDecomm     = $u->canViewDecommissionReports() && ! $u->isFinance();
+    // Decommissioning — the single e-waste review surface AND the archive (C-Suite, IT mgr,
+    // Finance, and anyone named as a management approver). Finance was excluded here until
+    // 2026-08-14, when their quotation review moved off Accounting → Assets → "Disposed":
+    // this is now the only way in, so hiding it would leave them no route to the decision
+    // their approval email links to.
+    $mCanDecomm     = $u->canViewDecommissionReports();
     $mCanCompanyReg = $u->isSuperadmin() || $u->isHrManager() || $u->isHrExecutive();
     $mShow = $mCanTask || $mCanAutomation || $mCanStrategist || $mCanTicket || $mCanTeamLeave || $mCanTeamClaims || $mCanVendors || $mCanDecomm || $mCanCompanyReg;
     $mAutomationOpen = request()->routeIs('it.automation.*');

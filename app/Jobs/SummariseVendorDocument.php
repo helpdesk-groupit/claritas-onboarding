@@ -104,7 +104,12 @@ class SummariseVendorDocument implements ShouldBeUnique, ShouldQueue
                 return;
             }
 
-            $this->record($document, VendorDocumentInsightService::read(
+            // readDetails(), not read(): a re-reading has to refresh the PARTIES as well,
+            // because they are shown in the listing's first column and would otherwise keep
+            // naming the counterparties of a document that has since been replaced. The
+            // dates and figures are NOT touched — those are the record, owned by whoever
+            // filed it, and a summariser must never overwrite a field a human owns.
+            $this->record($document, VendorDocumentInsightService::readDetails(
                 $disk->path($document->file_path),
                 (string) $disk->mimeType($document->file_path),
                 $document->aiKind(),
@@ -136,6 +141,12 @@ class SummariseVendorDocument implements ShouldBeUnique, ShouldQueue
             'ai_key_points' => $result['key_points'] ?: null,
             'ai_text' => $result['text'],
             'ai_at' => now(),
+            'companies_involved' => ($result['companies'] ?? []) ?: null,
+            // This summary is the model's again. Any edit stamp on the row belonged to the
+            // wording just replaced, and leaving it would print a person's name under text
+            // they never wrote.
+            'ai_summary_edited_at' => null,
+            'ai_summary_edited_by' => null,
         ])->save();
     }
 }

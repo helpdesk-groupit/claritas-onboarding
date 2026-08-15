@@ -32,6 +32,10 @@ class AssetInvoiceGroupingTest extends TestCase
         // Behave as with no Anthropic key: documents are stored, nothing is read.
         config()->set('vendors.ai.enabled', false);
         config()->set('vendors.own_sst_category', null);
+        // Track every rental asset regardless of when it was registered, so a fixture's
+        // rental asset always leaves the vendor with a Report tab — assetsPane() needs it
+        // as the boundary of its slice.
+        config()->set('vendors.aarf_track_from', null);
     }
 
     private function itManager(): User
@@ -180,11 +184,16 @@ class AssetInvoiceGroupingTest extends TestCase
             ->assertSee('id="inv-doc-'.$purchaseInvoice->id.'"', false);
     }
 
-    public function test_the_group_header_links_the_registered_document_not_the_assets_own_copy(): void
+    // ── The tab carries no tie to the billing register ────────────────────────
+    public function test_the_group_header_names_the_invoice_and_links_to_no_document(): void
     {
         Storage::fake('local');
         $vendor = $this->vendor();
-        $invoice = $this->invoice($vendor, ['file_path' => 'vendor_billing/'.$vendor->id.'/filed.pdf', 'original_filename' => 'filed.pdf']);
+        $invoice = $this->invoice($vendor, [
+            'doc_number' => 'IV-25268',
+            'file_path' => 'vendor_billing/'.$vendor->id.'/filed.pdf',
+            'original_filename' => 'filed.pdf',
+        ]);
 
         $this->asset([
             'vendor_id' => $vendor->id,
@@ -192,17 +201,43 @@ class AssetInvoiceGroupingTest extends TestCase
             'invoice_documents' => ['invoices/asset-copy.pdf'],
         ]);
 
+        $pane = $this->assetsPane(
+            $this->actingAs($this->itManager())
+                ->get(route('vendors.show', [$vendor, 'tab' => 'assets']))
+                ->assertOk()
+                ->getContent()
+        );
+
+        // The number still leads the group — it is what says which invoice these assets
+        // arrived on, and that fact is recorded on the asset itself.
+        $this->assertStringContainsString('IV-25268', $pane);
+
+        // Neither document is reachable from here any more: not the filed copy, not the
+        // asset's own, and not the Billing tab.
+        $this->assertStringNotContainsString(secure_file_url($invoice->file_path), $pane);
+        $this->assertStringNotContainsString(secure_file_url('invoices/asset-copy.pdf'), $pane);
+        $this->assertStringNotContainsString('Open in Billing', $pane);
+        $this->assertStringNotContainsString(route('vendors.show', [$vendor, 'tab' => 'billing']), $pane);
+    }
+
+    public function test_an_unregistered_reference_offers_no_way_to_file_it(): void
+    {
+        $vendor = $this->vendor();
+        $this->asset(['vendor_id' => $vendor->id, 'rental_contract_reference' => 'IV-25270']);
+
         $response = $this->actingAs($this->itManager())
             ->get(route('vendors.show', [$vendor, 'tab' => 'assets']))
             ->assertOk();
 
-        // `invoices/` is gated to HR + IT by SecureFileController, so linking the asset's own
-        // copy here would 403 for the Finance readers this tab's figures exist for.
-        $response->assertSee(secure_file_url($invoice->file_path), false);
-        $response->assertDontSee(secure_file_url('invoices/asset-copy.pdf'), false);
+        // A typed reference reads exactly like a registered one: the claim being made is
+        // "these assets arrived on IV-25270", which is equally true either way, and there is
+        // no longer an action here for which the difference would matter.
+        $response->assertSee('IV-25270')
+            ->assertDontSee('Not in the billing register')
+            ->assertDontSee(route('vendors.billing.register-from-assets', $vendor), false);
     }
 
-    public function test_the_billing_row_says_how_many_assets_arrived_on_the_document(): void
+    public function test_the_billing_row_no_longer_points_at_the_assets_tab(): void
     {
         $vendor = $this->vendor();
         $invoice = $this->invoice($vendor);
@@ -212,7 +247,98 @@ class AssetInvoiceGroupingTest extends TestCase
         $this->actingAs($this->itManager())
             ->get(route('vendors.show', [$vendor, 'tab' => 'billing']))
             ->assertOk()
-            ->assertSee('2 assets arrived on this');
+            ->assertDontSee('assets arrived on this')
+            ->assertDontSee('#inv-doc-'.$invoice->id, false);
+    }
+
+    // ── The six columns ───────────────────────────────────────────────────────
+    public function test_the_asset_tables_carry_only_the_six_agreed_columns(): void
+    {
+        $vendor = $this->vendor(['vendor_types' => ['rental', 'purchase']]);
+        $this->asset([
+            'vendor_id' => $vendor->id,
+            'ownership_type' => 'rental',
+            'asset_tag' => 'DEMO-LPT-006',
+            'serial_number' => 'SN-DEMO-1012',
+            'rental_cost_per_month' => 99,
+        ]);
+
+        $this->asset([
+            'vendor_id' => $vendor->id,
+            'ownership_type' => 'company',
+            'asset_tag' => 'DEMO-LPT-900',
+            'purchase_cost' => 4200,
+            'warranty_expiry_date' => '2027-01-01',
+        ]);
+
+        $page = $this->actingAs($this->itManager())
+            ->get(route('vendors.show', [$vendor, 'tab' => 'assets']))
+            ->assertOk();
+
+        // Matched as markup, not as words: "Cost", "Status" and "Model" all occur in prose
+        // elsewhere on this page, so a bare assertSee would pass on the wrong thing.
+        $headings = [
+            '<th class="ps-3">Asset Tag</th>',
+            '<th>Asset Type</th>',
+            '<th>Model</th>',
+            '<th>Spec</th>',
+            '<th>Rental Period</th>',
+            '<th class="text-end">Monthly Charge</th>',
+            '<th>Purchased</th>',
+            '<th class="text-end">Cost</th>',
+        ];
+        foreach ($headings as $heading) {
+            $page->assertSee($heading, false);
+        }
+
+        // Dropped columns. Assigned To / Status / AARF came off this tab by operator
+        // decision — the tab answers "what kit sits against this vendor", and who holds it,
+        // whether it is free and whether it has been signed for are answered on the asset
+        // record and the Report tab respectively.
+        $dropped = [
+            '<th>Assigned To</th>',
+            '<th>Description</th>',
+            '<th>Warranty</th>',
+            '<th class="text-center">Status</th>',
+            '<th class="text-center">AARF</th>',
+        ];
+        foreach ($dropped as $heading) {
+            $page->assertDontSee($heading, false);
+        }
+
+        // The serial keeps the row about one machine rather than a model we rent several of.
+        $page->assertSee('S/N SN-DEMO-1012');
+    }
+
+    public function test_the_specification_is_shown_as_one_column(): void
+    {
+        $vendor = $this->vendor();
+        $this->asset([
+            'vendor_id' => $vendor->id,
+            'processor' => 'Intel Core i5-1335U',
+            'ram_size' => '16GB',
+            'storage' => '512GB SSD',
+            // operating_system deliberately blank — an empty field is dropped, not printed
+            // as a dash, or a machine with one field filled in reads as one with none.
+            'screen_size' => '14"',
+            'spec_others' => 'Backlit keyboard',
+        ]);
+
+        $this->actingAs($this->itManager())
+            ->get(route('vendors.show', [$vendor, 'tab' => 'assets']))
+            ->assertOk()
+            // Escaped, not raw: the screen size carries a double quote and Blade renders it
+            // as &quot;. assertSee() escapes the expected value the same way.
+            ->assertSee('Intel Core i5-1335U · 16GB · 512GB SSD · 14" · Backlit keyboard');
+    }
+
+    public function test_an_asset_with_nothing_in_section_b_has_an_empty_spec_summary(): void
+    {
+        $asset = $this->asset(['vendor_id' => $this->vendor()->id]);
+
+        // Empty rather than a string of separators or dashes — the caller decides what an
+        // unrecorded specification says, and both tables print a single em-dash.
+        $this->assertSame('', $asset->specSummary());
     }
 
     // ── The asset form ────────────────────────────────────────────────────────
@@ -397,6 +523,27 @@ class AssetInvoiceGroupingTest extends TestCase
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+    /**
+     * The Assets pane on its own.
+     *
+     * Every tab pane renders into the DOM whichever one is active, and the Billing pane
+     * legitimately links the very document the Assets tab no longer does — so an
+     * assertDontSee over the whole page is answered by the wrong markup and passes or fails
+     * for the wrong reason. The nav's own "Billing" tab link is outside the pane too.
+     */
+    private function assetsPane(string $html): string
+    {
+        $start = strpos($html, 'id="vndAssets"');
+        $this->assertNotFalse($start, 'The vendor profile rendered no Assets pane.');
+
+        // The slice MUST be bounded: the modals that follow the panes carry document links
+        // of their own, so running to the end of the document would quietly widen this.
+        $end = strpos($html, 'id="vndReport"', $start);
+        $this->assertNotFalse($end, 'No Report pane to bound the Assets pane with — the fixture needs a pending rental asset.');
+
+        return substr($html, $start, $end - $start);
+    }
+
     /**
      * The asset edit form posts every Section C field; a partial payload would blank the
      * ones left out and the test would be asserting against a different save than the UI's.

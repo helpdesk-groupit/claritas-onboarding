@@ -23,7 +23,13 @@ class RentalAssetAcknowledgementItem extends Model
 {
     protected $table = 'rental_asset_acknowledgement_items';
 
-    /** The Section A fields, in the order the asset listing shows them. */
+    /**
+     * The Section A fields, in the order the asset listing shows them.
+     *
+     * `spec_summary` is NOT here: it is a Section A snapshot like the rest, but it is not a
+     * column on `asset_inventories` — it is built by AssetInventory::specSummary() from six
+     * of them, so snapshotFrom() fills it separately.
+     */
     public const SECTION_A_FIELDS = [
         'asset_tag', 'asset_name', 'asset_category', 'asset_type',
         'brand', 'model', 'serial_number',
@@ -32,7 +38,7 @@ class RentalAssetAcknowledgementItem extends Model
     protected $fillable = [
         'rental_asset_acknowledgement_id', 'direction', 'asset_inventory_id',
         'asset_tag', 'asset_name', 'asset_category', 'asset_type',
-        'brand', 'model', 'serial_number',
+        'brand', 'model', 'serial_number', 'spec_summary',
     ];
 
     public function acknowledgement()
@@ -62,6 +68,12 @@ class RentalAssetAcknowledgementItem extends Model
         foreach (self::SECTION_A_FIELDS as $field) {
             $data[$field] = $asset->{$field};
         }
+
+        // Snapshot too, and through the same builder the vendor profile's Assets tab uses —
+        // one page must never describe an asset's specification two ways. Stored rather than
+        // derived at render time for the reason every other column here is: a spec corrected
+        // later must not change what a signed form says was handed over.
+        $data['spec_summary'] = mb_substr($asset->specSummary(), 0, 500) ?: null;
 
         return $data;
     }

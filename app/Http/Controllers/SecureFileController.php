@@ -35,6 +35,9 @@ class SecureFileController extends Controller
         // keep the two in step or a role reaches the page but 403s on every document on it.
         'vendor_contracts' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
         'vendor_billing' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
+        // Proof of payment for those invoices. Same set again — the slip is read on the same
+        // row as the bill it settles, so anyone who can open one must be able to open both.
+        'vendor_payment_slips' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
         // Signed AARFs — same set again: whoever reaches the vendor profile reads its documents.
         'rental_acknowledgements' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
         // ticket_attachments is intentionally not listed here — it follows

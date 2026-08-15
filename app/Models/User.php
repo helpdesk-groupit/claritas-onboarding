@@ -454,12 +454,68 @@ class User extends Authenticatable
     }
 
     /**
-     * May the user open the Decommissioning report (C-Suite archive)? The existing
-     * reports set (superadmin/hr_manager/system_admin) widened with it_manager + Finance.
+     * May this user cast the MANAGEMENT decision on a cycle for $company?
+     *
+     * Deliberately per-company and identity-based, not role-based: the approvers span
+     * companies (CEO of one entity, CTO of another), so nothing derivable from this user's own
+     * employer or role can express it. See EwasteCompanyApprover.
+     *
+     * Management's decision is the one that advances a cycle, so this is a strictly narrower
+     * gate than canApproveEwasteQuotation() — being in Finance does not make you management.
+     */
+    public function canApproveEwasteAsManagement(?string $company): bool
+    {
+        return EwasteCompanyApprover::approversFor($company)->contains('id', $this->id);
+    }
+
+    /** Is this user a named management approver for any company at all? Drives UI visibility. */
+    public function isEwasteManagementApprover(): bool
+    {
+        return EwasteCompanyApprover::where('user_id', $this->id)->exists()
+            || $this->role === 'superadmin';
+    }
+
+    /** May this user configure who approves disposals? Superadmin only — it grants authority. */
+    public function canManageEwasteApprovers(): bool
+    {
+        return in_array($this->role, ['superadmin', 'system_admin']);
+    }
+
+    /**
+     * May the user open the Decommissioning page? The existing reports set
+     * (superadmin/hr_manager/system_admin) widened with it_manager + Finance — plus anybody
+     * NAMED as a management approver.
+     *
+     * The named-approver arm is not a convenience. Since the page became the single review
+     * surface, it is where a disposal is authorised and it is the link the approval email
+     * carries; a CEO named in ewaste_company_approvers holds none of the six roles above and
+     * would have 403'd on the page they were just asked to act on. What they may SEE there is
+     * narrowed per-company by reachableDecommissionCompanies().
      */
     public function canViewDecommissionReports(): bool
     {
-        return in_array($this->role, ['superadmin', 'system_admin', 'hr_manager', 'it_manager', 'finance_manager', 'finance_executive']);
+        return in_array($this->role, ['superadmin', 'system_admin', 'hr_manager', 'it_manager', 'finance_manager', 'finance_executive'])
+            || $this->isEwasteManagementApprover();
+    }
+
+    /**
+     * Which companies' cycles this user may see on the Decommissioning page.
+     *
+     * Null means "every company" — the role-holders above, who own the process or the money
+     * across the group. A user who reaches the page ONLY by being a named approver is scoped
+     * to their own companies: another entity's disposal is not theirs to read, the same rule
+     * that decides who a signed AARF is copied to. Their authority is per-company by design
+     * (canApproveEwasteAsManagement), so the list they see matches the list they can act on.
+     *
+     * @return \Illuminate\Support\Collection<int, string>|null
+     */
+    public function reachableDecommissionCompanies(): ?\Illuminate\Support\Collection
+    {
+        if (in_array($this->role, ['superadmin', 'system_admin', 'hr_manager', 'it_manager', 'finance_manager', 'finance_executive'])) {
+            return null;
+        }
+
+        return EwasteCompanyApprover::companiesFor($this->id);
     }
 
     /**

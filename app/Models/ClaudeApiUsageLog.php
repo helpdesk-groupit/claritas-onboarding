@@ -36,6 +36,11 @@ class ClaudeApiUsageLog extends Model
         'vendor_quotation_scan' => 'Vendor Management — Quotation Scan',
         'vendor_invoice_scan' => 'Vendor Management — Invoice Scan',
         'vendor_document_summary' => 'Vendor Management — Document Summary',
+        // The second, text-only pass over a transcript that reads the parties and the
+        // record fields. Billed apart from the summary because it is a separate call with
+        // its own cost, and because "what did the reading of a document cost us" is only
+        // answerable if both halves are visible.
+        'vendor_document_fields' => 'Vendor Management — Document Details',
         'vendor_document_chat' => 'Vendor Management — Document Q&A',
         'accounting_invoice_scan' => 'Accounting — Invoice Scan',
         'accounting_ai_chat' => 'Accounting — AI Assistant',
@@ -85,6 +90,7 @@ class ClaudeApiUsageLog extends Model
         'vendor_quotation_scan' => 'Vendor Management',
         'vendor_invoice_scan' => 'Vendor Management',
         'vendor_document_summary' => 'Vendor Management',
+        'vendor_document_fields' => 'Vendor Management',
         'vendor_document_chat' => 'Vendor Management',
         'accounting_invoice_scan' => 'Accounting (AI)',
         'accounting_ai_chat' => 'Accounting (AI)',

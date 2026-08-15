@@ -6,11 +6,11 @@ use App\Jobs\SummariseVendorDocument;
 use App\Models\AssetInventory;
 use App\Models\Vendor;
 use App\Models\VendorBillingDocument;
+use App\Models\VendorDocumentScan;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
-use Illuminate\Validation\Rule;
 
 /**
  * Quotations and invoices received from a vendor — a DOCUMENT REGISTER on the vendor
@@ -18,9 +18,15 @@ use Illuminate\Validation\Rule;
  * the Accounting module; it mirrors the "Finance stays lightweight" decision already made
  * for the e-waste cycle.
  *
- * Same shape as vendor contracts: the figures are typed by hand and saving is a plain
- * upload. The per-field OCR was removed on 2026-08-11; the only AI reading of a billing
- * document is the queued whole-document summary (`SummariseVendorDocument`).
+ * Same shape as vendor contracts as of 2026-08-13: filing a document is upload → read →
+ * correct the SUMMARY → save. The number, dates and figures come off that same reading and
+ * are never asked for on the Add form; they are shown and owned on Edit. See
+ * VendorContractController for why the field values must keep coming from a call SEPARATE
+ * from the transcription.
+ *
+ * `registerFromAssets` is the one path that still files a document nobody scanned — it
+ * copies an invoice already uploaded against an asset — so it keeps the queued background
+ * read (`SummariseVendorDocument`).
  */
 class VendorBillingController extends Controller
 {
@@ -33,53 +39,118 @@ class VendorBillingController extends Controller
         }
     }
 
+    /**
+     * File a scanned quotation or invoice.
+     *
+     * Requires a completed scan, like the contract side: the Add form is an upload form,
+     * and a billing document with no file has no summary, no parties and no figures.
+     * Whether it is a quotation or an invoice comes from the reading — the form no longer
+     * asks, and the document says so on its face.
+     */
     public function store(Request $request, Vendor $vendor)
     {
         $this->authorizeManage();
 
-        $data = $this->validateDocument($request, $vendor);
-        $file = $this->resolveDocument($request, $vendor, $data);
+        $data = $request->validate([
+            'scan_token' => 'required|string|max:64',
+            'ai_summary' => 'nullable|string|max:6000',
+            'companies_involved' => 'nullable|string|max:2000',
+        ]);
 
-        $doc = new VendorBillingDocument($file['data']);
-        $doc->vendor_id = $vendor->id;
-        $doc->file_path = $file['path'];
-        $doc->original_filename = $file['name'];
-        $doc->created_by = Auth::id();
-        if ($file['path']) {
-            $doc->resetDocumentInsight();
+        $scan = $this->claimScan($vendor, $data['scan_token']);
+
+        if (! $scan) {
+            return $this->back($vendor)->with('error',
+                'That upload is no longer available — it may have expired. Please attach the document again.');
         }
+
+        $doc = new VendorBillingDocument($this->fieldsFromScan(is_array($scan->fields) ? $scan->fields : []));
+        $doc->vendor_id = $vendor->id;
+        $doc->file_path = $scan->file_path;
+        $doc->original_filename = $scan->original_filename;
+        $doc->created_by = Auth::id();
+
+        // Carried across whole rather than re-run: it has been paid for, and a second
+        // reading would replace the summary the operator just reviewed with one they
+        // never saw.
+        $doc->forceFill([
+            'ai_status' => $scan->status,
+            'ai_key_points' => $scan->key_points ?: null,
+            'ai_text' => $scan->text,
+            'ai_at' => now(),
+        ]);
+        $doc->ai_summary = $scan->summary;
+        $doc->companies_involved = VendorBillingDocument::parseCompaniesInput($data['companies_involved'] ?? null) ?: null;
+        $doc->applySummaryEdit($data['ai_summary'] ?? null, Auth::id());
+
         $doc->save();
 
-        $summary = $this->queueSummary($doc, (bool) $file['path']);
+        // The record owns the file now; the staging row goes WITHOUT deleting it.
+        $scan->delete();
 
-        return redirect()->route('vendors.show', [$vendor, 'tab' => 'billing'])
-            ->with('success', $doc->typeLabel().' added.'.$summary.$this->sstFlash($doc));
+        return $this->back($vendor)->with('success',
+            $doc->typeLabel().' added from the scanned document.'.$this->readingNote($doc).$this->sstFlash($doc));
     }
 
+    /**
+     * Correct the READING of a filed document — its summary and its parties — move it
+     * along its lifecycle, or replace the document behind it.
+     *
+     * No figures. They are read off the document and stored, never typed: the operator's
+     * instruction is that the scan produces the summary and the form asks for no fields. A
+     * total the scan read wrong is fixed by re-reading or replacing the document, both of
+     * which are in this same modal.
+     *
+     * `status` is the one exception and is NOT a document field — it is our own workflow
+     * state (received → paid / disputed), it is a column on the listing, and no reading of
+     * the document could ever set it.
+     */
     public function update(Request $request, Vendor $vendor, VendorBillingDocument $document)
     {
         $this->authorizeManage();
         $this->assertBelongs($vendor, $document);
 
         $data = $this->validateDocument($request, $vendor);
-        $file = $this->resolveDocument($request, $vendor, $data);
 
-        if ($file['replaced']) {
-            $this->deleteFile($document->file_path);
+        $scan = filled($data['scan_token'] ?? null)
+            ? $this->claimScan($vendor, $data['scan_token'])
+            : null;
 
-            $document->file_path = $file['path'];
-            $document->original_filename = $file['name'];
-            // Same rule as the contract side: the stored summary and transcription describe
-            // the file just deleted, so they go in the SAME write that repoints the record.
-            $document->resetDocumentInsight();
+        if (filled($data['scan_token'] ?? null) && ! $scan) {
+            return $this->back($vendor)->with('error',
+                'The replacement upload is no longer available — it may have expired. Nothing was changed; please attach it again.');
         }
 
-        $document->fill($file['data'])->save();
+        if ($scan) {
+            $this->deleteFile($document->file_path);
 
-        $summary = $this->queueSummary($document, $file['replaced']);
+            $document->file_path = $scan->file_path;
+            $document->original_filename = $scan->original_filename;
 
-        return redirect()->route('vendors.show', [$vendor, 'tab' => 'billing'])
-            ->with('success', $document->typeLabel().' updated.'.$summary.$this->sstFlash($document));
+            // Same rule as the contract side: the stored summary, transcription, parties and
+            // edit stamp describe the file just deleted, so they are cleared in the SAME
+            // write that repoints the record.
+            $document->resetDocumentInsight();
+            $document->forceFill([
+                'ai_status' => $scan->status,
+                'ai_key_points' => $scan->key_points ?: null,
+                'ai_text' => $scan->text,
+                'ai_at' => now(),
+            ]);
+            $document->ai_summary = $scan->summary;
+        }
+
+        $document->companies_involved = VendorBillingDocument::parseCompaniesInput($data['companies_involved'] ?? null) ?: null;
+        $document->applySummaryEdit($data['ai_summary'] ?? null, Auth::id());
+
+        $document->save();
+
+        if ($scan) {
+            $scan->delete();
+        }
+
+        return $this->back($vendor)->with('success',
+            $document->typeLabel().' updated.'.($scan ? $this->readingNote($document) : '').$this->sstFlash($document));
     }
 
     /**
@@ -157,6 +228,10 @@ class VendorBillingController extends Controller
 
         $label = $document->typeLabel();
         $this->deleteFile($document->file_path);
+        // The slip ROW cascades with the invoice; its FILE does not. Deleting the record and
+        // leaving the proof of payment on the private disk would accumulate documents nothing
+        // can ever reach or account for.
+        $this->deleteFile($document->paymentSlip?->file_path);
         $document->delete();
 
         return redirect()->route('vendors.show', [$vendor, 'tab' => 'billing'])
@@ -217,73 +292,82 @@ class VendorBillingController extends Controller
         abort_unless($document->vendor_id === $vendor->id, 404);
     }
 
-    private function validateDocument(Request $request, Vendor $vendor): array
+    private function back(Vendor $vendor)
     {
-        $data = $request->validate([
-            'doc_type' => ['required', 'string', Rule::in(array_keys(VendorBillingDocument::TYPES))],
-            'doc_number' => 'nullable|string|max:255',
-            'status' => ['required', 'string', Rule::in(array_keys(VendorBillingDocument::STATUSES))],
-            // Scoped to THIS vendor: a contract id from another vendor would silently file
-            // the document under a relationship it has nothing to do with.
-            'vendor_contract_id' => [
-                'nullable',
-                Rule::exists('vendor_contracts', 'id')->where('vendor_id', $vendor->id),
-            ],
-            'doc_date' => 'nullable|date',
-            'due_date' => 'nullable|date',
-            'subtotal' => 'nullable|numeric|min:0|max:999999999.99',
-            'sst_amount' => 'nullable|numeric|min:0|max:999999999.99',
-            'total' => 'nullable|numeric|min:0|max:999999999.99',
-            'currency' => 'nullable|string|size:3',
-            'description' => 'nullable|string|max:255',
-            'notes' => 'nullable|string|max:2000',
-            'document' => 'nullable|file|mimes:pdf,jpg,jpeg,png|max:10240|valid_file_content',
-        ]);
-
-        // `currency` is NOT NULL with a DB default, but a CLEARED text input arrives as ''
-        // which ConvertEmptyStringsToNull turns into null — and an explicit null defeats a
-        // column default, so the insert dies on an integrity violation instead of falling
-        // back. Coalesce here rather than making the column nullable: an amount with no
-        // currency beside it is not a meaningful record.
-        $data['currency'] = $data['currency'] ?? VendorBillingDocument::DEFAULT_CURRENCY;
-
-        return $data;
-    }
-
-    /** @return array{0:string,1:string} */
-    private function storeDocument(Request $request, Vendor $vendor): array
-    {
-        $file = $request->file('document');
-
-        return [
-            $file->store(self::DIR.'/'.$vendor->id, 'local'),
-            mb_substr((string) $file->getClientOriginalName(), 0, 255),
-        ];
+        return redirect()->route('vendors.show', [$vendor, 'tab' => 'billing']);
     }
 
     /**
-     * Which document this submit carries: a new upload, or nothing.
+     * This operator's completed scan for this vendor, of the billing kind.
      *
-     * `replaced` drives both the old file's deletion and the re-reading of the summary, so
-     * it must mean "the record now points at a DIFFERENT file" — a save that only edits the
-     * typed figures must not discard the reading of a document that has not changed.
-     *
-     * @return array{path:?string,name:?string,data:array,replaced:bool}
+     * Scoped by vendor, uploader AND kind — the token arrives in the request, so without
+     * all three a contract upload could be filed as an invoice (putting a contract's term
+     * into a due date) or somebody else's upload could be claimed.
      */
-    private function resolveDocument(Request $request, Vendor $vendor, array $data): array
+    private function claimScan(Vendor $vendor, string $token): ?VendorDocumentScan
     {
-        if ($request->hasFile('document')) {
-            [$path, $name] = $this->storeDocument($request, $vendor);
+        return VendorDocumentScan::where('vendor_id', $vendor->id)
+            ->where('user_id', Auth::id())
+            ->where('kind', VendorDocumentScan::KIND_BILLING)
+            ->where('token', $token)
+            ->first();
+    }
 
-            return ['path' => $path, 'name' => $name, 'data' => $data, 'replaced' => true];
+    /**
+     * The figures the reading produced, with the two the column layer insists on.
+     *
+     * `doc_type` is already resolved to a valid type by the reading (it is what decides
+     * quotation vs invoice now that the form does not ask), and `status` seeds the
+     * lifecycle at the same 'received' every document used to start on.
+     */
+    private function fieldsFromScan(array $fields): array
+    {
+        return array_merge($fields, [
+            'doc_type' => $fields['doc_type'] ?? 'invoice',
+            'status' => 'received',
+            'currency' => $fields['currency'] ?? VendorBillingDocument::DEFAULT_CURRENCY,
+        ]);
+    }
+
+    /** Says what the reading managed, so a blank summary never reads as an empty document. */
+    private function readingNote(VendorBillingDocument $document): string
+    {
+        if (in_array($document->ai_status, ['ok', 'partial'], true)) {
+            return '';
         }
 
-        return ['path' => null, 'name' => null, 'data' => $data, 'replaced' => false];
+        return ' '.(VendorBillingDocument::aiNoteFor($document->ai_status) ?: 'The document was not read.');
     }
 
     /**
-     * Queue the summary + transcription pass. Out of band for the same reason as the
-     * contract side: a long PDF read inside the save request is what times out on live.
+     * The Edit form's whole surface: the reading, and optionally a replacement document.
+     *
+     * Every figure the record carries is absent on purpose. Accepting them here would give
+     * a crafted submit a way to set a total, a due date or a document number that no form
+     * ever displayed — and there is no form left that displays them.
+     *
+     * `status` was the one exception until 2026-08-13 and is now gone with the rest. Whether
+     * an invoice is Paid is derived from the payment slip filed against it, so accepting a
+     * status here would let a submit assert a bill was settled with no document behind it —
+     * on the one register whose entire value is provenance.
+     */
+    private function validateDocument(Request $request, Vendor $vendor): array
+    {
+        return $request->validate([
+            'scan_token' => 'nullable|string|max:64',
+            'ai_summary' => 'nullable|string|max:6000',
+            'companies_involved' => 'nullable|string|max:2000',
+        ]);
+    }
+
+    /**
+     * Queue a background reading for a document nobody scanned.
+     *
+     * The ONE remaining caller is registerFromAssets(), which files an invoice copied off
+     * an asset record — there is no modal, no operator watching, and nothing to review
+     * before saving. Every document that arrives through the Add form is read inline
+     * instead, because the whole point there is that its summary is on screen before the
+     * record exists.
      */
     private function queueSummary(VendorBillingDocument $document, bool $documentChanged): string
     {

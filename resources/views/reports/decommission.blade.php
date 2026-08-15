@@ -68,23 +68,70 @@
             <a href="{{ route('reports.decommission') }}" class="btn btn-sm btn-outline-secondary">Reset</a>
             @endif
         </form>
-        {{-- Quotation approval lives on Accounting → Assets → status "Disposed" and nowhere
-             else; only link out for users who can actually open that page (it_manager and
-             hr_manager can approve nothing and have no accounting access). --}}
-        @if(Auth::user()->canApproveEwasteQuotation() && Auth::user()->canViewAccounting())
-        <a href="{{ route('accounting.fixed-assets.index', ['status' => 'disposed']) }}" class="btn btn-sm btn-outline-warning ms-auto">
-            <i class="bi bi-cash-coin me-1"></i>Pending Quotations
-        </a>
-        @endif
+        {{-- No link out to Accounting → Assets any more: quotation review lives on THIS page
+             and nowhere else, so a button pointing somewhere else for it would recreate the
+             split this page was made to end. --}}
     </div>
 </div>
+
+{{-- ══════════════ Awaiting your decision ══════════════
+     The cycles this user can actually act on — Finance's position, management's
+     authorisation, or both. Loaded outside the paginated archive below on purpose: an
+     approver has to reach a pending cycle whichever page of the list it would fall on, and
+     the full comparison is worth rendering only for the handful that need one.
+
+     Nothing is shown to a viewer with no decision to make (hr_manager reads the archive and
+     approves nothing), so this stays absent rather than becoming an empty panel. --}}
+@if($awaiting->isNotEmpty())
+<div class="card ewx-card mb-3">
+    <div class="ewx-head">
+        <span class="ewx-chip ewx-chip-warn"><i class="bi bi-hourglass-split"></i></span>
+        <div class="me-2">
+            <span class="ewx-title">Awaiting your decision</span>
+            <span class="ewx-sub">Compare the vendors&rsquo; offers and decide. The vendor pays us for scrap, so the best offer is the highest.</span>
+        </div>
+        <span class="ewx-count ewx-count-warn">{{ $awaiting->count() }}</span>
+    </div>
+    <div class="card-body">
+        @foreach($awaiting as $pending)
+            <div class="mb-4 pb-2 {{ ! $loop->last ? 'border-bottom' : '' }}">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                    <div>
+                        <a href="{{ route('decommission.show', $pending) }}" class="ewx-code">{{ $pending->batch_number }}</a>
+                        <span class="text-muted small ms-2">
+                            {{ $pending->issuingCompany() }} &middot;
+                            {{ $pending->items_count }} asset{{ $pending->items_count === 1 ? '' : 's' }} &middot;
+                            submitted {{ fmt_date($pending->submitted_for_approval_at) }}
+                        </span>
+                    </div>
+                    <a href="{{ route('reports.decommission.view', $pending) }}" target="_blank" rel="noopener"
+                       class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-file-earmark-pdf me-1"></i>Asset list
+                    </a>
+                </div>
+
+                @include('it.decommission._quotation-comparison', [
+                    'batch' => $pending,
+                    // IT's upload and submit controls stay on the cycle page — this surface is
+                    // for deciding, and offering to file a new offer mid-review would change
+                    // the comparison under the person reviewing it.
+                    'canManage' => false,
+                    'canDecide' => Auth::user()->canApproveEwasteAsManagement($pending->company),
+                    'canFinance' => $canFinance,
+                    'ewasteVendors' => $ewasteVendors,
+                ])
+            </div>
+        @endforeach
+    </div>
+</div>
+@endif
 
 <div class="card ewx-card">
     <div class="ewx-head">
         <span class="ewx-chip ewx-chip-slate"><i class="bi bi-archive"></i></span>
         <div class="me-2">
-            <span class="ewx-title">Decommissioning Archive</span>
-            <span class="ewx-sub">Every completed e-waste disposal cycle. Rental returns are acknowledged on an AARF and archived on the vendor&rsquo;s profile.</span>
+            <span class="ewx-title">E-waste Cycles</span>
+            <span class="ewx-sub">Every disposal cycle, in-flight ones included. Rental returns are acknowledged on an AARF and archived on the vendor&rsquo;s profile.</span>
         </div>
         @if($batches->total())
         <span class="ewx-count">{{ $batches->total() }}</span>
@@ -94,7 +141,7 @@
         @if($batches->isEmpty())
             <div class="ewx-empty">
                 <i class="bi bi-inbox"></i>
-                No completed e-waste cycles found{{ $year ? ' for this year' : '' }}.
+                No e-waste cycles found{{ $year ? ' for this year' : '' }}.
             </div>
         @else
         <div class="table-responsive">
@@ -112,14 +159,33 @@
                 </thead>
                 <tbody>
                 @foreach($batches as $batch)
-                    @php [$badgeClass, $badgeLabel] = $batch->statusBadge(); $amt = $batch->reportAmount(); @endphp
+                    @php
+                        // ewasteStageBadge(), not statusBadge(): this page is read by Finance
+                        // and management, and the two readings diverge exactly where it
+                        // matters — an approved cycle is "done" to IT but still open here
+                        // until the vendor has collected and paid.
+                        [$badgeClass, $badgeLabel] = $batch->ewasteStageBadge();
+                        $amt = $batch->reportAmount();
+                        $vndDone = $batch->isFinalized() || $batch->status === 'completed';
+                    @endphp
                     <tr>
                         <td class="ps-3">
                             <a href="{{ route('decommission.show', $batch) }}" class="ewx-code">{{ $batch->batch_number }}</a>
                         </td>
                         <td class="text-center">{{ $batch->items_count }}</td>
                         <td>{{ $batch->vendor?->name ?? '—' }}</td>
-                        <td class="text-end {{ $amt !== null ? 'ewx-amt' : 'text-muted' }}">{{ $amt !== null ? '+'.number_format($amt, 2) : '—' }}</td>
+                        {{-- An offer on an unfinished cycle is money nobody has been paid, so it
+                             prints as a muted "offer" rather than a +credit. Same guard as the
+                             headline tile, which counts completed cycles only. --}}
+                        <td class="text-end {{ $amt !== null && $vndDone ? 'ewx-amt' : 'text-muted' }}">
+                            @if($amt === null)
+                                —
+                            @elseif($vndDone)
+                                +{{ number_format($amt, 2) }}
+                            @else
+                                {{ number_format($amt, 2) }} offer
+                            @endif
+                        </td>
                         <td>{{ fmt_date($batch->finalized_at ?? $batch->created_at) }}</td>
                         <td><span class="badge rounded-pill bg-{{ $badgeClass }}">{{ $badgeLabel }}</span></td>
                         <td class="text-end pe-3">

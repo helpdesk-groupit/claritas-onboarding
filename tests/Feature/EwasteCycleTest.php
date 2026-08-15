@@ -35,15 +35,23 @@ class EwasteCycleTest extends TestCase
         parent::tearDown();
     }
 
-    private function stageEwaste(): AssetInventory
+    /**
+     * A queued e-waste asset that is READY for a cycle — inspected, with its owning company
+     * confirmed. Since Phase 4 the sweep refuses to run while anything in the queue is not,
+     * so these cycle-mechanics tests would otherwise all be testing the gate instead. The
+     * gate itself is covered in EwasteDecommissionFlowTest.
+     */
+    private function stageEwaste(array $attrs = []): AssetInventory
     {
         $asset = AssetInventory::factory()->create(['asset_condition' => 'not_good', 'status' => 'unavailable']);
-        DisposedAsset::create([
+        DisposedAsset::create(array_merge([
             'asset_inventory_id' => $asset->id, 'asset_tag' => $asset->asset_tag,
             'asset_type' => $asset->asset_type, 'brand' => $asset->brand, 'model' => $asset->model,
             'serial_number' => $asset->serial_number, 'asset_condition' => 'not_good',
             'decommission_type' => 'e_waste', 'disposed_by' => 'IT', 'disposed_at' => now(),
-        ]);
+            'ewaste_completeness' => 'complete', 'company' => 'Claritas Asia Sdn Bhd',
+            'inspected_at' => now(),
+        ], $attrs));
 
         return $asset;
     }
@@ -51,15 +59,16 @@ class EwasteCycleTest extends TestCase
     public function test_sweep_service_opens_cycle_rfqs_vendor_and_reports_finance(): void
     {
         Mail::fake();
-        Vendor::create(['name' => 'RecycleCo', 'vendor_types' => ['ewaste'], 'pic_email' => 'ops@recycleco.com', 'is_primary_ewaste' => true, 'is_active' => true]);
+        Vendor::create(['name' => 'RecycleCo', 'vendor_types' => ['ewaste'], 'pic_email' => 'ops@recycleco.com', 'is_active' => true]);
         User::factory()->create(['role' => 'finance_manager']);
         $asset = $this->stageEwaste();
 
         $result = EwasteSweepService::sweep();
 
-        $this->assertNotNull($result['batch']);
-        $this->assertSame('awaiting_quotation', $result['batch']->status);
-        $this->assertSame($result['batch']->id, $asset->fresh()->decommission_batch_id);
+        $batch = $result['batches']->first();
+        $this->assertNotNull($batch);
+        $this->assertSame('awaiting_quotation', $batch->status);
+        $this->assertSame($batch->id, $asset->fresh()->decommission_batch_id);
         Mail::assertSent(EwasteRfqMail::class);
         Mail::assertSent(EwasteAwaitingReportMail::class);
     }
@@ -67,7 +76,7 @@ class EwasteCycleTest extends TestCase
     public function test_finance_report_goes_to_manager_and_ccs_executives_on_work_email_only(): void
     {
         Mail::fake();
-        Vendor::create(['name' => 'RecycleCo', 'vendor_types' => ['ewaste'], 'pic_email' => 'ops@recycleco.com', 'is_primary_ewaste' => true, 'is_active' => true]);
+        Vendor::create(['name' => 'RecycleCo', 'vendor_types' => ['ewaste'], 'pic_email' => 'ops@recycleco.com', 'is_active' => true]);
         $manager = User::factory()->create(['role' => 'finance_manager', 'work_email' => 'fin.manager@claritas.com']);
         $exec = User::factory()->create(['role' => 'finance_executive', 'work_email' => 'fin.exec@claritas.com']);
         User::factory()->create(['role' => 'finance_executive', 'work_email' => 'fin.exec2@claritas.com', 'is_active' => false]);
@@ -100,7 +109,7 @@ class EwasteCycleTest extends TestCase
         $this->stageEwaste();
         EwasteSweepService::sweep();                      // first sweep takes it
         $second = EwasteSweepService::sweep();            // nothing new
-        $this->assertNull($second['batch']);
+        $this->assertTrue($second['batches']->isEmpty());
         $this->assertSame(1, AssetDecommissionBatch::count());
     }
 
@@ -124,11 +133,18 @@ class EwasteCycleTest extends TestCase
         $this->assertSame(1, AssetDecommissionBatch::count());
     }
 
+    /**
+     * A cycle whose comparison IT have submitted — both Finance and management have been asked
+     * and neither has answered. `quotation_uploaded` is no longer a reviewable state since
+     * Phase 5: offers are still being collected then.
+     */
     private function quotedBatch(): AssetDecommissionBatch
     {
         return AssetDecommissionBatch::create([
-            'batch_number' => 'EWA-2026-Q3', 'type' => 'e_waste', 'status' => 'quotation_uploaded',
-            'finance_status' => 'pending', 'quotation_amount' => 350, 'quotation_path' => 'ewaste_quotations/EWA/q.pdf',
+            'batch_number' => 'EWA-2026-Q3', 'type' => 'e_waste', 'status' => 'pending_approval',
+            'company' => 'Claritas Asia Sdn Bhd',
+            'finance_status' => 'pending', 'management_status' => 'pending',
+            'quotation_amount' => 350, 'quotation_path' => 'ewaste_quotations/EWA/q.pdf',
             'quotation_uploaded_at' => now(),
         ]);
     }
@@ -142,8 +158,11 @@ class EwasteCycleTest extends TestCase
 
         $batch->refresh();
         $this->assertSame('approved', $batch->finance_status);
-        $this->assertSame('finance_approved', $batch->status);
         $this->assertSame($fin->id, $batch->finance_reviewed_by);
+        // Since Phase 5 Finance record a POSITION — the cycle only moves when management
+        // approve, so it stays pending here rather than advancing to a released state.
+        $this->assertSame('pending_approval', $batch->status);
+        $this->assertFalse($batch->isApproved());
     }
 
     public function test_approve_guard_blocks_non_pending(): void
@@ -415,28 +434,28 @@ class EwasteCycleTest extends TestCase
         $this->assertSame(0, DisposedAsset::where('asset_inventory_id', $asset->id)->count());
     }
 
-    public function test_incomplete_ewaste_requires_parts_then_stores_them(): void
+    /**
+     * Superseded 2026-08-13 by the refined flow: completeness and the parts list moved off
+     * this form onto the inspection (Phase 2), so the form must now IGNORE them rather than
+     * validate them. The rule they used to enforce lives in EwasteDecommissionFlowTest.
+     */
+    public function test_the_asset_form_no_longer_sets_completeness_and_leaves_the_row_uninspected(): void
     {
         $it = User::factory()->create(['role' => 'it_manager']);
         $asset = AssetInventory::factory()->create(['asset_condition' => 'good']);
 
-        // Not Good + Incomplete with empty parts → blocked.
         $this->actingAs($it)->put(route('assets.update', $asset), $this->assetUpdatePayload($asset, [
             'asset_condition' => 'not_good',
-            'ewaste_completeness' => 'incomplete',
-            'ewaste_parts_removed' => '',
-        ]))->assertSessionHasErrors('ewaste_parts_removed');
-
-        // With the parts listed → saved and staged with the list.
-        $this->actingAs($it)->put(route('assets.update', $asset), $this->assetUpdatePayload($asset, [
-            'asset_condition' => 'not_good',
+            'decommission_reason' => 'Water damage',
+            // Posted by hand — no screen offers these any more, so they must not take effect.
             'ewaste_completeness' => 'incomplete',
             'ewaste_parts_removed' => 'Battery, RAM',
         ]))->assertSessionHasNoErrors();
 
         $staging = DisposedAsset::where('asset_inventory_id', $asset->id)->first();
         $this->assertNotNull($staging);
-        $this->assertSame('incomplete', $staging->ewaste_completeness);
-        $this->assertSame('Battery, RAM', $staging->ewaste_parts_removed);
+        $this->assertNull($staging->ewaste_completeness, 'Completeness may only be set by an inspection.');
+        $this->assertNull($staging->ewaste_parts_removed);
+        $this->assertFalse($staging->isInspected(), 'Marking an asset Not Good is not an inspection.');
     }
 }

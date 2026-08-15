@@ -13,16 +13,21 @@
      button that does that on the document row is behind this panel's backdrop, so pointing
      at it would be pointing somewhere the operator cannot reach.
 
-     Expects: $vendor, $askable (Collection of documents), $chatMessages, $askFocus,
-     $canManage. --}}
+     Expects: $vendor, $askable (Collection of documents), $chatMessages, $focusDoc
+     (the one document this was opened about, or null for the whole vendor), $canManage.
+
+     $focusDoc is resolved ONCE, by show.blade.php, and handed down: the panel header and
+     this body both name what is in scope, and two places deriving it from the raw ?focus=
+     key is how they end up disagreeing about which document an answer came from. --}}
 @php
     $vndUsable = $askable->filter->hasAiText();
     $vndBlocked = $askable->reject->hasAiText();
     // A focus link from a document row pre-selects just that one; otherwise everything
-    // readable is in scope, which is what "ask about this vendor" means. A focus key naming
-    // a document that CANNOT be asked about falls back to everything — ticking nothing
-    // would look like an empty scope rather than an unreadable document.
-    $vndFocusKey = $askFocus && $vndUsable->contains(fn ($d) => $d->askKey() === $askFocus) ? $askFocus : null;
+    // readable is in scope, which is what the floating button means. A focus key naming a
+    // document that CANNOT be asked about resolves to null upstream and falls back to
+    // everything — ticking nothing would look like an empty scope rather than an
+    // unreadable document.
+    $vndFocusKey = $focusDoc?->askKey();
 
     $vndAiOn = config('vendors.ai.enabled', true);
 
@@ -33,9 +38,24 @@
     // later became unreadable would quietly destroy the audit value of keeping it.
     $vndCanAsk = $vndAiOn && $vndUsable->isNotEmpty();
 
-    // Matches the @checked below, so the bar's opening count is never a line the page has
-    // to be corrected on by the first click.
-    $vndInScope = $vndFocusKey ? 1 : $vndUsable->count();
+    // What the assistant will read, SAID rather than counted. "1 of 3 in scope" is true and
+    // useless: opened from a document row this panel answers about that document alone, and
+    // a number gives the reader no way to tell WHICH — so an answer scoped to the wrong
+    // document is indistinguishable from one scoped to the right one. Kept in step with the
+    // @checked below and re-derived by the script on every scope change, so the sentence can
+    // never be a line the page has to be corrected on by the first click.
+    $vndOnlyDoc = $focusDoc ?: ($vndUsable->count() === 1 ? $vndUsable->first() : null);
+    $vndScopePhrase = $vndUsable->isEmpty() ? 'No document has been read yet'
+        : ($vndOnlyDoc ? 'Asking about: '.$vndOnlyDoc->aiLabel()
+        : 'Asking about all '.$vndUsable->count().' documents');
+
+    // Named in the box the question is typed into as well: someone who came from a row is
+    // looking here, not at the toolbar, when they decide what to ask. Clipped with the
+    // ellipsis as the CUT MARK rather than appended after one — a label that fits would
+    // otherwise read as shortened, and one that does not would end in two of them.
+    $vndAskPlaceholder = $vndOnlyDoc
+        ? 'Ask about '.\Illuminate\Support\Str::limit($vndOnlyDoc->aiLabel(), 44, '…')
+        : 'Ask about these contracts and invoices…';
 
     // Why the composer is dead, said in the composer rather than only above it. Ordered
     // most-specific first: "nothing filed" and "nothing read" are different problems with
@@ -49,14 +69,16 @@
 <div class="vnd-ask-toolbar">
     @if($askable->isNotEmpty())
         {{-- Collapsed by default when there IS something to ask: in a panel this narrow the
-             chips pushed the thread off the bottom, and the count is the part worth a
-             glance. Defaulted OPEN when nothing is readable, because then this list — and
-             the reason beside each row — is the only content the panel has. --}}
+             chips pushed the thread off the bottom, and the one-line summary of what will
+             be read is the part worth a glance. Defaulted OPEN when nothing is readable,
+             because then this list — and the reason beside each row — is the only content
+             the panel has. --}}
         <button class="vnd-ask-scopebar" type="button" data-bs-toggle="collapse"
                 data-bs-target="#vndAskScope" aria-controls="vndAskScope"
-                aria-expanded="{{ $vndCanAsk ? 'false' : 'true' }}">
+                aria-expanded="{{ $vndCanAsk ? 'false' : 'true' }}"
+                title="What the assistant will read for the next question — open to change it">
             <i class="bi bi-file-earmark-text"></i>
-            <span><strong data-vnd-ask-count>{{ $vndInScope }}</strong> of {{ $vndUsable->count() }} in scope</span>
+            <span class="vnd-ask-subject" data-vnd-ask-subject>{{ $vndScopePhrase }}</span>
             @if($vndBlocked->isNotEmpty())
                 <span class="vnd-ask-scopebar-warn">{{ $vndBlocked->count() }} unavailable</span>
             @endif
@@ -86,8 +108,13 @@
                     <label class="vnd-ask-chip">
                         {{-- Shown but inert when the AI is off: dropping them would hide what
                              the assistant CAN see behind a switch, and the panel's whole job
-                             is to say what went into an answer. --}}
+                             is to say what went into an answer.
+
+                             data-vnd-doc-label so the script can NAME the document in the
+                             scope line and the composer. Read off an attribute rather than
+                             the chip's own text, which also carries the "partial" badge. --}}
                         <input type="checkbox" value="{{ $vndDoc->askKey() }}"
+                               data-vnd-doc-label="{{ $vndDoc->aiLabel() }}"
                                @checked($vndFocusKey === null || $vndFocusKey === $vndDoc->askKey())
                                @disabled(! $vndAiOn)>
                         <span>{{ $vndDoc->aiLabel() }}</span>
@@ -232,7 +259,8 @@
     @csrf
     <div class="input-group">
         <input type="text" class="form-control" name="question" maxlength="2000" autocomplete="off"
-               placeholder="Ask about these contracts and invoices…" data-vnd-ask-input>
+               placeholder="{{ $vndAskPlaceholder }}" data-vnd-ask-input
+               data-vnd-ask-placeholder-all="Ask about these contracts and invoices…">
         <button class="btn btn-primary" type="submit" data-vnd-ask-send>
             <i class="bi bi-send me-1"></i>Ask
         </button>

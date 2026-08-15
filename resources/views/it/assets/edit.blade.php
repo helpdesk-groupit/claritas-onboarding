@@ -458,35 +458,18 @@
             <div class="form-text">Shown in the Decommissioning tab. Recommended for returned rental assets (e.g. contract end).</div>
         </div>
 
-        {{-- E-waste completeness — shown for Not Good (e-waste) only. Drives the vendor's disposal price. --}}
-        <div class="col-md-3" id="ewasteCompletenessWrap" style="{{ $cond === 'not_good' ? '' : 'display:none;' }}">
-            <label class="form-label fw-semibold">Completeness @if($cond === 'not_good')<span class="text-danger">*</span>@endif</label>
-            @php
-                $existingCompleteness = old('ewaste_completeness',
-                    \App\Models\DisposedAsset::where('asset_inventory_id', $asset->id)->value('ewaste_completeness') ?: 'complete');
-            @endphp
-            <select name="ewaste_completeness" id="ewasteCompleteness" class="form-select" {{ $cond === 'not_good' ? 'required' : '' }}>
-                <option value="complete"   {{ $existingCompleteness === 'complete' ? 'selected' : '' }}>Complete — all parts intact</option>
-                <option value="incomplete" {{ $existingCompleteness === 'incomplete' ? 'selected' : '' }}>Incomplete — parts removed</option>
-            </select>
-            <div class="form-text">Incomplete = parts like battery, RAM or hard disk removed. Affects the e-waste vendor's price.</div>
+        {{-- Completeness and the parts-removed list used to live here. They are recorded by an
+             INSPECTION now (Decommissioning tab → Inspect), because the vendor prices against
+             that verdict and it has to come from someone who opened the machine — not from
+             whoever happened to change the condition dropdown. --}}
+        @if($cond === 'not_good')
+        <div class="col-md-6 d-flex align-items-end">
+            <div class="form-text mb-1">
+                <i class="bi bi-info-circle me-1"></i>
+                Completeness and removed parts are recorded when this asset is <strong>inspected</strong>, from the Decommissioning tab.
+            </div>
         </div>
-
-        {{-- Parts removed — shown only when Completeness = Incomplete (Not Good e-waste). --}}
-        @php
-            $existingPartsRemoved = old('ewaste_parts_removed',
-                \App\Models\DisposedAsset::where('asset_inventory_id', $asset->id)->value('ewaste_parts_removed') ?? '');
-            $showParts = $cond === 'not_good' && $existingCompleteness === 'incomplete';
-        @endphp
-        <div class="col-md-6" id="ewastePartsWrap" style="{{ $showParts ? '' : 'display:none;' }}">
-            <label class="form-label fw-semibold">Parts Removed <span class="text-danger">*</span></label>
-            <input type="text" name="ewaste_parts_removed" id="ewasteParts"
-                   class="form-control"
-                   value="{{ $existingPartsRemoved }}"
-                   placeholder="e.g. Battery, RAM, Hard disk, Charger"
-                   {{ $showParts ? 'required' : '' }}>
-            <div class="form-text">List the parts removed from this asset. Shown to the e-waste vendor (and Finance) for pricing.</div>
-        </div>
+        @endif
 
         <div class="col-md-3"><label class="form-label fw-semibold">Last Maintenance Date</label><input type="date" name="last_maintenance_date" class="form-control" value="{{ old('last_maintenance_date',$asset->last_maintenance_date?->format('Y-m-d')) }}"></div>
         <div class="col-12">
@@ -832,32 +815,7 @@ function syncStatusFromCondition(condition) {
         }
     }
 
-    // Completeness applies to Not Good (e-waste) only.
-    const completenessWrap  = document.getElementById('ewasteCompletenessWrap');
-    const completenessInput = document.getElementById('ewasteCompleteness');
-    if (completenessWrap) {
-        const isEwaste = condition === 'not_good';
-        completenessWrap.style.display = isEwaste ? '' : 'none';
-        if (completenessInput) {
-            completenessInput.required = isEwaste;
-            // Leaving the e-waste state resets completeness so a stale "incomplete" isn't
-            // submitted from the now-hidden select (which would trip the Parts-Removed rule).
-            if (!isEwaste) completenessInput.value = 'complete';
-        }
-    }
-    toggleEwasteParts();
-}
-
-// Parts-removed field shows only when the asset is Not Good AND marked Incomplete.
-function toggleEwasteParts() {
-    const condEl = document.getElementById('assetCondition');
-    const compEl = document.getElementById('ewasteCompleteness');
-    const wrap   = document.getElementById('ewastePartsWrap');
-    const input  = document.getElementById('ewasteParts');
-    if (!wrap) return;
-    const show = !!condEl && condEl.value === 'not_good' && !!compEl && compEl.value === 'incomplete';
-    wrap.style.display = show ? '' : 'none';
-    if (input) input.required = show;
+    // Completeness / parts-removed are no longer on this form — they are set by an inspection.
 }
 
 // Run on page load + bind change listeners
@@ -867,11 +825,6 @@ document.addEventListener('DOMContentLoaded', function () {
         syncStatusFromCondition(condEl.value);
         condEl.addEventListener('change', function() { syncStatusFromCondition(this.value); });
     }
-    const compEl = document.getElementById('ewasteCompleteness');
-    if (compEl) {
-        compEl.addEventListener('change', toggleEwasteParts);
-    }
-    toggleEwasteParts();
 });
 
 // ── Asset Name auto-fill (same as Add form) ───────────────────────────────

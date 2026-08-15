@@ -2,20 +2,28 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\EwasteAwardMail;
 use App\Mail\EwasteFinalReportMail;
+use App\Mail\EwasteManagementApprovalMail;
 use App\Mail\EwasteQuotationApprovalMail;
 use App\Models\AssetDecommissionBatch;
+use App\Models\AssetDecommissionQuotation;
 use App\Models\AssetInventory;
+use App\Models\Company;
 use App\Models\DisposedAsset;
 use App\Models\User;
+use App\Models\Vendor;
 use App\Notifications\DecommissionNotification;
 use App\Services\DecommissionReportRenderer;
 use App\Services\EwasteDocumentOcrService;
+use App\Services\EwasteQuotationFilingService;
 use App\Services\EwasteSweepService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
 
 /**
  * E-WASTE ONLY.
@@ -45,26 +53,47 @@ class AssetDecommissionController extends Controller
         }
     }
 
-    /** IT-side cycle detail. Finance may view it too. */
+    /**
+     * IT's working page for one cycle. Finance and management may READ it; neither decides here.
+     *
+     * The management approve/reject controls lived on this page until 2026-08-14 and were moved
+     * to Management → Decommissioning, which is now the single review surface for both Finance
+     * and management. This page is IT's: gather the offers, recommend one, upload the receipt.
+     * Do not put a decision control back on it — two places to approve one disposal is the
+     * arrangement that move was undoing.
+     */
     public function show(AssetDecommissionBatch $batch)
     {
         $user = Auth::user();
         $canManage = $user->canManageDecommission();
-        $financeViewingEwaste = $batch->isEwaste() && $user->canViewDecommissionReports();
-        if (! $canManage && ! $financeViewingEwaste) {
+        // A named approver still reaches the page to READ the cycle their decision concerns —
+        // they may hold none of the other decommission permissions, since a CEO is not IT and
+        // not Finance. They decide on the Decommissioning page.
+        $canRead = $batch->isEwaste()
+            && ($user->canViewDecommissionReports() || $user->canApproveEwasteAsManagement($batch->company));
+        if (! $canManage && ! $canRead) {
             abort(403);
         }
 
-        // `quotations` carries the re-quote loop (every offer + the Finance decision on it);
-        // the timeline walks it rather than the batch's single-revision cache columns.
+        // `quotations` carries every vendor's offers and the decision made on each; the
+        // comparison and the timeline both walk it rather than the batch's cache columns.
         $batch->load([
-            'vendor', 'items.asset', 'creator', 'financeReviewer',
-            'quotations.uploader', 'quotations.financeReviewer',
+            'vendor', 'items.asset', 'creator', 'financeReviewer', 'managementReviewer',
+            'quotations.uploader', 'quotations.financeReviewer', 'quotations.vendor',
+            'recommendedQuotation.vendor', 'selectedQuotation.vendor',
         ]);
 
         return view('it.decommission.show', [
             'batch' => $batch,
             'canManage' => $canManage,
+            // Always false: the decision moved to the Decommissioning page. Passed rather than
+            // dropped because the comparison partial is shared with that page, where it is
+            // per-company true.
+            'canDecide' => false,
+            // Who may be named as the sender of a filed quotation — the same set the RFQ went to.
+            'ewasteVendors' => Vendor::where('is_active', true)
+                ->whereJsonContains('vendor_types', 'ewaste')
+                ->orderBy('name')->get(['id', 'name']),
         ]);
     }
 
@@ -87,6 +116,89 @@ class AssetDecommissionController extends Controller
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    //  Phase 2 — Inspection
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Record an inspection against a queued e-waste asset: its completeness, the parts taken
+     * off it, and the company that owns it.
+     *
+     * A separate act from marking the asset Not Good, deliberately. The completeness is what
+     * the vendor prices against, so it has to be decided by someone who physically opened the
+     * machine — and the quarterly cycle refuses to run while anything in the queue is still
+     * unexamined, which only means something if "unexamined" is a state the data can hold.
+     *
+     * Re-inspectable until the asset is swept into a cycle: a correction before the RFQ costs
+     * nothing, and afterwards the vendor has already quoted against what was recorded.
+     */
+    public function inspect(Request $request, DisposedAsset $disposedAsset)
+    {
+        $this->authorizeManage();
+
+        // A vendor return is not inspected here — the collector examines it and signs the
+        // return AARF, which is the document that records its condition.
+        if (! $disposedAsset->isEwaste()) {
+            return back()->with('error', 'Only assets staged for e-waste are inspected here — a returned rental asset is examined on its return form.');
+        }
+
+        if ($disposedAsset->decommission_batch_id) {
+            return back()->with('error', 'This asset is already in cycle '.($disposedAsset->batch?->batch_number ?? 'a collection cycle').' — the vendor has been asked to quote against what was recorded, so its inspection can no longer be changed.');
+        }
+
+        $companies = Company::orderBy('name')->pluck('name');
+        if ($companies->isEmpty()) {
+            return back()->with('error', 'No companies are registered, so the owning company cannot be confirmed. Register the company first.');
+        }
+
+        $data = $request->validate([
+            'ewaste_completeness' => ['required', Rule::in(array_keys(DisposedAsset::COMPLETENESS))],
+            // Recording WHICH parts came off is the whole substance of an "Incomplete"
+            // verdict — without it the vendor is told the machine is short of something,
+            // but not what, and cannot price it.
+            'ewaste_parts_removed' => ['nullable', 'string', 'max:500', Rule::requiredIf(
+                fn () => $request->input('ewaste_completeness') === 'incomplete'
+            )],
+            // Confirmed against the registered companies, never the asset's own free-text
+            // company_name: from Phase 4 this decides which management approver may authorise
+            // the disposal, and a fuzzy match is not a good enough basis for that.
+            'company' => ['required', 'string', Rule::in($companies->all())],
+            // Rows staged before the reason became mandatory have none, and the queue is
+            // where that gap is closed — required only for those, so an inspection of a
+            // properly-marked asset is not made to re-type what is already on file.
+            'reason' => ['nullable', 'string', 'max:500', Rule::requiredIf(
+                fn () => blank($disposedAsset->reason)
+            )],
+        ], [
+            'ewaste_parts_removed.required' => 'List the parts removed — an "Incomplete" asset the vendor cannot itemise cannot be priced.',
+            'company.required' => 'Confirm which company owns this asset.',
+            'company.in' => 'Pick one of the registered companies — the owner decides who approves the disposal.',
+            'reason.required' => 'This asset was queued before a reason was required. State why it is being written off.',
+        ]);
+
+        $parts = $data['ewaste_completeness'] === 'incomplete'
+            ? (trim((string) ($data['ewaste_parts_removed'] ?? '')) ?: null)
+            : null;   // a "Complete" verdict must not keep a parts list from an earlier one
+
+        $disposedAsset->update([
+            'ewaste_completeness' => $data['ewaste_completeness'],
+            'ewaste_parts_removed' => $parts,
+            'company' => $data['company'],
+            'inspected_at' => now(),
+            'inspected_by' => Auth::id(),
+            'reason' => filled($data['reason'] ?? null) ? $data['reason'] : $disposedAsset->reason,
+        ]);
+
+        $actor = Auth::user();
+        $verdict = DisposedAsset::COMPLETENESS[$data['ewaste_completeness']];
+        $note = $parts ? "{$verdict} — parts removed: {$parts}" : $verdict;
+        $disposedAsset->asset?->appendRemark(
+            "E-waste inspection: {$note}. Owner confirmed as {$data['company']}. Inspected by ".($actor->name ?? 'IT').'.'
+        );
+
+        return back()->with('success', "{$disposedAsset->asset_tag} inspected — {$note}.");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
     //  The e-waste cycle (quarterly, finance-gated)
     // ═══════════════════════════════════════════════════════════════════════
 
@@ -97,11 +209,25 @@ class AssetDecommissionController extends Controller
 
         $result = EwasteSweepService::sweep(Auth::id());
 
-        if (! $result['batch']) {
+        // "Run sweep now" bypasses the quarterly DATE gate only — never the inspection gate.
+        // Letting it through here would make the gate decorative: the one button an operator
+        // reaches for when the cycle did not run is this one.
+        if ($result['blocked']) {
+            return back()->with('error', $result['message']);
+        }
+
+        if ($result['batches']->isEmpty()) {
             return back()->with('info', $result['message']);
         }
 
-        return redirect()->route('decommission.show', $result['batch'])->with('success', $result['message']);
+        // A sweep now produces one cycle per company. Land on it when there is only one;
+        // otherwise go back to the queue, where all of them are listed.
+        if ($result['batches']->count() === 1) {
+            return redirect()->route('decommission.show', $result['batches']->first())
+                ->with('success', $result['message']);
+        }
+
+        return redirect()->route('assets.index', ['tab' => 'damaged'])->with('success', $result['message']);
     }
 
     /** Stage 2 — IT uploads the vendor's quotation (RM they will pay us). */
@@ -109,7 +235,10 @@ class AssetDecommissionController extends Controller
     {
         $this->authorizeManage();
 
-        if (! $batch->isEwaste() || ! in_array($batch->status, ['awaiting_quotation', 'finance_rejected'])) {
+        // Quotations are collected while the cycle is gathering them, and again after a
+        // rejection sends everyone back for revised offers. Not while a decision is pending —
+        // an offer arriving mid-review would change the comparison under the approvers.
+        if (! $batch->isEwaste() || ! in_array($batch->status, ['awaiting_quotation', 'quotation_uploaded', 'rejected', 'finance_rejected'])) {
             return back()->with('error', 'A quotation cannot be uploaded for this cycle right now.');
         }
 
@@ -119,116 +248,270 @@ class AssetDecommissionController extends Controller
         $request->validate([
             'quotation_file' => 'required|file|mimes:pdf,jpg,jpeg,png|max:5120|valid_file_content',
             'quotation_amount' => 'nullable|numeric|min:0.01|max:99999999.99',
+            // WHOSE offer this is. Required: the cycle RFQs every active e-waste vendor, so a
+            // document filed against no vendor cannot be compared, cannot be attributed in the
+            // report, and would leave the winner's PIC unidentifiable at collection.
+            'vendor_id' => ['required', Rule::exists('vendors', 'id')],
+        ], [
+            'vendor_id.required' => 'Say which vendor sent this quotation — the offers are compared against each other.',
         ]);
 
         $file = $request->file('quotation_file');
         $path = $file->store('ewaste_quotations/'.$batch->batch_number, 'local');
 
-        // A re-quote is a new REVISION, not a replacement: the rejected offer and Finance's
-        // reason for refusing it stay on their own row. addQuotationRevision() also re-points
-        // the batch's cache columns, which is all every other screen reads.
+        // A re-quote is a new REVISION, not a replacement: the rejected offer and the reason it
+        // was refused stay on their own row. Revisions run per vendor.
         $revision = $batch->addQuotationRevision([
+            'vendor_id' => (int) $request->input('vendor_id'),
             'path' => $path,
             'amount' => $this->resolveAmount($request->input('quotation_amount'), $path, 'quotation'),
             'uploaded_at' => now(),
             'uploaded_by' => Auth::id(),
         ]);
 
-        $isRequote = $revision->revision > 1;
-        $rejected = $batch->lastRejectedQuotation();
+        // Uploading no longer notifies anybody: nothing is under review until IT has the offers
+        // in and submits the comparison. Telling Finance on every upload would ask them to
+        // decide on a field of one, repeatedly.
+        $vendorName = $revision->vendorName();
+        $note = $revision->revision > 1
+            ? "Revised quotation from {$vendorName} filed as their revision {$revision->revision} — the offer they replaced stays on the cycle log."
+            : "Quotation from {$vendorName} filed.";
+
+        return redirect()->route('decommission.show', $batch)
+            ->with('success', $note.$this->fileToVendorRecord($revision, $file->getClientOriginalName())
+                .' Submit the comparison for approval once every vendor has replied.');
+    }
+
+    /**
+     * IT put the collected offers up for approval, naming the one they recommend.
+     *
+     * This is the step that makes the cycle reviewable. Before it, quotations are still coming
+     * in — showing an approver a half-collected comparison invites a decision on a field of one,
+     * which is exactly what asking several vendors was meant to avoid.
+     */
+    public function submitForApproval(Request $request, AssetDecommissionBatch $batch)
+    {
+        $this->authorizeManage();
+
+        if (! $batch->isEwaste() || ! in_array($batch->status, ['quotation_uploaded', 'rejected', 'finance_rejected'])) {
+            return back()->with('error', 'This cycle has no quotations waiting to be submitted.');
+        }
+
+        // Every offer needs a figure or there is nothing to compare them ON, and the
+        // recommendation would be an assertion nobody can check. OCR fills these where it can;
+        // the rest are typed on the cycle page.
+        if (! $batch->everyQuotationHasAnAmount()) {
+            return back()->with('error', 'Every quotation needs an amount before the comparison can be submitted — fill in the missing figures on this page.');
+        }
+
+        $data = $request->validate([
+            'recommended_quotation_id' => [
+                'required',
+                Rule::exists('asset_decommission_quotations', 'id')
+                    ->where('asset_decommission_batch_id', $batch->id),
+            ],
+            'recommendation_note' => 'nullable|string|max:1000',
+        ], [
+            'recommended_quotation_id.required' => 'Pick the quotation you are recommending.',
+            'recommended_quotation_id.exists' => 'That quotation does not belong to this cycle.',
+        ]);
+
+        $recommended = $batch->quotations()->findOrFail($data['recommended_quotation_id']);
+        $batch->submitForApproval($recommended, $data['recommendation_note'] ?? null, Auth::id());
+
+        // Finance AND management are asked at the same time; either may answer first, and only
+        // management's answer moves the cycle.
+        $fresh = $batch->fresh(['vendor', 'quotations.vendor', 'quotations.financeReviewer', 'recommendedQuotation.vendor']);
 
         $this->notifyFinance(
-            new EwasteQuotationApprovalMail($batch->fresh(['vendor', 'quotations.financeReviewer'])),
+            new EwasteQuotationApprovalMail($fresh),
             new DecommissionNotification(
                 event: 'ewaste.quotation_pending',
                 batchNumber: $batch->batch_number,
-                subject: $isRequote ? 'Revised e-waste quotation awaiting approval' : 'E-waste quotation awaiting approval',
-                message: $isRequote
-                    ? "Cycle {$batch->batch_number} has a REVISED quotation (revision {$revision->revision}) awaiting your approval — the offer you rejected is kept in the cycle log."
-                    : "Cycle {$batch->batch_number} has a quotation awaiting your approval — the offer amount is in the attached quote.",
-                url: route('accounting.fixed-assets.index', ['status' => 'disposed']),
+                subject: 'E-waste quotation comparison awaiting your review',
+                message: "Cycle {$batch->batch_number} has ".$batch->quotationsForComparison()->count()
+                    .' vendor quotation(s) for review. Your position is recorded alongside management\'s, who authorise the disposal.',
+                url: route('reports.decommission'),
                 icon: 'bi-cash-coin',
                 color: 'warning',
             )
         );
 
+        $this->notifyManagement($batch, $fresh);
+
         return redirect()->route('decommission.show', $batch)
-            ->with('success', $isRequote
-                ? "Revised quotation uploaded as revision {$revision->revision} — the rejected revision "
-                    .($rejected?->revision ?? $revision->revision - 1)
-                    .' and its reason stay on the cycle log. Finance has been notified to approve it.'
-                : 'Quotation uploaded — Finance has been notified to approve it.');
+            ->with('success', 'Comparison submitted. Finance and '.$batch->company.' management have both been asked to review it.');
     }
 
-    /** Stage 3 — Finance approves the quotation (mirrors eClaim hrApprove). */
+    /**
+     * Finance records its POSITION on the comparison.
+     *
+     * It does not move the cycle — management's decision does. Finance approving alone must
+     * never release assets to a vendor, because that is what keeps a later management
+     * rejection able to stop something that has not happened yet.
+     */
     public function financeApprove(Request $request, AssetDecommissionBatch $batch)
     {
         $this->authorizeFinance();
 
         if (! $batch->isEwaste() || $batch->finance_status !== 'pending') {
-            return back()->with('error', 'This quotation is not pending approval.');
+            return back()->with('error', 'This cycle is not awaiting your review.');
         }
 
         $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
-
-        // Stamped on the quotation revision under review AND the batch cache, so the log keeps
-        // which offer was approved even after a later re-quote.
         $batch->recordFinanceDecision('approved', Auth::id(), $remarks ?: null);
 
-        Log::info('E-waste quotation approved', [
+        Log::info('E-waste quotation: Finance position recorded', [
             'batch' => $batch->batch_number,
-            'revision' => $batch->currentQuotation()?->revision,
+            'position' => 'approved',
+            'quotation_id' => $batch->quotationUnderReview()?->id,
             'actor_id' => Auth::id(),
         ]);
 
         EwasteSweepService::notifyIt(new DecommissionNotification(
-            event: 'ewaste.quotation_approved',
+            event: 'ewaste.finance_position',
             batchNumber: $batch->batch_number,
-            subject: 'E-waste quotation approved',
-            message: "Finance approved the quotation for {$batch->batch_number}. Proceed with collection, then upload the payment receipt.",
+            subject: 'Finance approved the e-waste quotation',
+            message: "Finance approved the quotation for {$batch->batch_number}. The cycle proceeds once "
+                .$batch->company.' management have also approved.',
             url: route('decommission.show', $batch),
             icon: 'bi-check-circle',
-            color: 'success',
+            color: 'info',
         ));
 
-        return redirect()->route('accounting.fixed-assets.index', ['status' => 'disposed'])->with('success', "Quotation for {$batch->batch_number} approved.");
+        return redirect()->route('reports.decommission')
+            ->with('success', "Your approval for {$batch->batch_number} is recorded. It proceeds once management approve.");
     }
 
-    /** Stage 3 — Finance rejects the quotation (reason required). */
+    /** Finance objects to the comparison (reason required). Management may still override. */
     public function financeReject(Request $request, AssetDecommissionBatch $batch)
     {
         $this->authorizeFinance();
 
         if (! $batch->isEwaste() || $batch->finance_status !== 'pending') {
-            return back()->with('error', 'This quotation is not pending approval.');
+            return back()->with('error', 'This cycle is not awaiting your review.');
         }
 
         $request->validate(['remarks' => 'required|string|max:1000']);
         $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
 
-        // The rejection is recorded ON the rejected revision, so IT's re-quote cannot erase it.
+        // Recorded ON the quotation under review, so a later re-quote cannot erase it.
         $batch->recordFinanceDecision('rejected', Auth::id(), $remarks);
 
         EwasteSweepService::notifyIt(new DecommissionNotification(
-            event: 'ewaste.quotation_rejected',
+            event: 'ewaste.finance_position',
             batchNumber: $batch->batch_number,
-            subject: 'E-waste quotation rejected',
-            message: "Finance rejected the quotation for {$batch->batch_number}: {$remarks}. Re-quote or cancel the cycle.",
+            subject: 'Finance objected to the e-waste quotation',
+            message: "Finance objected to the quotation for {$batch->batch_number}: {$remarks}. "
+                .$batch->company.' management still have to decide.',
+            url: route('decommission.show', $batch),
+            icon: 'bi-exclamation-circle',
+            color: 'warning',
+        ));
+
+        return redirect()->route('reports.decommission')
+            ->with('success', "Your objection to {$batch->batch_number} is recorded and shown to management.");
+    }
+
+    // ── Management: the decision that moves the cycle ─────────────────────────
+
+    private function authorizeManagement(AssetDecommissionBatch $batch): void
+    {
+        if (! Auth::user()->canApproveEwasteAsManagement($batch->company)) {
+            abort(403, 'Only '.($batch->company ?: 'this company').'\'s management may authorise this disposal.');
+        }
+    }
+
+    /**
+     * Management authorise the disposal — optionally on a DIFFERENT vendor's offer than the
+     * one IT recommended ("or go with other company choices").
+     *
+     * First decision wins where a company names several approvers: waiting for all of them
+     * would stall a cycle behind whoever is on leave.
+     */
+    public function managementApprove(Request $request, AssetDecommissionBatch $batch)
+    {
+        $this->authorizeManagement($batch);
+
+        if (! $batch->isEwaste() || $batch->management_status !== 'pending') {
+            return back()->with('error', 'This cycle is not awaiting a management decision.');
+        }
+
+        $data = $request->validate([
+            'selected_quotation_id' => [
+                'nullable',
+                Rule::exists('asset_decommission_quotations', 'id')
+                    ->where('asset_decommission_batch_id', $batch->id),
+            ],
+            'remarks' => 'nullable|string|max:1000',
+        ], [
+            'selected_quotation_id.exists' => 'That quotation does not belong to this cycle.',
+        ]);
+
+        $selected = ! empty($data['selected_quotation_id'])
+            ? $batch->quotations()->find($data['selected_quotation_id'])
+            : null;
+
+        $batch->recordManagementDecision(
+            'approved',
+            Auth::id(),
+            mb_substr(strip_tags((string) ($data['remarks'] ?? '')), 0, 1000) ?: null,
+            $selected,
+        );
+
+        $winner = $batch->fresh(['selectedQuotation.vendor'])->selectedQuotation;
+        $this->notifyApproved($batch, $winner);
+
+        $overrode = $selected && $batch->recommended_quotation_id !== $selected->id;
+
+        return redirect()->route('decommission.show', $batch)->with('success',
+            "Disposal for {$batch->batch_number} approved"
+            .($winner?->vendor ? ' — '.$winner->vendor->name.' selected' : '')
+            .($overrode ? ' (not the vendor IT recommended).' : '.')
+            .' The vendor and IT have been notified.');
+    }
+
+    /** Management refuse the disposal. A reason is required — IT have to act on it. */
+    public function managementReject(Request $request, AssetDecommissionBatch $batch)
+    {
+        $this->authorizeManagement($batch);
+
+        if (! $batch->isEwaste() || $batch->management_status !== 'pending') {
+            return back()->with('error', 'This cycle is not awaiting a management decision.');
+        }
+
+        $request->validate(['remarks' => 'required|string|max:1000'], [
+            'remarks.required' => 'State why the disposal is refused — IT have to act on the reason.',
+        ]);
+        $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
+
+        $batch->recordManagementDecision('rejected', Auth::id(), $remarks);
+
+        EwasteSweepService::notifyIt(new DecommissionNotification(
+            event: 'ewaste.management_rejected',
+            batchNumber: $batch->batch_number,
+            subject: 'E-waste disposal rejected by management',
+            message: $batch->company." management rejected the disposal for {$batch->batch_number}: {$remarks}. "
+                .'Collect revised quotations or cancel the cycle.',
             url: route('decommission.show', $batch),
             icon: 'bi-x-circle',
             color: 'danger',
         ));
 
-        return redirect()->route('accounting.fixed-assets.index', ['status' => 'disposed'])->with('success', "Quotation for {$batch->batch_number} rejected — IT notified.");
+        return redirect()->route('decommission.show', $batch)
+            ->with('success', "Disposal for {$batch->batch_number} rejected — IT notified.");
     }
 
-    /** Stage 4 — IT uploads the vendor's payment receipt (only after finance approval). */
+    /** Stage 4 — IT uploads the vendor's payment receipt (only after the disposal is authorised). */
     public function uploadReceipt(Request $request, AssetDecommissionBatch $batch)
     {
         $this->authorizeManage();
 
-        if (! $batch->isEwaste() || $batch->finance_status !== 'approved') {
-            return back()->with('error', 'A receipt can only be uploaded after Finance has approved the quotation.');
+        // Gated on the CYCLE being approved, not on Finance's position: management authorise
+        // the disposal, and since Phase 5 a Finance approval alone leaves the cycle pending.
+        // (isApproved() also covers the legacy `finance_approved` status.)
+        if (! $batch->isEwaste() || ! $batch->isApproved()) {
+            return back()->with('error', 'A receipt can only be uploaded once management have approved the disposal.');
         }
 
         // This one request chains the most expensive work in the module: an OCR call (up to 45s),
@@ -315,22 +598,12 @@ class AssetDecommissionController extends Controller
         EwasteSweepService::mailFinance(new EwasteFinalReportMail($batch->fresh(['vendor', 'items.asset'])));
     }
 
-    /**
-     * The e-waste quotations awaiting a Finance decision. There is no standalone screen for
-     * these any more — Accounting → Assets → status "Disposed" renders them inline, so this
-     * is the shared query behind that page (see Accounting\FixedAssetController::index).
-     */
-    public static function pendingQuotationsQuery()
-    {
-        // `quotations` is eager-loaded so the row can say "this is revision 2, you rejected
-        // revision 1 because …" — a reviewer looking at a second quote needs to know why
-        // without opening the cycle. Handful of rows per batch, so the cost is negligible.
-        return AssetDecommissionBatch::where('type', AssetDecommissionBatch::TYPE_EWASTE)
-            ->where('finance_status', 'pending')
-            ->with(['vendor', 'quotations.financeReviewer'])
-            ->withCount('items')
-            ->latest();
-    }
+    // pendingQuotationsQuery() lived here as the shared `finance_status = pending` query behind
+    // Accounting → Assets → "Disposed". Removed with that page on 2026-08-14: the Decommissioning
+    // page asks a different question — which cycles await THIS user's decision, Finance's or
+    // management's — and a cycle whose Finance position is already recorded while management
+    // have yet to answer is still open work that the old filter would have dropped.
+    // See ReportController::decommissionReport().
 
     /**
      * Correct the amount read off a quotation/receipt.
@@ -350,6 +623,16 @@ class AssetDecommissionController extends Controller
         $data = $request->validate([
             'field' => 'required|in:quotation,receipt',
             'amount' => 'nullable|numeric|min:0.01|max:99999999.99',
+            // WHICH quotation. With several vendors on a cycle there is no single "the"
+            // quotation any more, and correcting a figure on the wrong vendor's offer would
+            // silently change what the comparison ranks them by.
+            'quotation_id' => [
+                'nullable',
+                Rule::exists('asset_decommission_quotations', 'id')
+                    ->where('asset_decommission_batch_id', $batch->id),
+            ],
+        ], [
+            'quotation_id.exists' => 'That quotation does not belong to this cycle.',
         ]);
 
         $column = $data['field'].'_amount';
@@ -357,9 +640,18 @@ class AssetDecommissionController extends Controller
 
         // A quotation amount belongs to a REVISION as well as the cache — correcting only the
         // cache would leave the cycle log quoting a figure the report contradicts.
-        $data['field'] === 'quotation'
-            ? $batch->setQuotationAmount($amount)
-            : $batch->update(['receipt_amount' => $amount]);
+        if ($data['field'] === 'quotation') {
+            // A null target is legitimate: a cycle whose quotation predates the revision table
+            // holds its figure in the cache columns alone, and setQuotationAmount() writes
+            // those directly in that case.
+            $quotation = ! empty($data['quotation_id'])
+                ? $batch->quotations()->find($data['quotation_id'])
+                : $batch->quotationUnderReview();
+
+            $batch->setQuotationAmount($amount, $quotation);
+        } else {
+            $batch->update(['receipt_amount' => $amount]);
+        }
 
         Log::info('E-waste amount corrected', [
             'batch' => $batch->batch_number, 'field' => $column,
@@ -372,6 +664,34 @@ class AssetDecommissionController extends Controller
     }
 
     // ── Shared helpers ────────────────────────────────────────────────────────
+
+    /**
+     * Copy the quotation onto the sending vendor's Contracts tab, and say so in the flash.
+     *
+     * FAILS OPEN. The quotation gates the entire cycle — no offer, no comparison, no
+     * collection — so a bookkeeping copy failing must never bounce the upload that carries it.
+     * Same rule the OCR services follow, and the reason the filing is a side effect here
+     * rather than part of addQuotationRevision()'s transaction.
+     */
+    private function fileToVendorRecord(AssetDecommissionQuotation $revision, ?string $originalFilename): string
+    {
+        try {
+            $contract = EwasteQuotationFilingService::file($revision, $originalFilename);
+        } catch (\Throwable $e) {
+            Log::error('E-waste quotation filing to vendor record failed', [
+                'quotation' => $revision->id, 'error' => $e->getMessage(),
+            ]);
+
+            return ' NOTE: it could NOT be copied to the vendor\'s Contracts tab — file it there by hand.';
+        }
+
+        if (! $contract) {
+            return '';
+        }
+
+        return ' A copy was filed on '.$revision->vendorName().'\'s Contracts tab.';
+    }
+
     /**
      * The amount to store: what the uploader typed, else whatever OCR can read off the
      * document. Never throws and never blocks the upload — a null simply means the report
@@ -416,5 +736,96 @@ class AssetDecommissionController extends Controller
         if ($financeUsers->isNotEmpty()) {
             \Illuminate\Support\Facades\Notification::send($financeUsers, $notification);
         }
+    }
+
+    /**
+     * Ask this cycle's company management to decide.
+     *
+     * Addressed to the named approvers individually rather than to a role — they are named
+     * people who span companies, and a role-wide mail would put one entity's disposal in front
+     * of everyone. Every approver is asked; the first to answer settles it.
+     */
+    private function notifyManagement(AssetDecommissionBatch $batch, AssetDecommissionBatch $fresh): void
+    {
+        $approvers = $batch->managementApprovers();
+
+        if ($approvers->isEmpty()) {
+            // Nobody can move this cycle. Say so loudly to IT rather than leaving it to be
+            // discovered when the collection does not happen.
+            EwasteSweepService::notifyIt(new DecommissionNotification(
+                event: 'ewaste.no_management_approver',
+                batchNumber: $batch->batch_number,
+                subject: 'No management approver configured',
+                message: "Cycle {$batch->batch_number} was submitted but no management approver is set for "
+                    .($batch->company ?: 'its company').' — set one in Settings → E-Waste Approvers or it cannot proceed.',
+                url: route('decommission.show', $batch),
+                icon: 'bi-exclamation-triangle',
+                color: 'danger',
+            ));
+
+            return;
+        }
+
+        $emails = $approvers->pluck('work_email')->filter()->unique()->values()->all();
+        if ($emails) {
+            try {
+                Mail::to($emails)->send(new EwasteManagementApprovalMail($fresh));
+            } catch (\Throwable $e) {
+                Log::error('E-waste management approval email failed for '.$batch->batch_number.': '.$e->getMessage());
+            }
+        }
+
+        \Illuminate\Support\Facades\Notification::send($approvers, new DecommissionNotification(
+            event: 'ewaste.management_pending',
+            batchNumber: $batch->batch_number,
+            subject: 'E-waste disposal awaiting your approval',
+            message: "Cycle {$batch->batch_number} for {$batch->company} is awaiting your approval — "
+                .$batch->quotationsForComparison()->count().' vendor quotation(s) to compare.',
+            // Decommissioning, not the cycle page — that is where the decision is cast, and it
+            // is where the approval EMAIL lands, so the bell must not send them somewhere else.
+            url: route('reports.decommission'),
+            icon: 'bi-shield-check',
+            color: 'warning',
+        ));
+    }
+
+    /**
+     * Phase 5C — once the disposal is authorised, tell the winning vendor and IT.
+     *
+     * Only the winner is told. A losing vendor is not sent a rejection: they made an offer we
+     * did not take up, and there is nothing they are required to do. Each leg is caught
+     * separately — a typo in the vendor's PIC address must not silence the notice to IT.
+     */
+    private function notifyApproved(AssetDecommissionBatch $batch, ?AssetDecommissionQuotation $winner): void
+    {
+        $fresh = $batch->fresh(['vendor', 'items.asset', 'quotations.vendor', 'selectedQuotation.vendor', 'managementReviewer']);
+        $vendorEmail = $winner?->vendor?->pic_email;
+
+        if ($vendorEmail) {
+            try {
+                Mail::to($vendorEmail)->send(new EwasteAwardMail($fresh));
+            } catch (\Throwable $e) {
+                Log::error('E-waste award email to vendor failed for '.$batch->batch_number.': '.$e->getMessage());
+            }
+        }
+
+        try {
+            EwasteSweepService::mailIt(new EwasteAwardMail($fresh, audience: 'it'));
+        } catch (\Throwable $e) {
+            Log::error('E-waste award email to IT failed for '.$batch->batch_number.': '.$e->getMessage());
+        }
+
+        EwasteSweepService::notifyIt(new DecommissionNotification(
+            event: 'ewaste.approved',
+            batchNumber: $batch->batch_number,
+            subject: 'E-waste disposal approved',
+            message: $batch->company." management approved {$batch->batch_number}"
+                .($winner?->vendor ? ' — '.$winner->vendor->name.' will collect' : '')
+                .'. Arrange collection, then upload the payment receipt.'
+                .($vendorEmail ? '' : ' NOTE: the vendor has no PIC email on file and was NOT notified.'),
+            url: route('decommission.show', $batch),
+            icon: 'bi-check-circle',
+            color: 'success',
+        ));
     }
 }

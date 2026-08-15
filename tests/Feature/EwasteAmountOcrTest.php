@@ -90,6 +90,27 @@ class EwasteAmountOcrTest extends TestCase
         );
     }
 
+    /**
+     * The amount OCR read, on the quotation it was read FROM.
+     *
+     * Not the batch's quotation_amount cache: since Phase 5 that follows the offer in play
+     * (selected, else recommended), not the newest upload — with several vendors quoting,
+     * "the newest document" is regularly one nobody has chosen.
+     */
+    private function uploadedAmount(AssetDecommissionBatch $batch): ?string
+    {
+        return $batch->fresh()->quotations()->orderByDesc('id')->value('amount');
+    }
+
+    /** A quotation belongs to a vendor since Phase 5 — the upload is refused without one. */
+    private function vendor(): \App\Models\Vendor
+    {
+        return \App\Models\Vendor::firstOrCreate(
+            ['name' => 'RecycleCo'],
+            ['vendor_types' => ['ewaste'], 'pic_email' => 'ops@recycleco.com', 'is_active' => true]
+        );
+    }
+
     private function cycle(string $status = 'awaiting_quotation'): AssetDecommissionBatch
     {
         $batch = AssetDecommissionBatch::create([
@@ -115,10 +136,10 @@ class EwasteAmountOcrTest extends TestCase
         $batch = $this->cycle();
 
         $this->actingAs(User::factory()->create(['role' => 'it_manager']))
-            ->post(route('ewaste.quotation', $batch), ['quotation_file' => $this->pdf()])
+            ->post(route('ewaste.quotation', $batch), ['vendor_id' => $this->vendor()->id, 'quotation_file' => $this->pdf()])
             ->assertRedirect();
 
-        $this->assertSame('923.40', $batch->fresh()->quotation_amount);
+        $this->assertSame('923.40', $this->uploadedAmount($batch));
     }
 
     /** A PDF must go in an Anthropic `document` block — an `image` block is rejected outright. */
@@ -129,7 +150,7 @@ class EwasteAmountOcrTest extends TestCase
         $batch = $this->cycle();
 
         $this->actingAs(User::factory()->create(['role' => 'it_manager']))
-            ->post(route('ewaste.quotation', $batch), ['quotation_file' => $this->pdf()]);
+            ->post(route('ewaste.quotation', $batch), ['vendor_id' => $this->vendor()->id, 'quotation_file' => $this->pdf()]);
 
         Http::assertSent(function ($request) {
             $types = array_column($request['messages'][0]['content'], 'type');
@@ -151,10 +172,10 @@ class EwasteAmountOcrTest extends TestCase
         $batch = $this->cycle();
 
         $this->actingAs(User::factory()->create(['role' => 'it_manager']))
-            ->post(route('ewaste.quotation', $batch), ['quotation_file' => $this->pdf()])
+            ->post(route('ewaste.quotation', $batch), ['vendor_id' => $this->vendor()->id, 'quotation_file' => $this->pdf()])
             ->assertRedirect();
 
-        $this->assertSame('923.40', $batch->fresh()->quotation_amount);
+        $this->assertSame('923.40', $this->uploadedAmount($batch));
     }
 
     /**
@@ -168,7 +189,7 @@ class EwasteAmountOcrTest extends TestCase
         $batch = $this->cycle();
 
         $this->actingAs(User::factory()->create(['role' => 'it_manager']))
-            ->post(route('ewaste.quotation', $batch), ['quotation_file' => $this->pdf()]);
+            ->post(route('ewaste.quotation', $batch), ['vendor_id' => $this->vendor()->id, 'quotation_file' => $this->pdf()]);
 
         Http::assertSent(fn ($request) => $request['max_tokens'] >= 1024);
     }
@@ -181,7 +202,7 @@ class EwasteAmountOcrTest extends TestCase
         $batch = $this->cycle();
 
         $this->actingAs(User::factory()->create(['role' => 'it_manager']))
-            ->post(route('ewaste.quotation', $batch), ['quotation_file' => $this->pdf()]);
+            ->post(route('ewaste.quotation', $batch), ['vendor_id' => $this->vendor()->id, 'quotation_file' => $this->pdf()]);
 
         Http::assertSent(function ($request) {
             $types = array_column($request['messages'][0]['content'], 'type');
@@ -199,11 +220,11 @@ class EwasteAmountOcrTest extends TestCase
 
         $this->actingAs(User::factory()->create(['role' => 'it_manager']))
             ->post(route('ewaste.quotation', $batch), [
-                'quotation_file' => $this->pdf(),
+                'vendor_id' => $this->vendor()->id, 'quotation_file' => $this->pdf(),
                 'quotation_amount' => '850.00',
             ]);
 
-        $this->assertSame('850.00', $batch->fresh()->quotation_amount);
+        $this->assertSame('850.00', $this->uploadedAmount($batch));
     }
 
     /**
@@ -217,12 +238,12 @@ class EwasteAmountOcrTest extends TestCase
         $batch = $this->cycle();
 
         $this->actingAs(User::factory()->create(['role' => 'it_manager']))
-            ->post(route('ewaste.quotation', $batch), ['quotation_file' => $this->pdf()])
+            ->post(route('ewaste.quotation', $batch), ['vendor_id' => $this->vendor()->id, 'quotation_file' => $this->pdf()])
             ->assertRedirect();
 
         $fresh = $batch->fresh();
-        $this->assertNull($fresh->quotation_amount);
-        $this->assertNotNull($fresh->quotation_path);      // the document still landed
+        $this->assertNull($this->uploadedAmount($batch));
+        $this->assertNotNull($fresh->quotations()->value('path'));      // the document still landed
         $this->assertSame('quotation_uploaded', $fresh->status);
     }
 
@@ -252,7 +273,7 @@ class EwasteAmountOcrTest extends TestCase
         $batch = $this->cycle();
 
         $this->actingAs(User::factory()->create(['role' => 'it_manager']))
-            ->post(route('ewaste.quotation', $batch), ['quotation_file' => $this->pdf()])
+            ->post(route('ewaste.quotation', $batch), ['vendor_id' => $this->vendor()->id, 'quotation_file' => $this->pdf()])
             ->assertRedirect();
 
         $this->assertNull($batch->fresh()->quotation_amount);
@@ -268,6 +289,8 @@ class EwasteAmountOcrTest extends TestCase
 
         $this->actingAs($it)->post(route('ewaste.amount', $batch), ['field' => 'quotation', 'amount' => '923.40'])
             ->assertRedirect();
+        // This cycle has no revision rows — its quotation predates that table, so the cache
+        // columns ARE the record and the correction has to land there.
         $this->assertSame('923.40', $batch->fresh()->quotation_amount);
 
         // Empty clears it — the report then points at the attached document, not RM 0.00.
@@ -298,10 +321,10 @@ class EwasteAmountOcrTest extends TestCase
         $batch = $this->cycle();
 
         $this->actingAs(User::factory()->create(['role' => 'it_manager']))
-            ->post(route('ewaste.quotation', $batch), ['quotation_file' => $this->pdf()])
+            ->post(route('ewaste.quotation', $batch), ['vendor_id' => $this->vendor()->id, 'quotation_file' => $this->pdf()])
             ->assertRedirect();
 
-        $this->assertSame('1450.75', $batch->fresh()->quotation_amount);
+        $this->assertSame('1450.75', $this->uploadedAmount($batch));
 
         Http::assertSent(function ($request) {
             $types = array_column($request['messages'][0]['content'], 'type');

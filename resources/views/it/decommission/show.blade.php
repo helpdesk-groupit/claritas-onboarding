@@ -123,7 +123,10 @@
                     <span class="dcm-band-icon"><i class="bi bi-recycle"></i></span>
                     <div>
                         <h4 class="text-white fw-bold mb-1">Asset Decommissioning Report</h4>
-                        <div class="text-white-50 small">{{ config('decommission.org_name') }} &mdash; {{ $batch->typeLabel() }}</div>
+                        {{-- The same letterhead line as the PDF, and it reads from the same
+                             helper: the cycle's owning company, never the group's fixed name.
+                             Change one only by changing the other. --}}
+                        <div class="text-white-50 small">{{ $batch->issuingCompany() }} &mdash; {{ $batch->typeLabel() }}</div>
                     </div>
                 </div>
                 <div class="text-end">
@@ -258,8 +261,8 @@
             <ul class="dcm-steps mb-3">
                 <li class="dcm-step {{ $batch->rfq_sent_at ? '' : 'dcm-step-todo' }}">
                     <span class="dcm-dot {{ $batch->rfq_sent_at ? 'dcm-dot-done' : 'dcm-dot-todo' }}">@if($batch->rfq_sent_at)<i class="bi bi-check"></i>@endif</span>
-                    <div class="dcm-step-title">RFQ sent to primary vendor</div>
-                    <div class="dcm-step-meta">{{ $batch->rfq_sent_at ? fmt_datetime($batch->rfq_sent_at) : 'Not sent — no primary e-waste vendor set' }}</div>
+                    <div class="dcm-step-title">RFQ sent to e-waste vendors</div>
+                    <div class="dcm-step-meta">{{ $batch->rfq_sent_at ? fmt_datetime($batch->rfq_sent_at) : 'Not sent — no active e-waste vendor has a PIC email' }}</div>
                 </li>
                 <li class="dcm-step {{ $batch->finance_report_sent_at ? '' : 'dcm-step-todo' }}">
                     <span class="dcm-dot {{ $batch->finance_report_sent_at ? 'dcm-dot-done' : 'dcm-dot-todo' }}">@if($batch->finance_report_sent_at)<i class="bi bi-check"></i>@endif</span>
@@ -293,41 +296,30 @@
                 </li>
             </ul>
 
-            @if($canManage && in_array($batch->status, ['awaiting_quotation', 'finance_rejected']))
-            <form action="{{ route('ewaste.quotation', $batch) }}" method="POST" enctype="multipart/form-data" class="dcm-upload mb-3">@csrf
-                {{-- Uploading after a rejection ADDS a revision — say so, and restate what
-                     Finance asked to be fixed, so the operator isn't re-reading the log to
-                     find it (and doesn't think the rejected quote is about to be erased). --}}
-                @php $rejectedRev = $batch->financeRejected() ? $batch->currentQuotation() : null; @endphp
-                @if($rejectedRev)
-                <div class="alert alert-warning py-2 px-3 mb-3 small">
-                    <div class="fw-semibold mb-1">
-                        <i class="bi bi-arrow-repeat me-1"></i>This will be uploaded as revision {{ $rejectedRev->revision + 1 }} &mdash; revision {{ $rejectedRev->revision }} stays on the log.
-                    </div>
-                    <div>
-                        Finance rejected revision {{ $rejectedRev->revision }}
-                        @if($rejectedRev->finance_reviewed_at) on {{ fmt_datetime($rejectedRev->finance_reviewed_at) }}@endif
-                        @if($rejectedRev->financeReviewer) ({{ $rejectedRev->financeReviewer->name }})@endif
-                        @if($rejectedRev->finance_remarks): {{ $rejectedRev->finance_remarks }}@endif
-                    </div>
-                </div>
-                @endif
-                <div class="row g-2 align-items-end">
-                    <div class="col-md-6">
-                        <label class="form-label small fw-semibold">Quotation file (PDF/image)</label>
-                        <input type="file" name="quotation_file" class="form-control form-control-sm" accept=".pdf,.jpg,.jpeg,.png" required>
-                        <div class="form-text">Leave the amount blank and the system reads it from this document; you can correct it afterwards.</div>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label small fw-semibold">Offer amount (RM) <span class="text-muted fw-normal">— optional</span></label>
-                        <input type="number" step="0.01" min="0.01" name="quotation_amount" class="form-control form-control-sm" placeholder="Read from document">
-                    </div>
-                    <div class="col-md-3"><button class="btn btn-sm btn-primary w-100"><i class="bi bi-upload me-1"></i>Upload quotation</button></div>
-                </div>
-            </form>
+            {{-- ── Phase 5: the comparison and IT's recommendation ──
+                 The DECISIONS are not made here. Both Finance's position and management's
+                 authorisation moved to Management → Decommissioning on 2026-08-14, so this
+                 renders the comparison read-only for anyone but IT. --}}
+            @include('it.decommission._quotation-comparison', [
+                'batch' => $batch,
+                'canManage' => $canManage,
+                'canDecide' => $canDecide,
+                'canFinance' => false,
+                'ewasteVendors' => $ewasteVendors,
+            ])
+
+            @if($batch->isAwaitingDecision() && (Auth::user()->canApproveEwasteQuotation() || Auth::user()->canApproveEwasteAsManagement($batch->company)))
+            {{-- Says where the control is, rather than leaving somebody who was emailed about
+                 this cycle hunting a button that used to be on this page. --}}
+            <div class="alert alert-info py-2 px-3 small d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+                <span><i class="bi bi-shield-check me-1"></i>This cycle is awaiting a decision.</span>
+                <a href="{{ route('reports.decommission') }}" class="btn btn-sm btn-primary">
+                    Review on Decommissioning <i class="bi bi-arrow-right ms-1"></i>
+                </a>
+            </div>
             @endif
 
-            @if($batch->financeApproved() && $canManage && $batch->status !== 'completed')
+            @if($batch->isApproved() && $canManage && $batch->status !== 'completed')
             <form action="{{ route('ewaste.receipt', $batch) }}" method="POST" enctype="multipart/form-data" class="dcm-upload mb-3">@csrf
                 <div class="row g-2 align-items-end">
                     <div class="col-md-6">
@@ -354,7 +346,7 @@
                     <button class="btn btn-sm btn-warning"><i class="bi bi-arrow-repeat me-1"></i>Finalize cycle</button>
                 </form>
                 @endif
-                @if(in_array($batch->status, ['awaiting_quotation', 'quotation_uploaded', 'finance_rejected']))
+                @if(in_array($batch->status, ['awaiting_quotation', 'quotation_uploaded', 'pending_approval', 'rejected', 'finance_rejected']))
                 <form action="{{ route('decommission.cancel', $batch) }}" method="POST" class="js-confirm"
                       data-confirm="Cancel this cycle and return its assets to the queue?"
                       data-confirm-title="Cancel cycle" data-confirm-ok="Cancel cycle" data-confirm-variant="danger">@csrf

@@ -38,34 +38,58 @@ class VendorManagementTest extends TestCase
         $this->assertDatabaseHas('vendors', ['name' => 'TechLease Sdn Bhd', 'is_active' => 1]);
     }
 
-    public function test_single_primary_ewaste_vendor_is_enforced(): void
+    /**
+     * There is no primary e-waste vendor to nominate (retired 2026-08-15): the quarterly
+     * sweep asks EVERY active e-waste vendor with a PIC email so the offers can be compared,
+     * and singling one out is what made a cycle only ever able to show one price.
+     *
+     * The registration form must therefore offer no such control, and a hand-posted flag must
+     * not resurrect one — the vendor is registered exactly as if the field had not been sent.
+     *
+     * Asserted on the VALUE rather than the key's absence, because the column outlives the
+     * feature by one release: the drop is deferred so this deploy can be rolled back with a
+     * single push (the previously deployed code still reads it). What matters either way is
+     * that nothing a client sends can set it, so this reads the same before and after the
+     * follow-up contract migration.
+     */
+    public function test_no_vendor_can_be_nominated_as_the_primary_ewaste_target(): void
     {
         $it = User::factory()->create(['role' => 'it_manager']);
-        $first = Vendor::create(['name' => 'RecycleA', 'vendor_types' => ['ewaste'], 'is_primary_ewaste' => true, 'is_active' => true]);
+
+        $this->actingAs($it)->get(route('vendors.create'))
+            ->assertOk()
+            ->assertDontSee('name="is_primary_ewaste"', false);
 
         $this->actingAs($it)->post(route('vendors.store'), [
             'name' => 'RecycleB',
             'vendor_types' => ['ewaste'],
-            'is_primary_ewaste' => '1',
+            'is_primary_ewaste' => '1',   // no control, no rule, no effect
             'is_active' => '1',
         ]);
 
-        $this->assertFalse($first->fresh()->is_primary_ewaste);            // demoted
-        $this->assertSame('RecycleB', Vendor::primaryEwaste()->name);      // the only primary
+        $vendor = Vendor::where('name', 'RecycleB')->first();
+        $this->assertNotNull($vendor);
+        $this->assertFalse(
+            (bool) ($vendor->getAttributes()['is_primary_ewaste'] ?? false),
+            'a posted flag must not nominate a vendor, whether or not the column still exists'
+        );
     }
 
-    public function test_primary_flag_ignored_when_ewaste_not_selected(): void
+    /**
+     * "Who can be asked to quote" is one query — Vendor::ewasteRfqRecipients() — read by the
+     * sweep that sends the RFQ and by the directory banner that warns when nobody can be. A
+     * vendor with no PIC email has no address to send to and must not be counted as reachable,
+     * or the banner goes green over a cycle that will stall.
+     */
+    public function test_only_active_ewaste_vendors_with_a_pic_email_can_be_sent_an_rfq(): void
     {
-        $it = User::factory()->create(['role' => 'it_manager']);
-        $this->actingAs($it)->post(route('vendors.store'), [
-            'name' => 'RentalOnly',
-            'vendor_types' => ['rental'],
-            'is_primary_ewaste' => '1',   // ignored — not an e-waste vendor
-            'is_active' => '1',
-        ]);
+        Vendor::create(['name' => 'Reachable', 'vendor_types' => ['ewaste'], 'pic_email' => 'pic@reachable.com', 'is_active' => true]);
+        Vendor::create(['name' => 'No PIC email', 'vendor_types' => ['ewaste'], 'is_active' => true]);
+        Vendor::create(['name' => 'Blank PIC email', 'vendor_types' => ['ewaste'], 'pic_email' => '', 'is_active' => true]);
+        Vendor::create(['name' => 'Retired', 'vendor_types' => ['ewaste'], 'pic_email' => 'pic@retired.com', 'is_active' => false]);
+        Vendor::create(['name' => 'Not e-waste', 'vendor_types' => ['rental'], 'pic_email' => 'pic@rental.com', 'is_active' => true]);
 
-        $v = Vendor::where('name', 'RentalOnly')->first();
-        $this->assertFalse($v->is_primary_ewaste);
+        $this->assertSame(['Reachable'], Vendor::ewasteRfqRecipients()->pluck('name')->all());
     }
 
     /**
@@ -118,10 +142,15 @@ class VendorManagementTest extends TestCase
             ->get(route('vendors.index'))->assertForbidden();
     }
 
-    public function test_toggle_active_deactivates_and_clears_primary(): void
+    /**
+     * Deactivating has to be enough on its own to take a vendor out of the quarterly RFQ —
+     * there is no second flag to clear alongside it, so the scope is what must hold.
+     */
+    public function test_deactivating_a_vendor_removes_it_from_the_ewaste_rfq(): void
     {
         $it = User::factory()->create(['role' => 'it_manager']);
-        $v = Vendor::create(['name' => 'RecycleCo', 'vendor_types' => ['ewaste'], 'is_primary_ewaste' => true, 'is_active' => true]);
+        $v = Vendor::create(['name' => 'RecycleCo', 'vendor_types' => ['ewaste'], 'pic_email' => 'ops@recycleco.com', 'is_active' => true]);
+        $this->assertSame(1, Vendor::ewasteRfqRecipients()->count());
 
         $this->actingAs($it)
             ->from(route('vendors.index'))
@@ -129,7 +158,7 @@ class VendorManagementTest extends TestCase
             ->assertRedirect(route('vendors.index'));
         $v->refresh();
         $this->assertFalse($v->is_active);
-        $this->assertFalse($v->is_primary_ewaste);   // inactive can't be the RFQ target
+        $this->assertSame(0, Vendor::ewasteRfqRecipients()->count());
     }
 
     /**
@@ -177,7 +206,7 @@ class VendorManagementTest extends TestCase
             'industry' => 'it_hardware',
             'company_registration_no' => '202301012345',
             'sst_number' => 'W10-1234-56789012',
-            'sst_category' => 'professional',
+            'sst_categories' => ['professional'],
             'address' => '12 Jalan Satu, 50000 Kuala Lumpur',
             'contact_number' => '03-1234 5678',
             'email' => 'hello@fulldetails.com',
@@ -201,7 +230,6 @@ class VendorManagementTest extends TestCase
             'name' => 'Full Details Sdn Bhd',
             'industry' => 'it_hardware',
             'sst_number' => 'W10-1234-56789012',
-            'sst_category' => 'professional',
             'contact_number' => '03-1234 5678',
             'technical_person_name' => 'Ravi',
             'technical_person_phone' => '012-999 8888',
@@ -212,6 +240,155 @@ class VendorManagementTest extends TestCase
             'bank_branch' => 'Jalan Tun Perak',
             'bank_swift' => 'MBBEMYKL',
         ]);
+
+        // Asserted through the model, not assertDatabaseHas: `sst_categories` is a JSON
+        // column, and MySQL will not match one against a bound string however the JSON is
+        // spelled — the row is found, the column silently never compares equal.
+        $this->assertSame(['professional'], Vendor::where('name', 'Full Details Sdn Bhd')->first()->sstCategoryList());
+    }
+
+    /**
+     * The service list widened to 36 entries on 2026-08-14, and the one thing a list that
+     * long can quietly acquire is two tokens meaning the same service — at which point the
+     * same vendor is tagged one way, filtered the other, and drops off the picker built to
+     * find it. Also pins that the tokens other modules filter on still exist: a rename
+     * there is silent, and the quarterly e-waste RFQ simply stops finding a vendor.
+     */
+    public function test_the_service_type_list_carries_no_duplicates_and_keeps_its_load_bearing_tokens(): void
+    {
+        $labels = array_map(fn ($l) => strtolower(trim($l)), array_values(Vendor::TYPES));
+        $this->assertSame(array_unique($labels), $labels, 'two service types must never carry the same label');
+
+        foreach (['rental', 'repair', 'ewaste'] as $token) {
+            $this->assertArrayHasKey($token, Vendor::TYPES, "the {$token} token is filtered on with whereJsonContains");
+        }
+
+        foreach (array_merge(Vendor::RENTAL_ASSET_TYPES, Vendor::PURCHASE_ASSET_TYPES) as $token) {
+            $this->assertArrayHasKey($token, Vendor::TYPES, "the asset picker offers {$token}, so it must be a real type");
+        }
+    }
+
+    /**
+     * A vendor can be registered under several taxable-service groups at once, and every
+     * one of them has to survive the save — the whole point of the 2026-08-14 change is
+     * that filing such a vendor under one group used to throw the other away, taking the
+     * B2B exemption with it.
+     */
+    public function test_a_vendor_can_be_registered_under_several_sst_categories(): void
+    {
+        $it = User::factory()->create(['role' => 'it_manager']);
+
+        $this->actingAs($it)->post(route('vendors.store'), [
+            'name' => 'Multi Group Sdn Bhd',
+            'vendor_types' => ['professional', 'rental'],
+            'sst_categories' => ['professional', 'rental_leasing'],
+            'is_active' => '1',
+        ])->assertSessionHasNoErrors();
+
+        $this->assertEqualsCanonicalizing(
+            ['professional', 'rental_leasing'],
+            Vendor::where('name', 'Multi Group Sdn Bhd')->first()->sstCategoryList()
+        );
+    }
+
+    /**
+     * "Not SST-registered" is the ABSENCE of a registration. Stored beside a group it would
+     * make sstVerdict() answer on whichever branch it tested first, and that answer decides
+     * whether an invoice's SST line is flagged — so the combination is refused outright
+     * rather than silently resolved one way.
+     */
+    public function test_not_registered_cannot_be_combined_with_a_category(): void
+    {
+        $it = User::factory()->create(['role' => 'it_manager']);
+
+        $this->actingAs($it)->post(route('vendors.store'), [
+            'name' => 'Contradictory Sdn Bhd',
+            'vendor_types' => ['software'],
+            'sst_categories' => ['professional', 'not_registered'],
+            'is_active' => '1',
+        ])->assertSessionHasErrors('sst_categories');
+
+        $this->assertDatabaseMissing('vendors', ['name' => 'Contradictory Sdn Bhd']);
+    }
+
+    /**
+     * Ticking nothing means "not checked yet", which must stay null: an empty list and a
+     * null are indistinguishable to a reader, and "not recorded" is a different answer from
+     * "not registered" — only the second one says an SST line on their invoice is wrong.
+     */
+    public function test_no_category_ticked_is_stored_as_not_recorded(): void
+    {
+        $it = User::factory()->create(['role' => 'it_manager']);
+        $vendor = Vendor::create([
+            'name' => 'Recheck Sdn Bhd',
+            'vendor_types' => ['software'],
+            'sst_categories' => ['professional'],
+            'is_active' => true,
+        ]);
+
+        $this->actingAs($it)->put(route('vendors.update', $vendor), [
+            'name' => 'Recheck Sdn Bhd',
+            'vendor_types' => ['software'],
+            'is_active' => '1',
+        ])->assertSessionHasNoErrors();
+
+        $this->assertNull($vendor->fresh()->sst_categories);
+        $this->assertSame('unknown', $vendor->fresh()->sstVerdict()['state']);
+    }
+
+    /**
+     * The registration form offers every group as a tick box, marks the exclusive answer for
+     * the browser, and states our own side when it is configured. The banner branch is only
+     * reachable with `own_sst_category` set, which the rest of the suite leaves null.
+     */
+    public function test_the_registration_form_offers_the_categories_as_tick_boxes(): void
+    {
+        config()->set('vendors.own_sst_category', ['professional', 'other_services']);
+
+        $html = $this->actingAs(User::factory()->create(['role' => 'it_manager']))
+            ->get(route('vendors.create'))
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringContainsString('name="sst_categories[]"', $html);
+        $this->assertStringNotContainsString('name="sst_category"', $html, 'the single-choice select is gone');
+        // Every offered group, and the exclusivity marker the script binds to.
+        foreach (array_keys(Vendor::sstCategories()) as $key) {
+            $this->assertStringContainsString('value="'.$key.'"', $html);
+        }
+        $this->assertStringContainsString('data-sst-exclusive="1"', $html);
+        // Both of our own categories are named, not just the first.
+        $this->assertStringContainsString('Group G', $html);
+        $this->assertStringContainsString('Group I', $html);
+    }
+
+    /**
+     * A category the list no longer offers is rendered ticked, so an unrelated edit posts it
+     * back. Refusing it there would bounce a save over a field the form filled in by itself.
+     */
+    public function test_a_retired_category_survives_an_unrelated_edit(): void
+    {
+        $it = User::factory()->create(['role' => 'it_manager']);
+        $vendor = Vendor::create([
+            'name' => 'Legacy Sdn Bhd',
+            'vendor_types' => ['software'],
+            'sst_categories' => ['healthcare'],
+            'is_active' => true,
+        ]);
+
+        $this->actingAs($it)->get(route('vendors.edit', $vendor))
+            ->assertOk()
+            ->assertSee('value="healthcare"', false);
+
+        $this->actingAs($it)->put(route('vendors.update', $vendor), [
+            'name' => 'Legacy Sdn Bhd',
+            'vendor_types' => ['software'],
+            'sst_categories' => ['healthcare'],
+            'pic_name' => 'Siti',
+            'is_active' => '1',
+        ])->assertSessionHasNoErrors();
+
+        $this->assertSame(['healthcare'], $vendor->fresh()->sstCategoryList());
     }
 
     /**

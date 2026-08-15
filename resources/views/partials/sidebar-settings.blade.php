@@ -50,6 +50,14 @@
 </div>
 @endif
 
+@if($sSysAdm)
+<div class="nav-item">
+    <a href="{{ route('superadmin.ewaste-approvers') }}" class="nav-link {{ request()->routeIs('superadmin.ewaste-approvers*') ? 'active' : '' }}">
+        <i class="bi bi-shield-check"></i> E-Waste Approvers
+    </a>
+</div>
+@endif
+
 @if($sSuper)
 <div class="nav-item">
     <a href="{{ route('superadmin.claude-api.index') }}" class="nav-link {{ request()->routeIs('superadmin.claude-api.*') ? 'active' : '' }}">
