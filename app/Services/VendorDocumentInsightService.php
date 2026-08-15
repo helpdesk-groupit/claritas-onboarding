@@ -145,7 +145,11 @@ TXT;
             $mimeType,
             $company,
             (int) config('vendors.ai.summary_max_tokens', 8000),
-            'vendor_document_summary'
+            'vendor_document_summary',
+            // Sized here rather than left to the transport's default: this is the one caller
+            // that asks for a full transcription, and 45s is a receipt's budget, not a
+            // contract's. Passing it also stops a timeout being retried at the same ceiling.
+            (int) config('vendors.ai.read_timeout', 180)
         );
 
         $json = $meta['json'];
@@ -611,7 +615,11 @@ TXT;
         if ($usable === []) {
             return static::noAnswer(
                 'None of this vendor\'s documents have been read yet, so there is nothing to answer from. '
-                .'Use "Re-summarise" on a document to read it.',
+                // "Read now" is the button this panel renders beside each unreadable document,
+                // directly below this sentence. It used to name "Re-summarise" — a label no
+                // control in this application carries, on a row that is behind this panel's
+                // own backdrop even when it is on screen.
+                .'Use "Read now" beside a document below to read it.',
                 $excluded
             );
         }

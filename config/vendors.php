@@ -137,6 +137,19 @@ return [
         // never quietly presented as the whole document.
         'summary_max_tokens' => env('VENDOR_AI_SUMMARY_MAX_TOKENS', 8000),
 
+        // How long to wait for that reply. Deliberately far above the OCR transport's own
+        // 45s default, which was sized for a photo of a receipt: this call transcribes a
+        // whole multi-page PDF, the request is not streamed, and the client therefore sits
+        // at zero bytes until the entire generation finishes. At 45s the first real contract
+        // filed on live — a signed multi-page agreement — died twice on the timeout and was
+        // reported to the operator as unreadable, which it was not.
+        //
+        // Safe to make this longer than the edge will hold a request open: the scan stores
+        // its file and its staging row BEFORE calling the model, and the browser polls for
+        // the result under a token it generated, so a read that outlives the request is
+        // collected rather than paid for and thrown away.
+        'read_timeout' => env('VENDOR_AI_READ_TIMEOUT', 180),
+
         // Caps the second, text-only pass that reads the parties and the record fields off
         // the transcript. Small on purpose: it returns a handful of values, and a ceiling
         // sized for prose would only buy room for the model to pad.

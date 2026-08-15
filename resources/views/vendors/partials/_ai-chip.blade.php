@@ -29,7 +29,9 @@
                 <i class="bi bi-chevron-down me-1"></i>AI summary
             </button>
         @else
-            <span class="vnd-ai-chipnote">{{ $doc->aiNote() ?: 'Not read yet — use Re-summarise to read it.' }}</span>
+            {{-- Names the control as it is actually labelled and says where it is. The old
+                 wording ("use Re-summarise") named no button in this application. --}}
+            <span class="vnd-ai-chipnote">{{ $doc->aiNote() ?: 'Not read yet — use "Read the document again" in its Edit window.' }}</span>
         @endif
     </div>
 @endif

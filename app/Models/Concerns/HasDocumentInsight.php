@@ -66,7 +66,12 @@ trait HasDocumentInsight
             'empty' => 'The document was read but nothing could be summarised from it.',
             'skipped' => 'Not read: the configured AI provider cannot read PDFs.',
             'disabled' => 'Not read: document AI is not configured.',
-            'failed' => 'Could not be read — press Re-summarise to try again.',
+            // Names the control as it is ACTUALLY labelled, in the place it actually is —
+            // the row's Edit window. It said "press Re-summarise", which is the name of no
+            // button in this application, and the staging modal repeats this wording where
+            // even the real button cannot exist. Both sent the first operator to try this on
+            // live hunting the screen for something that was never there.
+            'failed' => 'Could not be read — use "Read the document again" in its Edit window to retry.',
             default => null,
         };
     }

@@ -353,9 +353,9 @@ class ClaimReceiptOcrService
      *                          Billing is per token actually generated, so a generous ceiling is
      *                          free on models that don't think.
      */
-    protected static function callVision(string $prompt, string $absolutePath, string $mimeType, ?string $company, int $maxTokens = 2048, string $feature = 'claim_receipt_scan'): ?array
+    protected static function callVision(string $prompt, string $absolutePath, string $mimeType, ?string $company, int $maxTokens = 2048, string $feature = 'claim_receipt_scan', ?int $timeout = null): ?array
     {
-        return self::callVisionMeta($prompt, $absolutePath, $mimeType, $company, $maxTokens, $feature)['json'];
+        return self::callVisionMeta($prompt, $absolutePath, $mimeType, $company, $maxTokens, $feature, $timeout)['json'];
     }
 
     /**
@@ -366,9 +366,19 @@ class ClaimReceiptOcrService
      * that reads as complete makes "that clause is not in this document" a lie. Every
      * other caller wants the JSON alone and goes through callVision().
      *
+     * $timeout is for the caller who KNOWS its request is slow. The default 45s was sized
+     * for this class's own work — a photo of a receipt, ~2000 tokens out — and is far too
+     * short for a caller asking the model to transcribe a whole multi-page PDF: the request
+     * is not streamed, so cURL sits at 0 bytes until the entire generation is finished and
+     * the read dies at 45s having produced nothing. Passing it also SUPPRESSES the retry on
+     * a read timeout, because a caller that has sized the wait itself is telling us the work
+     * is genuinely long — trying the same ceiling a second time only doubles a wait that was
+     * never going to succeed. Connection-level failures and 5xx still retry as before, and a
+     * caller that passes nothing behaves exactly as it always has.
+     *
      * @return array{json:?array,stop_reason:?string}
      */
-    protected static function callVisionMeta(string $prompt, string $absolutePath, string $mimeType, ?string $company, int $maxTokens = 2048, string $feature = 'claim_receipt_scan'): array
+    protected static function callVisionMeta(string $prompt, string $absolutePath, string $mimeType, ?string $company, int $maxTokens = 2048, string $feature = 'claim_receipt_scan', ?int $timeout = null): array
     {
         ['provider' => $provider, 'model' => $model, 'key' => $key, 'settings' => $settings]
             = self::resolveProvider($company);
@@ -384,15 +394,8 @@ class ClaimReceiptOcrService
                 // retryable statuses are 500 (api_error) and 529 (overloaded_error) — 529 is the
                 // one that actually shows up under load. NOT 429: that needs a real wait, so it
                 // fails open to manual entry rather than burning quota on a fast retry.
-                $resp = Http::timeout(45)
-                    ->retry(2, 1500, function (\Throwable $e) {
-                        if ($e instanceof \Illuminate\Http\Client\ConnectionException) {
-                            return true;
-                        }
-
-                        return $e instanceof \Illuminate\Http\Client\RequestException
-                            && in_array($e->response?->status(), [500, 502, 503, 529], true);
-                    }, throw: false)
+                $resp = Http::timeout($timeout ?? 45)
+                    ->retry(2, 1500, fn (\Throwable $e) => self::isRetryable($e, [500, 502, 503, 529], $timeout === null), throw: false)
                     ->withHeaders(['x-api-key' => $key, 'anthropic-version' => '2023-06-01'])
                     ->post('https://api.anthropic.com/v1/messages', [
                         'model' => $model,
@@ -431,20 +434,13 @@ class ClaimReceiptOcrService
                 // Retry rides out transient 5xx "model overloaded" blips, which usually
                 // clear immediately. NOT 429 (quota): that needs a ~20s wait, so a fast
                 // retry only burns more quota — fail open to manual entry instead.
-                $req = Http::timeout($provider === 'ollama' ? 120 : 45)
-                    ->retry(3, 1000, function (\Throwable $e) {
-                        // Retry transient network blips + 5xx "model overloaded"; NOT 429 (quota
-                        // needs a long wait, so fail open). NB: the retry callback's 2nd arg is the
-                        // PendingRequest — read the status from the EXCEPTION, never call ->status()
-                        // on the request (that threw "PendingRequest::status does not exist" and
-                        // turned every retryable blip into a hard failure).
-                        if ($e instanceof \Illuminate\Http\Client\ConnectionException) {
-                            return true;
-                        }
-
-                        return $e instanceof \Illuminate\Http\Client\RequestException
-                            && in_array($e->response?->status(), [500, 502, 503], true);
-                    }, throw: false);
+                // Retry transient network blips + 5xx "model overloaded"; NOT 429 (quota
+                // needs a long wait, so fail open). NB: the retry callback's 2nd arg is the
+                // PendingRequest — read the status from the EXCEPTION, never call ->status()
+                // on the request (that threw "PendingRequest::status does not exist" and
+                // turned every retryable blip into a hard failure).
+                $req = Http::timeout($timeout ?? ($provider === 'ollama' ? 120 : 45))
+                    ->retry(3, 1000, fn (\Throwable $e) => self::isRetryable($e, [500, 502, 503], $timeout === null), throw: false);
                 if ($provider !== 'ollama') {
                     $req = $req->withToken($key);
                 }
@@ -515,6 +511,44 @@ class ClaimReceiptOcrService
 
             return ['json' => null, 'stop_reason' => $stopReason];
         }
+    }
+
+    /**
+     * Is this failure worth trying again straight away?
+     *
+     * Shared by both provider branches so the two can't come to disagree about what counts
+     * as transient; they differ only in which 5xx their provider actually emits.
+     *
+     * $retryTimeouts is false when the caller sized the timeout itself. A ConnectionException
+     * covers two very different things — the connection never came up (a blip, worth another
+     * go) and the response did not arrive inside the ceiling (the model is still generating).
+     * Retrying the second kind at the SAME ceiling cannot succeed: it just doubles the wait
+     * the operator sits through, and may well be billed twice for work we then discard.
+     */
+    protected static function isRetryable(\Throwable $e, array $retryableStatuses, bool $retryTimeouts): bool
+    {
+        if ($e instanceof \Illuminate\Http\Client\ConnectionException) {
+            return $retryTimeouts || ! self::isReadTimeout($e);
+        }
+
+        return $e instanceof \Illuminate\Http\Client\RequestException
+            && in_array($e->response?->status(), $retryableStatuses, true);
+    }
+
+    /**
+     * Did the request run out of time rather than fail to connect?
+     *
+     * Matched on the message because Guzzle folds every transport fault into one exception
+     * class. cURL 28 is the timeout family — the wording differs between a connect timeout
+     * and a read timeout, and both mean the same thing here: the ceiling was reached.
+     */
+    protected static function isReadTimeout(\Throwable $e): bool
+    {
+        $message = $e->getMessage();
+
+        return str_contains($message, 'cURL error 28')
+            || stripos($message, 'timed out') !== false
+            || stripos($message, 'timeout') !== false;
     }
 
     /**

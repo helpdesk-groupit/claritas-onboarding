@@ -123,12 +123,34 @@ class VendorDocumentScan extends Model
             'token' => $this->token,
             'status' => $this->status,
             'settled' => $this->isSettled(),
-            'note' => VendorContract::aiNoteFor($this->status),
+            'note' => self::modalNoteFor($this->status),
             'summary' => (string) $this->summary,
             'key_points' => $this->key_points ?? [],
             'companies' => $this->companies ?? [],
             'fields' => $this->fields ?? [],
             'filename' => $this->original_filename,
         ];
+    }
+
+    /**
+     * What the reading did, worded for the ADD-DOCUMENT MODAL rather than a filed row.
+     *
+     * Every status but `failed` means the same thing in both places, so the shared wording
+     * stands and the two cannot drift. `failed` does not: on a filed row the remedy is that
+     * row's "Read the document again" button, and in this modal no such button can exist —
+     * the record it belongs to has not been created yet. Naming it here sends the operator
+     * hunting their screen for a control that is not on it, which is precisely what happened
+     * the first time a contract was filed on live.
+     *
+     * What it names instead are the two things that ARE on this screen: Save (the file is
+     * already stored, and a document that could not be read must never be an unfileable one)
+     * and the file picker, which re-runs the read on a fresh choice.
+     */
+    protected static function modalNoteFor(?string $status): ?string
+    {
+        return $status === 'failed'
+            ? 'The document could not be read. You can still save it and write the summary yourself, '
+                .'or choose the file again to retry.'
+            : VendorContract::aiNoteFor($status);
     }
 }

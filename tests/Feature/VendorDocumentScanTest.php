@@ -203,6 +203,56 @@ class VendorDocumentScanTest extends TestCase
         Storage::disk('local')->assertExists($scan->file_path);
     }
 
+    /**
+     * A failure must point at something that is ON THIS SCREEN.
+     *
+     * The modal reused the filed row's wording, which said "press Re-summarise" — a label no
+     * control in this application carries, describing a button that in this modal could not
+     * exist anyway, because the record it belongs to has not been created yet. The first
+     * contract anybody filed on live failed to read and sent the operator hunting for it.
+     *
+     * What the note may name is what the modal actually offers: Save, and the file picker.
+     */
+    public function test_a_failed_reading_points_at_a_control_this_modal_actually_has(): void
+    {
+        $vendor = $this->vendor();
+        Http::fake(['api.anthropic.com/*' => Http::response(['error' => 'boom'], 500)]);
+
+        $response = $this->actingAs($this->itManager())
+            ->post(route('vendors.documents.scan', $vendor), [
+                'kind' => 'contract',
+                'token' => 'tok-'.str_repeat('n', 12),
+                'document' => $this->pdf(),
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'failed');
+
+        $note = $response->json('note');
+
+        $this->assertStringNotContainsStringIgnoringCase('re-summarise', $note);
+        // Not the filed row's remedy either: there is no Edit window for a record that does
+        // not exist, so naming one is the same mistake in different words.
+        $this->assertStringNotContainsStringIgnoringCase('edit window', $note);
+        $this->assertStringContainsString('save it and write the summary yourself', $note);
+        $this->assertStringContainsString('choose the file again', $note);
+    }
+
+    /**
+     * The filed-row wording has the same duty, and it is a DIFFERENT sentence: there the
+     * remedy really is a button, so it has to be called what the button is called.
+     */
+    public function test_the_filed_row_names_the_retry_control_by_its_real_label(): void
+    {
+        $note = VendorContract::aiNoteFor('failed');
+
+        $this->assertStringNotContainsStringIgnoringCase('re-summarise', $note);
+        $this->assertStringContainsString('Read the document again', $note);
+
+        // Both tables render this wording, and the same status has to read the same way
+        // whichever tab it is met on — that is the whole reason it lives in a shared trait.
+        $this->assertSame($note, VendorBillingDocument::aiNoteFor('failed'));
+    }
+
     // ── Losing the response ───────────────────────────────────────────────────
 
     /**
