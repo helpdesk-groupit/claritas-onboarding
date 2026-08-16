@@ -16,10 +16,12 @@ use App\Models\Vendor;
 use App\Notifications\DecommissionNotification;
 use App\Services\DecommissionReportRenderer;
 use App\Services\EwasteDocumentOcrService;
+use App\Services\EwasteQuotationComparisonService;
 use App\Services\EwasteQuotationFilingService;
 use App\Services\EwasteSweepService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
@@ -48,8 +50,8 @@ class AssetDecommissionController extends Controller
 
     private function authorizeFinance(): void
     {
-        if (! Auth::user()->canApproveEwasteQuotation()) {
-            abort(403, 'Only Finance may approve or reject e-waste quotations.');
+        if (! Auth::user()->canCommentEwasteQuotation()) {
+            abort(403, 'Only Finance may leave remarks on e-waste quotations.');
         }
     }
 
@@ -283,6 +285,62 @@ class AssetDecommissionController extends Controller
     }
 
     /**
+     * Undo an upload mistake — remove a quotation before the comparison has ever been
+     * submitted for approval. Not a way to withdraw an offer that has already been submitted,
+     * recommended or decided on; see AssetDecommissionQuotation::isDeletable().
+     */
+    public function deleteQuotation(AssetDecommissionBatch $batch, AssetDecommissionQuotation $quotation)
+    {
+        $this->authorizeManage();
+        $this->assertQuotationBelongs($batch, $quotation);
+
+        if (! $quotation->isDeletable()) {
+            return back()->with('error', 'This quotation can no longer be deleted — it has already been submitted or reviewed. Upload a revised offer instead.');
+        }
+
+        $vendorName = $quotation->vendorName();
+        $path = $quotation->path;
+        $revertedToAwaitingQuotation = false;
+
+        DB::transaction(function () use ($batch, $quotation, &$revertedToAwaitingQuotation) {
+            // A suggestion the AI made off this document no longer applies once it's gone.
+            if ($batch->ai_recommended_quotation_id === $quotation->id) {
+                $batch->update([
+                    'ai_recommended_quotation_id' => null,
+                    'ai_recommendation_note' => null,
+                    'ai_recommended_at' => null,
+                    'ai_compare_status' => null,
+                ]);
+            }
+
+            $quotation->delete();
+            $batch->unsetRelation('quotations');
+
+            // No quotations left at all means the cycle is back to gathering offers — leaving
+            // it at "quotation_uploaded" would assert an offer is on file when none is.
+            if ($batch->status === 'quotation_uploaded' && $batch->quotations()->doesntExist()) {
+                $batch->update(['status' => 'awaiting_quotation']);
+                $revertedToAwaitingQuotation = true;
+            }
+        });
+
+        // The ORIGINAL upload only — the copy filed on the vendor's Contracts tab is left in
+        // place (see the nullOnDelete note on vendor_contracts.asset_decommission_quotation_id):
+        // it is still a real document the vendor sent, even though the cycle no longer holds it.
+        if ($path) {
+            Storage::disk('local')->delete($path);
+        }
+
+        Log::info('E-waste quotation deleted', [
+            'batch' => $batch->batch_number, 'vendor' => $vendorName, 'actor_id' => Auth::id(),
+        ]);
+
+        return redirect()->route('decommission.show', $batch)->with('success',
+            "Quotation from {$vendorName} deleted."
+            .($revertedToAwaitingQuotation ? ' No quotations remain — the cycle is back to awaiting offers.' : ''));
+    }
+
+    /**
      * IT put the collected offers up for approval, naming the one they recommend.
      *
      * This is the step that makes the cycle reviewable. Before it, quotations are still coming
@@ -328,9 +386,9 @@ class AssetDecommissionController extends Controller
             new DecommissionNotification(
                 event: 'ewaste.quotation_pending',
                 batchNumber: $batch->batch_number,
-                subject: 'E-waste quotation comparison awaiting your review',
+                subject: 'E-waste quotation comparison ready for your review',
                 message: "Cycle {$batch->batch_number} has ".$batch->quotationsForComparison()->count()
-                    .' vendor quotation(s) for review. Your position is recorded alongside management\'s, who authorise the disposal.',
+                    .' vendor quotation(s) for review. Leave remarks if you wish — they are optional and shown alongside management\'s decision, who authorise the disposal.',
                 url: route('reports.decommission'),
                 icon: 'bi-cash-coin',
                 color: 'warning',
@@ -344,73 +402,97 @@ class AssetDecommissionController extends Controller
     }
 
     /**
-     * Finance records its POSITION on the comparison.
+     * IT asks AI to read every vendor's current quotation and suggest one, with reasons
+     * grounded in the documents rather than the amount alone.
      *
-     * It does not move the cycle — management's decision does. Finance approving alone must
-     * never release assets to a vendor, because that is what keeps a later management
-     * rejection able to stop something that has not happened yet.
+     * PRE-FILLS the Recommend form on this page — submitForApproval() is still what the
+     * module treats as IT's actual recommendation, so IT decides whether to use the
+     * suggestion or pick differently. Never runs automatically; it is a billed AI call.
      */
-    public function financeApprove(Request $request, AssetDecommissionBatch $batch)
+    public function compareQuotations(AssetDecommissionBatch $batch)
+    {
+        $this->authorizeManage();
+
+        if (! $batch->isEwaste() || $batch->quotationsForComparison()->isEmpty()) {
+            return redirect()->route('decommission.show', $batch)->with('error', 'There are no quotations to compare yet.');
+        }
+
+        // Reading several documents in one request can run past PHP's 30s default.
+        @set_time_limit(180);
+
+        $result = EwasteQuotationComparisonService::compare($batch->fresh(['quotations.vendor']));
+
+        $batch->update([
+            'ai_compare_status' => $result['status'],
+            'ai_recommended_quotation_id' => $result['quotation_id'],
+            'ai_recommendation_note' => $result['note'],
+            'ai_recommended_at' => now(),
+        ]);
+
+        if ($result['status'] === 'ok') {
+            $winner = $batch->fresh(['aiRecommendedQuotation.vendor'])->aiRecommendedQuotation;
+
+            return redirect()->route('decommission.show', $batch)->with('success',
+                'AI suggests '.($winner?->vendorName() ?? 'a vendor').' — the Recommend form below has been pre-filled. You decide whether to use it.');
+        }
+
+        return redirect()->route('decommission.show', $batch)->with(match ($result['status']) {
+            'disabled' => 'info',
+            default => 'error',
+        }, match ($result['status']) {
+            'disabled' => 'AI document reading is not configured — pick a recommendation by hand.',
+            'empty' => 'There are no quotations to compare yet.',
+            default => 'AI comparison could not be completed this time — pick a recommendation by hand.',
+        });
+    }
+
+    /**
+     * Finance leaves OPTIONAL remarks on the comparison — advisory only, never a decision.
+     *
+     * Replaced financeApprove()/financeReject() on 2026-08-16, on the operator's instruction:
+     * Finance's position never moved the cycle anyway (only management's decision does), so
+     * an approve/reject control was asking Finance to cast a vote nobody counted. May be
+     * called any number of times while the cycle is awaiting a decision — each call replaces
+     * the remarks, so Finance can edit what they said.
+     */
+    public function financeRemark(Request $request, AssetDecommissionBatch $batch)
     {
         $this->authorizeFinance();
 
-        if (! $batch->isEwaste() || $batch->finance_status !== 'pending') {
-            return back()->with('error', 'This cycle is not awaiting your review.');
+        if (! $batch->isEwaste() || ! $batch->isAwaitingDecision()) {
+            return back()->with('error', 'This cycle is not open for remarks right now.');
         }
 
+        $request->validate(['remarks' => 'nullable|string|max:1000']);
         $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
-        $batch->recordFinanceDecision('approved', Auth::id(), $remarks ?: null);
 
-        Log::info('E-waste quotation: Finance position recorded', [
+        $batch->recordFinanceRemark(Auth::id(), $remarks ?: null);
+
+        Log::info('E-waste quotation: Finance remarks recorded', [
             'batch' => $batch->batch_number,
-            'position' => 'approved',
             'quotation_id' => $batch->quotationUnderReview()?->id,
             'actor_id' => Auth::id(),
+            'has_remarks' => $remarks !== '',
         ]);
 
         EwasteSweepService::notifyIt(new DecommissionNotification(
-            event: 'ewaste.finance_position',
+            event: 'ewaste.finance_remark',
             batchNumber: $batch->batch_number,
-            subject: 'Finance approved the e-waste quotation',
-            message: "Finance approved the quotation for {$batch->batch_number}. The cycle proceeds once "
-                .$batch->company.' management have also approved.',
+            subject: 'Finance left remarks on the e-waste quotation',
+            message: $remarks !== ''
+                ? "Finance left remarks on the quotation for {$batch->batch_number}: {$remarks}. "
+                    .$batch->company.' management still decide.'
+                : "Finance reviewed the quotation for {$batch->batch_number} with no remarks. "
+                    .$batch->company.' management still decide.',
             url: route('decommission.show', $batch),
-            icon: 'bi-check-circle',
+            icon: 'bi-chat-left-text',
             color: 'info',
         ));
 
         return redirect()->route('reports.decommission')
-            ->with('success', "Your approval for {$batch->batch_number} is recorded. It proceeds once management approve.");
-    }
-
-    /** Finance objects to the comparison (reason required). Management may still override. */
-    public function financeReject(Request $request, AssetDecommissionBatch $batch)
-    {
-        $this->authorizeFinance();
-
-        if (! $batch->isEwaste() || $batch->finance_status !== 'pending') {
-            return back()->with('error', 'This cycle is not awaiting your review.');
-        }
-
-        $request->validate(['remarks' => 'required|string|max:1000']);
-        $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
-
-        // Recorded ON the quotation under review, so a later re-quote cannot erase it.
-        $batch->recordFinanceDecision('rejected', Auth::id(), $remarks);
-
-        EwasteSweepService::notifyIt(new DecommissionNotification(
-            event: 'ewaste.finance_position',
-            batchNumber: $batch->batch_number,
-            subject: 'Finance objected to the e-waste quotation',
-            message: "Finance objected to the quotation for {$batch->batch_number}: {$remarks}. "
-                .$batch->company.' management still have to decide.',
-            url: route('decommission.show', $batch),
-            icon: 'bi-exclamation-circle',
-            color: 'warning',
-        ));
-
-        return redirect()->route('reports.decommission')
-            ->with('success', "Your objection to {$batch->batch_number} is recorded and shown to management.");
+            ->with('success', $remarks !== ''
+                ? "Your remarks on {$batch->batch_number} are recorded and shown to management."
+                : "Recorded — no remarks left on {$batch->batch_number}.");
     }
 
     // ── Management: the decision that moves the cycle ─────────────────────────
@@ -664,6 +746,15 @@ class AssetDecommissionController extends Controller
     }
 
     // ── Shared helpers ────────────────────────────────────────────────────────
+
+    /**
+     * Both ids come from the URL, so without this a quotation could be deleted through any
+     * other cycle's route and would then vanish from the wrong batch.
+     */
+    private function assertQuotationBelongs(AssetDecommissionBatch $batch, AssetDecommissionQuotation $quotation): void
+    {
+        abort_unless($quotation->asset_decommission_batch_id === $batch->id, 404);
+    }
 
     /**
      * Copy the quotation onto the sending vendor's Contracts tab, and say so in the flash.

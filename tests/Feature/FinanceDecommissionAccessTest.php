@@ -168,59 +168,58 @@ class FinanceDecommissionAccessTest extends TestCase
     }
 
     // ── The quotation workflow, on the review page ───────────────────────────
-    public function test_pending_quotations_render_with_approve_and_reject_controls(): void
+    public function test_pending_quotations_render_with_a_remarks_control(): void
     {
         $finance = User::factory()->create(['role' => 'finance_executive']);
         $batch = $this->pendingQuotation();
 
         $this->actingAs($finance)->get($this->reviewUrl())
             ->assertOk()
-            ->assertSee('Awaiting your decision')
+            ->assertSee('Cycles in review')
             ->assertSee('EWA-2026-Q4')
-            ->assertSee(route('finance.ewaste.approve', $batch), false)
-            ->assertSee(route('finance.ewaste.reject', $batch), false);
+            // One control only — remarks are optional and advisory, never approve/reject.
+            ->assertSee(route('finance.ewaste.remark', $batch), false);
     }
 
-    public function test_approving_from_the_review_page_works_and_returns_there(): void
+    public function test_leaving_remarks_from_the_review_page_works_and_returns_there(): void
     {
         $finance = User::factory()->create(['role' => 'finance_manager']);
         $batch = $this->pendingQuotation();
 
         $this->actingAs($finance)
-            ->post(route('finance.ewaste.approve', $batch), ['remarks' => 'Offer accepted'])
+            ->post(route('finance.ewaste.remark', $batch), ['remarks' => 'Offer accepted'])
             ->assertRedirect($this->reviewUrl());
 
-        $this->assertSame('approved', $batch->fresh()->finance_status);
-        // Their approval is a recorded position, not the release: management authorise the
-        // disposal, so the cycle is still awaiting a decision.
+        $this->assertSame('noted', $batch->fresh()->finance_status);
+        $this->assertSame('Offer accepted', $batch->fresh()->finance_remarks);
+        // Remarks never move the cycle — only management's decision does, so it is still
+        // awaiting one.
         $this->assertSame('pending_approval', $batch->fresh()->status);
 
-        // Decided, so it drops out of the awaiting-decision block — but stays in the list.
+        // Finance's remarks are optional and advisory, so the cycle stays "in review" (it is
+        // still awaiting MANAGEMENT's decision) even after Finance has said something.
         $this->actingAs($finance)->get($this->reviewUrl())
             ->assertOk()
-            ->assertDontSee('Awaiting your decision')
+            ->assertSee('Cycles in review')
             ->assertSee('EWA-2026-Q4');
     }
 
-    public function test_rejecting_from_the_review_page_requires_a_reason_then_returns_there(): void
+    public function test_remarks_are_optional_and_can_be_left_blank(): void
     {
         $finance = User::factory()->create(['role' => 'finance_manager']);
         $batch = $this->pendingQuotation();
 
         $this->actingAs($finance)
-            ->post(route('finance.ewaste.reject', $batch), [])
-            ->assertSessionHasErrors('remarks');
-        $this->assertSame('pending', $batch->fresh()->finance_status);
-
-        $this->actingAs($finance)
-            ->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Offer too low'])
+            ->post(route('finance.ewaste.remark', $batch), [])
             ->assertRedirect($this->reviewUrl());
-        $this->assertSame('rejected', $batch->fresh()->finance_status);
+
+        $this->assertSame('noted', $batch->fresh()->finance_status);
+        $this->assertNull($batch->fresh()->finance_remarks);
     }
 
-    public function test_a_viewer_who_cannot_approve_sees_the_record_but_no_controls(): void
+    public function test_a_viewer_who_cannot_comment_sees_the_record_but_no_controls(): void
     {
-        // hr_manager reads the decommission archive but may approve nothing.
+        // hr_manager reads the decommission archive but may act on nothing.
         $hr = User::factory()->create(['role' => 'hr_manager']);
         $this->batchWithAsset('EWA-2026-Q1', 'e_waste', true);
         $batch = $this->pendingQuotation();
@@ -228,9 +227,9 @@ class FinanceDecommissionAccessTest extends TestCase
         $this->actingAs($hr)->get($this->reviewUrl())
             ->assertOk()
             ->assertSee('EWA-2026-Q1')
-            // The decision block is what they must not get.
-            ->assertDontSee('Awaiting your decision')
-            ->assertDontSee(route('finance.ewaste.approve', $batch), false)
+            // The review block is what they must not get.
+            ->assertDontSee('Cycles in review')
+            ->assertDontSee(route('finance.ewaste.remark', $batch), false)
             ->assertDontSee(route('management.ewaste.approve', $batch), false)
             // But the cycle itself belongs in the record they are allowed to read — they
             // simply can't act on it. Hiding it would tell them the disposal doesn't exist.
@@ -252,10 +251,10 @@ class FinanceDecommissionAccessTest extends TestCase
 
         $this->actingAs($ceo)->get($this->reviewUrl())
             ->assertOk()
-            ->assertSee('Awaiting your decision')
+            ->assertSee('Cycles in review')
             ->assertSee(route('management.ewaste.approve', $batch), false)
-            // Finance's controls are not theirs.
-            ->assertDontSee(route('finance.ewaste.approve', $batch), false);
+            // Finance's control is not theirs.
+            ->assertDontSee(route('finance.ewaste.remark', $batch), false);
 
         $this->actingAs($ceo)
             ->post(route('management.ewaste.approve', $batch), ['remarks' => 'Approved'])
@@ -317,7 +316,7 @@ class FinanceDecommissionAccessTest extends TestCase
             ->assertDontSee('E-waste Quotations Awaiting Approval')
             ->assertDontSee('EWA-2026-Q1')
             ->assertDontSee('EWA-2026-Q4')
-            ->assertDontSee(route('finance.ewaste.approve', $batch), false);
+            ->assertDontSee(route('finance.ewaste.remark', $batch), false);
     }
 
     /** The IT cycle page is IT's working surface — management decide on Decommissioning. */

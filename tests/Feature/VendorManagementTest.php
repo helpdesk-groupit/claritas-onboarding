@@ -45,12 +45,6 @@ class VendorManagementTest extends TestCase
      *
      * The registration form must therefore offer no such control, and a hand-posted flag must
      * not resurrect one — the vendor is registered exactly as if the field had not been sent.
-     *
-     * Asserted on the VALUE rather than the key's absence, because the column outlives the
-     * feature by one release: the drop is deferred so this deploy can be rolled back with a
-     * single push (the previously deployed code still reads it). What matters either way is
-     * that nothing a client sends can set it, so this reads the same before and after the
-     * follow-up contract migration.
      */
     public function test_no_vendor_can_be_nominated_as_the_primary_ewaste_target(): void
     {
@@ -63,16 +57,13 @@ class VendorManagementTest extends TestCase
         $this->actingAs($it)->post(route('vendors.store'), [
             'name' => 'RecycleB',
             'vendor_types' => ['ewaste'],
-            'is_primary_ewaste' => '1',   // no control, no rule, no effect
+            'is_primary_ewaste' => '1',   // no column, no rule, no effect
             'is_active' => '1',
         ]);
 
         $vendor = Vendor::where('name', 'RecycleB')->first();
         $this->assertNotNull($vendor);
-        $this->assertFalse(
-            (bool) ($vendor->getAttributes()['is_primary_ewaste'] ?? false),
-            'a posted flag must not nominate a vendor, whether or not the column still exists'
-        );
+        $this->assertArrayNotHasKey('is_primary_ewaste', $vendor->getAttributes());
     }
 
     /**

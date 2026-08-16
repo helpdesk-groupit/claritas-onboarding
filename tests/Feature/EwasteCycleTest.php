@@ -149,49 +149,61 @@ class EwasteCycleTest extends TestCase
         ]);
     }
 
-    public function test_finance_can_approve_pending_quotation(): void
+    public function test_finance_can_leave_remarks_on_pending_quotation(): void
     {
         $fin = User::factory()->create(['role' => 'finance_manager']);
         $batch = $this->quotedBatch();
 
-        $this->actingAs($fin)->post(route('finance.ewaste.approve', $batch), ['remarks' => 'ok'])->assertRedirect();
+        $this->actingAs($fin)->post(route('finance.ewaste.remark', $batch), ['remarks' => 'ok'])->assertRedirect();
 
         $batch->refresh();
-        $this->assertSame('approved', $batch->finance_status);
+        $this->assertSame('noted', $batch->finance_status);
+        $this->assertSame('ok', $batch->finance_remarks);
         $this->assertSame($fin->id, $batch->finance_reviewed_by);
-        // Since Phase 5 Finance record a POSITION — the cycle only moves when management
-        // approve, so it stays pending here rather than advancing to a released state.
+        // Finance's remarks never move the cycle — only management's decision does, so it
+        // stays pending_approval here rather than advancing.
         $this->assertSame('pending_approval', $batch->status);
         $this->assertFalse($batch->isApproved());
     }
 
-    public function test_approve_guard_blocks_non_pending(): void
-    {
-        $fin = User::factory()->create(['role' => 'finance_manager']);
-        $batch = $this->quotedBatch();
-        $batch->update(['finance_status' => 'approved', 'status' => 'finance_approved']);
-
-        $this->actingAs($fin)->post(route('finance.ewaste.approve', $batch), [])->assertRedirect();
-        // Still approved — a second approve is a no-op guarded by the state check.
-        $this->assertSame('approved', $batch->fresh()->finance_status);
-    }
-
-    public function test_finance_reject_requires_reason(): void
+    public function test_finance_remarks_are_optional(): void
     {
         $fin = User::factory()->create(['role' => 'finance_manager']);
         $batch = $this->quotedBatch();
 
-        $this->actingAs($fin)->post(route('finance.ewaste.reject', $batch), [])->assertSessionHasErrors('remarks');
-        $this->assertSame('pending', $batch->fresh()->finance_status);
+        $this->actingAs($fin)->post(route('finance.ewaste.remark', $batch), [])->assertRedirect();
 
-        $this->actingAs($fin)->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Too low'])->assertRedirect();
-        $this->assertSame('rejected', $batch->fresh()->finance_status);
+        $batch->refresh();
+        $this->assertSame('noted', $batch->finance_status);
+        $this->assertNull($batch->finance_remarks);
     }
 
-    public function test_it_manager_cannot_approve_quotation(): void
+    public function test_finance_can_edit_remarks_by_resubmitting(): void
+    {
+        $fin = User::factory()->create(['role' => 'finance_manager']);
+        $batch = $this->quotedBatch();
+
+        $this->actingAs($fin)->post(route('finance.ewaste.remark', $batch), ['remarks' => 'First note']);
+        $this->actingAs($fin)->post(route('finance.ewaste.remark', $batch), ['remarks' => 'Revised note']);
+
+        $this->assertSame('Revised note', $batch->fresh()->finance_remarks);
+    }
+
+    public function test_remark_guard_blocks_once_the_cycle_is_no_longer_awaiting_a_decision(): void
+    {
+        $fin = User::factory()->create(['role' => 'finance_manager']);
+        $batch = $this->quotedBatch();
+        $batch->update(['status' => 'approved', 'management_status' => 'approved']);
+
+        $this->actingAs($fin)->post(route('finance.ewaste.remark', $batch), ['remarks' => 'Too late'])->assertRedirect();
+
+        $this->assertNull($batch->fresh()->finance_remarks);
+    }
+
+    public function test_it_manager_cannot_leave_finance_remarks(): void
     {
         $it = User::factory()->create(['role' => 'it_manager']);
-        $this->actingAs($it)->post(route('finance.ewaste.approve', $this->quotedBatch()))->assertForbidden();
+        $this->actingAs($it)->post(route('finance.ewaste.remark', $this->quotedBatch()))->assertForbidden();
     }
 
     public function test_finance_cannot_run_sweep(): void
@@ -272,7 +284,7 @@ class EwasteCycleTest extends TestCase
         Mail::assertSent(EwasteFinalReportMail::class);
     }
 
-    public function test_report_states_ewaste_completeness_in_asset_details(): void
+    public function test_report_states_ewaste_completeness_in_the_assets_table(): void
     {
         $batch = AssetDecommissionBatch::create([
             'batch_number' => 'EWA-2026-Q3', 'type' => 'e_waste', 'status' => 'awaiting_quotation',
@@ -285,11 +297,12 @@ class EwasteCycleTest extends TestCase
             'ewaste_completeness' => 'incomplete', 'disposed_by' => 'IT', 'disposed_at' => now(),
         ]);
 
-        // The asset-details section (attached to the finance report + vendor RFQ) must state it.
+        // Completeness is a column on the Assets table (attached to the finance report +
+        // vendor RFQ), not a separate per-asset section — that section was removed 2026-08-16.
         $html = view('decommission.report-pdf', ['batch' => $batch->fresh(['vendor', 'items.asset'])])->render();
 
         $this->assertStringContainsString('Completeness', $html);
-        $this->assertStringContainsString('some parts removed', $html);
+        $this->assertStringContainsString('Incomplete', $html);
     }
 
     public function test_report_lists_the_specific_parts_removed_from_an_incomplete_asset(): void
@@ -308,14 +321,17 @@ class EwasteCycleTest extends TestCase
 
         $html = view('decommission.report-pdf', ['batch' => $batch->fresh(['vendor', 'items.asset'])])->render();
 
-        $this->assertStringContainsString('parts removed: Battery, RAM, Hard disk', $html);
+        $this->assertStringContainsString('Parts removed: Battery, RAM, Hard disk', $html);
     }
 
     /**
-     * The report carries the human-written `notes`, never the machine-appended `remarks`
-     * audit log — that log ran to dozens of assign/return lines and buried the document.
+     * The per-asset Notes / photos / condition narrative was removed from this report on
+     * 2026-08-16 in favour of a single Assets table (Asset Tag / Type / Brand-Model / Spec /
+     * Serial No. / Completeness) — mirroring the AARF's "List of Assets" table. Neither the
+     * human-written `notes` field nor the machine-appended `remarks` audit log appear any
+     * more; both are still visible on the asset's own record page.
      */
-    public function test_report_shows_notes_and_never_the_remarks_audit_log(): void
+    public function test_report_carries_no_per_asset_notes_or_remarks_narrative(): void
     {
         $batch = AssetDecommissionBatch::create([
             'batch_number' => 'EWA-2026-Q3', 'type' => 'e_waste', 'status' => 'awaiting_quotation',
@@ -333,24 +349,24 @@ class EwasteCycleTest extends TestCase
             'brand' => $asset->brand, 'model' => $asset->model, 'serial_number' => $asset->serial_number,
             'asset_condition' => 'not_good', 'decommission_type' => 'e_waste', 'decommission_batch_id' => $batch->id,
             'disposed_by' => 'IT', 'disposed_at' => now(),
-            // Staging snapshots the asset's remarks — the report must still not print them.
             'remarks' => $asset->fresh()->remarks,
         ]);
 
         $html = view('decommission.report-pdf', ['batch' => $batch->fresh(['vendor', 'items.asset'])])->render();
 
-        $this->assertStringContainsString('Screen delaminated after coffee spill.', $html);
-        $this->assertStringNotContainsString('Remarks', $html);
+        $this->assertStringNotContainsString('Screen delaminated after coffee spill.', $html);
         $this->assertStringNotContainsString('processed by IT Team', $html);
         // No timestamped audit-log line survived anywhere in the document.
         $this->assertDoesNotMatchRegularExpression('/\[\d{2}\/\d{2}\/\d{4}, \d{2}:\d{2} [AP]M\]/', $html);
     }
 
-    /** Asset photos are embedded when the files exist, so the report shows the condition. */
-    public function test_report_embeds_asset_photos_when_present(): void
+    /**
+     * Asset photos were dropped from this report on 2026-08-16 along with the rest of the
+     * per-asset narrative — pinned so the per-asset section is not accidentally reintroduced.
+     */
+    public function test_report_carries_no_asset_photos(): void
     {
         Storage::fake('public');
-        // Real PNG bytes — the report only embeds paths whose detected MIME is image/*.
         $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==');
         Storage::disk('public')->put('asset_photos/tag/one.png', $png);
 
@@ -371,34 +387,9 @@ class EwasteCycleTest extends TestCase
 
         $html = view('decommission.report-pdf', ['batch' => $batch->fresh(['vendor', 'items.asset'])])->render();
 
-        $this->assertStringContainsString('Asset Photos (1)', $html);
-        $this->assertStringContainsString('<img class="photo" src="data:image/', $html);
+        $this->assertStringNotContainsString('Asset Photos', $html);
+        $this->assertStringNotContainsString('<img', $html);
         $this->assertStringNotContainsString('could not be embedded', $html);
-    }
-
-    /** A photo recorded but missing from disk is stated, not silently dropped. */
-    public function test_report_says_so_when_a_recorded_photo_is_missing_from_disk(): void
-    {
-        Storage::fake('public');
-
-        $batch = AssetDecommissionBatch::create([
-            'batch_number' => 'EWA-2026-Q3', 'type' => 'e_waste', 'status' => 'awaiting_quotation',
-        ]);
-        $asset = AssetInventory::factory()->create([
-            'asset_condition' => 'not_good',
-            'decommission_batch_id' => $batch->id,
-            'asset_photos' => ['asset_photos/tag/gone.jpg'],
-        ]);
-        DisposedAsset::create([
-            'asset_inventory_id' => $asset->id, 'asset_tag' => $asset->asset_tag, 'asset_type' => $asset->asset_type,
-            'brand' => $asset->brand, 'model' => $asset->model, 'serial_number' => $asset->serial_number,
-            'asset_condition' => 'not_good', 'decommission_type' => 'e_waste', 'decommission_batch_id' => $batch->id,
-            'disposed_by' => 'IT', 'disposed_at' => now(),
-        ]);
-
-        $html = view('decommission.report-pdf', ['batch' => $batch->fresh(['vendor', 'items.asset'])])->render();
-
-        $this->assertStringContainsString('1 photo(s) on record could not be embedded.', $html);
     }
 
     /** Base valid payload for PUT /assets/{asset} (only required fields). */

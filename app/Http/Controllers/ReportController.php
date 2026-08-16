@@ -934,9 +934,15 @@ class ReportController extends Controller
         // Per cycle, because management authority is per company: a group CFO may sign nothing
         // while a named CEO signs only their own entity's. Finance's gate is role-wide, but it
         // is still evaluated per row so both flags read the same way in the view.
-        $canFinance = $user->canApproveEwasteQuotation();
+        //
+        // Finance's membership here is the ROLE alone, not finance_status — Finance never
+        // "decides" (remarks are optional, advisory, and editable at any point the cycle is
+        // still open), so a Finance user should keep seeing every pending cycle for as long as
+        // it is open, whether or not they have already left something. Only management's
+        // membership is gated on their own decision still being outstanding.
+        $canFinance = $user->canCommentEwasteQuotation();
         $awaiting = $awaiting->filter(
-            fn ($b) => ($canFinance && $b->finance_status === 'pending')
+            fn ($b) => $canFinance
                 || ($b->management_status === 'pending' && $user->canApproveEwasteAsManagement($b->company))
         )->values();
 

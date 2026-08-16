@@ -60,6 +60,7 @@ class AssetDecommissionBatch extends Model
         'management_status', 'management_reviewed_by', 'management_reviewed_at', 'management_remarks',
         'recommended_quotation_id', 'recommendation_note', 'selected_quotation_id', 'submitted_for_approval_at',
         'receipt_path', 'receipt_amount', 'receipt_uploaded_at', 'receipt_uploaded_by',
+        'ai_recommended_quotation_id', 'ai_recommendation_note', 'ai_recommended_at', 'ai_compare_status',
     ];
 
     protected $casts = [
@@ -73,6 +74,7 @@ class AssetDecommissionBatch extends Model
         'receipt_uploaded_at' => 'datetime',
         'quotation_amount' => 'decimal:2',
         'receipt_amount' => 'decimal:2',
+        'ai_recommended_at' => 'datetime',
     ];
 
     // ── Relations ─────────────────────────────────────────────────────────────
@@ -119,6 +121,16 @@ class AssetDecommissionBatch extends Model
     public function selectedQuotation()
     {
         return $this->belongsTo(AssetDecommissionQuotation::class, 'selected_quotation_id');
+    }
+
+    /**
+     * What the AI comparison last suggested. A SUGGESTION only — it pre-fills IT's Recommend
+     * form on the cycle page, but recommended_quotation_id (set by submitForApproval()) is
+     * still the only thing the module treats as IT's actual recommendation.
+     */
+    public function aiRecommendedQuotation()
+    {
+        return $this->belongsTo(AssetDecommissionQuotation::class, 'ai_recommended_quotation_id');
     }
 
     /** The management approvers for this cycle's company. */
@@ -213,14 +225,27 @@ class AssetDecommissionBatch extends Model
         return $this->finance_status === 'pending';
     }
 
+    /**
+     * LEGACY only — a decision made under the pre-2026-08-16 rule where Finance's position
+     * doubled as an approve/reject verdict on the comparison. Nothing writes 'approved' any
+     * more; kept so a cycle decided under the old rule still renders as it did the day it
+     * was decided. See recordFinanceRemark().
+     */
     public function financeApproved(): bool
     {
         return $this->finance_status === 'approved';
     }
 
+    /** LEGACY only — see financeApproved(). */
     public function financeRejected(): bool
     {
         return $this->finance_status === 'rejected';
+    }
+
+    /** Finance left optional remarks — the only thing Finance's review does since 2026-08-16. */
+    public function financeCommented(): bool
+    {
+        return $this->finance_status === 'noted';
     }
 
     public function typeLabel(): string
@@ -282,27 +307,31 @@ class AssetDecommissionBatch extends Model
     }
 
     /**
-     * Management's decision is the one that moves the cycle. Finance's is recorded beside it
-     * and shown on every screen, but a Finance approval alone releases nothing — which is what
-     * keeps a later management rejection able to stop something that has not happened yet.
+     * Management's decision is the one that moves the cycle. Finance never decides anything
+     * here — since 2026-08-16 their review is optional remarks only, shown on every screen
+     * beside management's decision but never gating or releasing anything.
      */
     public function managementDecided(): bool
     {
         return in_array($this->management_status, ['approved', 'rejected'], true);
     }
 
+    /** Has Finance looked at this cycle at all — left remarks now, or decided under the old rule? */
     public function financeDecided(): bool
     {
-        return in_array($this->finance_status, ['approved', 'rejected'], true);
+        return in_array($this->finance_status, ['approved', 'rejected', 'noted'], true);
     }
 
-    /** Badge for Finance's position — "recorded", never "decided the cycle". */
+    /** Badge for Finance's review — remarks only, never a decision on the cycle. */
     public function financeDecisionBadge(): array
     {
         return match ($this->finance_status) {
-            'approved' => ['success', 'Finance approved'],
-            'rejected' => ['danger', 'Finance objected'],
-            'pending' => ['warning', 'Finance not yet reviewed'],
+            // Legacy: a cycle decided under the pre-2026-08-16 rule. Nothing writes these
+            // any more — see recordFinanceRemark().
+            'approved' => ['success', 'Finance approved (legacy)'],
+            'rejected' => ['danger', 'Finance objected (legacy)'],
+            'noted' => ['info', 'Finance commented'],
+            'pending' => ['secondary', 'No remarks from Finance yet'],
             default => ['secondary', 'Not submitted'],
         };
     }
@@ -456,36 +485,34 @@ class AssetDecommissionBatch extends Model
     }
 
     /**
-     * Stamp a Finance decision on the current revision AND the batch's cache columns, so the
-     * per-revision history and the cache every other screen reads can never disagree.
+     * Finance's OPTIONAL remarks on the comparison — advisory only, never a decision.
      *
-     * A legacy batch with no revision row still gets its cache updated — the decision is
-     * never lost just because the history table postdates the cycle.
+     * Replaced recordFinanceDecision()'s approve/reject verdict on 2026-08-16, on the
+     * operator's instruction: Finance's position never moved the cycle anyway (only
+     * management's decision does — see recordManagementDecision()), so an approve/reject
+     * control was asking Finance to cast a vote that was never actually counted. This may be
+     * called any number of times while the cycle is awaiting a decision — each call replaces
+     * the remarks, letting Finance edit what they said rather than leaving a stale objection
+     * on the record.
+     *
+     * Stamped on the quotation under review AND the batch's cache columns together, so the
+     * per-revision history and the cache every other screen reads can never disagree. A
+     * legacy batch with no revision row still gets its cache updated.
      */
-    public function recordFinanceDecision(string $status, ?int $reviewerId, ?string $remarks): void
+    public function recordFinanceRemark(?int $reviewerId, ?string $remarks): void
     {
-        if (! in_array($status, ['approved', 'rejected'], true)) {
-            throw new \InvalidArgumentException("Unsupported finance decision [{$status}].");
-        }
-
-        DB::transaction(function () use ($status, $reviewerId, $remarks) {
+        DB::transaction(function () use ($reviewerId, $remarks) {
             $at = now();
 
-            // Stamped on the quotation under review, so the decision travels with the document
-            // it was made about rather than with whatever is current later.
             $this->quotationUnderReview()?->update([
-                'finance_status' => $status,
+                'finance_status' => 'noted',
                 'finance_reviewed_by' => $reviewerId,
                 'finance_reviewed_at' => $at,
                 'finance_remarks' => $remarks,
             ]);
 
-            // NOTE: `status` is deliberately NOT touched. Finance's position is recorded, not
-            // acted on — only management's decision moves the cycle. Writing finance_approved
-            // here (as this did before Phase 5) would let a Finance approval release assets to
-            // a vendor before the authority that actually signs had looked at it.
             $this->update([
-                'finance_status' => $status,
+                'finance_status' => 'noted',
                 'finance_reviewed_by' => $reviewerId,
                 'finance_reviewed_at' => $at,
                 'finance_remarks' => $remarks,

@@ -57,7 +57,7 @@ return [
         'rfq_subject' => 'Request for Quotation — IT Asset E-Waste Disposal',
         'rfq_intro' => 'We have the following IT assets awaiting e-waste disposal and invite your quotation for their collection and recycling.',
         'awaiting_subject' => 'E-Waste Cycle — Assets Awaiting Decommissioning',
-        'approval_subject' => 'Action Required — E-Waste Quotation Awaiting Finance Approval',
+        'approval_subject' => 'E-Waste Quotation Comparison Ready for Your Review',
         'final_subject' => 'E-Waste Cycle Completed — Final Report',
     ],
 ];

@@ -161,8 +161,8 @@ class ItDecommissionAccessTest extends TestCase
             ->assertForbidden();
     }
 
-    /** Finance holds the only approval step; driving the IT flow does not grant it. */
-    public function test_it_executive_cannot_approve_an_ewaste_quotation(): void
+    /** Finance holds the only remarks step; driving the IT flow does not grant it. */
+    public function test_it_executive_cannot_leave_finance_remarks_on_an_ewaste_quotation(): void
     {
         $batch = AssetDecommissionBatch::create([
             'batch_number' => 'EWA-2026-Q4', 'type' => 'e_waste',
@@ -171,7 +171,7 @@ class ItDecommissionAccessTest extends TestCase
         ]);
 
         $this->actingAs(User::factory()->create(['role' => 'it_executive']))
-            ->post(route('finance.ewaste.approve', $batch), ['remarks' => 'ok'])
+            ->post(route('finance.ewaste.remark', $batch), ['remarks' => 'ok'])
             ->assertForbidden();
 
         $this->assertSame('pending', $batch->fresh()->finance_status);

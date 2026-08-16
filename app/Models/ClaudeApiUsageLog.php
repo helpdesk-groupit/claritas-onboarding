@@ -31,6 +31,11 @@ class ClaudeApiUsageLog extends Model
         'claim_item_verify' => 'eClaim — Reviewer Verification',
         'ewaste_quotation_scan' => 'Asset Decommissioning — Quotation Scan',
         'ewaste_receipt_scan' => 'Asset Decommissioning — Receipt Scan',
+        // The two-call AI comparison (added 2026-08-16): transcribe() reads one document,
+        // compare() reasons over every vendor's transcript at once. Billed apart for the
+        // same reason the vendor document summary/detail passes are — two calls, two costs.
+        'ewaste_quotation_transcribe' => 'Asset Decommissioning — Quotation Transcription',
+        'ewaste_quotation_compare' => 'Asset Decommissioning — AI Quotation Comparison',
         // Retired 2026-08-11 (field OCR removed) — kept so past rows keep their names.
         'vendor_contract_scan' => 'Vendor Management — Contract Scan',
         'vendor_quotation_scan' => 'Vendor Management — Quotation Scan',
@@ -86,6 +91,8 @@ class ClaudeApiUsageLog extends Model
         'claim_item_verify' => 'eClaim (Receipt OCR)',
         'ewaste_quotation_scan' => 'Asset Decommissioning',
         'ewaste_receipt_scan' => 'Asset Decommissioning',
+        'ewaste_quotation_transcribe' => 'Asset Decommissioning',
+        'ewaste_quotation_compare' => 'Asset Decommissioning',
         'vendor_contract_scan' => 'Vendor Management',
         'vendor_quotation_scan' => 'Vendor Management',
         'vendor_invoice_scan' => 'Vendor Management',

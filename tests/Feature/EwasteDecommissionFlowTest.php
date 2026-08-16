@@ -887,6 +887,66 @@ class EwasteDecommissionFlowTest extends TestCase
         $this->assertSame([1], $batch->quotations()->where('vendor_id', $b->id)->pluck('revision')->all());
     }
 
+    /**
+     * The cycle page's quotation timeline (_quotation-steps.blade.php) used to walk every
+     * quotation in the whole cycle as one flat, batch-wide list ordered only by the bare
+     * `revision` column — so two DIFFERENT vendors each on their own revision 1 read as one
+     * vendor re-quoting the other's still-live offer, and the second one filed was stamped
+     * "Superseded" over an offer nobody had touched. Fixed by grouping the timeline per
+     * vendor before deciding what is current.
+     */
+    public function test_the_cycle_page_shows_each_vendors_own_offer_as_current_not_superseded_by_another(): void
+    {
+        Mail::fake();
+        $batch = $this->cycle();
+        $a = $this->vendor('RecycleCo');
+        $b = $this->vendor('ScrapWorks');
+        $this->fileQuotation($batch, $a, 500);
+        $this->fileQuotation($batch, $b, 700);
+
+        $response = $this->actingAs($this->itManager())
+            ->get(route('decommission.show', $batch))->assertOk();
+
+        // Neither vendor's only offer has been replaced by anything — "Superseded" must not
+        // appear anywhere on the page.
+        $response->assertDontSee('Superseded', false);
+        // Both vendors are named on the timeline now that there is more than one to tell apart.
+        $response->assertSee('RecycleCo', false);
+        $response->assertSee('ScrapWorks', false);
+        // Neither offer is a "revision" of the other — each vendor has exactly one.
+        $response->assertDontSee('Revision 1 of 2', false);
+    }
+
+    /**
+     * When one of the two vendors re-quotes, ONLY their own earlier offer is superseded — the
+     * other vendor's still-live, unrelated offer must never be caught by the same label.
+     */
+    public function test_a_requote_from_one_vendor_never_marks_a_different_vendors_offer_superseded(): void
+    {
+        Mail::fake();
+        $batch = $this->cycle();
+        $a = $this->vendor('RecycleCo');
+        $b = $this->vendor('ScrapWorks');
+        $this->fileQuotation($batch, $a, 500);
+        $this->fileQuotation($batch, $b, 700);
+        $this->fileQuotation($batch, $a, 650); // A re-quotes; B never has
+
+        $response = $this->actingAs($this->itManager())
+            ->get(route('decommission.show', $batch))->assertOk();
+
+        // A's history: revision 1 superseded, revision 2 current.
+        $response->assertSee('Revision 1 of 2', false);
+        $response->assertSee('Revision 2 of 2', false);
+        $response->assertSee('Superseded', false);
+
+        // B's single offer must still read as current, not swept up by A's re-quote.
+        $html = $response->getContent();
+        $scrapWorksPos = strpos($html, 'ScrapWorks');
+        $this->assertNotFalse($scrapWorksPos);
+        $nearbySlice = substr($html, $scrapWorksPos, 400);
+        $this->assertStringNotContainsString('Superseded', $nearbySlice);
+    }
+
     public function test_the_comparison_ranks_the_highest_offer_first(): void
     {
         Mail::fake();
@@ -991,29 +1051,29 @@ class EwasteDecommissionFlowTest extends TestCase
         NotificationFacade::assertSentTo($kelvin, DecommissionNotification::class);
     }
 
-    public function test_finance_approval_alone_does_not_advance_the_cycle(): void
+    public function test_finance_remarks_alone_do_not_advance_the_cycle(): void
     {
         Mail::fake();
         $batch = $this->submitted();
         $finance = User::factory()->create(['role' => 'finance_manager']);
 
-        $this->actingAs($finance)->post(route('finance.ewaste.approve', $batch))->assertSessionHasNoErrors();
+        $this->actingAs($finance)->post(route('finance.ewaste.remark', $batch), ['remarks' => 'Looks fine to me'])->assertSessionHasNoErrors();
 
         $batch->refresh();
-        $this->assertSame('approved', $batch->finance_status);
-        // Still pending: releasing assets on Finance's word alone would leave a later
-        // management rejection with nothing left to stop.
+        $this->assertSame('noted', $batch->finance_status);
+        // Still pending: Finance's remarks are advisory only — only management's decision
+        // releases assets to a vendor.
         $this->assertSame('pending_approval', $batch->status);
         $this->assertFalse($batch->isApproved());
     }
 
-    public function test_a_receipt_cannot_be_uploaded_on_finance_approval_alone(): void
+    public function test_a_receipt_cannot_be_uploaded_on_finance_remarks_alone(): void
     {
         Mail::fake();
         Storage::fake('local');
         $batch = $this->submitted();
         $this->actingAs(User::factory()->create(['role' => 'finance_manager']))
-            ->post(route('finance.ewaste.approve', $batch));
+            ->post(route('finance.ewaste.remark', $batch), ['remarks' => 'Looks fine to me']);
 
         $this->actingAs($this->itManager())
             ->post(route('ewaste.receipt', $batch), [
@@ -1024,21 +1084,22 @@ class EwasteDecommissionFlowTest extends TestCase
         $this->assertNull($batch->fresh()->receipt_path);
     }
 
-    public function test_management_approval_advances_the_cycle_over_a_finance_objection(): void
+    public function test_management_approval_advances_the_cycle_regardless_of_finance_remarks(): void
     {
         Mail::fake();
         $batch = $this->submitted();
         $kelvin = $this->approver('Claritas Asia Sdn Bhd');
 
         $this->actingAs(User::factory()->create(['role' => 'finance_manager']))
-            ->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Too cheap']);
+            ->post(route('finance.ewaste.remark', $batch), ['remarks' => 'Seems low for this volume']);
 
         $this->actingAs($kelvin)->post(route('management.ewaste.approve', $batch))->assertSessionHasNoErrors();
 
         $batch->refresh();
-        $this->assertSame('rejected', $batch->finance_status, "Finance's objection stays on record.");
+        $this->assertSame('noted', $batch->finance_status, "Finance's remarks stay on record.");
+        $this->assertSame('Seems low for this volume', $batch->finance_remarks);
         $this->assertSame('approved', $batch->management_status);
-        $this->assertTrue($batch->isApproved(), 'Management overrides Finance.');
+        $this->assertTrue($batch->isApproved(), "Management's decision is the only one that authorises the disposal.");
     }
 
     public function test_management_can_select_a_different_vendor_than_it_recommended(): void
@@ -1243,7 +1304,7 @@ class EwasteDecommissionFlowTest extends TestCase
             'recommendation_note' => 'Highest offer',
         ]);
         $this->actingAs(User::factory()->create(['role' => 'finance_manager']))
-            ->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Prefer the local firm']);
+            ->post(route('finance.ewaste.remark', $batch), ['remarks' => 'Prefer the local firm']);
         $this->actingAs($this->approver('Claritas Asia Sdn Bhd', ['name' => 'Kelvin Approver']))
             ->post(route('management.ewaste.approve', $batch), [
                 'selected_quotation_id' => $other->id,
@@ -1260,24 +1321,43 @@ class EwasteDecommissionFlowTest extends TestCase
 
         $html = view('decommission.report-pdf', ['batch' => $batch->load(['items.asset', 'quotations.vendor'])])->render();
 
-        // Management authorised it; Finance's position is recorded beside it. A report showing
-        // only the Finance stamp would name the wrong authority on the page an audit reads.
+        // Management authorised it; Finance's remarks are recorded beside it, advisory only.
+        // A report showing only the Finance stamp would name the wrong authority on the page
+        // an audit reads.
         $this->assertStringContainsString('Authorisation', $html);
         $this->assertStringContainsString('Approved by Claritas Asia Sdn Bhd management', $html);
         $this->assertStringContainsString('Kelvin Approver', $html);
-        $this->assertStringContainsString('Finance objected', $html);
+        $this->assertStringContainsString('Finance Remarks', $html);
         $this->assertStringContainsString('Prefer the local firm', $html);
     }
 
-    public function test_the_report_states_an_approval_made_over_a_finance_objection(): void
+    /**
+     * A cycle decided under the pre-2026-08-16 rule, where Finance's position doubled as an
+     * approve/reject verdict — built by writing the legacy columns directly (recordFinanceRemark()
+     * can no longer produce a 'rejected' status; that is the whole point of the change). The
+     * report must still print the override sentence for a cycle that genuinely carries it.
+     */
+    public function test_a_legacy_finance_objection_still_prints_the_override_note(): void
     {
         Mail::fake();
-        [$batch] = $this->decided();
+        $batch = $this->submitted();
+        $reviewer = User::factory()->create(['role' => 'finance_manager']);
+        $batch->quotationUnderReview()->update([
+            'finance_status' => 'rejected', 'finance_reviewed_by' => $reviewer->id,
+            'finance_reviewed_at' => now(), 'finance_remarks' => 'Too cheap for the volume',
+        ]);
+        $batch->update([
+            'finance_status' => 'rejected', 'finance_reviewed_by' => $reviewer->id,
+            'finance_reviewed_at' => now(), 'finance_remarks' => 'Too cheap for the volume',
+        ]);
+        $kelvin = $this->approver('Claritas Asia Sdn Bhd', ['name' => 'Kelvin Approver']);
+        $this->actingAs($kelvin)->post(route('management.ewaste.approve', $batch))->assertSessionHasNoErrors();
 
-        $html = view('decommission.report-pdf', ['batch' => $batch->load(['items.asset', 'quotations.vendor'])])->render();
+        $html = view('decommission.report-pdf', ['batch' => $batch->fresh()->load(['items.asset', 'quotations.vendor'])])->render();
 
         // The single most audit-relevant thing the report can contain: it must be stated, not
         // left to be inferred from two stamps that disagree.
+        $this->assertStringContainsString('Finance objected (legacy)', $html);
         $this->assertStringContainsString('authorised by management notwithstanding this objection', $html);
     }
 

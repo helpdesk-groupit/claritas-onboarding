@@ -469,22 +469,27 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     // ── E-waste quarterly cycle (Flow 2) ────────────────────────────────────
     Route::post('/ewaste/sweep', [AssetDecommissionController::class, 'runSweep'])->name('ewaste.sweep')->middleware('throttle:6,1');
     Route::post('/ewaste/{batch}/quotation', [AssetDecommissionController::class, 'uploadQuotation'])->name('ewaste.quotation')->middleware('throttle:uploads');
+    // Undo an upload mistake — only reachable before the comparison is submitted for approval.
+    Route::delete('/ewaste/{batch}/quotation/{quotation}', [AssetDecommissionController::class, 'deleteQuotation'])->name('ewaste.quotation.delete');
     Route::post('/ewaste/{batch}/receipt', [AssetDecommissionController::class, 'uploadReceipt'])->name('ewaste.receipt')->middleware('throttle:uploads');
     Route::post('/ewaste/{batch}/complete', [AssetDecommissionController::class, 'completeCycle'])->name('ewaste.complete');
     // Phase 5 — IT submit the collected offers for approval, naming the one they recommend.
     Route::post('/ewaste/{batch}/submit', [AssetDecommissionController::class, 'submitForApproval'])->name('ewaste.submit');
+    // IT asks AI to read every vendor's current quotation and suggest one — pre-fills the
+    // Recommend form on the cycle page; IT still decides. Throttled: it is a billed AI call.
+    Route::post('/ewaste/{batch}/compare', [AssetDecommissionController::class, 'compareQuotations'])->name('ewaste.compare')->middleware('throttle:6,1');
     // Correct an OCR-read (or blank) quotation/receipt amount without re-uploading the document.
     Route::post('/ewaste/{batch}/amount', [AssetDecommissionController::class, 'updateAmount'])->name('ewaste.amount');
 
-    // Finance records its POSITION on the comparison (mirrors the eClaim HR approve/reject
-    // shape). It does not move the cycle — only management's decision does.
+    // Finance leaves OPTIONAL remarks on the comparison (added 2026-08-16, replacing an
+    // approve/reject pair — Finance's position never moved the cycle, only management's
+    // decision does, so the control now matches what it was always able to do).
     //
-    // These lived under /accounting/fixed-assets/ until 2026-08-14, when Finance's review moved
+    // This lived under /accounting/fixed-assets/ until 2026-08-14, when Finance's review moved
     // off Accounting → Assets → "Disposed" onto Management → Decommissioning, which is now the
-    // ONE surface where both Finance and management review a disposal. Route NAMES are
-    // unchanged (the module's convention) — only the URIs followed the page.
-    Route::post('/reports/decommission/ewaste/{batch}/approve', [AssetDecommissionController::class, 'financeApprove'])->name('finance.ewaste.approve');
-    Route::post('/reports/decommission/ewaste/{batch}/reject', [AssetDecommissionController::class, 'financeReject'])->name('finance.ewaste.reject');
+    // ONE surface where both Finance and management review a disposal. Route NAME is unchanged
+    // in spirit with the module's convention of the URI following the page.
+    Route::post('/reports/decommission/ewaste/{batch}/remark', [AssetDecommissionController::class, 'financeRemark'])->name('finance.ewaste.remark');
 
     // Phase 5 — the MANAGEMENT decision, which is the one that authorises a disposal. Gated
     // per-company inside the controller against the named approvers, not by role. Submitted

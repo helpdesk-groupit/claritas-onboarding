@@ -246,10 +246,8 @@ class VendorImportTest extends TestCase
      *
      * `is_primary_ewaste` is the field named here because it used to exist and used to decide
      * where our e-waste disposal was offered. It was retired on 2026-08-15 (the sweep RFQs
-     * every e-waste vendor now), and this pins that the column merely EXISTING does not, on
-     * its own, make it reachable from a spreadsheet — which is exactly the state this release
-     * ships in, since dropping it is deferred one release to keep the rollback a single push.
-     * Asserted on the value, so it reads the same after the follow-up contract migration.
+     * every e-waste vendor now), and this pins that resurrecting the column would not, on its
+     * own, make it reachable from a spreadsheet.
      */
     public function test_a_hand_posted_mapping_to_an_unoffered_field_is_ignored(): void
     {
@@ -265,10 +263,7 @@ class VendorImportTest extends TestCase
         $vendor = Vendor::where('name', 'Gamma Sdn Bhd')->first();
         $this->assertNotNull($vendor, 'the mapped columns still import');
         $this->assertSame(['ewaste'], $vendor->vendor_types);
-        $this->assertFalse(
-            (bool) ($vendor->getAttributes()['is_primary_ewaste'] ?? false),
-            'a hand-posted mapping must not reach a field outside ColumnMapper::FIELDS'
-        );
+        $this->assertArrayNotHasKey('is_primary_ewaste', $vendor->getAttributes());
     }
 
     /** A row the file repeats must not become two vendors. */

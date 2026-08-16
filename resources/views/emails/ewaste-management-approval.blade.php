@@ -63,8 +63,8 @@
          reads as the only option on the table. --}}
     <p>
       You may approve the recommended offer or select a different vendor's quotation when you approve.
-      Finance are reviewing the same comparison; their position is recorded alongside yours, and
-      <strong>your decision is the one that authorises the disposal</strong>.
+      Finance may leave optional remarks on the same comparison, shown alongside it, but
+      <strong>your decision is the only one that authorises the disposal</strong>.
     </p>
 
     {{-- Decommissioning, not the cycle page: the decision moved there on 2026-08-14 and the

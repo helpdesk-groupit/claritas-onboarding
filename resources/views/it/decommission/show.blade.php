@@ -5,12 +5,7 @@
 @section('content')
 @include('partials.decommission-ui-style')
 @php
-    use Illuminate\Support\Facades\Storage;
     [$badgeClass, $badgeLabel] = $batch->statusBadge();
-    // Photos live on the PUBLIC disk. Check existence server-side: a row can reference a
-    // file that is no longer on disk, and rendering that <img> anyway shows the browser's
-    // broken-image glyph, which reads as a bug in the report rather than a missing file.
-    $photoExists = fn ($p) => $p && Storage::disk('public')->exists($p);
 @endphp
 <style>
     .dcm-band {
@@ -35,27 +30,6 @@
     .dcm-meta-v { font-weight: 700; color: #1e293b; font-size: .95rem; }
     .dcm-section { font-weight: 700; color: #1e293b; font-size: .95rem; display: flex; align-items: center; gap: .5rem; margin-bottom: .75rem; }
     .dcm-section .ewx-chip { width: 30px; height: 30px; border-radius: 9px; font-size: .8rem; }
-
-    .dcm-asset { border: 1px solid #e9eef5; border-radius: 12px; overflow: hidden; margin-bottom: .85rem; }
-    .dcm-asset-head {
-        background: linear-gradient(135deg, #f8fafc, #eef2f7); padding: .6rem .9rem;
-        border-bottom: 1px solid #e9eef5; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
-    }
-    .dcm-asset-tag { font-weight: 700; color: #1e293b; font-size: .85rem; }
-    .dcm-spec-title { font-size: .65rem; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8; font-weight: 700; margin-bottom: .35rem; }
-    .dcm-kv { width: 100%; font-size: 12.5px; }
-    .dcm-kv td { padding: .18rem 0; }
-    .dcm-kv td.k { color: #64748b; width: 45%; }
-    .dcm-kv td.v { color: #1e293b; font-weight: 600; }
-
-    .dcm-photo { height: 84px; width: 108px; object-fit: cover; border-radius: 8px; border: 1px solid #e2e8f0; transition: transform .15s ease; }
-    .dcm-photo:hover { transform: scale(1.04); }
-    .dcm-photo-missing {
-        height: 84px; width: 108px; border-radius: 8px; border: 1px dashed #cbd5e1; background: #f8fafc;
-        display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
-        color: #94a3b8; font-size: .62rem; text-align: center; gap: .2rem;
-    }
-    .dcm-photo-missing i { font-size: 1.05rem; }
 
     /* Vertical progress timeline for the two flows. */
     .dcm-steps { list-style: none; margin: 0; padding: 0; }
@@ -92,12 +66,10 @@
     .dcm-upload { border: 1px dashed #cbd5e1; border-radius: 10px; background: #f8fafc; padding: .9rem; }
 
     [data-theme="dark"] .dcm-meta { background: #0f172a; border-bottom-color: #334155; }
-    [data-theme="dark"] .dcm-meta-v, [data-theme="dark"] .dcm-asset-tag,
-    [data-theme="dark"] .dcm-section, [data-theme="dark"] .dcm-kv td.v,
+    [data-theme="dark"] .dcm-meta-v,
+    [data-theme="dark"] .dcm-section,
     [data-theme="dark"] .dcm-step-title { color: #e2e8f0; }
-    [data-theme="dark"] .dcm-asset { border-color: #334155; }
-    [data-theme="dark"] .dcm-asset-head { background: linear-gradient(135deg, #1e293b, #0f172a); border-bottom-color: #334155; }
-    [data-theme="dark"] .dcm-upload, [data-theme="dark"] .dcm-photo-missing { background: #1e293b; border-color: #334155; }
+    [data-theme="dark"] .dcm-upload { background: #1e293b; border-color: #334155; }
     [data-theme="dark"] .dcm-rev { background: #1e293b; border-color: #334155; color: #cbd5e1; }
     [data-theme="dark"] .dcm-rev-past { background: #3f1d1d; border-color: #7f1d1d; color: #fca5a5; }
     [data-theme="dark"] .dcm-step-past .dcm-step-title { color: #94a3b8; }
@@ -148,102 +120,48 @@
         </div>
 
         <div class="card-body p-4">
-            {{-- Assets summary --}}
+            {{-- Assets — one table, no per-asset boxes (mirrors the AARF "List of Assets"
+                 table). Spec is built the same way as everywhere else that shows it: widest-
+                 to-narrowest, empty fields dropped rather than printed as dashes — see
+                 AssetInventory::specSummary(). Completeness only ever applies to e-waste
+                 (this controller/report is e-waste only), so it is never conditional per row. --}}
             <div class="dcm-section"><span class="ewx-chip ewx-chip-slate"><i class="bi bi-box-seam"></i></span>Assets</div>
-            <div class="table-responsive mb-4">
+            <div class="table-responsive">
                 <table class="table table-hover ewx-table" style="border:1px solid #e9eef5;border-radius:10px;overflow:hidden;">
-                    <thead><tr><th class="ps-3">Asset Tag</th><th>Brand / Model</th><th>Type</th><th class="pe-3">Serial No.</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th class="ps-3">Asset Tag</th><th>Type</th><th>Brand / Model</th>
+                            <th>Spec</th><th>Serial No.</th><th class="pe-3">Completeness</th>
+                        </tr>
+                    </thead>
                     <tbody>
                         @foreach($batch->items as $item)
+                        @php $itemCompleteness = $item->isEwaste() ? $item->completenessLabel() : null; @endphp
                         <tr>
                             <td class="ps-3 ewx-code">{{ $item->asset_tag }}</td>
-                            <td>{{ trim(($item->brand ?? '').' '.($item->model ?? '')) ?: '—' }}</td>
                             <td>{{ ucfirst(str_replace('_',' ', $item->asset_type ?? '—')) }}</td>
-                            <td class="pe-3">{{ $item->serial_number ?? '—' }}</td>
+                            <td>{{ trim(($item->brand ?? '').' '.($item->model ?? '')) ?: '—' }}</td>
+                            <td class="small">{{ $item->asset?->specSummary() ?: '—' }}</td>
+                            <td>{{ $item->serial_number ?? '—' }}</td>
+                            <td class="pe-3">
+                                @if($itemCompleteness)
+                                    @if($item->isIncomplete())
+                                        <span class="badge rounded-pill bg-warning text-dark">Incomplete</span>
+                                        @if($item->ewaste_parts_removed)
+                                            <div class="text-muted" style="font-size:.72rem;">Parts removed: {{ $item->ewaste_parts_removed }}</div>
+                                        @endif
+                                    @else
+                                        <span class="badge rounded-pill bg-success">Complete</span>
+                                    @endif
+                                @else
+                                    —
+                                @endif
+                            </td>
                         </tr>
                         @endforeach
                     </tbody>
                 </table>
             </div>
-
-            {{-- Per-asset details (Section A/B + photos) --}}
-            <div class="dcm-section"><span class="ewx-chip ewx-chip-blue"><i class="bi bi-card-list"></i></span>Asset Details</div>
-            @foreach($batch->items as $item)
-            @php $a = $item->asset; $photos = $a?->asset_photos ?? []; @endphp
-            <div class="dcm-asset">
-                <div class="dcm-asset-head">
-                    <i class="bi bi-tag text-primary"></i>
-                    <span class="dcm-asset-tag">{{ $item->asset_tag }}</span>
-                    <span class="text-muted small">{{ trim(($item->brand ?? '').' '.($item->model ?? '')) ?: '—' }}</span>
-                </div>
-                <div class="p-3">
-                    <div class="row g-3">
-                        <div class="col-md-6">
-                            <div class="dcm-spec-title">Section A — Identification</div>
-                            <table class="dcm-kv">
-                                <tr><td class="k">Asset Tag</td><td class="v">{{ $item->asset_tag }}</td></tr>
-                                <tr><td class="k">Type</td><td class="v">{{ ucfirst(str_replace('_',' ',$item->asset_type ?? '—')) }}</td></tr>
-                                <tr><td class="k">Brand</td><td class="v">{{ $item->brand ?? $a?->brand ?? '—' }}</td></tr>
-                                <tr><td class="k">Model</td><td class="v">{{ $item->model ?? $a?->model ?? '—' }}</td></tr>
-                                <tr><td class="k">Serial No.</td><td class="v">{{ $item->serial_number ?? '—' }}</td></tr>
-                            </table>
-                        </div>
-                        <div class="col-md-6">
-                            <div class="dcm-spec-title">Section B — Specification</div>
-                            <table class="dcm-kv">
-                                <tr><td class="k">Processor</td><td class="v">{{ $a?->processor ?? '—' }}</td></tr>
-                                <tr><td class="k">RAM</td><td class="v">{{ $a?->ram_size ?? '—' }}</td></tr>
-                                <tr><td class="k">Storage</td><td class="v">{{ $a?->storage ?? '—' }}</td></tr>
-                                <tr><td class="k">OS</td><td class="v">{{ $a?->operating_system ?? '—' }}</td></tr>
-                                <tr><td class="k">Screen</td><td class="v">{{ $a?->screen_size ?? '—' }}</td></tr>
-                            </table>
-                        </div>
-                    </div>
-
-                    @php $itemCompleteness = $item->isEwaste() ? $item->completenessLabel() : null; @endphp
-                    @if($itemCompleteness)
-                    <div class="mt-3">
-                        <div class="dcm-spec-title">Completeness</div>
-                        @if($item->isIncomplete())
-                            <span class="badge rounded-pill bg-warning text-dark">Incomplete — parts removed</span>
-                            @if($item->ewaste_parts_removed)
-                                <div class="mt-1" style="font-size:12.5px;"><span class="text-muted">Parts removed:</span> <strong>{{ $item->ewaste_parts_removed }}</strong></div>
-                            @endif
-                        @else
-                            <span class="badge rounded-pill bg-success">Complete — all parts intact</span>
-                        @endif
-                    </div>
-                    @endif
-
-                    @if($a?->notes)
-                    <div class="mt-3">
-                        <div class="dcm-spec-title">Notes</div>
-                        <div style="font-size:12.5px;white-space:pre-wrap;">{{ $a->notes }}</div>
-                    </div>
-                    @endif
-
-                    @if(!empty($photos))
-                    <div class="mt-3">
-                        <div class="dcm-spec-title">Asset Photos ({{ count($photos) }})</div>
-                        <div class="d-flex flex-wrap gap-2">
-                            @foreach($photos as $photo)
-                                @if($photoExists($photo))
-                                <a href="{{ asset('storage/'.$photo) }}" target="_blank" rel="noopener" title="Open full size">
-                                    <img src="{{ asset('storage/'.$photo) }}" alt="Photo of {{ $item->asset_tag }}" loading="lazy" class="dcm-photo">
-                                </a>
-                                @else
-                                {{-- Recorded but not on disk — say so rather than showing a broken image. --}}
-                                <span class="dcm-photo-missing" title="{{ $photo }}">
-                                    <i class="bi bi-image-alt"></i>File missing
-                                </span>
-                                @endif
-                            @endforeach
-                        </div>
-                    </div>
-                    @endif
-                </div>
-            </div>
-            @endforeach
         </div>
     </div>
 
@@ -308,11 +226,11 @@
                 'ewasteVendors' => $ewasteVendors,
             ])
 
-            @if($batch->isAwaitingDecision() && (Auth::user()->canApproveEwasteQuotation() || Auth::user()->canApproveEwasteAsManagement($batch->company)))
+            @if($batch->isAwaitingDecision() && (Auth::user()->canCommentEwasteQuotation() || Auth::user()->canApproveEwasteAsManagement($batch->company)))
             {{-- Says where the control is, rather than leaving somebody who was emailed about
                  this cycle hunting a button that used to be on this page. --}}
             <div class="alert alert-info py-2 px-3 small d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
-                <span><i class="bi bi-shield-check me-1"></i>This cycle is awaiting a decision.</span>
+                <span><i class="bi bi-shield-check me-1"></i>This cycle is awaiting management's decision.</span>
                 <a href="{{ route('reports.decommission') }}" class="btn btn-sm btn-primary">
                     Review on Decommissioning <i class="bi bi-arrow-right ms-1"></i>
                 </a>

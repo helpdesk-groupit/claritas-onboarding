@@ -22,6 +22,7 @@ class AssetDecommissionQuotation extends Model
     protected $fillable = [
         'asset_decommission_batch_id', 'vendor_id', 'revision', 'path', 'amount', 'uploaded_at', 'uploaded_by',
         'finance_status', 'finance_reviewed_by', 'finance_reviewed_at', 'finance_remarks',
+        'ai_status', 'ai_transcript', 'ai_summary', 'ai_read_at',
     ];
 
     protected $casts = [
@@ -29,6 +30,7 @@ class AssetDecommissionQuotation extends Model
         'amount' => 'decimal:2',
         'uploaded_at' => 'datetime',
         'finance_reviewed_at' => 'datetime',
+        'ai_read_at' => 'datetime',
     ];
 
     // ── Relations ─────────────────────────────────────────────────────────────
@@ -76,39 +78,110 @@ class AssetDecommissionQuotation extends Model
         return $this->hasOne(VendorContract::class, 'asset_decommission_quotation_id');
     }
 
+    // ── AI reading ────────────────────────────────────────────────────────────
+    /** Has a short AI summary worth showing on the Vendor Quotations table? */
+    public function hasAiSummary(): bool
+    {
+        return filled($this->ai_summary);
+    }
+
+    /**
+     * Why no summary is shown for this quotation, or null when one is.
+     *
+     * Wording deliberately mirrors HasDocumentInsight::aiUnavailableReason() (Contracts/
+     * Billing) without pulling in that trait — this row has no Q&A assistant or edit
+     * provenance to go with it, just a summary or the reason there isn't one yet.
+     */
+    public function aiSummaryUnavailableReason(): ?string
+    {
+        if ($this->hasAiSummary()) {
+            return null;
+        }
+
+        return match ($this->ai_status) {
+            null => 'Not yet read — click "Ask AI to compare quotations" to generate one.',
+            'disabled' => 'AI document reading is not configured.',
+            'skipped' => 'Not read: the configured AI provider cannot read PDFs.',
+            'failed' => 'Could not be read.',
+            'partial' => 'Only part of this document could be read.',
+            default => 'No summary available.',
+        };
+    }
+
     // ── State helpers ─────────────────────────────────────────────────────────
     public function isPending(): bool
     {
         return $this->finance_status === 'pending';
     }
 
+    /**
+     * May be removed outright — an undo for an upload mistake before the comparison has ever
+     * been submitted for approval. Once the cycle has been submitted, this revision is the one
+     * IT recommended or management selected, or a later revision from the same vendor has
+     * already replaced it, deleting it would erase part of the record rather than undo a
+     * mistake nobody had acted on yet; correct it with a new revision instead (see
+     * AssetDecommissionBatch::addQuotationRevision()).
+     *
+     * The superseded check matters because addQuotationRevision() never touches an OLDER
+     * revision's finance_status — a re-quoted vendor's first offer stays finance_status=null
+     * forever, so without isSupersededByOwnVendor() this would happily delete history that a
+     * later revision already answered.
+     *
+     * The filed copy on the vendor's Contracts tab is deliberately left untouched by a
+     * delete — see the nullOnDelete note on vendor_contracts.asset_decommission_quotation_id.
+     */
+    public function isDeletable(): bool
+    {
+        $batch = $this->batch;
+
+        return $batch !== null
+            && $this->finance_status === null
+            && in_array($batch->status, ['awaiting_quotation', 'quotation_uploaded'], true)
+            && $batch->recommended_quotation_id !== $this->id
+            && $batch->selected_quotation_id !== $this->id
+            && ! $this->isSupersededByOwnVendor();
+    }
+
+    /**
+     * LEGACY only — a decision made under the pre-2026-08-16 rule where Finance's position
+     * doubled as an approve/reject verdict. Nothing writes 'approved' any more; kept so a
+     * cycle decided under the old rule still renders as it did the day it was decided.
+     */
     public function isApproved(): bool
     {
         return $this->finance_status === 'approved';
     }
 
+    /** LEGACY only — see isApproved(). */
     public function isRejected(): bool
     {
         return $this->finance_status === 'rejected';
     }
 
-    /** Bootstrap badge [class, label] for this revision's Finance decision. */
+    /** Finance left optional remarks — the only thing Finance's review does since 2026-08-16. */
+    public function isNoted(): bool
+    {
+        return $this->finance_status === 'noted';
+    }
+
+    /** Bootstrap badge [class, label] for this revision's Finance review. */
     public function decisionBadge(): array
     {
         return match ($this->finance_status) {
-            'approved' => ['success', 'Approved by Finance'],
-            'rejected' => ['danger', 'Rejected by Finance'],
-            'pending' => ['warning', 'Awaiting Finance review'],
-            default => ['secondary', 'Not submitted for review'],
+            'approved' => ['success', 'Finance approved (legacy)'],
+            'rejected' => ['danger', 'Finance objected (legacy)'],
+            'noted' => ['info', 'Finance commented'],
+            'pending' => ['secondary', 'No remarks from Finance yet'],
+            default => ['secondary', 'Not submitted'],
         };
     }
 
     /**
-     * One line naming the decision, its author and when — for the report body and the
+     * One line naming Finance's review, its author and when — for the report body and the
      * caption on the reproduced document page.
      *
-     * Returns null when no decision was ever recorded, so callers state that rather than
-     * printing a decision nobody made.
+     * Returns null when Finance never looked at this revision, so callers state that rather
+     * than printing a review nobody gave.
      */
     public function decisionLine(): ?string
     {
@@ -117,7 +190,11 @@ class AssetDecommissionQuotation extends Model
         }
 
         $who = AssetDecommissionBatch::actorIdentity($this->financeReviewer);
-        $line = ($this->isApproved() ? 'Approved' : 'Rejected').' by Finance';
+        $line = match ($this->finance_status) {
+            'approved' => 'Approved by Finance (legacy)',
+            'rejected' => 'Rejected by Finance (legacy)',
+            default => 'Reviewed by Finance',
+        };
 
         if ($this->finance_reviewed_at) {
             $line .= ' on '.fmt_datetime($this->finance_reviewed_at);

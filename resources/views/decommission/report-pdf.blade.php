@@ -1,14 +1,4 @@
 @php
-    use Illuminate\Support\Facades\Storage;
-    // Asset photos live on the PUBLIC disk — base64-embed them (dompdf never fetches over the network).
-    $pubImg = function ($path) {
-        try {
-            if (! $path || ! Storage::disk('public')->exists($path)) return null;
-            $mime = Storage::disk('public')->mimeType($path);
-            if (! str_starts_with((string) $mime, 'image/')) return null;
-            return 'data:'.$mime.';base64,'.base64_encode(Storage::disk('public')->get($path));
-        } catch (\Throwable $e) { return null; }
-    };
     // The entity the report is issued for — the company that OWNS the assets, not the group's
     // fixed name. A cycle has been per-company since Phase 4, and this PDF is also the asset
     // list attached to the vendor's RFQ, so a fixed letterhead names the wrong party on
@@ -60,17 +50,6 @@
     .section-title { font-size: 12px; font-weight: bold; color: #1e3a5f; margin: 16px 0 4px; border-bottom: 1px solid #dbeafe; padding-bottom: 3px; }
     .stamp { border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px 12px; margin-top: 6px; background: #f8fafc; }
     .stamp .ok { color: #047857; font-weight: bold; }
-    /* Per-asset detail cards — mirror the collector's acknowledgement form */
-    .asset-card { border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; margin: 8px 0; background: #f8fafc; page-break-inside: avoid; }
-    .asset-card .tag { font-weight: bold; font-size: 11px; color: #1e3a5f; margin-bottom: 5px; }
-    table.spec { width: 100%; border-collapse: collapse; }
-    table.spec td.col { width: 50%; vertical-align: top; padding-right: 12px; }
-    .spec-title { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: #64748b; font-weight: bold; margin-bottom: 2px; }
-    table.kv { width: 100%; border-collapse: collapse; }
-    table.kv td { padding: 1px 0; font-size: 10px; vertical-align: top; }
-    table.kv td.k { color: #64748b; width: 42%; }
-    .photos-title { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: #64748b; font-weight: bold; margin: 7px 0 3px; }
-    img.photo { width: 96px; height: 72px; margin: 0 4px 4px 0; border: 1px solid #e2e8f0; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -88,104 +67,37 @@
             <td class="k">Assets</td><td>{{ $batch->items->count() }}</td></tr>
     </table>
 
+    {{-- One table, no per-asset cards — mirrors the AARF "List of Assets" table. Spec is
+         built the same way as everywhere else that shows it: widest-to-narrowest, empty
+         fields dropped rather than printed as dashes (AssetInventory::specSummary()).
+         Completeness is unconditional per row since this report is e-waste only. --}}
     <div class="section-title">Assets</div>
     <table class="items">
-        <thead><tr><th>#</th><th>Asset Tag</th><th>Type</th><th>Brand / Model</th><th>Serial No.</th></tr></thead>
+        <thead><tr><th>#</th><th>Asset Tag</th><th>Type</th><th>Brand / Model</th><th>Spec</th><th>Serial No.</th><th>Completeness</th></tr></thead>
         <tbody>
             @foreach($batch->items as $i => $item)
+            @php $itemCompleteness = $item->isEwaste() ? $item->completenessLabel() : null; @endphp
             <tr>
                 <td>{{ $i + 1 }}</td>
                 <td>{{ $item->asset_tag }}</td>
                 <td>{{ ucfirst(str_replace('_', ' ', $item->asset_type ?? '—')) }}</td>
                 <td>{{ trim(($item->brand ?? '').' '.($item->model ?? '')) ?: '—' }}</td>
+                <td>{{ $item->asset?->specSummary() ?: '—' }}</td>
                 <td>{{ $item->serial_number ?? '—' }}</td>
+                <td>
+                    @if($itemCompleteness)
+                        {{ $item->isIncomplete() ? 'Incomplete' : 'Complete' }}
+                        @if($item->isIncomplete() && $item->ewaste_parts_removed)
+                            <br><span class="muted" style="font-size:9px;">Parts removed: {{ $item->ewaste_parts_removed }}</span>
+                        @endif
+                    @else
+                        —
+                    @endif
+                </td>
             </tr>
             @endforeach
         </tbody>
     </table>
-
-    {{-- Per-asset detail cards — specs, condition, notes, and photos. Rendered for
-         BOTH flows so the finance report and the vendor RFQ carry the full details. --}}
-    <div class="section-title">Asset Details</div>
-    @foreach($batch->items as $item)
-    @php
-        $a          = $item->asset;
-        $photos     = $a?->asset_photos ?? [];
-        $condition  = $a?->conditionLabel()
-            ?? ($item->asset_condition ? ucfirst(str_replace('_', ' ', (string) $item->asset_condition)) : null);
-        $specOthers = trim((string) ($a?->spec_others ?? ''));
-        $notes      = trim((string) ($a?->notes ?? ''));
-        $reason     = trim((string) ($item->reason ?? ''));
-        // `remarks` is deliberately NOT rendered: on both AssetInventory and its
-        // DisposedAsset snapshot it is the machine-appended audit log (appendRemark()),
-        // which ran to dozens of assign/return lines and buried the report. The
-        // human-written `notes` field is the only narrative the report carries.
-        // E-waste completeness drives the vendor's price — state it explicitly,
-        // listing exactly which parts were removed when the asset is incomplete.
-        $completeness = null;
-        if ($item->isEwaste() && $item->completenessLabel()) {
-            if ($item->isIncomplete()) {
-                $partsRemoved = trim((string) $item->ewaste_parts_removed);
-                $completeness = $partsRemoved !== ''
-                    ? 'Incomplete — parts removed: '.$partsRemoved
-                    : 'Incomplete — some parts removed';
-            } else {
-                $completeness = 'Complete — all parts intact';
-            }
-        }
-    @endphp
-    <div class="asset-card">
-        <div class="tag">{{ $item->asset_tag }} &mdash; {{ trim(($item->brand ?? '').' '.($item->model ?? '')) ?: '—' }}</div>
-        <table class="spec">
-            <tr>
-                <td class="col">
-                    <div class="spec-title">Section A — Identification</div>
-                    <table class="kv">
-                        <tr><td class="k">Asset Tag</td><td>{{ $item->asset_tag }}</td></tr>
-                        <tr><td class="k">Type</td><td>{{ ucfirst(str_replace('_', ' ', $item->asset_type ?? '—')) }}</td></tr>
-                        <tr><td class="k">Brand</td><td>{{ $item->brand ?? $a?->brand ?? '—' }}</td></tr>
-                        <tr><td class="k">Model</td><td>{{ $item->model ?? $a?->model ?? '—' }}</td></tr>
-                        <tr><td class="k">Serial No.</td><td>{{ $item->serial_number ?? '—' }}</td></tr>
-                    </table>
-                </td>
-                <td class="col">
-                    <div class="spec-title">Section B — Specification</div>
-                    <table class="kv">
-                        <tr><td class="k">Processor</td><td>{{ $a?->processor ?? '—' }}</td></tr>
-                        <tr><td class="k">RAM</td><td>{{ $a?->ram_size ?? '—' }}</td></tr>
-                        <tr><td class="k">Storage</td><td>{{ $a?->storage ?? '—' }}</td></tr>
-                        <tr><td class="k">OS</td><td>{{ $a?->operating_system ?? '—' }}</td></tr>
-                        <tr><td class="k">Screen</td><td>{{ $a?->screen_size ?? '—' }}</td></tr>
-                    </table>
-                </td>
-            </tr>
-        </table>
-        @if($condition || $completeness || $specOthers || $notes || $reason)
-            <div class="spec-title" style="margin-top:7px;">Condition &amp; Notes</div>
-            <table class="kv">
-                @if($condition)<tr><td class="k">Condition</td><td>{{ $condition }}</td></tr>@endif
-                @if($completeness)<tr><td class="k">Completeness</td><td>{{ $completeness }}</td></tr>@endif
-                @if($reason)<tr><td class="k">Decommission Reason</td><td>{{ $reason }}</td></tr>@endif
-                @if($specOthers)<tr><td class="k">Other Specs</td><td>{{ $specOthers }}</td></tr>@endif
-                @if($notes)<tr><td class="k">Notes</td><td>{!! nl2br(e($notes)) !!}</td></tr>@endif
-            </table>
-        @endif
-        @if(!empty($photos))
-            @php
-                $embedded = array_values(array_filter(array_map($pubImg, $photos)));
-            @endphp
-            @if($embedded)
-                <div class="photos-title">Asset Photos ({{ count($embedded) }})</div>
-                @foreach($embedded as $img)<img class="photo" src="{{ $img }}">@endforeach
-            @else
-                {{-- Photos are recorded but unreadable (missing from disk / non-image).
-                     Say so rather than silently rendering nothing. --}}
-                <div class="photos-title">Asset Photos</div>
-                <div class="muted" style="font-size:9px;">{{ count($photos) }} photo(s) on record could not be embedded.</div>
-            @endif
-        @endif
-    </div>
-    @endforeach
 
     {{-- This report covers e-waste cycles only. A rental return is an Asset Acceptance &
          Return Form (RTA-…), rendered by vendors/aarf/pdf.blade.php and archived on the
@@ -301,13 +213,20 @@
         @endif
     </div>
 
+    {{-- Finance does not approve or reject a cycle — since 2026-08-16 their review is
+         optional remarks only, shown here beside management's decision but never itself a
+         verdict. A cycle decided under the pre-2026-08-16 rule still prints the verdict it
+         was actually given, because that IS what happened on that cycle. --}}
     <div class="stamp" style="margin-top:6px;">
+        <div style="font-weight:bold;color:#1e3a5f;">Finance Remarks</div>
         @if($batch->financeApproved())
-            <div class="ok">✓ Finance concurred</div>
+            <div class="ok">✓ Finance approved (legacy)</div>
         @elseif($batch->financeRejected())
-            <div style="color:#b91c1c;font-weight:bold;">✗ Finance objected</div>
+            <div style="color:#b91c1c;font-weight:bold;">✗ Finance objected (legacy)</div>
+        @elseif($batch->finance_remarks)
+            <div>{{ $batch->finance_remarks }}</div>
         @else
-            <div class="muted">No Finance position recorded.</div>
+            <div class="muted">No remarks left by Finance. Finance's input is optional and advisory only — it does not authorise or block the disposal.</div>
         @endif
         @if($reviewer)
             <div style="margin-top:4px;">Reviewed by: <strong>{{ $reviewer['name'] }}</strong></div>
@@ -316,11 +235,19 @@
         @if($batch->finance_reviewed_at)
             <div class="muted">Reviewed {{ fmt_datetime($batch->finance_reviewed_at) }}</div>
         @endif
-        @if($batch->finance_remarks)<div>Remarks: {{ $batch->finance_remarks }}</div>@endif
+        @if(($batch->financeApproved() || $batch->financeRejected()) && $batch->finance_remarks)
+            {{-- The legacy approved/rejected branches above print the VERDICT, not the
+                 remarks text that went with it — print it here, same as the current 'noted'
+                 branch already does as its main line. --}}
+            <div>Remarks: {{ $batch->finance_remarks }}</div>
+        @endif
         @if($batch->financeRejected() && $batch->management_status === 'approved')
-            {{-- An approval over an objection is the single most audit-relevant thing this
-                 report can contain. It must be stated, not left to be inferred from two
-                 stamps that disagree. --}}
+            {{-- LEGACY only — a cycle decided under the old rule where a Finance objection
+                 was a real verdict. An approval over that objection is the single most
+                 audit-relevant thing this report can contain, so it is stated rather than
+                 left to be inferred from two stamps that disagree. Cannot happen on a cycle
+                 decided under the current rule — Finance no longer has an objection to
+                 override. --}}
             <div style="margin-top:4px;">The disposal was authorised by management notwithstanding this objection.</div>
         @endif
     </div>
