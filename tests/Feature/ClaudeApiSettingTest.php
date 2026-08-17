@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Http\Middleware\EnforceTwoFactor;
+use App\Models\ClaudeApiKeyHistory;
 use App\Models\ClaudeApiSetting;
 use App\Models\Employee;
 use App\Models\User;
@@ -117,5 +118,87 @@ class ClaudeApiSettingTest extends TestCase
         $this->actingAs($this->superadmin())->post(route('superadmin.claude-api.update'), [
             'api_key' => 'sk-ant-x', 'model' => 'gpt-4o', 'enabled' => '1',
         ])->assertSessionHasErrors('model');
+    }
+
+    // ── Key rotation history & labeling ──────────────────────────────────────
+
+    public function test_saving_a_new_key_creates_a_history_row_and_closes_the_previous_one(): void
+    {
+        $super = $this->superadmin();
+
+        $this->actingAs($super)->post(route('superadmin.claude-api.update'), [
+            'api_key' => 'sk-ant-first-key-1111', 'key_label' => 'Key A', 'model' => 'claude-haiku-4-5', 'enabled' => '1',
+        ]);
+        $this->actingAs($super)->post(route('superadmin.claude-api.update'), [
+            'api_key' => 'sk-ant-second-key-2222', 'key_label' => 'Key B', 'model' => 'claude-haiku-4-5', 'enabled' => '1',
+        ]);
+
+        $this->assertSame(2, ClaudeApiKeyHistory::count());
+
+        $first = ClaudeApiKeyHistory::orderBy('id')->first();
+        $second = ClaudeApiKeyHistory::orderBy('id')->skip(1)->first();
+
+        $this->assertSame('Key A', $first->label);
+        $this->assertSame('sk-ant-…1111', $first->masked_key);
+        $this->assertNotNull($first->ended_at);
+
+        $this->assertSame('Key B', $second->label);
+        $this->assertSame('sk-ant-…2222', $second->masked_key);
+        $this->assertNull($second->ended_at);
+        $this->assertTrue($second->isCurrent());
+
+        $this->assertSame($second->id, ClaudeApiKeyHistory::current()->id);
+    }
+
+    public function test_label_only_edit_relabels_the_current_row_without_rotating(): void
+    {
+        $super = $this->superadmin();
+        $this->actingAs($super)->post(route('superadmin.claude-api.update'), [
+            'api_key' => 'sk-ant-stable-key-3333', 'key_label' => 'Original Label', 'model' => 'claude-haiku-4-5', 'enabled' => '1',
+        ]);
+
+        // Blank key, changed label.
+        $this->actingAs($super)->post(route('superadmin.claude-api.update'), [
+            'api_key' => '', 'key_label' => 'Renamed Label', 'model' => 'claude-haiku-4-5', 'enabled' => '1',
+        ]);
+
+        $this->assertSame(1, ClaudeApiKeyHistory::count());
+        $current = ClaudeApiKeyHistory::current();
+        $this->assertSame('Renamed Label', $current->label);
+        $this->assertSame('sk-ant-…3333', $current->masked_key); // key itself untouched
+        $this->assertNull($current->ended_at);
+    }
+
+    public function test_first_ever_save_creates_exactly_one_history_row_with_nothing_to_close(): void
+    {
+        $this->actingAs($this->superadmin())->post(route('superadmin.claude-api.update'), [
+            'api_key' => 'sk-ant-brand-new-4444', 'key_label' => 'First key', 'model' => 'claude-haiku-4-5', 'enabled' => '1',
+        ]);
+
+        $this->assertSame(1, ClaudeApiKeyHistory::count());
+        $this->assertNull(ClaudeApiKeyHistory::first()->ended_at);
+    }
+
+    public function test_label_only_submit_with_no_key_and_no_history_is_a_noop(): void
+    {
+        $this->actingAs($this->superadmin())->post(route('superadmin.claude-api.update'), [
+            'api_key' => '', 'key_label' => 'Nothing to attach this to', 'model' => 'claude-haiku-4-5', 'enabled' => '0',
+        ]);
+
+        $this->assertSame(0, ClaudeApiKeyHistory::count());
+    }
+
+    public function test_key_history_card_shows_label_masked_key_and_set_by(): void
+    {
+        $super = $this->superadmin();
+        $this->actingAs($super)->post(route('superadmin.claude-api.update'), [
+            'api_key' => 'sk-ant-visible-5555', 'key_label' => 'Finance team key', 'model' => 'claude-haiku-4-5', 'enabled' => '1',
+        ]);
+
+        $this->actingAs($super)->get(route('superadmin.claude-api.index'))
+            ->assertOk()
+            ->assertSee('Key History')
+            ->assertSee('Finance team key')
+            ->assertSee('sk-ant-…5555');
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\ClaudeApiKeyHistory;
 use App\Models\ClaudeApiUsageLog;
 use App\Models\ClaudeModelRate;
 use Illuminate\Support\Facades\Auth;
@@ -57,6 +58,7 @@ class ClaudeUsageRecorder
                 // Auth::id() is null on scheduled/CLI calls — that's a valid, nullable state.
                 'user_id' => Auth::id(),
                 'company' => $company,
+                'claude_api_key_history_id' => self::currentKeyHistoryId(),
             ]);
         } catch (\Throwable $e) {
             Log::warning('Claude usage recording failed', [
@@ -64,6 +66,21 @@ class ClaudeUsageRecorder
                 'model' => $model,
                 'error' => $e->getMessage(),
             ]);
+        }
+    }
+
+    /**
+     * Which key was active when this call was made — looked up here rather than
+     * threaded through every call site. Guarded by its own try/catch, separate from
+     * the outer one: a hiccup in this lookup (e.g. this table missing on a fresh
+     * deploy) must never take down the primary token/cost write it sits beside.
+     */
+    private static function currentKeyHistoryId(): ?int
+    {
+        try {
+            return ClaudeApiKeyHistory::current()?->id;
+        } catch (\Throwable $e) {
+            return null;
         }
     }
 }

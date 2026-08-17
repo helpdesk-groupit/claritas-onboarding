@@ -63,6 +63,29 @@
         </div>
     @endif
 
+    {{-- Spend by Key — mirrors the on-screen card, same period/feature scope as the
+         rest of this export. Skipped entirely with only one row (a single key/bucket
+         duplicates the totals above with nothing new to say). --}}
+    @if($byKey->count() > 1)
+        <div class="sec">Spend by Key</div>
+        <table class="usage">
+            <tr>
+                <th style="width:40%;">Key</th>
+                <th class="r">Calls</th>
+                <th class="r">Tokens</th>
+                <th class="r">Cost (USD / MYR)</th>
+            </tr>
+            @foreach($byKey as $k)
+                <tr>
+                    <td>{{ $k['label'] }}{{ $k['masked_key'] ? ' ('.$k['masked_key'].')' : '' }}{{ $k['is_current'] ? ' — current' : '' }}</td>
+                    <td class="r">{{ $fmtTok($k['calls']) }}</td>
+                    <td class="r">{{ $fmtTok($k['total_tokens']) }}</td>
+                    <td class="r">{{ $fmtUsd($k['cost_usd']) }}<br><span class="myr">{{ $fmtMyr($k['cost_myr']) }}</span></td>
+                </tr>
+            @endforeach
+        </table>
+    @endif
+
     {{-- Year › Month › Feature, each feature split into its input and output halves —
          the same breakdown the on-screen accordion reveals on drop-down. --}}
     @forelse($byYear as $year)

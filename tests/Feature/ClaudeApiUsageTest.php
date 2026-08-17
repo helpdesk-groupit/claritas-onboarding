@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Http\Middleware\EnforceTwoFactor;
+use App\Models\ClaudeApiKeyHistory;
 use App\Models\ClaudeApiSetting;
 use App\Models\ClaudeApiUsageLog;
 use App\Models\ClaudeModelRate;
@@ -403,6 +404,135 @@ class ClaudeApiUsageTest extends TestCase
         $this->assertSame(100.0, $chart->first()['height']);                         // peak scaled
         $this->assertTrue($chart->last()['isLatest']);
         $res->assertSee('<div class="uc-chart">', false);
+    }
+
+    // ── Spend by Key ─────────────────────────────────────────────────────────
+
+    public function test_usage_log_is_stamped_with_the_active_key_history_id(): void
+    {
+        $history = ClaudeApiKeyHistory::rotate('sk-ant-active-key-9999', 'Active key', null);
+
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 100, 'output_tokens' => 20]);
+
+        $log = ClaudeApiUsageLog::firstOrFail();
+        $this->assertSame($history->id, $log->claude_api_key_history_id);
+    }
+
+    public function test_usage_with_no_key_history_reads_as_before_tracking_began(): void
+    {
+        $super = $this->superadmin();
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0); // usage() never sets the FK
+
+        $byKey = $this->actingAs($super)->get(route('superadmin.claude-api.index'))->viewData('byKey');
+
+        $this->assertCount(1, $byKey);
+        $this->assertSame('Before key tracking began', $byKey->first()['label']);
+        $this->assertNull($byKey->first()['id']);
+    }
+
+    public function test_by_key_splits_spend_across_a_rotation_boundary(): void
+    {
+        $super = $this->superadmin();
+
+        $keyA = ClaudeApiKeyHistory::rotate('sk-ant-key-a-1111', 'Key A', null);
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 1_000_000, 'output_tokens' => 0]); // $1
+
+        $keyB = ClaudeApiKeyHistory::rotate('sk-ant-key-b-2222', 'Key B', null);
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 2_000_000, 'output_tokens' => 0]); // $2
+
+        $byKey = $this->actingAs($super)->get(route('superadmin.claude-api.index'))->viewData('byKey')->keyBy('id');
+
+        $this->assertCount(2, $byKey);
+        $this->assertSame('Key A', $byKey[$keyA->id]['label']);
+        $this->assertSame(1.0, $byKey[$keyA->id]['cost_usd']);
+        $this->assertFalse($byKey[$keyA->id]['is_current']);
+        $this->assertSame('Key B', $byKey[$keyB->id]['label']);
+        $this->assertSame(2.0, $byKey[$keyB->id]['cost_usd']);
+        $this->assertTrue($byKey[$keyB->id]['is_current']);
+    }
+
+    public function test_by_key_respects_period_and_feature_filters(): void
+    {
+        $super = $this->superadmin();
+        $key = ClaudeApiKeyHistory::rotate('sk-ant-filtered-3333', 'Filtered key', null);
+
+        ClaudeApiUsageLog::create([
+            'feature' => 'claim_receipt_scan', 'model' => 'claude-haiku-4-5', 'provider' => 'anthropic',
+            'input_tokens' => 1_000_000, 'output_tokens' => 0,
+            'input_cost_usd' => 1.0, 'output_cost_usd' => 0, 'cost_usd' => 1.0,
+            'claude_api_key_history_id' => $key->id,
+        ]);
+        ClaudeApiUsageLog::create([
+            'feature' => 'accounting_invoice_scan', 'model' => 'claude-haiku-4-5', 'provider' => 'anthropic',
+            'input_tokens' => 4_000_000, 'output_tokens' => 0,
+            'input_cost_usd' => 4.0, 'output_cost_usd' => 0, 'cost_usd' => 4.0,
+            'claude_api_key_history_id' => $key->id,
+        ]);
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index', ['feature' => 'claim_receipt_scan']));
+        $byKey = $res->viewData('byKey');
+
+        $this->assertCount(1, $byKey);
+        $this->assertSame(1.0, $byKey->first()['cost_usd']); // only the filtered feature's spend
+    }
+
+    public function test_spend_by_key_card_is_hidden_with_only_one_bucket(): void
+    {
+        $super = $this->superadmin();
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0);
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        $this->assertCount(1, $res->viewData('byKey'));
+        $res->assertDontSee('Spend by Key', false);
+    }
+
+    public function test_pdf_export_includes_spend_by_key(): void
+    {
+        $super = $this->superadmin();
+        ClaudeApiKeyHistory::rotate('sk-ant-pdf-a-4444', 'PDF Key A', null);
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 1_000_000, 'output_tokens' => 0]);
+        ClaudeApiKeyHistory::rotate('sk-ant-pdf-b-5555', 'PDF Key B', null);
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 1_000_000, 'output_tokens' => 0]);
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.usage-pdf', ['period' => 'all']));
+        $res->assertOk();
+        $this->assertSame('application/pdf', $res->headers->get('content-type'));
+    }
+
+    // ── Key history migration backfill ──────────────────────────────────────
+
+    public function test_migration_backfills_one_history_row_from_the_existing_singleton(): void
+    {
+        // Seed the pre-migration shape: a settings row with a key, and some usage
+        // logs already written under it (created before the FK column existed).
+        $super = User::factory()->create(['role' => 'superadmin']);
+        $setting = ClaudeApiSetting::current();
+        $setting->update(['api_key' => 'sk-ant-legacy-key-6666', 'model' => 'claude-haiku-4-5', 'enabled' => true, 'updated_by' => $super->id]);
+
+        // The FK column + backfill already ran once via RefreshDatabase's migration
+        // pass (with no settings row yet, so it was a no-op). Clear any history rows
+        // that produced and any usage rows, then invoke the backfill fresh against
+        // this seeded state.
+        ClaudeApiKeyHistory::query()->delete();
+        DB::table('claude_api_usage_logs')->delete();
+
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 100, 0);
+        $this->usage('claim_item_verify', 'claude-haiku-4-5', 200, 0);
+
+        $migration = require database_path('migrations/2026_08_17_120000_create_claude_api_key_histories_table.php');
+
+        $method = new \ReflectionMethod($migration, 'backfillFromExistingSetting');
+        $method->setAccessible(true);
+        $method->invoke($migration);
+
+        $this->assertSame(1, ClaudeApiKeyHistory::count());
+        $history = ClaudeApiKeyHistory::first();
+        $this->assertSame('sk-ant-…6666', $history->masked_key);
+        $this->assertNull($history->label);
+        $this->assertSame($super->id, $history->set_by);
+        $this->assertNull($history->ended_at);
+
+        $this->assertSame(2, ClaudeApiUsageLog::where('claude_api_key_history_id', $history->id)->count());
     }
 
     // ── PDF export ───────────────────────────────────────────────────────────

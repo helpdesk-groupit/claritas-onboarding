@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ClaudeApiKeyHistory;
 use App\Models\ClaudeApiSetting;
 use App\Models\ClaudeApiUsageLog;
 use App\Models\ClaudeModelRate;
@@ -55,6 +56,8 @@ class ClaudeApiSettingController extends Controller
             'feature' => $feature,
             'availableMonths' => $this->availableMonths(),
             'availableFeatures' => $this->availableFeatures(),
+            'currentKeyHistory' => ClaudeApiKeyHistory::current(),
+            'keyHistory' => $this->keyHistory(),
         ], $this->usageReport($period, $feature)));
     }
 
@@ -142,29 +145,9 @@ class ClaudeApiSettingController extends Controller
             ->all();
     }
 
-    /**
-     * The usage report: token totals and USD/MYR spend, grouped by month and then by
-     * feature. Aggregated in SQL (one grouped query) rather than by hydrating rows —
-     * this table grows by one row per OCR scan and is never paginated on screen.
-     *
-     * @return array{report: \Illuminate\Support\Collection, byYear: \Illuminate\Support\Collection, chart: \Illuminate\Support\Collection, totals: array, unpricedModels: array}
-     */
-    private function usageReport(array $period, string $feature = ''): array
+    /** The same period/feature narrowing, applied identically wherever the usage log is queried. */
+    private function applyPeriodAndFeature($query, array $period, string $feature)
     {
-        $query = ClaudeApiUsageLog::query()
-            ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') as ym")
-            ->selectRaw('feature')
-            ->selectRaw('COUNT(*) as calls')
-            ->selectRaw('SUM(input_tokens) as in_tokens')
-            ->selectRaw('SUM(output_tokens) as out_tokens')
-            ->selectRaw('SUM(cache_creation_input_tokens + cache_read_input_tokens) as cache_tokens')
-            ->selectRaw('SUM(input_cost_usd) as in_cost')
-            ->selectRaw('SUM(output_cost_usd) as out_cost')
-            ->selectRaw('SUM(cost_usd) as cost_usd')
-            ->groupBy('ym', 'feature')
-            ->orderByDesc('ym')
-            ->orderByDesc('cost_usd');
-
         if ($period['start']) {
             $query->where('created_at', '>=', $period['start']);
         }
@@ -174,6 +157,35 @@ class ClaudeApiSettingController extends Controller
         if ($feature !== '') {
             $query->where('feature', $feature);
         }
+
+        return $query;
+    }
+
+    /**
+     * The usage report: token totals and USD/MYR spend, grouped by month and then by
+     * feature. Aggregated in SQL (one grouped query) rather than by hydrating rows —
+     * this table grows by one row per OCR scan and is never paginated on screen.
+     *
+     * @return array{report: \Illuminate\Support\Collection, byYear: \Illuminate\Support\Collection, chart: \Illuminate\Support\Collection, totals: array, unpricedModels: array, byKey: \Illuminate\Support\Collection}
+     */
+    private function usageReport(array $period, string $feature = ''): array
+    {
+        $query = $this->applyPeriodAndFeature(
+            ClaudeApiUsageLog::query()
+                ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') as ym")
+                ->selectRaw('feature')
+                ->selectRaw('COUNT(*) as calls')
+                ->selectRaw('SUM(input_tokens) as in_tokens')
+                ->selectRaw('SUM(output_tokens) as out_tokens')
+                ->selectRaw('SUM(cache_creation_input_tokens + cache_read_input_tokens) as cache_tokens')
+                ->selectRaw('SUM(input_cost_usd) as in_cost')
+                ->selectRaw('SUM(output_cost_usd) as out_cost')
+                ->selectRaw('SUM(cost_usd) as cost_usd')
+                ->groupBy('ym', 'feature')
+                ->orderByDesc('ym')
+                ->orderByDesc('cost_usd'),
+            $period, $feature
+        );
 
         $rows = $query->get();
         // MYR is a convenience conversion off config; USD is what Anthropic bills.
@@ -262,7 +274,71 @@ class ClaudeApiSettingController extends Controller
                 'avg_per_call' => $report->sum('calls') > 0 ? $totalUsd / $report->sum('calls') : 0.0,
             ],
             'unpricedModels' => $unpriced,
+            'byKey' => $this->usageReportByKey($period, $feature, $rate),
         ];
+    }
+
+    /**
+     * Spend broken down by whichever key was active when each call was made — a
+     * separate, single-level grouping rather than a 4th level nested into the Year >
+     * Month > Feature accordion above. "Which key cost how much" doesn't need month
+     * granularity, and nesting it in would multiply row cardinality by rotation count
+     * for no reason.
+     */
+    private function usageReportByKey(array $period, string $feature, float $rate): \Illuminate\Support\Collection
+    {
+        $query = $this->applyPeriodAndFeature(
+            ClaudeApiUsageLog::query()
+                ->selectRaw('claude_api_key_history_id')
+                ->selectRaw('COUNT(*) as calls')
+                ->selectRaw('SUM(input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens) as total_tokens')
+                ->selectRaw('SUM(cost_usd) as cost_usd')
+                ->groupBy('claude_api_key_history_id')
+                ->orderByDesc('cost_usd'),
+            $period, $feature
+        );
+
+        $rows = $query->get();
+        $histories = ClaudeApiKeyHistory::whereIn('id', $rows->pluck('claude_api_key_history_id')->filter())
+            ->get()->keyBy('id');
+
+        return $rows->map(function ($r) use ($histories, $rate) {
+            $h = $r->claude_api_key_history_id ? $histories->get($r->claude_api_key_history_id) : null;
+
+            return [
+                'id' => $r->claude_api_key_history_id,
+                'label' => $h ? $h->displayLabel() : 'Before key tracking began',
+                'masked_key' => $h?->masked_key,
+                'is_current' => $h?->isCurrent() ?? false,
+                'calls' => (int) $r->calls,
+                'total_tokens' => (int) $r->total_tokens,
+                'cost_usd' => (float) $r->cost_usd,
+                'cost_myr' => (float) $r->cost_usd * $rate,
+            ];
+        })->values();
+    }
+
+    /**
+     * Every key ever set, newest first, with its lifetime (all-time, unfiltered)
+     * calls/cost — the administrative record shown near the settings form, distinct
+     * from the period-filtered "Spend by Key" card in the Usage & Cost section below.
+     *
+     * @return \Illuminate\Support\Collection<int, array{version: ClaudeApiKeyHistory, calls: int, cost_usd: float}>
+     */
+    private function keyHistory(): \Illuminate\Support\Collection
+    {
+        $costs = ClaudeApiUsageLog::query()
+            ->selectRaw('claude_api_key_history_id, SUM(cost_usd) as cost_usd, COUNT(*) as calls')
+            ->whereNotNull('claude_api_key_history_id')
+            ->groupBy('claude_api_key_history_id')
+            ->get()->keyBy('claude_api_key_history_id');
+
+        return ClaudeApiKeyHistory::with('setBy.employee')->orderByDesc('id')->get()
+            ->map(fn ($h) => [
+                'version' => $h,
+                'calls' => (int) ($costs[$h->id]->calls ?? 0),
+                'cost_usd' => (float) ($costs[$h->id]->cost_usd ?? 0),
+            ]);
     }
 
     /** The same report as the page, as a downloadable PDF. */
@@ -296,6 +372,7 @@ class ClaudeApiSettingController extends Controller
 
         $data = $request->validate([
             'api_key' => 'nullable|string|max:255',
+            'key_label' => 'nullable|string|max:190',
             'model' => 'required|string|in:'.implode(',', array_keys(ClaudeApiSetting::MODELS)),
             'enabled' => 'nullable|boolean',
         ]);
@@ -303,13 +380,10 @@ class ClaudeApiSettingController extends Controller
         $setting = ClaudeApiSetting::current();
         $setting->model = $data['model'];
         $setting->enabled = $request->boolean('enabled');
-        // Blank key = keep the existing one (so toggling/changing model never wipes it).
-        $newKey = trim((string) ($data['api_key'] ?? ''));
-        if ($newKey !== '') {
-            $setting->api_key = $newKey;
-        }
         $setting->updated_by = Auth::id();
-        $setting->save();
+        // Blank key = keep the existing one (so toggling/changing model never wipes
+        // it) and, if a current key history row exists, just relabels it in place.
+        $setting->applyKeyAndLabel($data['api_key'] ?? null, $data['key_label'] ?? null, Auth::id());
 
         Log::info('Claude API setting updated', [
             'actor_id' => Auth::id(),

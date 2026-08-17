@@ -49,10 +49,15 @@
                                placeholder="{{ $hasKey ? 'Key saved ('.$setting->maskedKey().') — leave blank to keep it' : 'sk-ant-…' }}">
                         <button type="button" class="btn btn-outline-primary" id="caTest"><i class="bi bi-lightning-charge me-1"></i>Test key</button>
                     </div>
+                    <input type="text" name="key_label" id="caKeyLabel" class="form-control mt-2" maxlength="190"
+                           placeholder="Label (optional) — e.g. Finance team — John's org"
+                           value="{{ old('key_label', optional($currentKeyHistory)->label) }}">
                     <div class="form-text">
                         Create a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>
                         (the Anthropic API bills separately from any Claude Pro / ChatGPT subscription — add a little credit).
                         The key is stored <strong>encrypted</strong> and never shown again in full.
+                        Anthropic has no way to look up whose account a key belongs to, so the label above is
+                        yours to set — it's how the Usage &amp; Cost report below can tell keys apart.
                     </div>
                     <div id="caTestResult" class="small mt-2 d-none py-2 px-3 rounded"></div>
                 </div>
@@ -79,7 +84,6 @@
         <i class="bi bi-info-circle me-1"></i>This overrides any provider set in the server's <code>.env</code>. Cost is roughly a fraction of a cent per receipt on Haiku.
     </div>
 
-    {{-- ─────────── Usage & Cost ─────────── --}}
     @php
         $fmtTok = fn ($n) => number_format((int) $n);
         // Sub-dollar spend is the normal case here (a Haiku scan is ~$0.004), so 4dp
@@ -98,6 +102,54 @@
         };
     @endphp
 
+    {{-- Key History — every key ever set, unfiltered by period (unlike the Spend by
+         Key card below, which is scoped to the report's period/feature filters). This
+         is the administrative record: who set what, labeled how, and for how long. --}}
+    @if($keyHistory->isNotEmpty())
+        <div class="card border-0 shadow-sm mt-4">
+            <div class="card-body p-3 p-md-4">
+                <div class="uc-lbl mb-2">Key History</div>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr class="text-muted small">
+                                <th>Label</th>
+                                <th>Key</th>
+                                <th>Active</th>
+                                <th>Set by</th>
+                                <th class="text-end">Calls</th>
+                                <th class="text-end">Lifetime cost</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach($keyHistory as $row)
+                                @php $v = $row['version']; @endphp
+                                <tr>
+                                    <td>
+                                        {{ $v->displayLabel() }}
+                                        @if($v->isCurrent())
+                                            <span class="badge bg-success-subtle text-success-emphasis ms-1">Current</span>
+                                        @endif
+                                    </td>
+                                    <td class="text-muted"><code>{{ $v->masked_key }}</code></td>
+                                    <td class="small text-muted">
+                                        {{ $v->started_at->format('d M Y') }}
+                                        &ndash;
+                                        {{ $v->ended_at ? $v->ended_at->format('d M Y') : 'now' }}
+                                    </td>
+                                    <td class="small text-muted">{{ $v->setBy?->employee?->full_name ?? $v->setBy?->name ?? '—' }}</td>
+                                    <td class="text-end">{{ $fmtTok($row['calls']) }}</td>
+                                    <td class="text-end">{{ $fmtUsd($row['cost_usd']) }}</td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    @endif
+
+    {{-- ─────────── Usage & Cost ─────────── --}}
     <div class="d-flex align-items-center gap-3 mt-5 mb-3">
         <div class="ca-hero" style="background:linear-gradient(135deg,#0891b2,#0e7490);"><i class="bi bi-graph-up-arrow"></i></div>
         <div class="flex-grow-1">
@@ -180,6 +232,50 @@
             </div>
         </div>
     </div>
+
+    {{-- Spend by Key — period/feature-filtered, same as everything else in this
+         section (unlike the Key History card above, which is the unfiltered
+         administrative record). Hidden with only one row: a single key/bucket just
+         duplicates the hero total above with nothing new to say. --}}
+    @if($byKey->count() > 1)
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-body p-4">
+                <div class="uc-lbl mb-2">Spend by Key · {{ $period['label'] }}</div>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr class="text-muted small">
+                                <th>Key</th>
+                                <th class="text-end">Calls</th>
+                                <th class="text-end">Tokens</th>
+                                <th class="text-end">Cost (USD)</th>
+                                <th class="text-end">Cost (MYR)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach($byKey as $k)
+                                <tr>
+                                    <td>
+                                        {{ $k['label'] }}
+                                        @if($k['masked_key'])
+                                            <code class="text-muted small ms-1">{{ $k['masked_key'] }}</code>
+                                        @endif
+                                        @if($k['is_current'])
+                                            <span class="badge bg-success-subtle text-success-emphasis ms-1">Current</span>
+                                        @endif
+                                    </td>
+                                    <td class="text-end">{{ $fmtTok($k['calls']) }}</td>
+                                    <td class="text-end">{{ $fmtTok($k['total_tokens']) }}</td>
+                                    <td class="text-end fw-semibold">{{ $fmtUsd($k['cost_usd']) }}</td>
+                                    <td class="text-end uc-dim">{{ $fmtMyr($k['cost_myr']) }}</td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    @endif
 
     @if(!empty($unpricedModels))
         <div class="alert alert-warning py-2 small">

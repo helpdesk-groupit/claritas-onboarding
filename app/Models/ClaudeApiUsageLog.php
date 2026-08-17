@@ -64,6 +64,7 @@ class ClaudeApiUsageLog extends Model
         'input_tokens', 'output_tokens',
         'cache_creation_input_tokens', 'cache_read_input_tokens',
         'input_cost_usd', 'output_cost_usd', 'cost_usd', 'user_id', 'company',
+        'claude_api_key_history_id',
     ];
 
     protected $casts = [
@@ -79,6 +80,11 @@ class ClaudeApiUsageLog extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function keyHistory(): BelongsTo
+    {
+        return $this->belongsTo(ClaudeApiKeyHistory::class, 'claude_api_key_history_id');
     }
 
     /**

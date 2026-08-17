@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Single-row settings for the "Claude API" superadmin page — the Anthropic API
@@ -59,15 +60,47 @@ class ClaudeApiSetting extends Model
     public function maskedKey(): ?string
     {
         $key = $this->getRawKey();
-        if (! $key) {
-            return null;
-        }
 
+        return $key ? self::maskKeyValue($key) : null;
+    }
+
+    /** The 'sk-ant-…last4' formatting rule, shared with ClaudeApiKeyHistory so it can't drift. */
+    public static function maskKeyValue(string $key): string
+    {
         return 'sk-ant-…'.substr($key, -4);
     }
 
     public function modelLabel(): string
     {
         return self::MODELS[$this->model] ?? $this->model;
+    }
+
+    /**
+     * Apply this save's key rotation and/or label edit in one transaction, so the
+     * usable key and its rotation history can never disagree about what "current"
+     * means.
+     *
+     *  - Non-blank $rawKey -> ROTATES: closes the current ClaudeApiKeyHistory row
+     *    (if any), opens a new one, becomes the usable key on this row.
+     *  - Blank $rawKey with a current history row -> relabels it in place, no rotation.
+     *  - Blank $rawKey with no current history row -> no-op; nothing exists yet to label.
+     *
+     * Caller sets model/enabled/updated_by on $this before calling.
+     */
+    public function applyKeyAndLabel(?string $rawKey, ?string $label, ?int $actorId): void
+    {
+        $rawKey = trim((string) $rawKey);
+        $label = trim((string) $label) ?: null;
+
+        DB::transaction(function () use ($rawKey, $label, $actorId) {
+            if ($rawKey !== '') {
+                $this->api_key = $rawKey;
+                $this->save();
+                ClaudeApiKeyHistory::rotate($rawKey, $label, $actorId);
+            } else {
+                $this->save();
+                ClaudeApiKeyHistory::current()?->relabel($label);
+            }
+        });
     }
 }
