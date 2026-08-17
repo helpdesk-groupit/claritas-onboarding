@@ -210,6 +210,18 @@ class ClaimReceiptOcrService
             .'not a statement or no name is shown. '
             .'"issuer" — the card brand / bank / statement provider shown in the header (e.g. "Touch n Go", a bank '
             .'name); or null. '
+            .'"is_single_receipt" — answer this ONE question about the WHOLE image, separately from how you split '
+            .'"items" below: is it ONE physical receipt / invoice / bill from ONE transaction, with ONE total '
+            .'printed at the bottom — true — no matter how many product or line-item rows it lists (a '
+            .'supermarket/hypermarket/grocery receipt with 15+ product rows is STILL true if it has one total)? Or '
+            .'does the image genuinely hold MULTIPLE SEPARATE receipts (more than one storefront header, each with '
+            .'its own total), or a bank/card statement or history listing many dated transactions — false? When '
+            .'unsure, answer false. '
+            .'"receipt_total" — ONLY when is_single_receipt is true: the single grand TOTAL actually printed on '
+            .'the receipt (the final "Total" / "Grand Total" / "Amount Due" line, after any discounts and '
+            .'rounding adjustments — e.g. for a receipt showing "SUB-TOTAL 210.64", "ROUNDING ADJUSTMENTS 0.01", '
+            .'"TOTAL 210.65", return 210.65, the LAST total line, not the sub-total) as a number with no currency '
+            .'symbol. null when is_single_receipt is false, or no total is clearly printed. '
             .'"items" — an ARRAY with ONE object per DISTINCT receipt or transaction (use an EMPTY array when the '
             .'image is a map). A SINGLE receipt that lists several product / fee LINE-ITEMS — e.g. a clinic bill '
             .'with consultation + several medicines, a restaurant bill with several dishes, or a SUPERMARKET / '
@@ -279,6 +291,20 @@ class ClaimReceiptOcrService
                 }
                 $items[] = $row;
             }
+        }
+
+        // The model is asked NOT to split a single receipt's product rows into separate items
+        // (see the "items" rule above), but that instruction can still be missed on a dense
+        // receipt (e.g. a supermarket bill with 15+ near-identical lines) even when the model
+        // correctly answers the separate, narrower is_single_receipt question. Rather than trust
+        // the split, collapse it deterministically in code whenever the model says this IS one
+        // receipt. Skipped when any row was highlighted — that means the user marked SPECIFIC
+        // lines to single out for claiming, and collapsing would erase that choice.
+        $isSingleReceipt = isset($json['is_single_receipt']) && filter_var($json['is_single_receipt'], FILTER_VALIDATE_BOOLEAN);
+        $receiptTotal = isset($json['receipt_total']) && is_numeric($json['receipt_total']) ? round(abs((float) $json['receipt_total']), 2) : null;
+        $anyHighlighted = (bool) array_filter($items, fn ($it) => ! empty($it['highlighted']));
+        if ($isSingleReceipt && count($items) > 1 && ! $anyHighlighted) {
+            $items = [self::collapseSingleReceiptItems($items, $receiptTotal)];
         }
 
         // Flag (don't hide) when a long statement hit the ceiling, so the UI can warn
@@ -966,6 +992,49 @@ class ClaimReceiptOcrService
             'email_subject' => self::clip($json['email_subject'] ?? null, 255),
             'bill_to' => self::clip($json['bill_to'] ?? null, 120),
             'account_email' => self::clip($json['account_email'] ?? null, 120),
+        ];
+    }
+
+    /**
+     * Fold a wrongly over-split single receipt (many product-row items that should have been
+     * ONE) back into one item, once is_single_receipt has said so. $receiptTotal — the model's
+     * separate, single read of the printed grand total — is preferred over summing the
+     * per-row amounts: those rows were mis-extracted in the first place (this AEON receipt's
+     * rows summed to the PRE-discount gross, not the actual total), so trusting their sum would
+     * just relocate the bug into the total instead of fixing it. Summing is only the fallback
+     * for when receipt_total itself came back null.
+     */
+    protected static function collapseSingleReceiptItems(array $items, ?float $receiptTotal): array
+    {
+        $first = $items[0];
+        $sum = round(array_sum(array_map(fn ($it) => (float) ($it['amount'] ?? 0), $items)), 2);
+        $taxSum = round(array_sum(array_map(fn ($it) => (float) ($it['tax_amount'] ?? 0), $items)), 2);
+
+        // A short list of what was on the receipt, for the read-only "Category C" panel only —
+        // the user's own Expense Description field is never auto-filled from a receipt scan.
+        $descriptions = array_values(array_unique(array_filter(array_map(fn ($it) => $it['item_description'] ?? null, $items))));
+        $descLabel = $descriptions ? implode(', ', array_slice($descriptions, 0, 5)) : null;
+        if ($descriptions && count($descriptions) > 5) {
+            $descLabel .= ', +'.(count($descriptions) - 5).' more';
+        }
+
+        return [
+            'amount' => $receiptTotal ?? $sum,
+            'tax_amount' => $taxSum > 0 ? $taxSum : null,
+            'date' => $first['date'] ?? null,
+            'vendor' => $first['vendor'] ?? null,
+            'item_description' => self::clip($descLabel, 255),
+            'paid_by' => $first['paid_by'] ?? null,
+            'category' => $first['category'] ?? null,
+            'highlighted' => false,
+            'transaction_type' => null,
+            'entry_location' => null,
+            'exit_location' => null,
+            'pickup_location' => null,
+            'dropoff_location' => null,
+            'email_subject' => $first['email_subject'] ?? null,
+            'bill_to' => $first['bill_to'] ?? null,
+            'account_email' => $first['account_email'] ?? null,
         ];
     }
 
