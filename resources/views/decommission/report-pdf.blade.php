@@ -213,20 +213,13 @@
         @endif
     </div>
 
-    {{-- Finance does not approve or reject a cycle — since 2026-08-16 their review is
-         optional remarks only, shown here beside management's decision but never itself a
-         verdict. A cycle decided under the pre-2026-08-16 rule still prints the verdict it
-         was actually given, because that IS what happened on that cycle. --}}
     <div class="stamp" style="margin-top:6px;">
-        <div style="font-weight:bold;color:#1e3a5f;">Finance Remarks</div>
         @if($batch->financeApproved())
-            <div class="ok">✓ Finance approved (legacy)</div>
+            <div class="ok">✓ Finance concurred</div>
         @elseif($batch->financeRejected())
-            <div style="color:#b91c1c;font-weight:bold;">✗ Finance objected (legacy)</div>
-        @elseif($batch->finance_remarks)
-            <div>{{ $batch->finance_remarks }}</div>
+            <div style="color:#b91c1c;font-weight:bold;">✗ Finance objected</div>
         @else
-            <div class="muted">No remarks left by Finance. Finance's input is optional and advisory only — it does not authorise or block the disposal.</div>
+            <div class="muted">No Finance position recorded.</div>
         @endif
         @if($reviewer)
             <div style="margin-top:4px;">Reviewed by: <strong>{{ $reviewer['name'] }}</strong></div>
@@ -235,19 +228,11 @@
         @if($batch->finance_reviewed_at)
             <div class="muted">Reviewed {{ fmt_datetime($batch->finance_reviewed_at) }}</div>
         @endif
-        @if(($batch->financeApproved() || $batch->financeRejected()) && $batch->finance_remarks)
-            {{-- The legacy approved/rejected branches above print the VERDICT, not the
-                 remarks text that went with it — print it here, same as the current 'noted'
-                 branch already does as its main line. --}}
-            <div>Remarks: {{ $batch->finance_remarks }}</div>
-        @endif
+        @if($batch->finance_remarks)<div>Remarks: {{ $batch->finance_remarks }}</div>@endif
         @if($batch->financeRejected() && $batch->management_status === 'approved')
-            {{-- LEGACY only — a cycle decided under the old rule where a Finance objection
-                 was a real verdict. An approval over that objection is the single most
-                 audit-relevant thing this report can contain, so it is stated rather than
-                 left to be inferred from two stamps that disagree. Cannot happen on a cycle
-                 decided under the current rule — Finance no longer has an objection to
-                 override. --}}
+            {{-- An approval over an objection is the single most audit-relevant thing this
+                 report can contain. It must be stated, not left to be inferred from two
+                 stamps that disagree. --}}
             <div style="margin-top:4px;">The disposal was authorised by management notwithstanding this objection.</div>
         @endif
     </div>

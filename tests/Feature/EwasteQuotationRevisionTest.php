@@ -120,12 +120,11 @@ class EwasteQuotationRevisionTest extends TestCase
     }
 
     /**
-     * offer → management reject (with reason) → revised offer → management approve.
+     * offer → refused (with reason) → revised offer → approved.
      *
-     * Management's decision is what sends the cycle back for a revised offer and what moves
-     * it forward — that is unchanged. Finance leave optional remarks at each round (since
-     * 2026-08-16 that is all Finance's review does); the assertions below that care about a
-     * "rejection reason" on the revision are reading Finance's REMARKS, not a verdict.
+     * Both parties act at each round since Phase 5: Finance record their position, management
+     * make the decision that actually moves the cycle. The rejection reason the assertions
+     * below care about is Finance's, recorded on the revision itself.
      */
     private function rejectedThenApproved(User $it, User $finance): AssetDecommissionBatch
     {
@@ -134,7 +133,7 @@ class EwasteQuotationRevisionTest extends TestCase
 
         $this->upload($it, $batch, 'first.pdf', 1000);
         $this->submit($it, $batch);
-        $this->actingAs($finance)->post(route('finance.ewaste.remark', $batch), [
+        $this->actingAs($finance)->post(route('finance.ewaste.reject', $batch), [
             'remarks' => 'Offer is below the market rate for 3 laptops.',
         ])->assertRedirect();
         // Management's rejection is what sends the cycle back for a revised offer.
@@ -144,7 +143,7 @@ class EwasteQuotationRevisionTest extends TestCase
 
         $this->upload($it, $batch, 'second.pdf', 1450);
         $this->submit($it, $batch);
-        $this->actingAs($finance)->post(route('finance.ewaste.remark', $batch), [
+        $this->actingAs($finance)->post(route('finance.ewaste.approve', $batch), [
             'remarks' => 'Revised offer accepted.',
         ])->assertRedirect();
         $this->actingAs($mgmt)->post(route('management.ewaste.approve', $batch))->assertRedirect();
@@ -172,7 +171,7 @@ class EwasteQuotationRevisionTest extends TestCase
         return (new Fpdi)->setSourceFile(StreamReader::createByString($pdf));
     }
 
-    public function test_a_requote_keeps_the_earlier_quotation_and_the_remarks_on_it(): void
+    public function test_a_requote_keeps_the_rejected_quotation_and_the_reason_it_was_refused(): void
     {
         $it = $this->itManager();
         $finance = $this->financeManager();
@@ -184,18 +183,18 @@ class EwasteQuotationRevisionTest extends TestCase
 
         [$first, $second] = [$revisions[0], $revisions[1]];
 
-        // The superseded offer survived the re-quote in full: document, amount, actor, remarks.
+        // The refused offer survived the re-quote in full: document, amount, actor, reason.
         $this->assertSame(1, $first->revision);
         $this->assertSame('1000.00', $first->amount);
         $this->assertSame($it->id, $first->uploaded_by);
-        $this->assertTrue($first->isNoted());
+        $this->assertTrue($first->isRejected());
         $this->assertSame('Offer is below the market rate for 3 laptops.', $first->finance_remarks);
         $this->assertSame($finance->id, $first->finance_reviewed_by);
         $this->assertNotNull($first->finance_reviewed_at);
 
         $this->assertSame(2, $second->revision);
         $this->assertSame('1450.00', $second->amount);
-        $this->assertTrue($second->isNoted());
+        $this->assertTrue($second->isApproved());
         $this->assertSame('Revised offer accepted.', $second->finance_remarks);
 
         // Two distinct documents, both still on disk — neither upload overwrote the other.
@@ -203,11 +202,11 @@ class EwasteQuotationRevisionTest extends TestCase
         $this->assertTrue(Storage::disk('local')->exists($first->path));
         $this->assertTrue(Storage::disk('local')->exists($second->path));
 
-        // The batch columns cache the offer IN PLAY — the accepted one, which on a
-        // single-vendor cycle is still the current revision.
+        // The batch columns cache the offer IN PLAY — the accepted one since Phase 5, which on
+        // a single-vendor cycle is still the current revision.
         $this->assertSame($second->path, $batch->quotation_path);
         $this->assertSame('1450.00', $batch->quotation_amount);
-        $this->assertSame('noted', $batch->finance_status);
+        $this->assertSame('approved', $batch->finance_status);
         // `approved`, not `finance_approved`: management authorise a disposal, so a status
         // naming Finance as the decider would misstate who signed it off.
         $this->assertSame('approved', $batch->status);
@@ -215,19 +214,20 @@ class EwasteQuotationRevisionTest extends TestCase
         $this->assertSame($second->id, $batch->selected_quotation_id);
     }
 
-    public function test_the_cycle_log_shows_both_offers_with_the_remarks_between_them(): void
+    public function test_the_cycle_log_shows_both_offers_with_the_rejection_between_them(): void
     {
         $it = $this->itManager();
         $batch = $this->rejectedThenApproved($it, $this->financeManager());
 
         $response = $this->actingAs($it)->get(route('decommission.show', $batch))->assertOk();
 
-        // Both revisions, in order, each with its own Finance remarks.
+        // Both revisions, in order, each with its own Finance decision.
         $response->assertSee('Revision 1 of 2', false);
         $response->assertSee('Superseded', false);
+        $response->assertSee('Rejected', false);
         $response->assertSee('Offer is below the market rate for 3 laptops.', false);
         $response->assertSee('Revision 2 of 2', false);
-        $response->assertSee('Revised offer accepted.', false);
+        $response->assertSee('Approved', false);
         $response->assertSee('RM 1,000.00', false);
         $response->assertSee('RM 1,450.00', false);
 
@@ -252,7 +252,7 @@ class EwasteQuotationRevisionTest extends TestCase
         $this->upload($it, $batch, 'first.pdf', 1000);
         $this->submit($it, $batch);
         $this->actingAs($this->financeManager())
-            ->post(route('finance.ewaste.remark', $batch), ['remarks' => 'Too low.'])->assertRedirect();
+            ->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Too low.'])->assertRedirect();
         $this->actingAs($mgmt)->post(route('management.ewaste.reject', $batch), [
             'remarks' => 'Go back for a better price.',
         ])->assertRedirect();
@@ -260,7 +260,7 @@ class EwasteQuotationRevisionTest extends TestCase
         $this->actingAs($it)->get(route('decommission.show', $batch))->assertOk()
             ->assertSee('Management rejected this disposal', false)
             ->assertSee('Go back for a better price.', false)
-            // Finance's remarks stay visible in the cycle log beside the offer they were made about.
+            // Finance's objection stays visible in the cycle log beside the offer it was made about.
             ->assertSee('Too low.', false);
     }
 
@@ -290,13 +290,13 @@ class EwasteQuotationRevisionTest extends TestCase
         // One appended page per quotation — the rejected document is IN the report, not just named.
         $this->assertSame($this->pageCount($body) + 2, $this->pageCount($report));
 
-        // And its caption says which revision it is and what Finance said about it. Matched
+        // And its caption says which revision it is and what Finance did with it. Matched
         // without the brackets: a PDF string literal escapes them, so the stream carries
         // `Quotation \(revision 1 of 2\)`.
         $captions = $this->inflatedText($report);
         $this->assertStringContainsString('revision 1 of 2', $captions);
         $this->assertStringContainsString('revision 2 of 2', $captions);
-        $this->assertStringContainsString('Reviewed by Finance', $captions);
+        $this->assertStringContainsString('Rejected by Finance', $captions);
     }
 
     /** Correcting the live figure must not rewrite what Finance actually rejected. */
@@ -314,16 +314,8 @@ class EwasteQuotationRevisionTest extends TestCase
         $this->assertSame('1000.00', $first->fresh()->amount, 'A superseded revision was rewritten.');
     }
 
-    /**
-     * Finance is told the offer in front of them is a revised one, and repeats their OWN
-     * remarks on the one it replaced.
-     *
-     * NOT why management sent it back: submitForApproval() clears management_remarks on
-     * every resubmit, so by the time this mail is built (which happens on the very submit
-     * that triggers it) that reason is already gone from the batch. It is only ever visible
-     * transiently, on the cycle page, between management rejecting and IT re-uploading.
-     */
-    public function test_finance_is_told_the_quotation_is_a_revision_and_repeats_their_own_remarks(): void
+    /** Finance is told the offer in front of them is a revised one, and why the first failed. */
+    public function test_finance_is_told_the_quotation_is_a_revision_of_a_rejected_one(): void
     {
         $it = $this->itManager();
         $finance = $this->financeManager();
@@ -335,7 +327,7 @@ class EwasteQuotationRevisionTest extends TestCase
         // vendors are being collected first.
         $this->upload($it, $batch, 'first.pdf', 1000);
         $this->submit($it, $batch);
-        $this->actingAs($finance)->post(route('finance.ewaste.remark', $batch), ['remarks' => 'Below market rate.'])->assertRedirect();
+        $this->actingAs($finance)->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Below market rate.'])->assertRedirect();
         $this->actingAs($mgmt)->post(route('management.ewaste.reject', $batch), ['remarks' => 'Re-quote.'])->assertRedirect();
         $this->upload($it, $batch, 'second.pdf', 1450);
         $this->submit($it, $batch);
@@ -344,17 +336,17 @@ class EwasteQuotationRevisionTest extends TestCase
             $html = $mail->render();
 
             return str_contains($html, 'revised quotation')
-                && str_contains($html, 'Your remarks on revision 1')
+                && str_contains($html, 'Revision 1 was rejected')
                 && str_contains($html, 'Below market rate.');
         });
     }
 
     /**
-     * The comparison row on the review page says which revision Finance is looking at and
-     * repeats their own earlier remarks — reading a revised offer blind to what you said
-     * about the last one is how the same point gets missed on the second pass.
+     * Finance's own approval row says which revision it is looking at and repeats the reason
+     * it gave last time — approving a revised offer blind to your own earlier objection is
+     * how a rejected price gets waved through on the second pass.
      */
-    public function test_the_review_page_names_the_revision_and_finances_earlier_remarks(): void
+    public function test_the_finance_approval_row_names_the_revision_and_the_earlier_rejection(): void
     {
         $it = $this->itManager();
         $finance = $this->financeManager();
@@ -364,7 +356,7 @@ class EwasteQuotationRevisionTest extends TestCase
 
         $this->upload($it, $batch, 'first.pdf', 1000);
         $this->submit($it, $batch);
-        $this->actingAs($finance)->post(route('finance.ewaste.remark', $batch), [
+        $this->actingAs($finance)->post(route('finance.ewaste.reject', $batch), [
             'remarks' => 'Below market rate for 3 laptops.',
         ])->assertRedirect();
         $this->actingAs($mgmt)->post(route('management.ewaste.reject', $batch), ['remarks' => 'Re-quote.'])->assertRedirect();
@@ -376,8 +368,7 @@ class EwasteQuotationRevisionTest extends TestCase
         $this->actingAs($finance)->get(route('reports.decommission'))
             ->assertOk()
             ->assertSee('Revision 2', false)
-            // Finance's own earlier remark, so they don't repeat themselves.
-            ->assertSee('your remarks on revision', false)
+            ->assertSee('you rejected revision 1', false)
             ->assertSee('Below market rate for 3 laptops.', false);
     }
 

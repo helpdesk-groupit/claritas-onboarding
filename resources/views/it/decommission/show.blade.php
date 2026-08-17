@@ -226,7 +226,7 @@
                 'ewasteVendors' => $ewasteVendors,
             ])
 
-            @if($batch->isAwaitingDecision() && (Auth::user()->canCommentEwasteQuotation() || Auth::user()->canApproveEwasteAsManagement($batch->company)))
+            @if($batch->isAwaitingDecision() && (Auth::user()->canApproveEwasteQuotation() || Auth::user()->canApproveEwasteAsManagement($batch->company)))
             {{-- Says where the control is, rather than leaving somebody who was emailed about
                  this cycle hunting a button that used to be on this page. --}}
             <div class="alert alert-info py-2 px-3 small d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">

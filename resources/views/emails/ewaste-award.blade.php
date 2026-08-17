@@ -83,12 +83,9 @@
       @if($batch->management_remarks)
         <p style="font-size:13px;"><strong>Management's remarks:</strong> {{ $batch->management_remarks }}</p>
       @endif
-      {{-- financeDecided(), not a bare finance_status check: 'pending' means Finance was
-           asked but has not (yet, or ever — remarks are optional) left anything, and stating
-           that on the award notice would read as a gap rather than the non-event it is. --}}
-      @if($batch->financeDecided())
+      @if($batch->finance_status)
         <p style="font-size:13px;">
-          <strong>Finance's remarks:</strong> {{ $batch->financeDecisionBadge()[1] }}{{ $batch->finance_remarks ? ' — '.$batch->finance_remarks : '' }}
+          <strong>Finance's position:</strong> {{ $batch->financeDecisionBadge()[1] }}{{ $batch->finance_remarks ? ' — '.$batch->finance_remarks : '' }}
         </p>
       @endif
     @endunless

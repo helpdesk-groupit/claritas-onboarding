@@ -74,22 +74,21 @@
     </div>
 </div>
 
-{{-- ══════════════ Cycles in review ══════════════
-     The cycles this user can act on — management's authorisation, or Finance's optional
-     remarks, or both. Loaded outside the paginated archive below on purpose: an approver has
-     to reach a pending cycle whichever page of the list it would fall on, and the full
-     comparison is worth rendering only for the handful that need one.
+{{-- ══════════════ Awaiting your decision ══════════════
+     The cycles this user can actually act on — Finance's position, management's
+     authorisation, or both. Loaded outside the paginated archive below on purpose: an
+     approver has to reach a pending cycle whichever page of the list it would fall on, and
+     the full comparison is worth rendering only for the handful that need one.
 
-     Nothing is shown to a viewer with no reason to be here (hr_manager reads the archive,
-     decides nothing and is not Finance), so this stays absent rather than becoming an empty
-     panel. --}}
+     Nothing is shown to a viewer with no decision to make (hr_manager reads the archive and
+     approves nothing), so this stays absent rather than becoming an empty panel. --}}
 @if($awaiting->isNotEmpty())
 <div class="card ewx-card mb-3">
     <div class="ewx-head">
         <span class="ewx-chip ewx-chip-warn"><i class="bi bi-hourglass-split"></i></span>
         <div class="me-2">
-            <span class="ewx-title">Cycles in review</span>
-            <span class="ewx-sub">Every cycle currently awaiting a decision. {{ $canFinance ? 'Management authorise the disposal; your remarks are optional.' : 'Compare the vendors\' offers and decide — the vendor pays us for scrap, so the best offer is normally the highest.' }}</span>
+            <span class="ewx-title">Awaiting your decision</span>
+            <span class="ewx-sub">Compare the vendors&rsquo; offers and decide. The vendor pays us for scrap, so the best offer is the highest.</span>
         </div>
         <span class="ewx-count ewx-count-warn">{{ $awaiting->count() }}</span>
     </div>

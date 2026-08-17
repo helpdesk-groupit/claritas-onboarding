@@ -481,15 +481,15 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     // Correct an OCR-read (or blank) quotation/receipt amount without re-uploading the document.
     Route::post('/ewaste/{batch}/amount', [AssetDecommissionController::class, 'updateAmount'])->name('ewaste.amount');
 
-    // Finance leaves OPTIONAL remarks on the comparison (added 2026-08-16, replacing an
-    // approve/reject pair — Finance's position never moved the cycle, only management's
-    // decision does, so the control now matches what it was always able to do).
+    // Finance records its POSITION on the comparison (mirrors the eClaim HR approve/reject
+    // shape). It does not move the cycle — only management's decision does.
     //
-    // This lived under /accounting/fixed-assets/ until 2026-08-14, when Finance's review moved
+    // These lived under /accounting/fixed-assets/ until 2026-08-14, when Finance's review moved
     // off Accounting → Assets → "Disposed" onto Management → Decommissioning, which is now the
-    // ONE surface where both Finance and management review a disposal. Route NAME is unchanged
-    // in spirit with the module's convention of the URI following the page.
-    Route::post('/reports/decommission/ewaste/{batch}/remark', [AssetDecommissionController::class, 'financeRemark'])->name('finance.ewaste.remark');
+    // ONE surface where both Finance and management review a disposal. Route NAMES are
+    // unchanged (the module's convention) — only the URIs followed the page.
+    Route::post('/reports/decommission/ewaste/{batch}/approve', [AssetDecommissionController::class, 'financeApprove'])->name('finance.ewaste.approve');
+    Route::post('/reports/decommission/ewaste/{batch}/reject', [AssetDecommissionController::class, 'financeReject'])->name('finance.ewaste.reject');
 
     // Phase 5 — the MANAGEMENT decision, which is the one that authorises a disposal. Gated
     // per-company inside the controller against the named approvers, not by role. Submitted

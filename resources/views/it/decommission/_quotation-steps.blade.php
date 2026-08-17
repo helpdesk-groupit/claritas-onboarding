@@ -63,30 +63,21 @@
     </li>
     <li class="dcm-step {{ $batch->finance_status ? '' : 'dcm-step-todo' }}">
         @php
-            // Legacy approve/reject dots stay for a cycle decided under the old rule;
-            // 'noted' (Finance's optional remarks, since 2026-08-16) is a neutral "done",
-            // never fail — remarks are not a decision to fail on.
             $finDot = $batch->financeApproved() ? 'dcm-dot-done'
                 : ($batch->financeRejected() ? 'dcm-dot-fail'
-                : ($batch->financeCommented() ? 'dcm-dot-done'
-                : ($batch->financePending() ? 'dcm-dot-active' : 'dcm-dot-todo')));
+                : ($batch->financePending() ? 'dcm-dot-active' : 'dcm-dot-todo'));
         @endphp
         <span class="dcm-dot {{ $finDot }}">
-            @if($batch->financeApproved() || $batch->financeCommented())<i class="bi bi-check"></i>@elseif($batch->financeRejected())<i class="bi bi-x"></i>@endif
+            @if($batch->financeApproved())<i class="bi bi-check"></i>@elseif($batch->financeRejected())<i class="bi bi-x"></i>@endif
         </span>
-        <div class="dcm-step-title">Finance remarks <span class="text-muted fw-normal">(optional — advisory only)</span></div>
+        <div class="dcm-step-title">Finance decision</div>
         <div class="dcm-step-meta">
             @if($batch->finance_reviewed_at)
-                {{ $batch->financeApproved() ? 'Approved (legacy)' : ($batch->financeRejected() ? 'Rejected (legacy)' : 'Reviewed') }}
-                &middot; {{ fmt_datetime($batch->finance_reviewed_at) }}
+                {{ ucfirst($batch->finance_status) }} &middot; {{ fmt_datetime($batch->finance_reviewed_at) }}
                 @if($batch->financeReviewer) &middot; {{ $batch->financeReviewer->name }} @endif
-                @if($batch->finance_remarks)
-                    <div class="mt-1">Remarks: {{ $batch->finance_remarks }}</div>
-                @elseif($batch->financeCommented())
-                    <div class="mt-1 text-muted">No remarks left.</div>
-                @endif
+                @if($batch->finance_remarks)<div class="mt-1">Remarks: {{ $batch->finance_remarks }}</div>@endif
             @else
-                {{ $batch->financePending() ? 'Not yet reviewed by Finance' : 'Not yet submitted' }}
+                {{ $batch->financePending() ? 'Awaiting Finance review' : 'Not yet submitted' }}
             @endif
         </div>
     </li>
@@ -129,36 +120,28 @@
     </li>
     <li class="dcm-step {{ $q->finance_status ? '' : 'dcm-step-todo' }} {{ $isCurrent ? '' : 'dcm-step-past' }}">
         @php
-            // Legacy approve/reject dots stay for a revision decided under the old rule;
-            // isNoted() (Finance's optional remarks, since 2026-08-16) is a neutral "done".
             $finDot = $q->isApproved() ? 'dcm-dot-done'
                 : ($q->isRejected() ? 'dcm-dot-fail'
-                : ($q->isNoted() ? 'dcm-dot-done'
-                : ($q->isPending() ? 'dcm-dot-active' : 'dcm-dot-todo')));
+                : ($q->isPending() ? 'dcm-dot-active' : 'dcm-dot-todo'));
         @endphp
         <span class="dcm-dot {{ $finDot }}">
-            @if($q->isApproved() || $q->isNoted())<i class="bi bi-check"></i>@elseif($q->isRejected())<i class="bi bi-x"></i>@endif
+            @if($q->isApproved())<i class="bi bi-check"></i>@elseif($q->isRejected())<i class="bi bi-x"></i>@endif
         </span>
         <div class="dcm-step-title">
-            Finance remarks <span class="text-muted fw-normal">(optional)</span>
+            Finance decision
             @if($vendorLabel)<span class="dcm-rev">{{ $vendorLabel }}</span>@endif
             @if($showRev)<span class="dcm-rev">on revision {{ $q->revision }}</span>@endif
         </div>
         <div class="dcm-step-meta">
             @if($q->finance_reviewed_at)
-                {{ $q->isApproved() ? 'Approved (legacy)' : ($q->isRejected() ? 'Rejected (legacy)' : 'Reviewed') }}
-                &middot; {{ fmt_datetime($q->finance_reviewed_at) }}
+                {{ ucfirst($q->finance_status) }} &middot; {{ fmt_datetime($q->finance_reviewed_at) }}
                 @if($q->financeReviewer) &middot; {{ $q->financeReviewer->name }} @endif
-                @if($q->finance_remarks)
-                    <div class="mt-1">Remarks: {{ $q->finance_remarks }}</div>
-                @elseif($q->isNoted())
-                    <div class="mt-1 text-muted">No remarks left.</div>
-                @endif
+                @if($q->finance_remarks)<div class="mt-1">Remarks: {{ $q->finance_remarks }}</div>@endif
                 @if($q->isRejected() && ! $isCurrent)
                     <div class="mt-1 text-muted">A revised quotation was uploaded as revision {{ $q->revision + 1 }}.</div>
                 @endif
             @else
-                {{ $q->isPending() ? 'Not yet reviewed by Finance' : 'Not yet submitted' }}
+                {{ $q->isPending() ? 'Awaiting Finance review' : 'Not yet submitted' }}
             @endif
         </div>
     </li>

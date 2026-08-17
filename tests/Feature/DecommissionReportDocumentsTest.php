@@ -136,12 +136,12 @@ class DecommissionReportDocumentsTest extends TestCase
     }
 
     /**
-     * A LEGACY Finance approval (pre-2026-08-16, when Finance's position doubled as a
-     * verdict) still names the reviewer, their role, and when — the report states what
-     * actually happened on that cycle rather than rewriting history to fit the current rule.
-     * Nothing produces a new 'approved' finance_status any more; this is built directly.
+     * Finance's position on the report: who reviewed, their role, and when.
+     *
+     * "Concurred" rather than "Approved by Finance" since Phase 5 — Finance no longer
+     * authorise a disposal, and a stamp saying they did would name the wrong authority.
      */
-    public function test_a_legacy_finance_approval_names_the_approver_with_details_and_timestamp(): void
+    public function test_finance_approval_names_the_approver_with_details_and_timestamp(): void
     {
         Storage::fake('local');
 
@@ -162,48 +162,11 @@ class DecommissionReportDocumentsTest extends TestCase
 
         $html = view('decommission.report-pdf', ['batch' => $batch->load('financeReviewer.employee')])->render();
 
-        $this->assertStringContainsString('Finance approved (legacy)', $html);
+        $this->assertStringContainsString('Finance concurred', $html);
         $this->assertStringContainsString('Priya Ramasamy', $html);
         $this->assertStringContainsString('Finance Manager', $html);
         $this->assertStringContainsString(fmt_datetime($batch->finance_reviewed_at), $html);
         $this->assertStringContainsString('Offer is in line with market rates.', $html);
-    }
-
-    /**
-     * A CURRENT Finance review (remarks only, since 2026-08-16) prints the remarks under a
-     * neutral "Finance Remarks" heading — no verdict language, because there is no verdict.
-     */
-    public function test_a_current_finance_remark_prints_under_a_neutral_heading(): void
-    {
-        Storage::fake('local');
-
-        $reviewer = User::factory()->create(['role' => 'finance_manager']);
-        $batch = $this->ewasteBatch([
-            'finance_status' => 'noted',
-            'finance_reviewed_by' => $reviewer->id,
-            'finance_reviewed_at' => now(),
-            'finance_remarks' => 'Seems reasonable for this volume.',
-        ]);
-
-        $html = view('decommission.report-pdf', ['batch' => $batch->load('financeReviewer.employee')])->render();
-
-        $this->assertStringContainsString('Finance Remarks', $html);
-        $this->assertStringContainsString('Seems reasonable for this volume.', $html);
-        $this->assertStringNotContainsString('Finance approved', $html);
-        $this->assertStringNotContainsString('Finance objected', $html);
-    }
-
-    /** No remarks at all is stated plainly — never rendered as a blank or a missing decision. */
-    public function test_no_finance_remarks_reads_as_optional_not_missing(): void
-    {
-        Storage::fake('local');
-
-        $batch = $this->ewasteBatch();
-
-        $html = view('decommission.report-pdf', ['batch' => $batch])->render();
-
-        $this->assertStringContainsString('No remarks left by Finance', $html);
-        $this->assertStringContainsString('optional and advisory only', $html);
     }
 
     /** Each appended document is accountable: when it was uploaded and by whom. */

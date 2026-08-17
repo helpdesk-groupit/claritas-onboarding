@@ -50,8 +50,8 @@ class AssetDecommissionController extends Controller
 
     private function authorizeFinance(): void
     {
-        if (! Auth::user()->canCommentEwasteQuotation()) {
-            abort(403, 'Only Finance may leave remarks on e-waste quotations.');
+        if (! Auth::user()->canApproveEwasteQuotation()) {
+            abort(403, 'Only Finance may approve or reject e-waste quotations.');
         }
     }
 
@@ -386,9 +386,9 @@ class AssetDecommissionController extends Controller
             new DecommissionNotification(
                 event: 'ewaste.quotation_pending',
                 batchNumber: $batch->batch_number,
-                subject: 'E-waste quotation comparison ready for your review',
+                subject: 'E-waste quotation comparison awaiting your review',
                 message: "Cycle {$batch->batch_number} has ".$batch->quotationsForComparison()->count()
-                    .' vendor quotation(s) for review. Leave remarks if you wish — they are optional and shown alongside management\'s decision, who authorise the disposal.',
+                    .' vendor quotation(s) for review. Your position is recorded alongside management\'s, who authorise the disposal.',
                 url: route('reports.decommission'),
                 icon: 'bi-cash-coin',
                 color: 'warning',
@@ -447,52 +447,73 @@ class AssetDecommissionController extends Controller
     }
 
     /**
-     * Finance leaves OPTIONAL remarks on the comparison — advisory only, never a decision.
+     * Finance records its POSITION on the comparison.
      *
-     * Replaced financeApprove()/financeReject() on 2026-08-16, on the operator's instruction:
-     * Finance's position never moved the cycle anyway (only management's decision does), so
-     * an approve/reject control was asking Finance to cast a vote nobody counted. May be
-     * called any number of times while the cycle is awaiting a decision — each call replaces
-     * the remarks, so Finance can edit what they said.
+     * It does not move the cycle — management's decision does. Finance approving alone must
+     * never release assets to a vendor, because that is what keeps a later management
+     * rejection able to stop something that has not happened yet.
      */
-    public function financeRemark(Request $request, AssetDecommissionBatch $batch)
+    public function financeApprove(Request $request, AssetDecommissionBatch $batch)
     {
         $this->authorizeFinance();
 
-        if (! $batch->isEwaste() || ! $batch->isAwaitingDecision()) {
-            return back()->with('error', 'This cycle is not open for remarks right now.');
+        if (! $batch->isEwaste() || $batch->finance_status !== 'pending') {
+            return back()->with('error', 'This cycle is not awaiting your review.');
         }
 
-        $request->validate(['remarks' => 'nullable|string|max:1000']);
         $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
+        $batch->recordFinanceDecision('approved', Auth::id(), $remarks ?: null);
 
-        $batch->recordFinanceRemark(Auth::id(), $remarks ?: null);
-
-        Log::info('E-waste quotation: Finance remarks recorded', [
+        Log::info('E-waste quotation: Finance position recorded', [
             'batch' => $batch->batch_number,
+            'position' => 'approved',
             'quotation_id' => $batch->quotationUnderReview()?->id,
             'actor_id' => Auth::id(),
-            'has_remarks' => $remarks !== '',
         ]);
 
         EwasteSweepService::notifyIt(new DecommissionNotification(
-            event: 'ewaste.finance_remark',
+            event: 'ewaste.finance_position',
             batchNumber: $batch->batch_number,
-            subject: 'Finance left remarks on the e-waste quotation',
-            message: $remarks !== ''
-                ? "Finance left remarks on the quotation for {$batch->batch_number}: {$remarks}. "
-                    .$batch->company.' management still decide.'
-                : "Finance reviewed the quotation for {$batch->batch_number} with no remarks. "
-                    .$batch->company.' management still decide.',
+            subject: 'Finance approved the e-waste quotation',
+            message: "Finance approved the quotation for {$batch->batch_number}. The cycle proceeds once "
+                .$batch->company.' management have also approved.',
             url: route('decommission.show', $batch),
-            icon: 'bi-chat-left-text',
+            icon: 'bi-check-circle',
             color: 'info',
         ));
 
         return redirect()->route('reports.decommission')
-            ->with('success', $remarks !== ''
-                ? "Your remarks on {$batch->batch_number} are recorded and shown to management."
-                : "Recorded — no remarks left on {$batch->batch_number}.");
+            ->with('success', "Your approval for {$batch->batch_number} is recorded. It proceeds once management approve.");
+    }
+
+    /** Finance objects to the comparison (reason required). Management may still override. */
+    public function financeReject(Request $request, AssetDecommissionBatch $batch)
+    {
+        $this->authorizeFinance();
+
+        if (! $batch->isEwaste() || $batch->finance_status !== 'pending') {
+            return back()->with('error', 'This cycle is not awaiting your review.');
+        }
+
+        $request->validate(['remarks' => 'required|string|max:1000']);
+        $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
+
+        // Recorded ON the quotation under review, so a later re-quote cannot erase it.
+        $batch->recordFinanceDecision('rejected', Auth::id(), $remarks);
+
+        EwasteSweepService::notifyIt(new DecommissionNotification(
+            event: 'ewaste.finance_position',
+            batchNumber: $batch->batch_number,
+            subject: 'Finance objected to the e-waste quotation',
+            message: "Finance objected to the quotation for {$batch->batch_number}: {$remarks}. "
+                .$batch->company.' management still have to decide.',
+            url: route('decommission.show', $batch),
+            icon: 'bi-exclamation-circle',
+            color: 'warning',
+        ));
+
+        return redirect()->route('reports.decommission')
+            ->with('success', "Your objection to {$batch->batch_number} is recorded and shown to management.");
     }
 
     // ── Management: the decision that moves the cycle ─────────────────────────

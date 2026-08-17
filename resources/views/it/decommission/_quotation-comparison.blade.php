@@ -1,11 +1,11 @@
 {{--
     Phase 5/6 — the vendor comparison, an optional AI suggestion, IT's recommendation, and the
-    ONE decision (management's).
+    two decisions.
 
     The cycle asks every active e-waste vendor to quote, so this panel is where the offers are
     gathered and ranked, optionally compared by AI, submitted for approval with a
-    recommendation, and then decided. Finance may leave optional remarks alongside — since
-    2026-08-16 that is all their review does (see AssetDecommissionBatch::recordFinanceRemark()).
+    recommendation, and then decided by both Finance and management. Finance's position is
+    recorded but never binding — only management's decision moves the cycle.
 
     The vendor pays US for scrap, so the BEST offer is the HIGHEST — the sign is the opposite of
     a purchase, and every ordering and label here depends on getting that right.
@@ -17,7 +17,7 @@
         Decommissioning    canManage=false  canDecide=per-company  canFinance=per-gate
 
     Expects: $batch, $canManage (IT), $canDecide (this user may cast the management decision),
-             $canFinance (this user may leave Finance's remarks), $ewasteVendors.
+             $canFinance (this user may record Finance's position), $ewasteVendors.
 --}}
 @php
     // Defaulted rather than required: the cycle page renders this without the finance flag,
@@ -151,35 +151,6 @@
         @if($batch->recommendation_note)
             <p class="small text-muted mb-2"><strong>IT's reason:</strong> {{ $batch->recommendation_note }}</p>
         @endif
-
-        {{-- ── AI comparison — reads every quotation's full content, not just the amount ──
-             Explicit, never automatic: it is a billed AI call, so it only runs when IT asks
-             for it. The result PRE-FILLS the Recommend form below; submitForApproval() is
-             still what the module treats as IT's actual recommendation, so IT can accept the
-             suggestion as-is or overwrite it before submitting. --}}
-        @if($canManage && $collecting)
-        <form action="{{ route('ewaste.compare', $batch) }}" method="POST" class="mb-2">@csrf
-            <button class="btn btn-sm btn-outline-primary"><i class="bi bi-stars me-1"></i>Ask AI to compare quotations</button>
-            <span class="text-muted small ms-1">Reads every quotation in full and suggests one — the choice is still yours.</span>
-        </form>
-        @if($batch->ai_recommended_at)
-        <div class="alert alert-{{ $batch->ai_compare_status === 'ok' ? 'info' : 'secondary' }} py-2 px-3 small mb-3">
-            @if($batch->ai_compare_status === 'ok' && $batch->aiRecommendedQuotation)
-                <i class="bi bi-stars me-1"></i>
-                <strong>AI suggests: {{ $batch->aiRecommendedQuotation->vendorName() }}</strong>
-                @if($batch->aiRecommendedQuotation->amount !== null) — RM {{ number_format((float) $batch->aiRecommendedQuotation->amount, 2) }}@endif
-                @if($batch->ai_recommendation_note)<div class="mt-1">{{ $batch->ai_recommendation_note }}</div>@endif
-                <div class="text-muted mt-1">Pre-filled in the Recommend form below — pick differently if you disagree.</div>
-            @elseif($batch->ai_compare_status === 'disabled')
-                <i class="bi bi-info-circle me-1"></i>AI document reading is not configured. Pick a recommendation by hand below.
-            @elseif($batch->ai_compare_status === 'empty')
-                <i class="bi bi-info-circle me-1"></i>There is nothing to compare yet — file at least one quotation first.
-            @else
-                <i class="bi bi-exclamation-circle me-1"></i>AI comparison could not be completed this time. Pick a recommendation by hand below.
-            @endif
-        </div>
-        @endif
-        @endif
     @endif
 
     {{-- ── File a quotation (one per vendor; a re-quote is a new revision) ── --}}
@@ -216,6 +187,35 @@
             File one quotation per vendor — filing a new vendor's quotation never replaces or removes another vendor's offer, and a re-quote from the same vendor is kept as a new revision alongside the one it replaces.
         </div>
     </form>
+    @endif
+
+    {{-- ── AI comparison — reads every quotation's full content, not just the amount ──
+         Explicit, never automatic: it is a billed AI call, so it only runs when IT asks
+         for it. The result PRE-FILLS the Recommend form below; submitForApproval() is
+         still what the module treats as IT's actual recommendation, so IT can accept the
+         suggestion as-is or overwrite it before submitting. --}}
+    @if($canManage && $collecting)
+    <form action="{{ route('ewaste.compare', $batch) }}" method="POST" class="mb-2">@csrf
+        <button class="btn btn-sm btn-outline-primary"><i class="bi bi-stars me-1"></i>Ask AI to compare quotations</button>
+        <span class="text-muted small ms-1">Reads every quotation in full and suggests one — the choice is still yours.</span>
+    </form>
+    @if($batch->ai_recommended_at)
+    <div class="alert alert-{{ $batch->ai_compare_status === 'ok' ? 'info' : 'secondary' }} py-2 px-3 small mb-3">
+        @if($batch->ai_compare_status === 'ok' && $batch->aiRecommendedQuotation)
+            <i class="bi bi-stars me-1"></i>
+            <strong>AI suggests: {{ $batch->aiRecommendedQuotation->vendorName() }}</strong>
+            @if($batch->aiRecommendedQuotation->amount !== null) — RM {{ number_format((float) $batch->aiRecommendedQuotation->amount, 2) }}@endif
+            @if($batch->ai_recommendation_note)<div class="mt-1">{{ $batch->ai_recommendation_note }}</div>@endif
+            <div class="text-muted mt-1">Pre-filled in the Recommend form below — pick differently if you disagree.</div>
+        @elseif($batch->ai_compare_status === 'disabled')
+            <i class="bi bi-info-circle me-1"></i>AI document reading is not configured. Pick a recommendation by hand below.
+        @elseif($batch->ai_compare_status === 'empty')
+            <i class="bi bi-info-circle me-1"></i>There is nothing to compare yet — file at least one quotation first.
+        @else
+            <i class="bi bi-exclamation-circle me-1"></i>AI comparison could not be completed this time. Pick a recommendation by hand below.
+        @endif
+    </div>
+    @endif
     @endif
 
     {{-- ── Submit the comparison for approval ── --}}
@@ -265,16 +265,14 @@
         @endif
     @endif
 
-    {{-- ── Finance's remarks ──
-         OPTIONAL and ADVISORY only, since 2026-08-16 (see AssetDecommissionBatch::
-         recordFinanceRemark()). Finance does not approve or reject a comparison — only
-         management's decision moves the cycle — so this is a single remarks box, not a
-         verdict. Gated on the cycle still being open for a decision (not on whether Finance
-         has already left something) so remarks can be added or edited right up until
-         management decide. --}}
-    @if($canFinance && $batch->isAwaitingDecision())
+    {{-- ── Finance's position ──
+         RECORDED, never binding. Finance approving does not release anything and does not
+         move the cycle: only management's decision does. That is what keeps a later
+         management rejection able to stop a collection that has not happened yet, so the
+         wording here must never suggest this approval authorises the disposal. --}}
+    @if($canFinance && $batch->finance_status === 'pending')
     <div class="ewx-subsection mt-3">
-        <h6 class="fw-bold small text-uppercase text-muted mb-2">Finance remarks <span class="text-muted fw-normal text-lowercase">— optional, advisory only</span></h6>
+        <h6 class="fw-bold small text-uppercase text-muted mb-2">Finance review</h6>
 
         @if($batch->managementDecided())
             <p class="small mb-2">
@@ -284,42 +282,28 @@
         @endif
 
         @php
-            // A reviewer looking at a second quote needs to know what THEY said about the
-            // offer this replaced, without opening the cycle log — so they don't repeat
-            // themselves, or miss that it was already addressed.
-            //
-            // NOTE: management's own rejection reason (why this is a re-quote at all) is NOT
-            // shown here — submitForApproval() clears management_remarks on every resubmit, so
-            // by the time revision 2 exists that reason is already gone from the batch. It is
-            // only ever visible transiently, on the upload form, between management rejecting
-            // and IT re-uploading (see the "Management rejected this disposal" alert above).
-            // A LEGACY Finance rejection (pre-2026-08-16, when their position doubled as a
-            // verdict) DOES persist per revision and still wins when one is on record — that
-            // genuinely is why that cycle went round again.
+            // A reviewer looking at a second quote needs to know why without opening the cycle
+            // log — the rejection it answers is the whole context for the new price.
             //
             // Built here rather than inline: the sentence is a chain of optional clauses, and
             // in Blade `@endif@if(` glues `@` to a word character, which stops it being read as
             // a directive at all. It then compiles clean and throws "unexpected end of file"
             // only at RENDER, so view:cache does not catch it.
             $vndUnderReview = $batch->quotationUnderReview();
-            $vndPrevious = ($vndUnderReview && $vndUnderReview->revision > 1)
-                ? $batch->quotations->firstWhere('revision', $vndUnderReview->revision - 1)
-                : null;
+            $vndRejected = $vndUnderReview && $vndUnderReview->revision > 1 ? $batch->lastRejectedQuotation() : null;
             $vndRequoteNote = null;
 
             if ($vndUnderReview && $vndUnderReview->revision > 1) {
                 $vndRequoteNote = 'Revision '.$vndUnderReview->revision.' from '.$vndUnderReview->vendorName();
 
-                if ($vndPrevious && $vndPrevious->isRejected()) {
-                    $vndRequoteNote .= ' — revision '.$vndPrevious->revision.' was rejected by Finance';
-                    if ($vndPrevious->finance_reviewed_at) {
-                        $vndRequoteNote .= ' on '.fmt_date($vndPrevious->finance_reviewed_at);
+                if ($vndRejected) {
+                    $vndRequoteNote .= ' — you rejected revision '.$vndRejected->revision;
+                    if ($vndRejected->finance_reviewed_at) {
+                        $vndRequoteNote .= ' on '.fmt_date($vndRejected->finance_reviewed_at);
                     }
-                    if ($vndPrevious->finance_remarks) {
-                        $vndRequoteNote .= ' because '.$vndPrevious->finance_remarks;
+                    if ($vndRejected->finance_remarks) {
+                        $vndRequoteNote .= ' because '.$vndRejected->finance_remarks;
                     }
-                } elseif ($vndPrevious && $vndPrevious->finance_remarks) {
-                    $vndRequoteNote .= ' — your remarks on revision '.$vndPrevious->revision.': '.$vndPrevious->finance_remarks;
                 }
             }
         @endphp
@@ -329,18 +313,29 @@
             </p>
         @endif
 
-        <form action="{{ route('finance.ewaste.remark', $batch) }}" method="POST" class="row g-2 align-items-end">@csrf
+        <form action="{{ route('finance.ewaste.approve', $batch) }}" method="POST" class="row g-2 align-items-end mb-2">@csrf
             <div class="col-md-9">
-                <label class="form-label small fw-semibold">Remarks <span class="text-muted fw-normal">— optional, not required to proceed</span></label>
-                <textarea name="remarks" rows="2" class="form-control form-control-sm" maxlength="1000">{{ old('remarks', $batch->finance_status === 'noted' ? $batch->finance_remarks : '') }}</textarea>
+                <label class="form-label small fw-semibold">Remarks <span class="text-muted fw-normal">— optional</span></label>
+                <input type="text" name="remarks" class="form-control form-control-sm" maxlength="1000">
             </div>
             <div class="col-md-3">
-                <button class="btn btn-sm btn-primary w-100"><i class="bi bi-chat-left-text me-1"></i>Save remarks</button>
+                <button class="btn btn-sm ewx-btn-approve w-100"><i class="bi bi-check2-circle me-1"></i>Approve</button>
+            </div>
+        </form>
+
+        <form action="{{ route('finance.ewaste.reject', $batch) }}" method="POST" class="row g-2 align-items-end">@csrf
+            <div class="col-md-9">
+                <label class="form-label small fw-semibold">Or object — reason required</label>
+                <input type="text" name="remarks" class="form-control form-control-sm" maxlength="1000" required
+                       placeholder="Why is this offer refused?">
+            </div>
+            <div class="col-md-3">
+                <button class="btn btn-sm btn-outline-danger w-100"><i class="bi bi-x-circle me-1"></i>Object</button>
             </div>
         </form>
 
         <div class="form-text mt-1">
-            Finance does not approve or reject this comparison — {{ $batch->company ?: 'the company' }}'s management make the decision. Any remarks you leave are shown to them, and you may leave nothing at all.
+            Your position is recorded alongside management's, who authorise the disposal.
         </div>
     </div>
     @endif
@@ -351,14 +346,14 @@
         <h6 class="fw-bold small text-uppercase text-muted mb-2">Your decision</h6>
 
         @if($batch->financeDecided())
-            {{-- Finance's remarks are shown for context but are not a vote — Finance does not
-                 approve or reject, so there is nothing here to "override". --}}
+            {{-- Finance's position is shown but explicitly not binding — management may
+                 approve over an objection, which is the whole point of the override rule. --}}
             <p class="small mb-2">
                 <span class="badge bg-{{ $batch->financeDecisionBadge()[0] }}">{{ $batch->financeDecisionBadge()[1] }}</span>
                 @if($batch->finance_remarks)<span class="text-muted">— {{ $batch->finance_remarks }}</span>@endif
             </p>
         @else
-            <p class="small text-muted mb-2">Finance have not left any remarks. Their input is optional — decide when you're ready.</p>
+            <p class="small text-muted mb-2">Finance have not recorded a position yet. You may still decide.</p>
         @endif
 
         <form action="{{ route('management.ewaste.approve', $batch) }}" method="POST" class="row g-2 align-items-end mb-2">@csrf

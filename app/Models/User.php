@@ -434,9 +434,8 @@ class User extends Authenticatable
      * it_executive was added 2026-07-30 so the day-to-day IT operator — not just the
      * manager — can run a collection batch and work the e-waste cycle. This is the ONE
      * gate for the whole IT side of both flows, so it necessarily also grants finalize,
-     * cancel and resend; the batch is IT's own operational record. The only actual
-     * approval step is management's (canApproveEwasteAsManagement) — Finance may only
-     * leave optional remarks (canCommentEwasteQuotation). Interns stay out.
+     * cancel and resend; the batch is IT's own operational record, and Finance still
+     * holds the only approval step (canApproveEwasteQuotation). Interns stay out.
      * Note this does NOT grant the C-Suite report archive (canViewDecommissionReports)
      * or the vendor master (canManageVendors) — both remain it_manager+admin.
      */
@@ -446,15 +445,10 @@ class User extends Authenticatable
     }
 
     /**
-     * May the user leave remarks on an e-waste quotation comparison? Finance + superadmin
-     * oversight.
-     *
-     * Named canApproveEwasteQuotation() until 2026-08-16, when Finance's approve/reject
-     * control was replaced with optional remarks on the operator's instruction — the gate
-     * itself (who counts as Finance) is unchanged, only what it grants. Renamed so the
-     * method name does not keep asserting a power Finance no longer has.
+     * May the user approve/reject an e-waste quotation in-app (mirrors the eClaim
+     * hrApprove gate, for Finance)? Finance + superadmin oversight.
      */
-    public function canCommentEwasteQuotation(): bool
+    public function canApproveEwasteQuotation(): bool
     {
         return in_array($this->role, ['finance_manager', 'finance_executive', 'superadmin']);
     }
@@ -467,7 +461,7 @@ class User extends Authenticatable
      * employer or role can express it. See EwasteCompanyApprover.
      *
      * Management's decision is the one that advances a cycle, so this is a strictly narrower
-     * gate than canCommentEwasteQuotation() — being in Finance does not make you management.
+     * gate than canApproveEwasteQuotation() — being in Finance does not make you management.
      */
     public function canApproveEwasteAsManagement(?string $company): bool
     {

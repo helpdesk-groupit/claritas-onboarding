@@ -149,61 +149,49 @@ class EwasteCycleTest extends TestCase
         ]);
     }
 
-    public function test_finance_can_leave_remarks_on_pending_quotation(): void
+    public function test_finance_can_approve_pending_quotation(): void
     {
         $fin = User::factory()->create(['role' => 'finance_manager']);
         $batch = $this->quotedBatch();
 
-        $this->actingAs($fin)->post(route('finance.ewaste.remark', $batch), ['remarks' => 'ok'])->assertRedirect();
+        $this->actingAs($fin)->post(route('finance.ewaste.approve', $batch), ['remarks' => 'ok'])->assertRedirect();
 
         $batch->refresh();
-        $this->assertSame('noted', $batch->finance_status);
-        $this->assertSame('ok', $batch->finance_remarks);
+        $this->assertSame('approved', $batch->finance_status);
         $this->assertSame($fin->id, $batch->finance_reviewed_by);
-        // Finance's remarks never move the cycle — only management's decision does, so it
-        // stays pending_approval here rather than advancing.
+        // Since Phase 5 Finance record a POSITION — the cycle only moves when management
+        // approve, so it stays pending here rather than advancing to a released state.
         $this->assertSame('pending_approval', $batch->status);
         $this->assertFalse($batch->isApproved());
     }
 
-    public function test_finance_remarks_are_optional(): void
+    public function test_approve_guard_blocks_non_pending(): void
+    {
+        $fin = User::factory()->create(['role' => 'finance_manager']);
+        $batch = $this->quotedBatch();
+        $batch->update(['finance_status' => 'approved', 'status' => 'finance_approved']);
+
+        $this->actingAs($fin)->post(route('finance.ewaste.approve', $batch), [])->assertRedirect();
+        // Still approved — a second approve is a no-op guarded by the state check.
+        $this->assertSame('approved', $batch->fresh()->finance_status);
+    }
+
+    public function test_finance_reject_requires_reason(): void
     {
         $fin = User::factory()->create(['role' => 'finance_manager']);
         $batch = $this->quotedBatch();
 
-        $this->actingAs($fin)->post(route('finance.ewaste.remark', $batch), [])->assertRedirect();
+        $this->actingAs($fin)->post(route('finance.ewaste.reject', $batch), [])->assertSessionHasErrors('remarks');
+        $this->assertSame('pending', $batch->fresh()->finance_status);
 
-        $batch->refresh();
-        $this->assertSame('noted', $batch->finance_status);
-        $this->assertNull($batch->finance_remarks);
+        $this->actingAs($fin)->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Too low'])->assertRedirect();
+        $this->assertSame('rejected', $batch->fresh()->finance_status);
     }
 
-    public function test_finance_can_edit_remarks_by_resubmitting(): void
-    {
-        $fin = User::factory()->create(['role' => 'finance_manager']);
-        $batch = $this->quotedBatch();
-
-        $this->actingAs($fin)->post(route('finance.ewaste.remark', $batch), ['remarks' => 'First note']);
-        $this->actingAs($fin)->post(route('finance.ewaste.remark', $batch), ['remarks' => 'Revised note']);
-
-        $this->assertSame('Revised note', $batch->fresh()->finance_remarks);
-    }
-
-    public function test_remark_guard_blocks_once_the_cycle_is_no_longer_awaiting_a_decision(): void
-    {
-        $fin = User::factory()->create(['role' => 'finance_manager']);
-        $batch = $this->quotedBatch();
-        $batch->update(['status' => 'approved', 'management_status' => 'approved']);
-
-        $this->actingAs($fin)->post(route('finance.ewaste.remark', $batch), ['remarks' => 'Too late'])->assertRedirect();
-
-        $this->assertNull($batch->fresh()->finance_remarks);
-    }
-
-    public function test_it_manager_cannot_leave_finance_remarks(): void
+    public function test_it_manager_cannot_approve_quotation(): void
     {
         $it = User::factory()->create(['role' => 'it_manager']);
-        $this->actingAs($it)->post(route('finance.ewaste.remark', $this->quotedBatch()))->assertForbidden();
+        $this->actingAs($it)->post(route('finance.ewaste.approve', $this->quotedBatch()))->assertForbidden();
     }
 
     public function test_finance_cannot_run_sweep(): void

@@ -10,9 +10,8 @@ use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
 /**
- * Flow 2 — tells Finance a quotation comparison is ready for their (optional) review and
- * links to Management → Decommissioning, the one surface where Finance and management both
- * review a disposal. Finance's review is remarks only — they do not approve or reject.
+ * Flow 2 — tells Finance a quotation has been uploaded and links to the in-app
+ * Pending Quotations approval screen.
  */
 class EwasteQuotationApprovalMail extends Mailable
 {

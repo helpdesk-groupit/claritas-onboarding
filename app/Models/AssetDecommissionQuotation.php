@@ -142,46 +142,33 @@ class AssetDecommissionQuotation extends Model
             && ! $this->isSupersededByOwnVendor();
     }
 
-    /**
-     * LEGACY only — a decision made under the pre-2026-08-16 rule where Finance's position
-     * doubled as an approve/reject verdict. Nothing writes 'approved' any more; kept so a
-     * cycle decided under the old rule still renders as it did the day it was decided.
-     */
     public function isApproved(): bool
     {
         return $this->finance_status === 'approved';
     }
 
-    /** LEGACY only — see isApproved(). */
     public function isRejected(): bool
     {
         return $this->finance_status === 'rejected';
     }
 
-    /** Finance left optional remarks — the only thing Finance's review does since 2026-08-16. */
-    public function isNoted(): bool
-    {
-        return $this->finance_status === 'noted';
-    }
-
-    /** Bootstrap badge [class, label] for this revision's Finance review. */
+    /** Bootstrap badge [class, label] for this revision's Finance decision. */
     public function decisionBadge(): array
     {
         return match ($this->finance_status) {
-            'approved' => ['success', 'Finance approved (legacy)'],
-            'rejected' => ['danger', 'Finance objected (legacy)'],
-            'noted' => ['info', 'Finance commented'],
-            'pending' => ['secondary', 'No remarks from Finance yet'],
-            default => ['secondary', 'Not submitted'],
+            'approved' => ['success', 'Approved by Finance'],
+            'rejected' => ['danger', 'Rejected by Finance'],
+            'pending' => ['warning', 'Awaiting Finance review'],
+            default => ['secondary', 'Not submitted for review'],
         };
     }
 
     /**
-     * One line naming Finance's review, its author and when — for the report body and the
+     * One line naming the decision, its author and when — for the report body and the
      * caption on the reproduced document page.
      *
-     * Returns null when Finance never looked at this revision, so callers state that rather
-     * than printing a review nobody gave.
+     * Returns null when no decision was ever recorded, so callers state that rather than
+     * printing a decision nobody made.
      */
     public function decisionLine(): ?string
     {
@@ -190,11 +177,7 @@ class AssetDecommissionQuotation extends Model
         }
 
         $who = AssetDecommissionBatch::actorIdentity($this->financeReviewer);
-        $line = match ($this->finance_status) {
-            'approved' => 'Approved by Finance (legacy)',
-            'rejected' => 'Rejected by Finance (legacy)',
-            default => 'Reviewed by Finance',
-        };
+        $line = ($this->isApproved() ? 'Approved' : 'Rejected').' by Finance';
 
         if ($this->finance_reviewed_at) {
             $line .= ' on '.fmt_datetime($this->finance_reviewed_at);
