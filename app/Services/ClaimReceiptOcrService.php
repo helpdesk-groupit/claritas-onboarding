@@ -433,6 +433,16 @@ class ClaimReceiptOcrService
                     ->post('https://api.anthropic.com/v1/messages', [
                         'model' => $model,
                         'max_tokens' => $maxTokens,
+                        // Anthropic's default temperature (1.0, unspecified) is why the SAME
+                        // receipt can read differently on two separate scans — a borderline
+                        // digit (a date squeezed into a busy letterhead, a faint stamp) isn't
+                        // read the same way twice under real sampling. The OpenAI-compatible
+                        // branch below has always pinned this to 0.1 for exactly that reason;
+                        // this branch was simply missing it. Doesn't guarantee a correct read
+                        // off a genuinely hard-to-read image, but makes the model consistently
+                        // report its single most-confident reading instead of sampling one of
+                        // several candidates each call.
+                        'temperature' => 0.1,
                         'messages' => [[
                             'role' => 'user',
                             'content' => [
