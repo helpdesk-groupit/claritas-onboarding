@@ -499,6 +499,89 @@ class ClaudeApiUsageTest extends TestCase
         $this->assertSame('application/pdf', $res->headers->get('content-type'));
     }
 
+    // ── Downloading a single key's own breakdown ─────────────────────────────
+
+    public function test_key_filter_scopes_the_whole_report_to_that_key(): void
+    {
+        $super = $this->superadmin();
+
+        $keyA = ClaudeApiKeyHistory::rotate('sk-ant-scope-a-1111', 'Scope Key A', null);
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 1_000_000, 'output_tokens' => 0]); // $1
+
+        ClaudeApiKeyHistory::rotate('sk-ant-scope-b-2222', 'Scope Key B', null);
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 4_000_000, 'output_tokens' => 0]); // $4
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index', ['key' => $keyA->id]));
+
+        $this->assertSame(1.0, $res->viewData('totals')['cost_usd']); // only Key A's spend
+        $this->assertSame((string) $keyA->id, $res->viewData('key'));
+        // With the report already scoped to one key, byKey collapses to a single row
+        // and its own card stays hidden (count() > 1 gate) — nothing to add on top.
+        $this->assertCount(1, $res->viewData('byKey'));
+    }
+
+    public function test_key_filter_none_selects_usage_from_before_tracking_began(): void
+    {
+        $super = $this->superadmin();
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0); // no history id
+
+        ClaudeApiKeyHistory::rotate('sk-ant-tracked-3333', 'Tracked key', null);
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 5_000_000, 'output_tokens' => 0]); // $5
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index', ['key' => 'none']));
+
+        $this->assertSame(1.0, $res->viewData('totals')['cost_usd']);
+        $this->assertSame('none', $res->viewData('key'));
+    }
+
+    public function test_an_invalid_key_filter_is_ignored(): void
+    {
+        $super = $this->superadmin();
+        $this->usage('claim_receipt_scan', 'claude-haiku-4-5', 1_000_000, 0);
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index', ['key' => '999999']));
+        $res->assertOk();
+        $this->assertSame('', $res->viewData('key'));            // fell back to "all keys"
+        $this->assertSame(1.0, $res->viewData('totals')['cost_usd']); // nothing filtered out
+    }
+
+    public function test_pdf_filename_and_header_reflect_the_key_filter(): void
+    {
+        $super = $this->superadmin();
+        $key = ClaudeApiKeyHistory::rotate('sk-ant-named-4444', 'Reimbursement key', null);
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 1_000_000, 'output_tokens' => 0]);
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.usage-pdf', ['period' => 'all', 'key' => $key->id]));
+
+        $res->assertOk();
+        $this->assertStringContainsString('-key-reimbursement-key.pdf', $res->headers->get('content-disposition'));
+    }
+
+    public function test_key_history_card_offers_a_lifetime_per_key_download_link(): void
+    {
+        $super = $this->superadmin();
+        $keyA = ClaudeApiKeyHistory::rotate('sk-ant-lifetime-5555', 'Lifetime Key', null);
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 1_000_000, 'output_tokens' => 0]);
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        // period=all so the Key History link is a true lifetime export, independent
+        // of whatever period the Usage & Cost section happens to be showing.
+        $res->assertSee('usage.pdf?period=all&amp;key='.$keyA->id, false);
+    }
+
+    public function test_spend_by_key_card_offers_a_per_key_download_link(): void
+    {
+        $super = $this->superadmin();
+        $keyA = ClaudeApiKeyHistory::rotate('sk-ant-perkey-6666', 'Per Key A', null);
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 1_000_000, 'output_tokens' => 0]);
+        $keyB = ClaudeApiKeyHistory::rotate('sk-ant-perkey-7777', 'Per Key B', null);
+        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 1_000_000, 'output_tokens' => 0]);
+
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        $res->assertSee('key='.$keyA->id, false);
+        $res->assertSee('key='.$keyB->id, false);
+    }
+
     // ── Key history migration backfill ──────────────────────────────────────
 
     public function test_migration_backfills_one_history_row_from_the_existing_singleton(): void

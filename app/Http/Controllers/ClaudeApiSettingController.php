@@ -47,6 +47,7 @@ class ClaudeApiSettingController extends Controller
         $setting = ClaudeApiSetting::current();
         $period = $this->resolvePeriod($request);
         $feature = $this->resolveFeature($request);
+        $key = $this->resolveKey($request);
 
         return view('superadmin.claude-api', array_merge([
             'setting' => $setting,
@@ -54,11 +55,12 @@ class ClaudeApiSettingController extends Controller
             'periods' => self::PERIODS,
             'period' => $period,
             'feature' => $feature,
+            'key' => $key,
             'availableMonths' => $this->availableMonths(),
             'availableFeatures' => $this->availableFeatures(),
             'currentKeyHistory' => ClaudeApiKeyHistory::current(),
             'keyHistory' => $this->keyHistory(),
-        ], $this->usageReport($period, $feature)));
+        ], $this->usageReport($period, $feature, $key)));
     }
 
     /**
@@ -110,6 +112,35 @@ class ClaudeApiSettingController extends Controller
     }
 
     /**
+     * The ?key= filter — a real ClaudeApiKeyHistory id, the special 'none' token for
+     * usage predating key tracking (null FK), or '' for every key. Existence-checked
+     * against the real table rather than a static list, since the set of keys is
+     * open-ended and grows with every rotation.
+     */
+    private function resolveKey(Request $request): string
+    {
+        $key = (string) $request->query('key', '');
+        if ($key === 'none') {
+            return 'none';
+        }
+
+        return $key !== '' && ctype_digit($key) && ClaudeApiKeyHistory::whereKey($key)->exists() ? $key : '';
+    }
+
+    /** The label for a resolved ?key= value, or null when no key filter is active. */
+    private function keyFilterLabel(string $key): ?string
+    {
+        if ($key === '') {
+            return null;
+        }
+        if ($key === 'none') {
+            return 'Before key tracking began';
+        }
+
+        return ClaudeApiKeyHistory::find($key)?->displayLabel();
+    }
+
+    /**
      * Every month that actually has usage, newest first, as ['2026-07' => 'July 2026'].
      * Drives the per-month options in the period picker — offering an empty month would
      * just produce a blank report.
@@ -145,8 +176,8 @@ class ClaudeApiSettingController extends Controller
             ->all();
     }
 
-    /** The same period/feature narrowing, applied identically wherever the usage log is queried. */
-    private function applyPeriodAndFeature($query, array $period, string $feature)
+    /** The same period/feature/key narrowing, applied identically wherever the usage log is queried. */
+    private function applyFilters($query, array $period, string $feature, string $key = '')
     {
         if ($period['start']) {
             $query->where('created_at', '>=', $period['start']);
@@ -156,6 +187,11 @@ class ClaudeApiSettingController extends Controller
         }
         if ($feature !== '') {
             $query->where('feature', $feature);
+        }
+        if ($key === 'none') {
+            $query->whereNull('claude_api_key_history_id');
+        } elseif ($key !== '') {
+            $query->where('claude_api_key_history_id', $key);
         }
 
         return $query;
@@ -168,9 +204,9 @@ class ClaudeApiSettingController extends Controller
      *
      * @return array{report: \Illuminate\Support\Collection, byYear: \Illuminate\Support\Collection, chart: \Illuminate\Support\Collection, totals: array, unpricedModels: array, byKey: \Illuminate\Support\Collection}
      */
-    private function usageReport(array $period, string $feature = ''): array
+    private function usageReport(array $period, string $feature = '', string $key = ''): array
     {
-        $query = $this->applyPeriodAndFeature(
+        $query = $this->applyFilters(
             ClaudeApiUsageLog::query()
                 ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') as ym")
                 ->selectRaw('feature')
@@ -184,7 +220,7 @@ class ClaudeApiSettingController extends Controller
                 ->groupBy('ym', 'feature')
                 ->orderByDesc('ym')
                 ->orderByDesc('cost_usd'),
-            $period, $feature
+            $period, $feature, $key
         );
 
         $rows = $query->get();
@@ -274,7 +310,7 @@ class ClaudeApiSettingController extends Controller
                 'avg_per_call' => $report->sum('calls') > 0 ? $totalUsd / $report->sum('calls') : 0.0,
             ],
             'unpricedModels' => $unpriced,
-            'byKey' => $this->usageReportByKey($period, $feature, $rate),
+            'byKey' => $this->usageReportByKey($period, $feature, $key, $rate),
         ];
     }
 
@@ -283,11 +319,13 @@ class ClaudeApiSettingController extends Controller
      * separate, single-level grouping rather than a 4th level nested into the Year >
      * Month > Feature accordion above. "Which key cost how much" doesn't need month
      * granularity, and nesting it in would multiply row cardinality by rotation count
-     * for no reason.
+     * for no reason. When $key is already set (a per-key PDF), this naturally
+     * collapses to that one row — the card that renders it is gated on count() > 1,
+     * so it stays hidden rather than repeating the totals above it.
      */
-    private function usageReportByKey(array $period, string $feature, float $rate): \Illuminate\Support\Collection
+    private function usageReportByKey(array $period, string $feature, string $key, float $rate): \Illuminate\Support\Collection
     {
-        $query = $this->applyPeriodAndFeature(
+        $query = $this->applyFilters(
             ClaudeApiUsageLog::query()
                 ->selectRaw('claude_api_key_history_id')
                 ->selectRaw('COUNT(*) as calls')
@@ -295,7 +333,7 @@ class ClaudeApiSettingController extends Controller
                 ->selectRaw('SUM(cost_usd) as cost_usd')
                 ->groupBy('claude_api_key_history_id')
                 ->orderByDesc('cost_usd'),
-            $period, $feature
+            $period, $feature, $key
         );
 
         $rows = $query->get();
@@ -348,20 +386,28 @@ class ClaudeApiSettingController extends Controller
 
         $period = $this->resolvePeriod($request);
         $feature = $this->resolveFeature($request);
+        $key = $this->resolveKey($request);
+        $keyLabel = $this->keyFilterLabel($key);
 
         $pdf = Pdf::loadView('superadmin.claude-api-usage-pdf', array_merge([
             'periodLabel' => $period['label'],
             // So the header shows what was filtered when a downloaded copy is read later.
             'featureLabel' => $feature !== '' ? ClaudeApiUsageLog::featureLabel($feature) : null,
+            'keyLabel' => $keyLabel,
             'generatedAt' => now(),
             'generatedBy' => Auth::user()?->employee?->full_name ?? Auth::user()?->name,
-        ], $this->usageReport($period, $feature)))->setPaper('a4');
+        ], $this->usageReport($period, $feature, $key)))->setPaper('a4');
 
         // Name the file after what it contains: a single-month export is "…-2026-07.pdf",
-        // a rolling window is "…-last-12-months-<today>.pdf" (it depends on when it was run).
+        // a rolling window is "…-last-12-months-<today>.pdf" (it depends on when it was run),
+        // plus a -key-<label> tag when scoped to one key so a claim's supporting PDF is
+        // identifiable by filename alone.
         $suffix = $period['isMonth']
             ? $period['key']
             : Str::slug($period['label']).'-'.now()->format('Y-m-d');
+        if ($keyLabel !== null) {
+            $suffix .= '-key-'.Str::slug($keyLabel);
+        }
 
         return $pdf->download('claude-api-usage-'.$suffix.'.pdf');
     }

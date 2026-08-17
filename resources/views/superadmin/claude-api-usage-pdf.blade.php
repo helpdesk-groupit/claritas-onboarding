@@ -38,6 +38,7 @@
     <div class="sub">
         Period: {{ $periodLabel }}
         @if(!empty($featureLabel)) &nbsp;·&nbsp; Feature: {{ $featureLabel }} @endif
+        @if(!empty($keyLabel)) &nbsp;·&nbsp; Key: {{ $keyLabel }} @endif
         &nbsp;·&nbsp; Generated {{ fmt_datetime($generatedAt) }}
         @if($generatedBy) &nbsp;·&nbsp; by {{ $generatedBy }} @endif
     </div>

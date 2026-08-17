@@ -119,6 +119,7 @@
                                 <th>Set by</th>
                                 <th class="text-end">Calls</th>
                                 <th class="text-end">Lifetime cost</th>
+                                <th></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -140,6 +141,15 @@
                                     <td class="small text-muted">{{ $v->setBy?->employee?->full_name ?? $v->setBy?->name ?? '—' }}</td>
                                     <td class="text-end">{{ $fmtTok($row['calls']) }}</td>
                                     <td class="text-end">{{ $fmtUsd($row['cost_usd']) }}</td>
+                                    <td class="text-end">
+                                        {{-- Lifetime PDF for this key alone — always period=all, no
+                                             feature filter, regardless of what's selected below,
+                                             since this card is deliberately the unfiltered record. --}}
+                                        <a href="{{ route('superadmin.claude-api.usage-pdf', ['period' => 'all', 'key' => $v->id]) }}"
+                                           class="btn btn-sm btn-outline-danger" title="Download {{ $v->displayLabel() }}'s full lifetime report as PDF">
+                                            <i class="bi bi-file-earmark-pdf"></i>
+                                        </a>
+                                    </td>
                                 </tr>
                             @endforeach
                         </tbody>
@@ -250,6 +260,7 @@
                                 <th class="text-end">Tokens</th>
                                 <th class="text-end">Cost (USD)</th>
                                 <th class="text-end">Cost (MYR)</th>
+                                <th></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -268,6 +279,15 @@
                                     <td class="text-end">{{ $fmtTok($k['total_tokens']) }}</td>
                                     <td class="text-end fw-semibold">{{ $fmtUsd($k['cost_usd']) }}</td>
                                     <td class="text-end uc-dim">{{ $fmtMyr($k['cost_myr']) }}</td>
+                                    <td class="text-end">
+                                        {{-- This key's full Year/Month/Feature breakdown for the
+                                             CURRENTLY selected period + feature — same shape as the
+                                             per-month download below, one dimension over. --}}
+                                        <a href="{{ route('superadmin.claude-api.usage-pdf', array_filter(['period' => $period['key'], 'feature' => $feature, 'key' => $k['id'] ?? 'none'])) }}"
+                                           class="btn btn-sm btn-outline-danger" title="Download {{ $k['label'] }}'s breakdown for {{ $period['label'] }} as PDF">
+                                            <i class="bi bi-file-earmark-pdf"></i>
+                                        </a>
+                                    </td>
                                 </tr>
                             @endforeach
                         </tbody>
