@@ -3,11 +3,21 @@
 @section('page-title', 'Decommissioning Reports')
 
 @section('content')
-{{-- $hideFilters: this page ships its own Flow + Year bar below, so suppress the shared
-     header's generic Year select — otherwise two Year dropdowns stack on top of each other. --}}
-@include('reports.partials.report-header', ['hideFilters' => true])
 @include('partials.dashboard-widgets-style')
 @include('partials.decommission-ui-style')
+
+{{-- Standalone page header. Decommissioning is its own module — reached via the sidebar's
+     own "Decommissioning" link — not a sub-view of C-Suite Reports, so it does not share
+     that page's nav card or tabs. --}}
+<div class="card mb-4" style="border:none;background:linear-gradient(135deg,#0f172a,#1e3a5f);">
+    <div class="card-body py-3 d-flex align-items-center gap-3">
+        <span class="ewx-chip ewx-chip-slate"><i class="bi bi-recycle"></i></span>
+        <div>
+            <h5 class="text-white mb-0 fw-bold">Decommissioning</h5>
+            <small class="text-white-50">E-waste disposal cycles awaiting review, and the finished archive.</small>
+        </div>
+    </div>
+</div>
 
 {{-- Headline figures — computed controller-side over the full filtered set, not this page. --}}
 <div class="row g-3 mb-3">
