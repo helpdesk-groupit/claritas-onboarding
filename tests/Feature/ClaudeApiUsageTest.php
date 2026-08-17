@@ -434,21 +434,33 @@ class ClaudeApiUsageTest extends TestCase
     {
         $super = $this->superadmin();
 
-        $keyA = ClaudeApiKeyHistory::rotate('sk-ant-key-a-1111', 'Key A', null);
+        $keyA = ClaudeApiKeyHistory::rotate('sk-ant-key-a-1111', 'Key A', $super->id);
         ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 1_000_000, 'output_tokens' => 0]); // $1
 
-        $keyB = ClaudeApiKeyHistory::rotate('sk-ant-key-b-2222', 'Key B', null);
+        $keyB = ClaudeApiKeyHistory::rotate('sk-ant-key-b-2222', 'Key B', $super->id);
         ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 2_000_000, 'output_tokens' => 0]); // $2
 
-        $byKey = $this->actingAs($super)->get(route('superadmin.claude-api.index'))->viewData('byKey')->keyBy('id');
+        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
+        $byKey = $res->viewData('byKey')->keyBy('id');
 
         $this->assertCount(2, $byKey);
         $this->assertSame('Key A', $byKey[$keyA->id]['label']);
         $this->assertSame(1.0, $byKey[$keyA->id]['cost_usd']);
         $this->assertFalse($byKey[$keyA->id]['is_current']);
+        $this->assertNotNull($byKey[$keyA->id]['started_at']);
+        $this->assertNotNull($byKey[$keyA->id]['ended_at']); // closed when Key B rotated in
+        $this->assertSame($super->employee->full_name, $byKey[$keyA->id]['set_by']);
         $this->assertSame('Key B', $byKey[$keyB->id]['label']);
         $this->assertSame(2.0, $byKey[$keyB->id]['cost_usd']);
         $this->assertTrue($byKey[$keyB->id]['is_current']);
+        $this->assertNull($byKey[$keyB->id]['ended_at']); // still active
+
+        // The card renders the Active/Set by columns directly (no separate history card).
+        $res->assertSee('Spend by Key');
+        $res->assertSee('Active');
+        $res->assertSee('Set by');
+        $res->assertSee($super->employee->full_name);
+        $res->assertDontSee('Key History');
     }
 
     public function test_by_key_respects_period_and_feature_filters(): void
@@ -555,18 +567,6 @@ class ClaudeApiUsageTest extends TestCase
 
         $res->assertOk();
         $this->assertStringContainsString('-key-reimbursement-key.pdf', $res->headers->get('content-disposition'));
-    }
-
-    public function test_key_history_card_offers_a_lifetime_per_key_download_link(): void
-    {
-        $super = $this->superadmin();
-        $keyA = ClaudeApiKeyHistory::rotate('sk-ant-lifetime-5555', 'Lifetime Key', null);
-        ClaudeUsageRecorder::record('claim_receipt_scan', 'claude-haiku-4-5', ['input_tokens' => 1_000_000, 'output_tokens' => 0]);
-
-        $res = $this->actingAs($super)->get(route('superadmin.claude-api.index'));
-        // period=all so the Key History link is a true lifetime export, independent
-        // of whatever period the Usage & Cost section happens to be showing.
-        $res->assertSee('usage.pdf?period=all&amp;key='.$keyA->id, false);
     }
 
     public function test_spend_by_key_card_offers_a_per_key_download_link(): void

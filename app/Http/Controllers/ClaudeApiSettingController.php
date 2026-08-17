@@ -59,7 +59,6 @@ class ClaudeApiSettingController extends Controller
             'availableMonths' => $this->availableMonths(),
             'availableFeatures' => $this->availableFeatures(),
             'currentKeyHistory' => ClaudeApiKeyHistory::current(),
-            'keyHistory' => $this->keyHistory(),
         ], $this->usageReport($period, $feature, $key)));
     }
 
@@ -337,7 +336,8 @@ class ClaudeApiSettingController extends Controller
         );
 
         $rows = $query->get();
-        $histories = ClaudeApiKeyHistory::whereIn('id', $rows->pluck('claude_api_key_history_id')->filter())
+        $histories = ClaudeApiKeyHistory::with('setBy.employee')
+            ->whereIn('id', $rows->pluck('claude_api_key_history_id')->filter())
             ->get()->keyBy('id');
 
         return $rows->map(function ($r) use ($histories, $rate) {
@@ -348,35 +348,15 @@ class ClaudeApiSettingController extends Controller
                 'label' => $h ? $h->displayLabel() : 'Before key tracking began',
                 'masked_key' => $h?->masked_key,
                 'is_current' => $h?->isCurrent() ?? false,
+                'started_at' => $h?->started_at,
+                'ended_at' => $h?->ended_at,
+                'set_by' => $h?->setBy?->employee?->full_name ?? $h?->setBy?->name,
                 'calls' => (int) $r->calls,
                 'total_tokens' => (int) $r->total_tokens,
                 'cost_usd' => (float) $r->cost_usd,
                 'cost_myr' => (float) $r->cost_usd * $rate,
             ];
         })->values();
-    }
-
-    /**
-     * Every key ever set, newest first, with its lifetime (all-time, unfiltered)
-     * calls/cost — the administrative record shown near the settings form, distinct
-     * from the period-filtered "Spend by Key" card in the Usage & Cost section below.
-     *
-     * @return \Illuminate\Support\Collection<int, array{version: ClaudeApiKeyHistory, calls: int, cost_usd: float}>
-     */
-    private function keyHistory(): \Illuminate\Support\Collection
-    {
-        $costs = ClaudeApiUsageLog::query()
-            ->selectRaw('claude_api_key_history_id, SUM(cost_usd) as cost_usd, COUNT(*) as calls')
-            ->whereNotNull('claude_api_key_history_id')
-            ->groupBy('claude_api_key_history_id')
-            ->get()->keyBy('claude_api_key_history_id');
-
-        return ClaudeApiKeyHistory::with('setBy.employee')->orderByDesc('id')->get()
-            ->map(fn ($h) => [
-                'version' => $h,
-                'calls' => (int) ($costs[$h->id]->calls ?? 0),
-                'cost_usd' => (float) ($costs[$h->id]->cost_usd ?? 0),
-            ]);
     }
 
     /** The same report as the page, as a downloadable PDF. */

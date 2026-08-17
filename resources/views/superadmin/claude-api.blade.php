@@ -102,63 +102,6 @@
         };
     @endphp
 
-    {{-- Key History — every key ever set, unfiltered by period (unlike the Spend by
-         Key card below, which is scoped to the report's period/feature filters). This
-         is the administrative record: who set what, labeled how, and for how long. --}}
-    @if($keyHistory->isNotEmpty())
-        <div class="card border-0 shadow-sm mt-4">
-            <div class="card-body p-3 p-md-4">
-                <div class="uc-lbl mb-2">Key History</div>
-                <div class="table-responsive">
-                    <table class="table table-sm align-middle mb-0">
-                        <thead>
-                            <tr class="text-muted small">
-                                <th>Label</th>
-                                <th>Key</th>
-                                <th>Active</th>
-                                <th>Set by</th>
-                                <th class="text-end">Calls</th>
-                                <th class="text-end">Lifetime cost</th>
-                                <th></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @foreach($keyHistory as $row)
-                                @php $v = $row['version']; @endphp
-                                <tr>
-                                    <td>
-                                        {{ $v->displayLabel() }}
-                                        @if($v->isCurrent())
-                                            <span class="badge bg-success-subtle text-success-emphasis ms-1">Current</span>
-                                        @endif
-                                    </td>
-                                    <td class="text-muted"><code>{{ $v->masked_key }}</code></td>
-                                    <td class="small text-muted">
-                                        {{ $v->started_at->format('d M Y') }}
-                                        &ndash;
-                                        {{ $v->ended_at ? $v->ended_at->format('d M Y') : 'now' }}
-                                    </td>
-                                    <td class="small text-muted">{{ $v->setBy?->employee?->full_name ?? $v->setBy?->name ?? '—' }}</td>
-                                    <td class="text-end">{{ $fmtTok($row['calls']) }}</td>
-                                    <td class="text-end">{{ $fmtUsd($row['cost_usd']) }}</td>
-                                    <td class="text-end">
-                                        {{-- Lifetime PDF for this key alone — always period=all, no
-                                             feature filter, regardless of what's selected below,
-                                             since this card is deliberately the unfiltered record. --}}
-                                        <a href="{{ route('superadmin.claude-api.usage-pdf', ['period' => 'all', 'key' => $v->id]) }}"
-                                           class="btn btn-sm btn-outline-danger" title="Download {{ $v->displayLabel() }}'s full lifetime report as PDF">
-                                            <i class="bi bi-file-earmark-pdf"></i>
-                                        </a>
-                                    </td>
-                                </tr>
-                            @endforeach
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    @endif
-
     {{-- ─────────── Usage & Cost ─────────── --}}
     <div class="d-flex align-items-center gap-3 mt-5 mb-3">
         <div class="ca-hero" style="background:linear-gradient(135deg,#0891b2,#0e7490);"><i class="bi bi-graph-up-arrow"></i></div>
@@ -244,9 +187,8 @@
     </div>
 
     {{-- Spend by Key — period/feature-filtered, same as everything else in this
-         section (unlike the Key History card above, which is the unfiltered
-         administrative record). Hidden with only one row: a single key/bucket just
-         duplicates the hero total above with nothing new to say. --}}
+         section. Hidden with only one row: a single key/bucket just duplicates the
+         hero total above with nothing new to say. --}}
     @if($byKey->count() > 1)
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-body p-4">
@@ -256,6 +198,8 @@
                         <thead>
                             <tr class="text-muted small">
                                 <th>Key</th>
+                                <th>Active</th>
+                                <th>Set by</th>
                                 <th class="text-end">Calls</th>
                                 <th class="text-end">Tokens</th>
                                 <th class="text-end">Cost (USD)</th>
@@ -275,6 +219,16 @@
                                             <span class="badge bg-success-subtle text-success-emphasis ms-1">Current</span>
                                         @endif
                                     </td>
+                                    <td class="small text-muted">
+                                        @if($k['started_at'])
+                                            {{ $k['started_at']->format('d M Y') }}
+                                            &ndash;
+                                            {{ $k['ended_at'] ? $k['ended_at']->format('d M Y') : 'now' }}
+                                        @else
+                                            —
+                                        @endif
+                                    </td>
+                                    <td class="small text-muted">{{ $k['set_by'] ?? '—' }}</td>
                                     <td class="text-end">{{ $fmtTok($k['calls']) }}</td>
                                     <td class="text-end">{{ $fmtTok($k['total_tokens']) }}</td>
                                     <td class="text-end fw-semibold">{{ $fmtUsd($k['cost_usd']) }}</td>

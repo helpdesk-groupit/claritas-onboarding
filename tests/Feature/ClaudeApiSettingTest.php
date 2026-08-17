@@ -188,17 +188,16 @@ class ClaudeApiSettingTest extends TestCase
         $this->assertSame(0, ClaudeApiKeyHistory::count());
     }
 
-    public function test_key_history_card_shows_label_masked_key_and_set_by(): void
+    public function test_saving_a_key_records_its_label_and_masked_hint_in_history(): void
     {
         $super = $this->superadmin();
         $this->actingAs($super)->post(route('superadmin.claude-api.update'), [
             'api_key' => 'sk-ant-visible-5555', 'key_label' => 'Finance team key', 'model' => 'claude-haiku-4-5', 'enabled' => '1',
         ]);
 
-        $this->actingAs($super)->get(route('superadmin.claude-api.index'))
-            ->assertOk()
-            ->assertSee('Key History')
-            ->assertSee('Finance team key')
-            ->assertSee('sk-ant-…5555');
+        $history = ClaudeApiKeyHistory::sole();
+        $this->assertSame('Finance team key', $history->label);
+        $this->assertSame('sk-ant-…5555', $history->masked_key);
+        $this->assertSame($super->id, $history->set_by);
     }
 }
