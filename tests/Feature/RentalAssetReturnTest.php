@@ -958,6 +958,33 @@ class RentalAssetReturnTest extends TestCase
         $this->actingAs($it)->get(route('assets.index', ['tab' => 'damaged']))->assertDontSee('QUEUE-EXIT');
     }
 
+    /**
+     * A pre-existing "Returned" asset with no linked vendor record (a legacy row from before
+     * an asset was ever tied to a Vendor via the FK, or a physical return handled outside the
+     * app) can never resolve through planReturns() — it is permanently unresolvable, not
+     * merely pending. It must stay visible in the queue (the badge explains why), but must not
+     * offer a checkbox that only leads to it being silently dropped from the batch after the
+     * click. A normal, resolvable return on the same page keeps its checkbox.
+     */
+    public function test_a_return_with_no_linked_vendor_is_not_selectable_for_a_batch(): void
+    {
+        $this->stagedReturn(null, ['asset_tag' => 'LEGACY-NO-VENDOR']);
+        $this->stagedReturn($this->vendor(), ['asset_tag' => 'NORMAL-RETURN']);
+        $it = $this->itManager();
+
+        $response = $this->actingAs($it)->get(route('assets.index', ['tab' => 'damaged']));
+
+        $response->assertOk()
+            ->assertSee('LEGACY-NO-VENDOR')
+            ->assertSee('No vendor linked')
+            ->assertSee('NORMAL-RETURN');
+
+        // The checkbox's own data-tag is what proves whether ITS row rendered one — the
+        // asset tags above appear in plain text elsewhere on the row regardless.
+        $response->assertDontSee('data-tag="LEGACY-NO-VENDOR"', false);
+        $response->assertSee('data-tag="NORMAL-RETURN"', false);
+    }
+
     /** Discarding a draft is the only way an asset goes back to being returnable. */
     public function test_discarding_a_draft_return_puts_its_assets_back_in_the_queue(): void
     {

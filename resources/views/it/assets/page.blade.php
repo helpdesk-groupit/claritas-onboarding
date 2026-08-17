@@ -342,7 +342,14 @@
                         // the "Not a rental" warning that is the actual problem with the row.
                         $isRental = $d->asset?->ownership_type === 'rental';
                         $rtVendor = $isReturn && $isRental ? $d->asset?->vendor : null;
-                        $selectable = $canDecommission && $isReturn && ! $onForm;
+                        // A return with no resolvable vendor (not a rental, or a rental with
+                        // no linked vendor record) can never produce a form — planReturns()
+                        // skips it server-side regardless. Ticking it just to have it silently
+                        // dropped from the batch reads as broken, so it gets no checkbox at
+                        // all, same as a row already on a form. It stays visible in the queue
+                        // (the "No vendor linked" / "Not a rental" badge says why) — this only
+                        // blocks selecting it for a batch, it never touches the asset itself.
+                        $selectable = $canDecommission && $isReturn && ! $onForm && (bool) $rtVendor;
                     @endphp
                     <tr>
                         @if($canDecommission)
