@@ -1089,13 +1089,18 @@
                     // The receipt's printed date IS the date of expense — auto-fill the
                     // (editable) Date of Expense so the month guard checks the real receipt
                     // date, not a manual default. The user can still adjust it if OCR misread.
-                    const okDate = d.date && /^\d{4}-\d{2}-\d{2}$/.test(d.date);
-                    if (okDate) date.value = d.date;
+                    // correctSwappedDate() catches a day/month swap the AI still made despite
+                    // the prompt's rule, when the un-swapped reading falls outside this claim's
+                    // own month and the swap resolves it — see its definition for the full guard.
+                    const rawOkDate = d.date && /^\d{4}-\d{2}-\d{2}$/.test(d.date);
+                    const fixedSingleDate = rawOkDate ? correctSwappedDate(d.date, date.getAttribute('min'), date.getAttribute('max')) : d.date;
+                    const okDate = fixedSingleDate && /^\d{4}-\d{2}-\d{2}$/.test(fixedSingleDate);
+                    if (okDate) date.value = fixedSingleDate;
                     hint.textContent = okDate
                         ? '✨ Category, amount & date auto-filled from the receipt — now add the description.'
                         : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.';
                     // Capture Category C (read-only receipt details) into the fields below.
-                    setC(c, { company: d.vendor, itemdesc: d.item_description, date: d.date, paidby: d.paid_by, total: d.amount });
+                    setC(c, { company: d.vendor, itemdesc: d.item_description, date: fixedSingleDate, paidby: d.paid_by, total: d.amount });
                     applyReceiptCheck(c); // re-check now that the receipt total is captured
                     // Capped categories: now that the receipt total is known, LOCK the amount to
                     // min(receipt, remaining cap). No-op for non-capped categories.
@@ -1402,6 +1407,27 @@
         if (cb) cb();
     });
 
+    // A Malaysian receipt's day-first date (DD/MM) is sometimes still misread month-first by
+    // the AI despite the prompt's explicit rule (e.g. "11/08" read as 8 November instead of
+    // 11 August) — LLM instruction-following isn't 100% reliable on an ambiguous numeric date.
+    // Deterministic safety net, independent of the AI: if the read date falls outside the
+    // claim's own month AND swapping its day/month components lands it back inside that
+    // month, use the swapped date. This only ever fires when (a) the date is out of range,
+    // (b) the swap is calendar-valid (the day component must be ≤12 to double as a month),
+    // and (c) the swap specifically resolves it into THIS claim's month — a genuinely
+    // different-month receipt essentially never satisfies (c) by coincidence, so this can't
+    // silently "fix" a real cross-month receipt into looking like it belongs here.
+    function correctSwappedDate(iso, min, max) {
+        if (!iso || !min || !max) return iso;
+        if (iso >= min && iso <= max) return iso;
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+        if (!m) return iso;
+        const [, y, mo, d] = m;
+        if (parseInt(d, 10) < 1 || parseInt(d, 10) > 12) return iso;
+        const swapped = y + '-' + d + '-' + mo;
+        return (swapped >= min && swapped <= max) ? swapped : iso;
+    }
+
     // ── Multi-receipt review (one image split into many lines, or several files) ──
     let reviewCard = null, reviewFiles = [];
     function openMultiReview(c, items, files, truncated) {
@@ -1411,6 +1437,10 @@
         const sel = q(c, '.cc-i-cat');
         const optsHtml = sel ? sel.innerHTML : '<option value="">-- Select --</option>';
         const today = new Date().toISOString().slice(0, 10);
+        // Claim-month bounds, for the same swapped-date correction addAllReviewed() applies.
+        const rDateEl = q(c, '.cc-i-date');
+        const rMin = rDateEl ? rDateEl.getAttribute('min') : null;
+        const rMax = rDateEl ? rDateEl.getAttribute('max') : null;
         // If ANY row was highlighted, the user singled those out → pre-tick ONLY those.
         // Otherwise pre-tick everything except auto-detected non-claimable rows (reloads/fees).
         const anyHighlighted = items.some(it => it && it.highlighted);
@@ -1420,16 +1450,17 @@
             tr.setAttribute('data-mr-row', i);
             // Which uploaded file backs this line (multi-file: each row keeps its source).
             tr.dataset.mrFile = (it.file_index !== null && it.file_index !== undefined) ? it.file_index : 0;
+            const fixedDate = correctSwappedDate(it.date, rMin, rMax);
             // Stash the AI-read receipt details so they save as Category C on add.
             tr.dataset.cCompany = it.vendor || '';
             tr.dataset.cItemdesc = it.item_description || '';
-            tr.dataset.cDate = it.date || '';
+            tr.dataset.cDate = fixedDate || '';
             tr.dataset.cPaidby = it.paid_by || '';
             tr.dataset.cTotal = (it.amount !== null && it.amount !== undefined) ? it.amount : '';
             // Pre-fill the Expense Description with the read Item — for a toll row this is the
             // Entry → Exit route (e.g. "DUKE-BATU → 07_AKLEH"). The user can still edit it.
             const desc = it.item_description || '';
-            const dateVal = it.date || today;
+            const dateVal = fixedDate || today;
             const amt = (it.amount !== null && it.amount !== undefined) ? Number(it.amount).toFixed(2) : '';
             // Default tick: highlighted-only when any highlight exists; else on unless non-claimable.
             // A highlight always wins over the non-claimable default (the user marked it on purpose).
