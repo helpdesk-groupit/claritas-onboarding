@@ -212,10 +212,17 @@ class ClaimReceiptOcrService
             .'name); or null. '
             .'"items" — an ARRAY with ONE object per DISTINCT receipt or transaction (use an EMPTY array when the '
             .'image is a map). A SINGLE receipt that lists several product / fee LINE-ITEMS — e.g. a clinic bill '
-            .'with consultation + several medicines, or a restaurant bill with several dishes — is ONE '
-            .'transaction: return exactly ONE item carrying the receipt TOTAL, NOT one item per line. Only return '
-            .'multiple items when the image actually holds MULTIPLE SEPARATE receipts, or a bank/card statement '
-            .'or history listing many dated transactions. '
+            .'with consultation + several medicines, a restaurant bill with several dishes, or a SUPERMARKET / '
+            .'HYPERMARKET / GROCERY / MINI-MARKET receipt (AEON, Tesco, Giant, Mydin, 99 Speedmart, and similar) '
+            .'listing many product rows — is ONE transaction: return exactly ONE item carrying the receipt TOTAL, '
+            .'NOT one item per product row, however many rows it has. The structural test that decides this: ONE '
+            .'storefront header (one company/branch name + address printed once at the top) followed by ONE '
+            .'"TOTAL" / "SUB-TOTAL" / "Grand Total" line at the bottom means ONE receipt, no matter how many '
+            .'product lines sit between them — do not let a long, repetitive product list (e.g. many near-'
+            .'identical grocery items) read as a transaction list just because it has many rows with amounts. '
+            .'Only return multiple items when the image actually holds MULTIPLE SEPARATE receipts (more than one '
+            .'header, each with its own total), or a genuine bank/card statement or history listing many dated '
+            .'transactions. '
             .'For a statement / transaction history: emit one item ONLY for each row that has its OWN amount. '
             .'Many statements group rows under DATE HEADERS — a standalone date line with NO amount next to it, '
             .'e.g. "Wednesday, 1 April 2026" or "Thursday, 9 April 2026". These headers are SEPARATORS, NOT '
@@ -755,16 +762,34 @@ class ClaimReceiptOcrService
      * so the model falls back to the US MM/DD/YYYY reading and silently shifts the date — e.g. a
      * Jaya One season-parking invoice dated 06/04/2026 (6 April) came back as 4 June, which then
      * tripped the "receipt is dated June but this is an April claim" guard on a valid receipt.
+     *
+     * That first incident's own example (06/04) already had both parts ≤ 12, and the rule still
+     * wasn't enough to stop a SECOND one: an AEON receipt dated 11/08/2026 (11 August) came back
+     * as 8 November. Neither number is > 12, so the model's own "a component greater than 12
+     * settles it" escape hatch gave it nothing to grab onto, and it fell back to its US-trained
+     * default instead of just... staying day-first. The fix is to say plainly that day-first is
+     * NOT conditional on hitting that escape hatch — it is the rule, full stop — and to give a
+     * worked example in exactly this shape (two-digit-and-under, no month name, no >12 tell) so
+     * the model has something concrete to pattern-match against next time.
      */
     protected static function dateRule(): string
     {
-        return 'READING DATES: these are MALAYSIAN documents, so a numeric date is DAY-FIRST '
-            .'(DD/MM/YYYY or DD-MM-YYYY) — "06/04/2026" is 6 April 2026, NOT 4 June. Never assume the '
-            .'US month-first order. A component greater than 12 settles the order on its own '
-            .'("30/04/2026" can only be 30 April). A month written in words is already unambiguous — '
-            .'read "2 April 2026" as-is. When the document also shows a validity or billing RANGE such '
+        return 'READING DATES: these are MALAYSIAN documents, so EVERY numeric date is DAY-FIRST '
+            .'(DD/MM/YYYY or DD-MM-YYYY) — with NO exceptions and NO ambiguous cases. Never assume '
+            .'the US month-first order, even when BOTH numbers are 12 or under and a month-first '
+            .'reading would also look plausible: "06/04/2026" is 6 April 2026, NOT 4 June; '
+            .'"11/08/2026" is 11 August 2026, NOT 8 November. Take the FIRST number as the day every '
+            .'time — do not treat day-first as merely the more likely reading, it is the ONLY '
+            .'reading. A component greater than 12 is just an extra confirmation, not the condition '
+            .'for applying this rule ("30/04/2026" can only be 30 April, but "11/08/2026" is no less '
+            .'day-first for lacking one). A month written in words is already unambiguous — read '
+            .'"2 April 2026" as-is. When the document also shows a validity or billing RANGE such '
             .'as "1/04/2026 - 30/04/2026", that range tells you the month the document belongs to — a '
-            .'single date on the same document must not land outside it. ';
+            .'single date on the same document must not land outside it. If a reference / invoice '
+            .'number on the same document embeds an 8-digit date in YYYYMMDD form (e.g. an "InvNo:" '
+            .'or "Inv No" reading "20260811…"), that is the same date spelled unambiguously — use it '
+            .'to confirm the day/month you read from the numeric date, and prefer it if the two '
+            .'disagree. ';
     }
 
     /** Reusable per-receipt field-rule fragments (shared by extract + scanDocument). */
