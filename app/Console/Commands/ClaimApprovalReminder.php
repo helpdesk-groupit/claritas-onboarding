@@ -8,6 +8,7 @@ use App\Models\ExpenseClaim;
 use App\Models\ExpenseClaimPolicy;
 use App\Services\ClaimRulesService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 
 class ClaimApprovalReminder extends Command
@@ -44,9 +45,25 @@ class ClaimApprovalReminder extends Command
             ->get();
 
         // Group the claims by each approving manager.
+        //
+        // A claim whose pending items carry NO approver_id, or whose approver has no reachable
+        // account, cannot be reminded to anybody — and used to be dropped here in silence by a
+        // bare ->filter(). That is how EC-2026-03-0001 sat "submitted" from April to August
+        // with nothing chasing it: submit() now guarantees an eligible approver, so these are
+        // legacy or edge-case rows, but an unroutable claim is exactly the kind of stuck work
+        // that must be said out loud rather than skipped.
         $byApprover = [];
+        $unroutable = [];
         foreach ($pending as $claim) {
-            foreach ($claim->items->where('manager_status', 'pending')->pluck('approver_id')->filter()->unique() as $aid) {
+            $pendingItems = $claim->items->where('manager_status', 'pending');
+            $approverIds = $pendingItems->pluck('approver_id')->filter()->unique();
+
+            if ($approverIds->isEmpty()) {
+                $unroutable[$claim->id] = $claim->claim_number.' ('.($claim->employee->full_name ?? 'unknown employee').') — no approving manager on the claim';
+
+                continue;
+            }
+            foreach ($approverIds as $aid) {
                 $byApprover[$aid][$claim->id] = $claim;
             }
         }
@@ -56,6 +73,11 @@ class ClaimApprovalReminder extends Command
             $manager = Employee::with('user')->find($aid);
             $email = $manager?->user?->work_email ?? $manager?->user?->email ?? null;
             if (! $email) {
+                foreach ($claims as $claim) {
+                    $unroutable[$claim->id] = $claim->claim_number.' ('.($claim->employee->full_name ?? 'unknown employee').')'
+                        .' — approver '.($manager->full_name ?? '#'.$aid).' has no reachable email account';
+                }
+
                 continue;
             }
             Mail::to($email)->queue(new ClaimApprovalReminderMail($manager, collect($claims)->values(), $cutoffStr, $lastCall));
@@ -64,6 +86,21 @@ class ClaimApprovalReminder extends Command
 
         $phase = $lastCall ? 'CUTOFF-DAY last call' : 'Heads-up';
         $this->info("{$phase} manager approval reminders queued: {$sent}.");
+
+        // A claim nobody can be reminded about will otherwise sit forever, so make some noise:
+        // the console line is for a human running this by hand, the warning log is for the one
+        // who is not watching. Deliberately NOT an exception — the reminders that CAN be sent
+        // have been sent, and failing the command would only hide that.
+        if ($unroutable !== []) {
+            $this->warn('Unroutable claims (nobody can be reminded) — '.count($unroutable).':');
+            foreach ($unroutable as $line) {
+                $this->warn('  - '.$line);
+            }
+            Log::warning('Claim approval reminder: claims with no reachable approver', [
+                'count' => count($unroutable),
+                'claims' => array_values($unroutable),
+            ]);
+        }
 
         return self::SUCCESS;
     }
