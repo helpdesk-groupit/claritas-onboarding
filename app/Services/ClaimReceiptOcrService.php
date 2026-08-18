@@ -216,8 +216,8 @@ class ClaimReceiptOcrService
             .'written next to it, not a paid transaction. When set, "map" is an object with '
             .self::distanceRule()
             .self::routeRule()
-            .self::multiRouteRule()
             .'; otherwise "map" must be null. '
+            .self::multiRouteRule()
             .'"account_holder" — a statement normally prints the ACCOUNT HOLDER / Registered Name / Cardholder '
             .'ONCE at the TOP (the person these transactions belong to); return that name here, or null if it is '
             .'not a statement or no name is shown. '
@@ -289,7 +289,16 @@ class ClaimReceiptOcrService
             return null;
         }
 
-        $map = self::normalizeMap($json['map'] ?? []);
+        // "map_multi_routes" comes back from the model as a TOP-LEVEL key, a sibling of "map",
+        // not nested inside it — a real reply logged 2026-08-18 confirmed this even though the
+        // prompt used to describe it inside the "map object" sentence (see multiRouteRule()'s
+        // docblock). Merge it into the map source before normalizing so a flagged collage is
+        // actually recognised as one, regardless of which shape a given reply used.
+        $mapSrc = is_array($json['map'] ?? null) ? $json['map'] : [];
+        if (! array_key_exists('map_multi_routes', $mapSrc)) {
+            $mapSrc['map_multi_routes'] = $json['map_multi_routes'] ?? false;
+        }
+        $map = self::normalizeMap($mapSrc);
         // Keep "map" only if it actually carries route info; an empty {} is not a map.
         // multi_routes alone also counts — a flagged collage carries no distance/route (the
         // model is told to leave those null rather than merge them), so it wouldn't otherwise
@@ -1019,18 +1028,29 @@ class ClaimReceiptOcrService
      * label). Without this, the model has been folding a collage's separate distances together
      * into one combined route_stops reading — a single claim item then overstates the mileage of
      * whichever trip its description names, and silently drops the other trip entirely.
+     *
+     * "map_multi_routes" is asked for as a TOP-LEVEL key, a sibling of "map" — NOT nested inside
+     * it, despite living beside distanceRule()/routeRule() in the prompt for readability. A real
+     * reply logged 2026-08-18 came back exactly that way even when the earlier wording put it
+     * inside the "map object" sentence: {"map": {...}, "map_multi_routes": true, ...} — the
+     * "map_" prefix reads to the model as "a top-level fact about the map", the same shape as
+     * "is_single_receipt" sitting outside "items". normalizeMap() only ever looked for it INSIDE
+     * $json['map'], so that real reply's true flag was silently never seen — scanDocument() must
+     * read $json['map_multi_routes'] at the top level, not $json['map']['map_multi_routes'].
      */
     protected static function multiRouteRule(): string
     {
-        return '"map_multi_routes" (true ONLY when the image shows TWO OR MORE INDEPENDENT, SEPARATELY-COMPUTED '
-            .'route panels placed or pasted together in one screenshot — e.g. two distinct Google Maps directions '
-            .'views side by side or stacked, each with its own search fields, its own highlighted route line, and '
-            .'its own distance/duration label, for two DIFFERENT unrelated trips — such as one panel headed '
-            .'"To HRDF" and a separate panel headed "To Jaya One". false for an ORDINARY single route, even one '
-            .'with several waypoints/stops listed under ONE search box and ONE continuous route line — that is a '
+        return '"map_multi_routes" — a TOP-LEVEL key, a SIBLING of "map" (do NOT nest it inside the "map" '
+            .'object): true ONLY when the image shows TWO OR MORE INDEPENDENT, SEPARATELY-COMPUTED route panels '
+            .'placed or pasted together in one screenshot — e.g. two distinct Google Maps directions views side '
+            .'by side or stacked, each with its own search fields, its own highlighted route line, and its own '
+            .'distance/duration label, for two DIFFERENT unrelated trips — such as one panel headed "To HRDF" '
+            .'and a separate panel headed "To Jaya One". false for an ORDINARY single route, even one with '
+            .'several waypoints/stops listed under ONE search box and ONE continuous route line — that is a '
             .'legitimate multi-stop trip (e.g. Home → Office → Client → Home) and must stay false. When '
-            .'map_multi_routes is true, set distance_km, route_from, route_to and route_stops ALL to null — do '
-            .'NOT add, merge, or guess a combined distance across the separate routes)';
+            .'map_multi_routes is true, set distance_km, route_from, route_to and route_stops ALL to null inside '
+            .'"map" — do NOT add, merge, or guess a combined distance across the separate routes; leave "issue" '
+            .'null in this case, since map_multi_routes already says why nothing was filled in. ';
     }
 
     /** Normalise one receipt object's fields to the public shape. */

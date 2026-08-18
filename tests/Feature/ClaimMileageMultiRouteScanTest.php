@@ -60,19 +60,27 @@ class ClaimMileageMultiRouteScanTest extends TestCase
         return $user;
     }
 
+    /**
+     * The shape a REAL Anthropic reply actually used, logged live 2026-08-18: "map_multi_routes"
+     * came back as a TOP-LEVEL key, a sibling of "map", not nested inside it — even though the
+     * original prompt wording asked for it inside the "map object" sentence. normalizeMap() used
+     * to only ever look for it inside $json['map'], so this exact reply's true flag was silently
+     * never seen, and the scan fell through to the generic "couldn't read it" message instead of
+     * the multi-route one built for exactly this case. This is the real bug, not a hypothetical.
+     */
     public function test_a_collage_of_two_routes_is_refused_with_a_split_message(): void
     {
         $user = $this->actingEmployee();
         $this->fakeVision([
             'map' => [
-                'map_multi_routes' => true,
                 // The model is told to null these out on a flagged collage — simulate it
                 // still populating them anyway, to prove the server forces them null too.
                 'distance_km' => 17.7,
                 'route_from' => 'HRDF', 'route_to' => 'Jaya One',
                 'route_stops' => ['HRDF', 'Jaya One'],
             ],
-            'items' => [], 'account_holder' => null, 'issuer' => null,
+            'map_multi_routes' => true, // TOP-LEVEL, a sibling of "map" — the real observed shape.
+            'items' => [], 'account_holder' => null, 'issuer' => null, 'issue' => null,
             'is_single_receipt' => false, 'receipt_total' => null,
         ]);
 
@@ -84,6 +92,27 @@ class ClaimMileageMultiRouteScanTest extends TestCase
         $this->assertStringContainsString('more than one route', (string) $res->json('message'));
         // Never surface a combined/guessed distance for a flagged collage.
         $this->assertNull($res->json('distance_km'));
+    }
+
+    /** Belt-and-braces: a reply that DOES nest the flag inside "map" must still be honoured. */
+    public function test_the_flag_is_also_honoured_when_nested_inside_map(): void
+    {
+        $user = $this->actingEmployee();
+        $this->fakeVision([
+            'map' => [
+                'map_multi_routes' => true,
+                'distance_km' => null, 'route_from' => null, 'route_to' => null, 'route_stops' => null,
+            ],
+            'items' => [], 'account_holder' => null, 'issuer' => null,
+            'is_single_receipt' => false, 'receipt_total' => null,
+        ]);
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.scan-receipt'), [
+            'receipt' => UploadedFile::fake()->image('routes-nested.jpg'),
+        ]);
+
+        $res->assertStatus(200)->assertJsonPath('ok', false);
+        $this->assertStringContainsString('more than one route', (string) $res->json('message'));
     }
 
     public function test_an_unreadable_receipt_surfaces_the_models_own_reason(): void
