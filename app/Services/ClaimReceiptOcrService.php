@@ -338,6 +338,16 @@ class ClaimReceiptOcrService
         // the user rather than silently dropping rows past the cap.
         $truncated = count($items) >= $max;
 
+        // Diagnostic: the call succeeded and parsed, but nothing usable came out of it —
+        // no map, no receipt items, and (if the model followed the prompt) an "issue" the
+        // claimant already sees on screen. Log the model's raw reply so a specific "why
+        // won't this scan?" report can be diagnosed from what it actually said, instead of
+        // guessed at from outside. Safe to log: by definition there's little/no real data in
+        // a reply this empty.
+        if (! $isMap && empty($items)) {
+            Log::warning('Claim receipt OCR: scan produced nothing usable', ['reply' => $json]);
+        }
+
         return [
             'map' => $isMap ? $map : null,
             'items' => array_slice($items, 0, $max),
