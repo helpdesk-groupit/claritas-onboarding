@@ -3282,6 +3282,17 @@ class ExpenseClaimController extends Controller
         if (! empty($doc['map']) && empty($doc['items'])) {
             $m = $doc['map'];
 
+            // A collage of two-or-more independent routes pasted into one screenshot — refuse
+            // to auto-fill a combined/guessed distance (a real bug: two unrelated one-way trips
+            // read as one longer multi-stop journey). Ask the user to upload one screenshot per
+            // trip instead; this flows through the existing "!d.ok → show d.message" handling.
+            if (! empty($m['multi_routes'])) {
+                return response()->json([
+                    'enabled' => true, 'ok' => false,
+                    'message' => 'This image looks like it holds more than one route/trip. Upload one route screenshot at a time — add this trip, then upload and add each further trip as its own item.',
+                ]);
+            }
+
             return response()->json([
                 'enabled' => true, 'ok' => true, 'multi' => false,
                 'amount' => null, 'date' => null, 'vendor' => null,

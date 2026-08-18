@@ -178,8 +178,11 @@ class ClaimReceiptOcrService
     /**
      * Scan one image that may contain MULTIPLE receipts (or a statement/history of
      * dated transactions), OR a single map screenshot. Returns:
-     *   ['map' => {distance_km, route_from, route_to, route_stops} | null,
+     *   ['map' => {distance_km, route_from, route_to, route_stops, multi_routes} | null,
      *    'items' => [ {amount, date, vendor, item_description, paid_by, category}, … ]]
+     * multi_routes = true means the image is a COLLAGE of two-or-more independent routes (not
+     * one genuine multi-stop trip) — distance_km/route_from/route_to/route_stops are all null
+     * in that case; the caller must refuse to auto-fill and ask for one screenshot per trip.
      * Returns null only on a hard failure (fail open → caller falls back to manual).
      */
     public static function scanDocument(string $absolutePath, string $mimeType, ?string $company = null, array $categories = []): ?array
@@ -204,6 +207,7 @@ class ClaimReceiptOcrService
             .'pickup_location / dropoff_location. When set, "map" is an object with '
             .self::distanceRule()
             .self::routeRule()
+            .self::multiRouteRule()
             .'; otherwise "map" must be null. '
             .'"account_holder" — a statement normally prints the ACCOUNT HOLDER / Registered Name / Cardholder '
             .'ONCE at the TOP (the person these transactions belong to); return that name here, or null if it is '
@@ -270,7 +274,10 @@ class ClaimReceiptOcrService
 
         $map = self::normalizeMap($json['map'] ?? []);
         // Keep "map" only if it actually carries route info; an empty {} is not a map.
-        $isMap = $map['distance_km'] !== null || $map['route_from'] || $map['route_to'] || ! empty($map['route_stops']);
+        // multi_routes alone also counts — a flagged collage carries no distance/route (the
+        // model is told to leave those null rather than merge them), so it wouldn't otherwise
+        // survive this check and the "several routes in one image" message would never fire.
+        $isMap = $map['distance_km'] !== null || $map['route_from'] || $map['route_to'] || ! empty($map['route_stops']) || $map['multi_routes'];
 
         // Statement header (read once at the top) — inherited deterministically below so
         // every row carries the company + payer even when the model reads them per-row null.
@@ -970,7 +977,29 @@ class ClaimReceiptOcrService
             .'building, mall, or area name that a map search would find (e.g. "Suria KLCC", '
             .'"Mid Valley Megamall", "Sunway Pyramid") — NOT the full printed street address with '
             .'lot / level / unit / floor numbers. '
-            .'Do NOT swap origin and destination — the circle is always the start and the pin is always the end';
+            .'Do NOT swap origin and destination — the circle is always the start and the pin is always the end. ';
+    }
+
+    /**
+     * Distinguishes ONE continuous multi-stop route (route_stops legitimately combines several
+     * waypoints under a single search/route line — e.g. Home → Office → Client → Home) from a
+     * COLLAGE of two or more independent, separately-computed routes pasted into one screenshot
+     * (e.g. two unrelated one-way trips, each with its own directions panel and its own distance
+     * label). Without this, the model has been folding a collage's separate distances together
+     * into one combined route_stops reading — a single claim item then overstates the mileage of
+     * whichever trip its description names, and silently drops the other trip entirely.
+     */
+    protected static function multiRouteRule(): string
+    {
+        return '"map_multi_routes" (true ONLY when the image shows TWO OR MORE INDEPENDENT, SEPARATELY-COMPUTED '
+            .'route panels placed or pasted together in one screenshot — e.g. two distinct Google Maps directions '
+            .'views side by side or stacked, each with its own search fields, its own highlighted route line, and '
+            .'its own distance/duration label, for two DIFFERENT unrelated trips — such as one panel headed '
+            .'"To HRDF" and a separate panel headed "To Jaya One". false for an ORDINARY single route, even one '
+            .'with several waypoints/stops listed under ONE search box and ONE continuous route line — that is a '
+            .'legitimate multi-stop trip (e.g. Home → Office → Client → Home) and must stay false. When '
+            .'map_multi_routes is true, set distance_km, route_from, route_to and route_stops ALL to null — do '
+            .'NOT add, merge, or guess a combined distance across the separate routes)';
     }
 
     /** Normalise one receipt object's fields to the public shape. */
@@ -1052,12 +1081,17 @@ class ClaimReceiptOcrService
     protected static function normalizeMap($src): array
     {
         $src = is_array($src) ? $src : [];
+        $multiRoutes = isset($src['map_multi_routes']) && filter_var($src['map_multi_routes'], FILTER_VALIDATE_BOOLEAN);
 
+        // A flagged collage carries no usable single distance/route — force these null even
+        // if the model still populated them despite the prompt's instruction not to, so a
+        // combined reading can never reach the form under the multi_routes flag.
         return [
-            'distance_km' => isset($src['distance_km']) && is_numeric($src['distance_km']) ? round((float) $src['distance_km'], 1) : null,
-            'route_from' => self::clip($src['route_from'] ?? null, 120),
-            'route_to' => self::clip($src['route_to'] ?? null, 120),
-            'route_stops' => self::clipList($src['route_stops'] ?? null),
+            'distance_km' => (! $multiRoutes && isset($src['distance_km']) && is_numeric($src['distance_km'])) ? round((float) $src['distance_km'], 1) : null,
+            'route_from' => $multiRoutes ? null : self::clip($src['route_from'] ?? null, 120),
+            'route_to' => $multiRoutes ? null : self::clip($src['route_to'] ?? null, 120),
+            'route_stops' => $multiRoutes ? null : self::clipList($src['route_stops'] ?? null),
+            'multi_routes' => $multiRoutes,
         ];
     }
 

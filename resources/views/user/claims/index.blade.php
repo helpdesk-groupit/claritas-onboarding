@@ -842,6 +842,27 @@
         // calculation above is the figure. (Receipt details only show what was read.)
         q(c,'.cc-c-total').value = '';
     }
+    // Petrol/mileage claims must be read from ONE route screenshot per trip — a single
+    // image combining several unrelated routes (or several files picked at once) has
+    // been misread as one longer trip (route_stops summed across unrelated legs). Other
+    // categories keep the multi-file/multi-receipt batch-scan feature untouched.
+    function applyMileageUploadMode(c, isMileage) {
+        const file = q(c,'.cc-i-file'); if (!file) return;
+        const note = c.querySelector('.cc-mileage-upload-note');
+        const hint = c.querySelector('.cc-upload-hint');
+        if (note) note.classList.toggle('d-none', !isMileage);
+        if (hint) hint.classList.toggle('d-none', isMileage);
+        if (isMileage) {
+            file.removeAttribute('multiple');
+            if (file.files.length > 1) {
+                file.value = '';
+                const err = q(c,'.cc-item-error');
+                if (err) showErr(err, 'Petrol/mileage claims take one route screenshot at a time — the extra files were cleared. Re-select just the one for this trip.');
+            }
+        } else {
+            file.setAttribute('multiple', 'multiple');
+        }
+    }
     function resetEntry(c) {
         q(c,'.cc-i-desc').value = ''; q(c,'.cc-i-cat').value = '';
         const a = q(c,'.cc-i-amount'); a.value = ''; a.readOnly = false;
@@ -849,6 +870,7 @@
         q(c,'.cc-i-total').value = ''; q(c,'.cc-i-file').value = '';
         const sup = q(c,'.cc-i-support'); if (sup) sup.value = '';
         const mrow = c.querySelector('.cc-mileage-row'); if (mrow) mrow.classList.add('d-none');
+        applyMileageUploadMode(c, false);
         const km = q(c,'.cc-i-km'); if (km) km.value = '';
         const veh = q(c,'.cc-i-vehicle'); if (veh) veh.value = 'car';
         c.dataset.mileageComputed = ''; // drop the stale mileage counter-check reference
@@ -1306,6 +1328,7 @@
         const isMileage = opt && opt.dataset.mileage === '1';
         const fixed = opt && opt.dataset.rateType === 'fixed';
         if (isMileage) {
+            if (file.files.length > 1) return showErr(err, 'Petrol/mileage claims take one route screenshot at a time — remove the extra files and add each trip as its own item.');
             if (!(parseFloat(q(c,'.cc-i-km').value) > 0)) return showErr(err, 'Enter the distance (km) for the mileage claim.');
             // Amount is editable for mileage now — it must still be a positive figure.
             if (!(parseFloat(amount.value) > 0)) return showErr(err, 'Enter the amount for the mileage claim.');
@@ -1755,6 +1778,7 @@
             const isMileage = opt && opt.dataset.mileage === '1';
             const mrow = c.querySelector('.cc-mileage-row');
             if (mrow) mrow.classList.toggle('d-none', !isMileage);
+            applyMileageUploadMode(c, isMileage);
             if (isMileage) {
                 // Mileage: amount PRE-FILLS from km × vehicle rate but stays EDITABLE — the user
                 // may claim less (soft warning); claiming more than the calculated figure is blocked.

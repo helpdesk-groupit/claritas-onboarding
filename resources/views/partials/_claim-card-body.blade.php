@@ -119,7 +119,10 @@
     {{-- Upload attachment (under Description, above Expense Type) --}}
     <div class="row g-2 mt-1">
         <div class="col-12">
-            <label class="form-label small mb-1"><i class="bi bi-paperclip me-1"></i>Upload attachment @if($ocrEnabled)<span class="text-muted">— upload one or more files, then Scan to auto-fill. One image with several receipts, or several files at once, opens a review list. Tip: for a long statement, highlight or screenshot just the rows you’re claiming.</span>@endif</label>
+            <label class="form-label small mb-1"><i class="bi bi-paperclip me-1"></i>Upload attachment @if($ocrEnabled)<span class="text-muted cc-upload-hint">— upload one or more files, then Scan to auto-fill. One image with several receipts, or several files at once, opens a review list. Tip: for a long statement, highlight or screenshot just the rows you’re claiming.</span>@endif</label>
+            <div class="small mt-1 mb-1 py-2 px-2 rounded d-none cc-mileage-upload-note" style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;">
+                <i class="bi bi-exclamation-triangle me-1"></i>Please upload <strong>one route screenshot per trip</strong> — don’t combine multiple routes into a single image. Made several trips? Add this one first, then upload and add each further trip separately.
+            </div>
             <div class="d-flex gap-2 flex-wrap align-items-center">
                 <input type="file" class="form-control form-control-sm cc-i-file" accept=".jpg,.jpeg,.png,.pdf" multiple style="max-width:340px;">
                 @if($ocrEnabled)<button type="button" class="btn btn-sm btn-primary d-none cc-scan-btn"><i class="bi bi-magic me-1"></i>Scan</button>@endif
