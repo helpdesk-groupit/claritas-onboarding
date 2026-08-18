@@ -1131,10 +1131,12 @@
                     if (okDate) date.value = fixedSingleDate;
                     // Be honest when the scan found nothing at all — the two "auto-filled" messages
                     // below were shown even when every field came back empty/null, which read as a
-                    // silent no-op (nothing on screen changes, yet the hint claims success).
+                    // silent no-op (nothing on screen changes, yet the hint claims success). Prefer
+                    // the AI's own reason (blurry, cropped, several receipts overlapping, wrong
+                    // document type, …) over a generic line — it tells the user what to actually fix.
                     const gotSomething = !!(d.category_id || d.amount || d.vendor || d.item_description || d.paid_by || okDate);
                     setHint(hint, !gotSomething
-                        ? 'Couldn’t make out anything useful on this file — enter the details manually, or try a clearer photo/screenshot.'
+                        ? (d.issue || 'Couldn’t make out anything useful on this file — enter the details manually, or try a clearer photo/screenshot.')
                         : okDate
                             ? '✨ Category, amount & date auto-filled from the receipt — now add the description.'
                             : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.', !gotSomething);

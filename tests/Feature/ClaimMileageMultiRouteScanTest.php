@@ -86,6 +86,24 @@ class ClaimMileageMultiRouteScanTest extends TestCase
         $this->assertNull($res->json('distance_km'));
     }
 
+    public function test_an_unreadable_receipt_surfaces_the_models_own_reason(): void
+    {
+        $user = $this->actingEmployee();
+        $this->fakeVision([
+            'map' => null,
+            'items' => [], 'account_holder' => null, 'issuer' => null,
+            'is_single_receipt' => false, 'receipt_total' => null,
+            'issue' => 'The photo is too blurry to read the amount or date clearly.',
+        ]);
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.scan-receipt'), [
+            'receipt' => UploadedFile::fake()->image('blurry.jpg'),
+        ]);
+
+        $res->assertStatus(200)->assertJsonPath('ok', true);
+        $this->assertSame('The photo is too blurry to read the amount or date clearly.', $res->json('issue'));
+    }
+
     public function test_a_genuine_multi_stop_trip_still_auto_fills(): void
     {
         $user = $this->actingEmployee();

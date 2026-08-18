@@ -3302,6 +3302,7 @@ class ExpenseClaimController extends Controller
                 'route_from' => $m['route_from'],
                 'route_to' => $m['route_to'],
                 'route_stops' => $m['route_stops'],
+                'issue' => $doc['issue'] ?? null,
             ]);
         }
 
@@ -3324,6 +3325,7 @@ class ExpenseClaimController extends Controller
                 'category_id' => $one['category_id'] ?? null,
                 'category_name' => $one['category_name'] ?? null,
                 'distance_km' => null, 'route_from' => null, 'route_to' => null, 'route_stops' => null,
+                'issue' => $doc['issue'] ?? null,
             ]);
         }
 

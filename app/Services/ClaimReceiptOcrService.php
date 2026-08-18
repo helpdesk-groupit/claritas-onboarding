@@ -179,10 +179,13 @@ class ClaimReceiptOcrService
      * Scan one image that may contain MULTIPLE receipts (or a statement/history of
      * dated transactions), OR a single map screenshot. Returns:
      *   ['map' => {distance_km, route_from, route_to, route_stops, multi_routes} | null,
-     *    'items' => [ {amount, date, vendor, item_description, paid_by, category}, … ]]
+     *    'items' => [ {amount, date, vendor, item_description, paid_by, category}, … ],
+     *    'issue' => string|null]
      * multi_routes = true means the image is a COLLAGE of two-or-more independent routes (not
      * one genuine multi-stop trip) — distance_km/route_from/route_to/route_stops are all null
      * in that case; the caller must refuse to auto-fill and ask for one screenshot per trip.
+     * issue is the model's own plain-English reason it could NOT read this document (blurry,
+     * cropped, multiple overlapping receipts, unrecognised format, …) — null when it read fine.
      * Returns null only on a hard failure (fail open → caller falls back to manual).
      */
     public static function scanDocument(string $absolutePath, string $mimeType, ?string $company = null, array $categories = []): ?array
@@ -220,6 +223,14 @@ class ClaimReceiptOcrService
             .'not a statement or no name is shown. '
             .'"issuer" — the card brand / bank / statement provider shown in the header (e.g. "Touch n Go", a bank '
             .'name); or null. '
+            .'"issue" — set this ONLY when you could NOT confidently read the key details this WHOLE document '
+            .'needs (a receipt\'s amount/vendor/date, a statement\'s rows, or a map\'s route/distance): ONE short, '
+            .'plain-English sentence telling the claimant WHY, so they know what to do differently — e.g. "The '
+            .'photo is too blurry to read the amount or date clearly", "The image is cropped and cuts off the '
+            .'total", "This looks like it holds more than one receipt overlapping each other, which makes them '
+            .'too hard to read apart — photograph and upload each one separately", "The handwriting on this is '
+            .'not legible", or "This doesn\'t look like a receipt or a map/route screenshot". Return null once '
+            .'you DID manage to read the key details, even if a minor field like the vendor name is missing. '
             .'"is_single_receipt" — answer this ONE question about the WHOLE image, separately from how you split '
             .'"items" below: is it ONE physical receipt / invoice / bill from ONE transaction, with ONE total '
             .'printed at the bottom — true — no matter how many product or line-item rows it lists (a '
@@ -289,6 +300,9 @@ class ClaimReceiptOcrService
         // every row carries the company + payer even when the model reads them per-row null.
         $accountHolder = self::clip($json['account_holder'] ?? null, 120);
         $issuer = self::clip($json['issuer'] ?? null, 120);
+        // The model's own plain-English reason it couldn't read this document, when it can't —
+        // surfaced to the claimant instead of a generic "couldn't read it" catch-all.
+        $issue = self::clip($json['issue'] ?? null, 300);
 
         $items = [];
         foreach ((array) ($json['items'] ?? []) as $it) {
@@ -328,6 +342,7 @@ class ClaimReceiptOcrService
             'map' => $isMap ? $map : null,
             'items' => array_slice($items, 0, $max),
             'truncated' => $truncated,
+            'issue' => $issue,
         ];
     }
 
