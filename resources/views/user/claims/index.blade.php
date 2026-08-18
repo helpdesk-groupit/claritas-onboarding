@@ -1118,9 +1118,15 @@
                     const fixedSingleDate = rawOkDate ? correctSwappedDate(d.date, date.getAttribute('min'), date.getAttribute('max')) : d.date;
                     const okDate = fixedSingleDate && /^\d{4}-\d{2}-\d{2}$/.test(fixedSingleDate);
                     if (okDate) date.value = fixedSingleDate;
-                    hint.textContent = okDate
-                        ? '✨ Category, amount & date auto-filled from the receipt — now add the description.'
-                        : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.';
+                    // Be honest when the scan found nothing at all — the two "auto-filled" messages
+                    // below were shown even when every field came back empty/null, which read as a
+                    // silent no-op (nothing on screen changes, yet the hint claims success).
+                    const gotSomething = !!(d.category_id || d.amount || d.vendor || d.item_description || d.paid_by || okDate);
+                    hint.textContent = !gotSomething
+                        ? 'Couldn’t make out anything useful on this file — enter the details manually, or try a clearer photo/screenshot.'
+                        : okDate
+                            ? '✨ Category, amount & date auto-filled from the receipt — now add the description.'
+                            : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.';
                     // Capture Category C (read-only receipt details) into the fields below.
                     setC(c, { company: d.vendor, itemdesc: d.item_description, date: fixedSingleDate, paidby: d.paid_by, total: d.amount });
                     applyReceiptCheck(c); // re-check now that the receipt total is captured

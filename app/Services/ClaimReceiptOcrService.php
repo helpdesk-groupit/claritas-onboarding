@@ -204,7 +204,13 @@ class ClaimReceiptOcrService
             .'payment. CRITICAL: a RIDE-HAILING RECEIPT (Grab, JustGrab, MyCar, taxi) that shows a Total paid / '
             .'fare / GrabPay / payment method is a RECEIPT, NOT a map — even though it displays a small route '
             .'map. Put such a ride in "items" (never in "map") and place its pick-up/drop-off into '
-            .'pickup_location / dropoff_location. When set, "map" is an object with '
+            .'pickup_location / dropoff_location. Do NOT apply that same exclusion to a plain Google Maps / '
+            .'Waze DIRECTIONS screenshot that the CLAIMANT has annotated with their OWN calculated distance × '
+            .'rate figure for a self-driven mileage claim (e.g. "9.1 km" handwritten or typed beside "RM6.37") '
+            .'— that is STILL case (a), a map, even though a Ringgit amount appears on it: it carries none of '
+            .'a ride-hailing app\'s own receipt chrome (no driver name/photo, no "Total Fare" / payment-method '
+            .'label, no GrabPay-style layout) — it is a directions view with the claimant\'s own arithmetic '
+            .'written next to it, not a paid transaction. When set, "map" is an object with '
             .self::distanceRule()
             .self::routeRule()
             .self::multiRouteRule()
