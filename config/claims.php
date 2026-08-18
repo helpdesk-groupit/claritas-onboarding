@@ -170,22 +170,49 @@ return [
     | decodes every image through GD, which costs w*h*4 bytes of transient RAM
     | (a 5-megapixel receipt photo = ~22 MB) on top of the PDF itself.
     |
-    | 'max_claims' bounds the batch by WALL CLOCK, not memory — the export
-    | renders at roughly 1s/claim, and production sits behind Cloudflare, whose
-    | edge read timeout is 100s (a 524 with no explanation). Keep this low
-    | enough that a full batch finishes inside that budget. When a filter
-    | matches more, the export is NOT silently truncated: the ZIP carries an
-    | _EXPORT-NOTES.txt naming exactly what was left out.
+    | The batch is bounded by WALL CLOCK, not memory — the export streams each
+    | PDF to a temp file, so peak memory is flat however many claims are in the
+    | batch, and what is actually scarce is how long the server will hold a
+    | request open. That limit is nginx's `proxy_read_timeout 60s` on this
+    | site's own vhost, which fires long before Cloudflare's 100s edge timeout
+    | ever gets a chance — past it the operator gets a bare gateway error page
+    | with nothing to act on. (Two such 504s on 2026-08-18, 11:26 and 11:27.)
     |
-    | 'memory_limit' is a safety margin for the per-image decode spike, not the
-    | fix for batch size — the export streams each PDF to a temp file, so peak
-    | memory is flat regardless of how many claims are in the batch. Set to
-    | null to leave the pool's own memory_limit alone.
+    | 'time_budget' is the PRIMARY bound: the loop stops once it projects that
+    | rendering another claim would take it past this many seconds, and reports
+    | what it left out. Keep it comfortably under the 60s the vhost allows —
+    | the archive still has to be closed and sent after the last render.
+    | Measured on production hardware 2026-08-18: ~0.8s for a receipt-less
+    | claim, 4.4-4.9s for one carrying several 7-megapixel receipt photos.
+    | Setting it to 0 disables the bound and re-exposes the 504.
+    |
+    | 'max_claims' is only a BACKSTOP against a pathological filter. Sized just
+    | above what the time budget could ever admit in the best case (45s at the
+    | fastest observed ~0.8s/claim is ~56), so that it can never quietly become
+    | the operative limit and turn an adaptive bound back into a fixed count.
+    |
+    | Neither bound truncates silently: the ZIP carries an _EXPORT-NOTES.txt
+    | naming exactly what was left out and which limit left it out.
     */
     'zip_export' => [
+        'time_budget' => (float) env('CLAIMS_ZIP_TIME_BUDGET', 45),
         'max_claims' => (int) env('CLAIMS_ZIP_MAX_CLAIMS', 60),
-        'memory_limit' => env('CLAIMS_ZIP_MEMORY_LIMIT', '512M'),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Claim PDF memory floor
+    |--------------------------------------------------------------------------
+    | Applies to EVERY claim PDF (single download, HR view, batch ZIP), because
+    | the expensive part is per-IMAGE, not per-batch: dompdf decodes each
+    | embedded receipt through GD at w*h*4 bytes, so one 5-megapixel receipt
+    | photo costs ~22 MB of transient buffer, and a claim may carry several.
+    |
+    | Applied as a FLOOR — it never lowers a pool that was deliberately given
+    | more room, and never caps an unlimited (-1) limit. Set to null to leave
+    | the pool's own memory_limit alone entirely.
+    */
+    'pdf_memory_limit' => env('CLAIMS_PDF_MEMORY_LIMIT', '512M'),
 
     /*
     |--------------------------------------------------------------------------

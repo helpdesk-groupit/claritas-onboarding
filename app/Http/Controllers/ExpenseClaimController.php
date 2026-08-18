@@ -737,11 +737,8 @@ class ExpenseClaimController extends Controller
             $update['ocr_details'] = $newOcr;
         }
         $item->update($update);
-        foreach (array_merge((array) $oldToDelete, $oldSupportingToDelete) as $del) {
-            if ($del) {
-                Storage::disk('local')->delete($del);
-            }
-        }
+        // The item row already points at the new file, so nothing here needs excluding.
+        $this->releaseReceiptFiles(array_merge((array) $oldToDelete, $oldSupportingToDelete));
 
         $claim->recalculateTotals();
         $claim->refresh();
@@ -766,11 +763,12 @@ class ExpenseClaimController extends Controller
         }
 
         $claim->load('items');
-        foreach ($claim->items as $it) {
-            foreach ($it->attachmentPaths() as $path) {
-                Storage::disk('local')->delete($path);
-            }
-        }
+        // Deleting a correction draft must not take the ORIGINAL claim's receipts with it —
+        // makeCorrection() copies receipt paths by reference, so the two share files on disk.
+        // Exclude this claim's own items (they are about to go) and keep anything still cited.
+        $ownIds = $claim->items->pluck('id')->all();
+        $paths = $claim->items->flatMap(fn ($it) => $it->attachmentPaths())->all();
+        $this->releaseReceiptFiles($paths, $ownIds);
         $number = $claim->claim_number;
         $claim->items()->delete();
         $claim->delete();
@@ -864,12 +862,13 @@ class ExpenseClaimController extends Controller
             $group = collect([$item]);
         }
 
-        $ids = [];
+        // Same sharing caveat as destroyClaim(): a correction's items point at the ORIGINAL's
+        // files, so the group's own ids are excluded and anything still cited elsewhere stays.
+        $ids = $group->pluck('id')->all();
+        $paths = $group->flatMap(fn ($gi) => array_merge($gi->attachmentPaths(), $gi->supportingPaths()))->all();
+        $this->releaseReceiptFiles($paths, $ids);
+
         foreach ($group as $gi) {
-            foreach (array_merge($gi->attachmentPaths(), $gi->supportingPaths()) as $path) {
-                Storage::disk('local')->delete($path);
-            }
-            $ids[] = $gi->id;
             $gi->delete();
         }
 
@@ -1460,12 +1459,9 @@ class ExpenseClaimController extends Controller
             'receipt_hash' => $receiptHash,
         ]);
 
-        if ($oldReceiptToDelete) {
-            Storage::disk('local')->delete($oldReceiptToDelete);
-        }
-        foreach (array_unique($attachmentsToDelete) as $path) {
-            Storage::disk('local')->delete($path);
-        }
+        // The item row above already points at the replacement, so nothing needs excluding —
+        // but a correction shares its files with the frozen original, so still check.
+        $this->releaseReceiptFiles(array_merge([$oldReceiptToDelete], $attachmentsToDelete));
 
         $claim->recalculateTotals();
 
@@ -1548,6 +1544,11 @@ class ExpenseClaimController extends Controller
     /** Render one claim to a dompdf PDF instance (form + embedded receipt images). */
     private function buildClaimPdf(ExpenseClaim $claim)
     {
+        // Per-IMAGE cost, so this matters for a single claim too, not just the batch export:
+        // one 5-megapixel receipt is ~22 MB of GD buffer inside dompdf and a claim may carry
+        // several. Idempotent and cheap, so the ZIP loop calling it repeatedly is harmless.
+        $this->raisePdfMemoryFloor();
+
         $claim->loadMissing('items.category', 'employee', 'managerApprover', 'manager', 'hrApprover');
         $company = \App\Models\Company::forName($claim->resolvedCompany());
         $items = $claim->items;
@@ -1666,18 +1667,23 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'ZIP download isn’t available on this server (the PHP “zip” extension is disabled). Please download the claims individually, or ask IT to enable it.');
         }
 
-        // Bound the batch by wall clock (~1s/claim vs Cloudflare's 100s edge timeout), and
-        // record what that left out — a finance export that quietly stops at N is worse than
-        // one that says so. See config('claims.zip_export').
+        // Bound the batch by WALL CLOCK, and record what that left out — a finance export
+        // that quietly stops at N is worse than one that says so.
+        //
+        // The limit that actually binds is nginx's `proxy_read_timeout 60s` on this site's
+        // vhost, NOT Cloudflare's 100s edge timeout: the NAS gives up first and the operator
+        // gets a bare gateway error page. Measured on production hardware 2026-08-18, a claim
+        // carrying several 7-megapixel receipts costs ~5s to render, so a count alone cannot
+        // express this — 15 receipt-light claims finish inside the window while 15 photo-heavy
+        // ones do not. $budget is therefore what normally stops the loop and $cap is a
+        // backstop. See config('claims.zip_export').
         $cap = max(1, (int) config('claims.zip_export.max_claims', 60));
+        $budget = (float) config('claims.zip_export.time_budget', 45);
         $claims = $matched->take($cap)->values();
         $omitted = $matched->slice($cap)->values();
 
-        // Batch PDF rendering is the heaviest thing this app does in a request: dompdf decodes
-        // every embedded receipt through GD at w*h*4 bytes. Streaming (below) keeps the batch
-        // itself flat, but one large receipt photo can still spike ~20 MB on its own, so give
-        // this endpoint headroom over the pool's general-purpose default.
-        $this->raiseMemoryFloor();
+        // Streaming (below) keeps the batch's memory flat; buildClaimPdf() raises the per-image
+        // floor. What is left is wall clock, and the batch is deliberately allowed to take it.
         @set_time_limit(0);
 
         // Two temp locations, deliberately: the per-claim PDFs go in a private working dir we
@@ -1701,8 +1707,30 @@ class ExpenseClaimController extends Controller
 
         $used = [];
         $failed = [];
+        $stoppedOnTime = false;
+        $startedAt = microtime(true);
         try {
             foreach ($claims as $index => $claim) {
+                // Stop before starting a render we cannot finish in time. Projected from the
+                // batch's OWN running average rather than a fixed per-claim figure, because
+                // the cost is dominated by how many megapixels of receipt each claim carries
+                // and that varies by an order of magnitude between claims — a receipt-less
+                // batch races through where a photo-heavy one must stop after a handful.
+                //
+                // Checked at the TOP so a completed render is never thrown away (and so the
+                // failure path's `continue` below cannot skip the check), and never on the
+                // first claim: an export that returns nothing at all is not an improvement on
+                // one that returns a partial archive plus a note saying what is missing.
+                if ($budget > 0 && $index > 0) {
+                    $elapsed = microtime(true) - $startedAt;
+                    if ($elapsed + ($elapsed / $index) >= $budget) {
+                        $stoppedOnTime = true;
+                        $omitted = $claims->slice($index)->concat($omitted)->values();
+
+                        break;
+                    }
+                }
+
                 $name = $claim->pdfFilename();
                 $unique = $name;
                 $i = 2;
@@ -1735,7 +1763,10 @@ class ExpenseClaimController extends Controller
                 $zip->addFile($pdfPath, $unique);
             }
 
-            if ($notes = $this->zipExportNotes($matched->count(), $claims->count(), $omitted, $failed, $cap)) {
+            // count($used), not $claims->count(): a claim that failed to render — or that the
+            // time budget stopped short of — is not in the archive, and a manifest that counts
+            // it as included is the silent-partial-export failure this file exists to prevent.
+            if ($notes = $this->zipExportNotes($matched->count(), count($used), $omitted, $failed, $cap, $stoppedOnTime, $budget)) {
                 $zip->addFromString('_EXPORT-NOTES.txt', $notes);
             }
             $zip->close();
@@ -1770,7 +1801,7 @@ class ExpenseClaimController extends Controller
      * render. Silence over a partial finance export is the failure mode worth engineering
      * against; an operator who sees every file they asked for gets no notes file at all.
      */
-    private function zipExportNotes(int $matchedCount, int $includedCount, \Illuminate\Support\Collection $omitted, array $failed, int $cap): ?string
+    private function zipExportNotes(int $matchedCount, int $includedCount, \Illuminate\Support\Collection $omitted, array $failed, int $cap, bool $stoppedOnTime = false, float $budget = 0): ?string
     {
         if ($omitted->isEmpty() && empty($failed)) {
             return null;
@@ -1784,7 +1815,17 @@ class ExpenseClaimController extends Controller
         ];
 
         if ($omitted->isNotEmpty()) {
-            $lines[] = 'NOT INCLUDED — batch limit of '.$cap.' claims per download ('.$omitted->count().' left out).';
+            // Name the limit that actually stopped it. Both remedies are "narrow the filter",
+            // but an operator told "batch limit of 60" while holding 9 PDFs would reasonably
+            // conclude the export is broken.
+            if ($stoppedOnTime) {
+                $lines[] = 'NOT INCLUDED — the export reached its '.rtrim(rtrim(number_format($budget, 1, '.', ''), '0'), '.').'-second time limit ('.$omitted->count().' left out).';
+                $lines[] = 'This server closes a request that runs too long, so a large batch stops early and';
+                $lines[] = 'tells you what is missing rather than failing with no file at all. Claims carrying';
+                $lines[] = 'several photographed receipts are much slower, so the number that fits will vary.';
+            } else {
+                $lines[] = 'NOT INCLUDED — batch limit of '.$cap.' claims per download ('.$omitted->count().' left out).';
+            }
             $lines[] = 'Re-run the export filtered to one submission cycle, or one company, to collect these:';
             foreach ($omitted as $claim) {
                 $lines[] = '  - '.($claim->claim_number ?: 'Claim #'.$claim->id)
@@ -1807,7 +1848,39 @@ class ExpenseClaimController extends Controller
     }
 
     /**
-     * Raise this request's memory ceiling to config('claims.zip_export.memory_limit') — never
+     * Delete receipt files that are genuinely finished with — and ONLY those.
+     *
+     * A receipt file is NOT owned by one row. `makeCorrection()` copies `receipt_path` and
+     * `receipt_paths` straight into the new claim's items, so a correction and the frozen
+     * original it corrects point at the SAME bytes on disk. Every delete here used to assume
+     * sole ownership, which meant replacing a receipt while fixing a rejected claim — or
+     * simply deleting the correction draft — silently destroyed the evidence attached to a
+     * claim that is deliberately frozen as history. Two live correction chains in production
+     * share 10 files this way, one side of each being an hr_approved (paid) report.
+     *
+     * So: drop the file only when no OTHER claim item still cites it. `$exceptItemIds` is for
+     * callers that delete files before deleting the rows (destroyClaim, deleteItemGroup) —
+     * those rows are on their way out and must not count as a reason to keep the file.
+     * Callers that have already re-pointed the row can pass nothing.
+     */
+    private function releaseReceiptFiles(array $paths, array $exceptItemIds = []): void
+    {
+        foreach (array_unique(array_filter($paths)) as $path) {
+            $stillReferenced = ExpenseClaimItem::query()
+                ->when($exceptItemIds, fn ($q) => $q->whereNotIn('id', $exceptItemIds))
+                ->where(fn ($q) => $q->where('receipt_path', $path)
+                    ->orWhereJsonContains('receipt_paths', $path)
+                    ->orWhereJsonContains('supporting_paths', $path))
+                ->exists();
+
+            if (! $stillReferenced) {
+                Storage::disk('local')->delete($path);
+            }
+        }
+    }
+
+    /**
+     * Raise this request's memory ceiling to config('claims.pdf_memory_limit') — never
      * lower it, and never touch an unlimited (-1) or already-generous limit. Same convention
      * (and same reasoning) as CaptureService::raiseMemoryFloor() in the Email Workflow engine:
      * a flat ini_set is a ceiling as often as it is a floor, and quietly capping a pool that
@@ -1816,9 +1889,9 @@ class ExpenseClaimController extends Controller
      * Best-effort by design: a pool that pins memory_limit via php_admin_value wins, and the
      * export's streaming already keeps peak memory flat without any of this.
      */
-    private function raiseMemoryFloor(): void
+    private function raisePdfMemoryFloor(): void
     {
-        $floor = (string) config('claims.zip_export.memory_limit', '');
+        $floor = (string) config('claims.pdf_memory_limit', '');
         if ($floor === '') {
             return;
         }

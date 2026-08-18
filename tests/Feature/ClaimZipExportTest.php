@@ -16,8 +16,13 @@ use Tests\TestCase;
  * every claim with addFromString(), so all PDFs sat in memory at once, and the 4th claim's
  * receipt then needed a 21 MB GD buffer that no longer fitted. The export now streams each
  * PDF to a temp file, so peak memory is flat in the number of claims — and the batch is
- * capped by wall clock (Cloudflare's 100s edge timeout) with the omissions written into the
- * archive instead of silently dropped.
+ * bounded by wall clock, with the omissions written into the archive instead of silently
+ * dropped.
+ *
+ * The clock that binds is nginx's `proxy_read_timeout 60s` on the site's own vhost, NOT
+ * Cloudflare's 100s edge timeout: the NAS gives up first. Because a claim costs ~0.8s
+ * receipt-less and 4.4-4.9s carrying several 7-megapixel photos (measured on the production
+ * NAS, 2026-08-18), the bound is a time budget the loop projects against, not a claim count.
  */
 class ClaimZipExportTest extends TestCase
 {
@@ -220,6 +225,73 @@ class ClaimZipExportTest extends TestCase
         }
     }
 
+    /**
+     * The bound that actually protects this endpoint is TIME, not a claim count.
+     *
+     * nginx closes the request at `proxy_read_timeout 60s` (Cloudflare's 100s never gets a
+     * chance), and a claim costs anywhere from ~0.8s receipt-less to ~5s carrying several
+     * 7-megapixel photos — measured on the production NAS 2026-08-18. So a fixed count cannot
+     * express the limit, and the loop stops on the clock instead.
+     */
+    public function test_the_export_stops_on_the_time_budget_and_names_what_it_left_out(): void
+    {
+        // Small enough that the projection trips after the first claim, whatever the hardware.
+        config(['claims.zip_export.time_budget' => 0.0001]);
+        $cat = $this->category();
+        foreach (['Alice A', 'Bob B', 'Carol C'] as $name) {
+            $this->processedClaim($cat, $name);
+        }
+
+        $entries = $this->readZip(
+            $this->actingAs($this->hrManager())->get(route('hr.claims.download-zip', ['year' => 2026]))
+        );
+
+        $pdfs = array_filter(array_keys($entries), fn ($n) => str_ends_with($n, '.pdf'));
+        $this->assertCount(1, $pdfs, 'The first claim must always be rendered — a bound that returns nothing is worse than a partial archive.');
+
+        $notes = $entries['_EXPORT-NOTES.txt'] ?? '';
+        $this->assertStringContainsString('time limit', $notes, 'A time-bounded stop must say so — "batch limit of 60" while holding 1 PDF reads as a broken export.');
+        $this->assertStringContainsString('Included in this ZIP:   1', $notes);
+
+        // Both survivors named, so the operator knows exactly what to re-run for.
+        foreach (ExpenseClaim::orderByDesc('processed_at')->get()->slice(1) as $claim) {
+            $this->assertStringContainsString((string) $claim->claim_number, $notes);
+        }
+    }
+
+    /** The count cap is a backstop now, so it must still name itself when IT is what bit. */
+    public function test_the_count_backstop_is_reported_as_a_count_not_as_a_timeout(): void
+    {
+        config(['claims.zip_export.max_claims' => 1, 'claims.zip_export.time_budget' => 600]);
+        $cat = $this->category();
+        $this->processedClaim($cat, 'Alice A');
+        $this->processedClaim($cat, 'Bob B');
+
+        $entries = $this->readZip(
+            $this->actingAs($this->hrManager())->get(route('hr.claims.download-zip', ['year' => 2026]))
+        );
+
+        $notes = $entries['_EXPORT-NOTES.txt'] ?? '';
+        $this->assertStringContainsString('batch limit of 1 claims', $notes);
+        $this->assertStringNotContainsString('time limit', $notes);
+    }
+
+    /** A budget the batch never approaches must not truncate anything. */
+    public function test_a_generous_time_budget_leaves_the_export_whole(): void
+    {
+        config(['claims.zip_export.time_budget' => 600]);
+        $cat = $this->category();
+        $this->processedClaim($cat, 'Alice A');
+        $this->processedClaim($cat, 'Bob B');
+
+        $entries = $this->readZip(
+            $this->actingAs($this->hrManager())->get(route('hr.claims.download-zip', ['year' => 2026]))
+        );
+
+        $this->assertCount(2, $entries);
+        $this->assertArrayNotHasKey('_EXPORT-NOTES.txt', $entries);
+    }
+
     /** A complete export gets no notes file — the archive alone is the answer. */
     public function test_complete_export_carries_no_notes_file(): void
     {
@@ -272,6 +344,11 @@ class ClaimZipExportTest extends TestCase
      * The export raises the memory ceiling because a batch render legitimately needs the room
      * — but a flat ini_set is a ceiling as often as it is a floor. Same rule as the Email
      * Workflow sweep: raise a stingy limit, leave a generous or unlimited one alone.
+     *
+     * The floor is read from claims.pdf_memory_limit and applied inside buildClaimPdf(), not
+     * on this endpoint, because the cost it covers is per-IMAGE and a single-claim download
+     * pays it too. Setting the retired claims.zip_export.memory_limit here would still pass —
+     * the new key's default is also 512M — so it would assert nothing at all.
      */
     public function test_memory_limit_is_a_floor_not_a_flat_setting(): void
     {
@@ -281,12 +358,12 @@ class ClaimZipExportTest extends TestCase
         $original = ini_get('memory_limit');
 
         try {
-            config(['claims.zip_export.memory_limit' => '512M']);
+            config(['claims.pdf_memory_limit' => '384M']);
 
             // Stingy → raised to the floor.
             ini_set('memory_limit', '128M');
             $this->actingAs($hr)->get(route('hr.claims.download-zip', ['year' => 2026]))->assertStatus(200);
-            $this->assertSame('512M', ini_get('memory_limit'), 'A stingy limit should have been raised.');
+            $this->assertSame('384M', ini_get('memory_limit'), 'A stingy limit should have been raised.');
 
             // Already generous → left alone, not capped down to the floor.
             ini_set('memory_limit', '1G');
