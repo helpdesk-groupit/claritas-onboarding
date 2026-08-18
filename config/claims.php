@@ -163,6 +163,32 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Approved-claim ZIP export (HR bulk download)
+    |--------------------------------------------------------------------------
+    | Rendering a batch of claim PDFs is one of the heaviest things this app
+    | does in a web request: each claim embeds its receipt images, and dompdf
+    | decodes every image through GD, which costs w*h*4 bytes of transient RAM
+    | (a 5-megapixel receipt photo = ~22 MB) on top of the PDF itself.
+    |
+    | 'max_claims' bounds the batch by WALL CLOCK, not memory — the export
+    | renders at roughly 1s/claim, and production sits behind Cloudflare, whose
+    | edge read timeout is 100s (a 524 with no explanation). Keep this low
+    | enough that a full batch finishes inside that budget. When a filter
+    | matches more, the export is NOT silently truncated: the ZIP carries an
+    | _EXPORT-NOTES.txt naming exactly what was left out.
+    |
+    | 'memory_limit' is a safety margin for the per-image decode spike, not the
+    | fix for batch size — the export streams each PDF to a temp file, so peak
+    | memory is flat regardless of how many claims are in the batch. Set to
+    | null to leave the pool's own memory_limit alone.
+    */
+    'zip_export' => [
+        'max_claims' => (int) env('CLAIMS_ZIP_MAX_CLAIMS', 60),
+        'memory_limit' => env('CLAIMS_ZIP_MEMORY_LIMIT', '512M'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Public holidays (deadline roll-back)
     |--------------------------------------------------------------------------
     | The 20th submission deadline rolls back to the preceding working day when

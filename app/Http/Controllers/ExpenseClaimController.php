@@ -1648,16 +1648,15 @@ class ExpenseClaimController extends Controller
             $q->whereRaw('COALESCE(submitted_at, created_at) < ?', [$rangeEnd->toDateTimeString()]);
         }
 
-        $claims = $q->orderByDesc('processed_at')->get()
+        $matched = $q->orderByDesc('processed_at')->get()
             ->filter(function (ExpenseClaim $claim) use ($year, $month) {
                 $cycle = $this->claimCycle($claim);
 
                 return (! $year || $cycle['year'] === $year) && (! $month || $cycle['month'] === $month);
             })
-            ->take(200)
             ->values();
 
-        if ($claims->isEmpty()) {
+        if ($matched->isEmpty()) {
             return back()->with('error', 'No processed claims match the current filter.');
         }
 
@@ -1667,24 +1666,198 @@ class ExpenseClaimController extends Controller
             return back()->with('error', 'ZIP download isn’t available on this server (the PHP “zip” extension is disabled). Please download the claims individually, or ask IT to enable it.');
         }
 
-        $tmp = tempnam(sys_get_temp_dir(), 'claims').'.zip';
-        $zip = new \ZipArchive;
-        $zip->open($tmp, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
-        $used = [];
-        foreach ($claims as $claim) {
-            $name = $claim->pdfFilename();
-            $unique = $name;
-            $i = 2;
-            while (isset($used[$unique])) {
-                $unique = preg_replace('/\.pdf$/', '', $name)." ({$i}).pdf";
-                $i++;
-            }
-            $used[$unique] = true;
-            $zip->addFromString($unique, $this->buildClaimPdf($claim)->output());
-        }
-        $zip->close();
+        // Bound the batch by wall clock (~1s/claim vs Cloudflare's 100s edge timeout), and
+        // record what that left out — a finance export that quietly stops at N is worse than
+        // one that says so. See config('claims.zip_export').
+        $cap = max(1, (int) config('claims.zip_export.max_claims', 60));
+        $claims = $matched->take($cap)->values();
+        $omitted = $matched->slice($cap)->values();
 
-        return response()->download($tmp, 'approved-claims-'.now()->format('Y-m-d').'.zip')->deleteFileAfterSend(true);
+        // Batch PDF rendering is the heaviest thing this app does in a request: dompdf decodes
+        // every embedded receipt through GD at w*h*4 bytes. Streaming (below) keeps the batch
+        // itself flat, but one large receipt photo can still spike ~20 MB on its own, so give
+        // this endpoint headroom over the pool's general-purpose default.
+        $this->raiseMemoryFloor();
+        @set_time_limit(0);
+
+        // Two temp locations, deliberately: the per-claim PDFs go in a private working dir we
+        // delete ourselves once they are inside the archive, and the ZIP sits OUTSIDE it so
+        // deleteFileAfterSend can reap it without stranding the directory.
+        $tmpDir = rtrim(sys_get_temp_dir(), '/\\').DIRECTORY_SEPARATOR.'claim-zip-'.bin2hex(random_bytes(8));
+        if (! @mkdir($tmpDir, 0700, true) && ! is_dir($tmpDir)) {
+            Log::error('Claim ZIP export: could not create temp dir', ['dir' => $tmpDir]);
+
+            return back()->with('error', 'Could not create a temporary working folder for the export. Please try again, or contact IT if it keeps happening.');
+        }
+        $zipPath = rtrim(sys_get_temp_dir(), '/\\').DIRECTORY_SEPARATOR.'claims-'.bin2hex(random_bytes(8)).'.zip';
+
+        $zip = new \ZipArchive;
+        if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            $this->deleteTempDir($tmpDir);
+            Log::error('Claim ZIP export: could not open archive', ['zip' => $zipPath]);
+
+            return back()->with('error', 'Could not start the ZIP file on the server. Please try again, or contact IT if it keeps happening.');
+        }
+
+        $used = [];
+        $failed = [];
+        try {
+            foreach ($claims as $index => $claim) {
+                $name = $claim->pdfFilename();
+                $unique = $name;
+                $i = 2;
+                while (isset($used[$unique])) {
+                    $unique = preg_replace('/\.pdf$/', '', $name)." ({$i}).pdf";
+                    $i++;
+                }
+
+                // Render straight to disk and drop every reference before moving on. Holding
+                // each rendered PDF in memory (addFromString) is what exhausted the 128 MB
+                // pool in production: 13 claims accumulated ~16 MB of PDF strings, and the
+                // 4th claim's receipt then needed a 21 MB GD buffer that no longer fitted.
+                $pdfPath = $tmpDir.DIRECTORY_SEPARATOR.$index.'.pdf';
+                try {
+                    $pdf = $this->buildClaimPdf($claim);
+                    file_put_contents($pdfPath, $pdf->output());
+                    unset($pdf);
+                    gc_collect_cycles();
+                } catch (\Throwable $e) {
+                    // One unrenderable claim must not cost the operator the whole export —
+                    // but it is named in _EXPORT-NOTES.txt so it can never pass unnoticed.
+                    report($e);
+                    @unlink($pdfPath);
+                    $failed[] = ($claim->claim_number ?: 'Claim #'.$claim->id).' — '.($claim->employee?->full_name ?? 'unknown employee');
+
+                    continue;
+                }
+
+                $used[$unique] = true;
+                $zip->addFile($pdfPath, $unique);
+            }
+
+            if ($notes = $this->zipExportNotes($matched->count(), $claims->count(), $omitted, $failed, $cap)) {
+                $zip->addFromString('_EXPORT-NOTES.txt', $notes);
+            }
+            $zip->close();
+        } catch (\Throwable $e) {
+            try {
+                $zip->close();
+            } catch (\Throwable) {
+                // Already broken — the archive is being discarded either way.
+            }
+            $this->deleteTempDir($tmpDir);
+            @unlink($zipPath);
+            report($e);
+
+            return back()->with('error', 'The ZIP export failed while building the file. Please narrow the filter (one cycle or one company at a time) and try again.');
+        }
+
+        // The PDFs are inside the archive now; the directory has served its purpose.
+        $this->deleteTempDir($tmpDir);
+
+        if (empty($used)) {
+            @unlink($zipPath);
+
+            return back()->with('error', 'None of the matching claims could be rendered to PDF. Please contact IT — the error has been logged.');
+        }
+
+        return response()->download($zipPath, 'approved-claims-'.now()->format('Y-m-d').'.zip')->deleteFileAfterSend(true);
+    }
+
+    /**
+     * Plain-language manifest for a ZIP export, written only when the archive is NOT the
+     * complete answer to the filter — i.e. the batch cap truncated it, or a claim failed to
+     * render. Silence over a partial finance export is the failure mode worth engineering
+     * against; an operator who sees every file they asked for gets no notes file at all.
+     */
+    private function zipExportNotes(int $matchedCount, int $includedCount, \Illuminate\Support\Collection $omitted, array $failed, int $cap): ?string
+    {
+        if ($omitted->isEmpty() && empty($failed)) {
+            return null;
+        }
+
+        $lines = [
+            'Claim PDF export — '.now()->format('d-m-Y H:i'),
+            'Matched by your filter: '.$matchedCount,
+            'Included in this ZIP:   '.$includedCount,
+            '',
+        ];
+
+        if ($omitted->isNotEmpty()) {
+            $lines[] = 'NOT INCLUDED — batch limit of '.$cap.' claims per download ('.$omitted->count().' left out).';
+            $lines[] = 'Re-run the export filtered to one submission cycle, or one company, to collect these:';
+            foreach ($omitted as $claim) {
+                $lines[] = '  - '.($claim->claim_number ?: 'Claim #'.$claim->id)
+                    .' — '.($claim->employee?->full_name ?? 'unknown employee')
+                    .' — '.($claim->resolvedCompany() ?: 'no company');
+            }
+            $lines[] = '';
+        }
+
+        if (! empty($failed)) {
+            $lines[] = 'FAILED TO RENDER — these claims are missing from this ZIP ('.count($failed).').';
+            $lines[] = 'Download them individually from the claim page, and report this to IT:';
+            foreach ($failed as $f) {
+                $lines[] = '  - '.$f;
+            }
+            $lines[] = '';
+        }
+
+        return implode(PHP_EOL, $lines);
+    }
+
+    /**
+     * Raise this request's memory ceiling to config('claims.zip_export.memory_limit') — never
+     * lower it, and never touch an unlimited (-1) or already-generous limit. Same convention
+     * (and same reasoning) as CaptureService::raiseMemoryFloor() in the Email Workflow engine:
+     * a flat ini_set is a ceiling as often as it is a floor, and quietly capping a pool that
+     * was deliberately given more room is the opposite of what this call is for.
+     *
+     * Best-effort by design: a pool that pins memory_limit via php_admin_value wins, and the
+     * export's streaming already keeps peak memory flat without any of this.
+     */
+    private function raiseMemoryFloor(): void
+    {
+        $floor = (string) config('claims.zip_export.memory_limit', '');
+        if ($floor === '') {
+            return;
+        }
+
+        $current = ini_get('memory_limit');
+        // -1 means unlimited: already better than anything we would set.
+        if ($current === false || trim((string) $current) === '-1') {
+            return;
+        }
+
+        $toBytes = function (string $value): int {
+            $value = trim($value);
+            $number = (int) $value;
+
+            return match (strtolower(substr($value, -1))) {
+                'g' => $number * 1024 * 1024 * 1024,
+                'm' => $number * 1024 * 1024,
+                'k' => $number * 1024,
+                default => $number,
+            };
+        };
+
+        if ($toBytes((string) $current) < $toBytes($floor)) {
+            @ini_set('memory_limit', $floor);
+        }
+    }
+
+    /** Remove a temp working directory and everything in it (one level deep — we only put files there). */
+    private function deleteTempDir(string $dir): void
+    {
+        if (! is_dir($dir)) {
+            return;
+        }
+        foreach ((array) glob($dir.DIRECTORY_SEPARATOR.'*') as $file) {
+            if (is_file($file)) {
+                @unlink($file);
+            }
+        }
+        @rmdir($dir);
     }
 
     /** Save the Event/purpose on a specific claim. */
