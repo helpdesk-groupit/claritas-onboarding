@@ -667,26 +667,37 @@
     // fill the km field. Used when a map screenshot has no km on it.
     function calcRouteDistance(c, stops, hint) {
         stops = (stops || []).filter(s => s && s !== '?');
-        if (stops.length < 2) { if (hint) hint.textContent = 'No route to measure — enter the km manually.'; return; }
-        if (hint) hint.textContent = '⏳ Calculating distance from the route…';
+        if (stops.length < 2) { setHint(hint, 'No route to measure — enter the km manually.', true); return; }
+        setHint(hint, '⏳ Calculating distance from the route…', false);
         fetch(ORS_ROUTE_URL, { method: 'POST', headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ stops: stops }) })
             .then(r => r.json()).then(d => {
                 if (d && d.ok && d.km) {
                     q(c,'.cc-i-km').value = d.km;
                     computeMileage(c);
-                    if (hint) hint.textContent = '≈ Estimated ' + d.km + ' km (maps estimate — may differ from Google; edit the km if you know the exact figure).';
+                    setHint(hint, '≈ Estimated ' + d.km + ' km (maps estimate — may differ from Google; edit the km if you know the exact figure).', false);
                 } else if (d && d.enabled === false) {
-                    if (hint) hint.textContent = 'Auto-distance is off — enter the km manually.';
+                    setHint(hint, 'Auto-distance is off — enter the km manually.', false);
                 } else {
-                    if (hint) hint.textContent = (d && d.message) ? d.message : 'Couldn’t calculate the distance — enter the km manually.';
+                    setHint(hint, (d && d.message) ? d.message : 'Couldn’t calculate the distance — enter the km manually.', true);
                 }
             })
-            .catch(() => { if (hint) hint.textContent = 'Couldn’t calculate the distance — enter the km manually.'; });
+            .catch(() => { setHint(hint, 'Couldn’t calculate the distance — enter the km manually.', true); });
     }
     const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const cardOf = (el) => el.closest('[data-claim-card]');
     const q = (c, sel) => c.querySelector(sel);
     const showErr = (el, msg) => { el.textContent = msg; el.classList.remove('d-none'); };
+    // Scan status text (.cc-scan-hint) covers everything from "Scanning…" to a hard failure in
+    // the same muted-gray span, so a "couldn't read this, please act" message read no differently
+    // from routine progress/success text and was easy to miss. problem=true switches it to a
+    // visible red so the ones that need the user to actually do something stand out.
+    const setHint = (el, text, problem) => {
+        if (!el) return;
+        el.textContent = text || '';
+        el.classList.toggle('text-danger', !!problem);
+        el.classList.toggle('fw-semibold', !!problem);
+        el.classList.toggle('text-muted', !problem);
+    };
 
     function syncTotal(c) {
         const a = parseFloat(q(c,'.cc-i-amount').value) || 0;
@@ -877,7 +888,7 @@
         setC(c, {});
         const sb = q(c,'.cc-scan-btn'); if (sb) sb.classList.add('d-none');
         const od = q(c,'.cc-ocr-details'); if (od) { od.classList.add('d-none'); od.innerHTML = ''; }
-        const h = q(c,'.cc-scan-hint'); if (h) h.textContent = '';
+        setHint(q(c,'.cc-scan-hint'), '', false);
         applyCapPreview(c); // category cleared → hide any leftover cap allowance hint
         applyReceiptCheck(c); // hide any leftover amount-mismatch warning
     }
@@ -913,16 +924,16 @@
         const fd = new FormData();
         files.forEach(f => fd.append('receipt_files[]', f));
         btn.disabled = true;
-        hint.textContent = 'Scanning ' + files.length + ' page' + (files.length === 1 ? '' : 's') + '… a long statement can take up to a minute.';
+        setHint(hint, 'Scanning ' + files.length + ' page' + (files.length === 1 ? '' : 's') + '… a long statement can take up to a minute.', false);
         fetch(SCAN_URL, { method: 'POST', headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' }, body: fd })
             .then(r => r.json()).then(d => {
                 btn.disabled = false;
-                if (!d || d.enabled === false) { hint.textContent = 'OCR is off — enter details manually.'; return; }
-                if (!d.ok || !Array.isArray(d.items) || !d.items.length) { hint.textContent = 'Couldn’t read those pages — try adding them one at a time, or screenshot just the rows you need.'; return; }
-                hint.textContent = '✨ Found ' + d.items.length + ' transactions — review and add them.' + (extraNote ? ' ' + extraNote : '');
+                if (!d || d.enabled === false) { setHint(hint, 'OCR is off — enter details manually.', false); return; }
+                if (!d.ok || !Array.isArray(d.items) || !d.items.length) { setHint(hint, 'Couldn’t read those pages — try adding them one at a time, or screenshot just the rows you need.', true); return; }
+                setHint(hint, '✨ Found ' + d.items.length + ' transactions — review and add them.' + (extraNote ? ' ' + extraNote : ''), false);
                 openMultiReview(c, d.items, files, d.truncated);
             })
-            .catch(() => { btn.disabled = false; hint.textContent = 'Scan failed — try again, or screenshot just the rows you need.'; });
+            .catch(() => { btn.disabled = false; setHint(hint, 'Scan failed — try again, or screenshot just the rows you need.', true); });
     }
 
     // ── PDF receipts: rasterise page 1 IN THE BROWSER (PDF.js, served same-origin) so the
@@ -1000,7 +1011,7 @@
             const base = (file.name || 'receipt').replace(/\.pdf$/i, '');
             const out = [];
             for (let i = 1; i <= n; i++) {
-                if (hint) hint.textContent = 'Preparing PDF — page ' + i + ' of ' + n + '…';
+                setHint(hint, 'Preparing PDF — page ' + i + ' of ' + n + '…', false);
                 const page = await pdf.getPage(i);
                 let viewport = page.getViewport({ scale: 2 }); // 2x for legible OCR
                 const MAXW = 1600;
@@ -1024,11 +1035,11 @@
         // A single PDF → render EVERY page to an image (multi-page statements have rows on
         // every page), then scan. One page → single scan; many → the multi-file review list.
         if (files.length === 1 && isPdfFile(files[0])) {
-            btn.disabled = true; hint.textContent = 'Preparing PDF…';
+            btn.disabled = true; setHint(hint, 'Preparing PDF…', false);
             pdfToPngFiles(files[0], hint).then(res => {
                 btn.disabled = false;
                 const pages = res.files;
-                if (!pages.length) { hint.textContent = 'Couldn’t read this PDF — please enter the details manually.'; return; }
+                if (!pages.length) { setHint(hint, 'Couldn’t read this PDF — please enter the details manually.', true); return; }
                 const note = res.capped ? ('Only the first ' + pages.length + ' of ' + res.total + ' pages were read — upload the rest separately if you need them.') : '';
                 if (pages.length === 1) { scanSingle(c, btn, pages[0], hint, details); }
                 else { scanMultipleFiles(c, pages, hint, btn, note); }
@@ -1042,12 +1053,12 @@
 
     function scanSingle(c, btn, scanFile, hint, details) {
         const fd = new FormData(); fd.append('receipt', scanFile);
-        btn.disabled = true; hint.textContent = 'Scanning…';
+        btn.disabled = true; setHint(hint, 'Scanning…', false);
         fetch(SCAN_URL, { method: 'POST', headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' }, body: fd })
             .then(r => r.json()).then(d => {
                 btn.disabled = false;
-                if (!d || d.enabled === false) { hint.textContent = 'OCR is off — enter details manually.'; return; }
-                if (!d.ok) { hint.textContent = (d && d.message) ? d.message : 'Couldn’t read it — enter details manually.'; return; }
+                if (!d || d.enabled === false) { setHint(hint, 'OCR is off — enter details manually.', false); return; }
+                if (!d.ok) { setHint(hint, (d && d.message) ? d.message : 'Couldn’t read it — enter details manually.', true); return; }
                 // One image holding several receipts / a dated statement → review table.
                 // When editing a single item, a re-scan must be one receipt — but if it still
                 // reads as several lines, unlock the fields anyway so the user isn't stuck.
@@ -1055,10 +1066,10 @@
                     if (c.dataset.editingItem) {
                         setEditLock(c, false);
                         const att = q(c,'.cc-edit-att'); if (att) att.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>New receipt scanned — it will replace the previous attachment.</span>';
-                        hint.textContent = 'Read several lines on this receipt — kept the current details; adjust if needed, then Save.';
+                        setHint(hint, 'Read several lines on this receipt — kept the current details; adjust if needed, then Save.', false);
                         return;
                     }
-                    hint.textContent = '✨ Found ' + d.items.length + ' transactions — review and add them.';
+                    setHint(hint, '✨ Found ' + d.items.length + ' transactions — review and add them.', false);
                     // Attach the ORIGINAL uploaded file (e.g. the PDF), not the rasterised scan image.
                     const origFile = (q(c,'.cc-i-file').files[0]) || scanFile;
                     openMultiReview(c, d.items, [origFile], d.truncated);
@@ -1084,7 +1095,7 @@
                         // The map already shows Google's exact distance — use it (most accurate).
                         q(c,'.cc-i-km').value = parseFloat(d.distance_km);
                         computeMileage(c);
-                        hint.textContent = '✨ Distance read from the map — pick the vehicle, then enter the description & date.';
+                        setHint(hint, '✨ Distance read from the map — pick the vehicle, then enter the description & date.', false);
                         bits.push(parseFloat(d.distance_km) + ' km (from the map)');
                     } else {
                         // No km on the screenshot → best-effort estimate from the route via ORS.
@@ -1122,11 +1133,11 @@
                     // below were shown even when every field came back empty/null, which read as a
                     // silent no-op (nothing on screen changes, yet the hint claims success).
                     const gotSomething = !!(d.category_id || d.amount || d.vendor || d.item_description || d.paid_by || okDate);
-                    hint.textContent = !gotSomething
+                    setHint(hint, !gotSomething
                         ? 'Couldn’t make out anything useful on this file — enter the details manually, or try a clearer photo/screenshot.'
                         : okDate
                             ? '✨ Category, amount & date auto-filled from the receipt — now add the description.'
-                            : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.';
+                            : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.', !gotSomething);
                     // Capture Category C (read-only receipt details) into the fields below.
                     setC(c, { company: d.vendor, itemdesc: d.item_description, date: fixedSingleDate, paidby: d.paid_by, total: d.amount });
                     applyReceiptCheck(c); // re-check now that the receipt total is captured
@@ -1142,10 +1153,10 @@
                 if (c.dataset.editingItem) {
                     setEditLock(c, false);
                     const att = q(c,'.cc-edit-att'); if (att) att.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>New receipt scanned — it will replace the previous attachment.</span>';
-                    hint.textContent = '✨ Re-scanned — review the details, then Save changes.';
+                    setHint(hint, '✨ Re-scanned — review the details, then Save changes.', false);
                 }
             })
-            .catch(() => { btn.disabled = false; hint.textContent = 'Scan failed — enter details manually.'; });
+            .catch(() => { btn.disabled = false; setHint(hint, 'Scan failed — enter details manually.', true); });
     }
 
     function fillRow(tr, item) {
@@ -1232,7 +1243,7 @@
         }
         // Lock everything until a fresh receipt is re-uploaded and scanned.
         setEditLock(c, true);
-        const eh = q(c,'.cc-scan-hint'); if (eh) eh.textContent = 'Re-upload & Scan the receipt to edit this item.';
+        setHint(q(c,'.cc-scan-hint'), 'Re-upload & Scan the receipt to edit this item.', false);
     }
 
     // AJAX-save the claim's Category B details (so items inherit the current values).
@@ -1414,7 +1425,7 @@
                     appendRow(c, d.item);
                 }
                 updateTotals(c, d.claim_total, d.item_count);
-                if (d.cap_note) { const h = q(c,'.cc-scan-hint'); if (h) h.textContent = d.cap_note; }
+                if (d.cap_note) { setHint(q(c,'.cc-scan-hint'), d.cap_note, false); }
                 resetEntry(c);
             })
             .catch(() => { btn.disabled = false; showErr(err, 'Could not save the item — try again.'); });
@@ -1810,7 +1821,7 @@
         if (e.target.matches('.cc-i-file')) {
             const c = cardOf(e.target); if (!c) return;
             const sb = q(c,'.cc-scan-btn'); if (sb) sb.classList.toggle('d-none', !e.target.files.length);
-            const h = q(c,'.cc-scan-hint'); if (h) h.textContent = '';
+            setHint(q(c,'.cc-scan-hint'), '', false);
         }
     });
     document.addEventListener('click', function (e) {
