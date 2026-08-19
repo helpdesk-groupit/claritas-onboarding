@@ -768,15 +768,6 @@
                         <div class="form-text text-muted small">
                             Registered suppliers come from <a href="{{ route('vendors.index') }}" target="_blank">Vendor Management</a>. Picking one overrides the free text.
                         </div></div>
-                    <div class="col-md-4">
-                        @include('it.assets._invoice-select', [
-                            'id' => 'companyInvoiceSelect',
-                            'vendorSelect' => 'companyVendorSelect',
-                            'ownership' => 'company',
-                            'selected' => old('origin_billing_document_id', ''),
-                            'disabled' => old('ownership_type', 'company') !== 'company',
-                        ])
-                    </div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Purchase Cost (RM)</label>
                         <input type="number" name="purchase_cost" class="form-control" value="{{ old('purchase_cost') }}" step="0.01"></div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Purchase Date</label>
@@ -828,15 +819,6 @@
                     <div class="col-md-3"><label class="form-label fw-semibold">Contract Reference</label>
                         <input type="text" name="rental_contract_reference" class="form-control" value="{{ old('rental_contract_reference') }}" placeholder="Contract / PO number">
                         <div class="form-text text-muted small">Free text. Groups the assets when no invoice is picked.</div></div>
-                    <div class="col-md-4">
-                        @include('it.assets._invoice-select', [
-                            'id' => 'rentalInvoiceSelect',
-                            'vendorSelect' => 'rentalVendorSelect',
-                            'ownership' => 'rental',
-                            'selected' => old('origin_billing_document_id', ''),
-                            'disabled' => old('ownership_type') !== 'rental',
-                        ])
-                    </div>
                     <div class="col-md-3"><label class="form-label fw-semibold">Invoice(s)</label>
                         <input type="file" name="invoice_documents[]" id="rentalInvoiceInput" class="form-control" accept=".pdf,.jpg,.jpeg,.png" multiple disabled>
                         <div class="form-text text-muted small">PDF or images. Multiple files allowed.</div></div>

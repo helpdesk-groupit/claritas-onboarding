@@ -141,15 +141,6 @@
                 <input type="text" name="purchase_vendor" class="form-control mt-2" value="{{ old('purchase_vendor',$asset->purchase_vendor) }}"
                        placeholder="Or type an unregistered supplier">
                 <div class="form-text text-muted small">Picking a registered supplier overrides the free text.</div></div>
-            <div class="col-md-4">
-                @include('it.assets._invoice-select', [
-                    'id' => 'editCompanyInvoiceSelect',
-                    'vendorSelect' => 'editCompanyVendorSelect',
-                    'ownership' => 'company',
-                    'selected' => old('origin_billing_document_id', $asset->origin_billing_document_id ?? ''),
-                    'disabled' => $ownershipType === 'rental',
-                ])
-            </div>
             <div class="col-md-4"><label class="form-label fw-semibold">Purchase Cost (RM)</label>
                 <input type="number" name="purchase_cost" class="form-control" value="{{ old('purchase_cost',$asset->purchase_cost) }}" step="0.01"></div>
             <div class="col-md-4"><label class="form-label fw-semibold">Purchase Date</label>
@@ -211,15 +202,6 @@
             <div class="col-md-3"><label class="form-label fw-semibold">Contract Reference</label>
                 <input type="text" name="rental_contract_reference" class="form-control" value="{{ old('rental_contract_reference',$asset->rental_contract_reference) }}" placeholder="Contract / PO number">
                 <div class="form-text text-muted small">Free text. Used to group the assets when no invoice is picked below.</div></div>
-            <div class="col-md-4">
-                @include('it.assets._invoice-select', [
-                    'id' => 'editRentalInvoiceSelect',
-                    'vendorSelect' => 'editRentalVendorSelect',
-                    'ownership' => 'rental',
-                    'selected' => old('origin_billing_document_id', $asset->origin_billing_document_id ?? ''),
-                    'disabled' => $ownershipType !== 'rental',
-                ])
-            </div>
             <div class="col-md-3"><label class="form-label fw-semibold">Invoice(s) {{ $asset->invoice_documents ? '— '.count($asset->invoice_documents).' file(s)' : '' }}</label>
                 <input type="file" name="invoice_documents[]" id="editRentalInvoiceInput" class="form-control" accept=".pdf,.jpg,.jpeg,.png" multiple
                     {{ old('ownership_type', $asset->ownership_type) !== 'rental' ? 'disabled' : '' }}>

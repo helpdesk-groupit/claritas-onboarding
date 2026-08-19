@@ -120,9 +120,6 @@ class AssetController extends Controller
         // Split by what they're engaged for so the picker only offers vendors that make
         // sense for the chosen ownership: rented FROM a rental vendor, bought FROM a supplier.
         $vendorOptions = self::vendorPickerOptions();
-        // Every vendor's invoices in one list; the form narrows it to the picked vendor
-        // client-side off data-vendor, the same no-AJAX device the vendor auto-fill uses.
-        $invoiceOptions = \App\Models\VendorBillingDocument::invoiceOptions();
         // How many vendors the quarterly sweep can actually ask to quote. There is no
         // "primary" one — it RFQs the whole active e-waste market so the offers can be
         // compared — so the number, not a name, is what tells IT the sweep can send.
@@ -257,7 +254,7 @@ class AssetController extends Controller
             'overviewCompanyTotal', 'overviewCompanyByType', 'overviewCompanyByCompany',
             'overviewRentalTotal', 'overviewRentalByCompany',
             'ewasteRfqVendorCount', 'openBatches', 'openReturnForms', 'returnForms', 'canDecommission',
-            'vendorOptions', 'invoiceOptions'
+            'vendorOptions'
         ));
     }
 
@@ -438,13 +435,8 @@ class AssetController extends Controller
         // free-text names for its filter dropdown — a different variable of a different
         // type. Don't reuse either name across the two views.
         $vendorOptions = self::vendorPickerOptions($asset);
-        // All vendors' invoices, filtered to the picked vendor client-side. The asset's OWN
-        // linked invoice is always among them, so a save that touches something unrelated
-        // can never blank the link by falling back to "" — the trap vendorPickerOptions()
-        // already guards against on the vendor select.
-        $invoiceOptions = \App\Models\VendorBillingDocument::invoiceOptions();
 
-        return view('it.assets.edit', compact('asset', 'employees', 'pendingOnboardings', 'registeredCompanies', 'vendorOptions', 'invoiceOptions'));
+        return view('it.assets.edit', compact('asset', 'employees', 'pendingOnboardings', 'registeredCompanies', 'vendorOptions'));
     }
 
     public function update(Request $request, AssetInventory $asset)
@@ -1776,14 +1768,6 @@ class AssetController extends Controller
             $data['vendor_id'] = $vendorId;
             $vendorName = $vendorId ? (\App\Models\Vendor::find($vendorId)?->name) : null;
 
-            // The invoice the asset arrived on. Validation has already refused an id from
-            // another vendor, so the only case left is "the vendor was cleared" — and a link
-            // to an invoice with no vendor beside it would keep grouping this asset under a
-            // company the record no longer claims. Clearing the vendor clears the invoice.
-            $data['origin_billing_document_id'] = $vendorId
-                ? ($validated['origin_billing_document_id'] ?? null)
-                : null;
-
             if ($data['ownership_type'] === 'rental') {
                 $data['company_name'] = null;
                 $data['company_supplied_to'] = $validated['company_supplied_to'] ?? null;
@@ -1894,22 +1878,6 @@ class AssetController extends Controller
             // One FK for both ownership types — rented-from when ownership_type = rental,
             // purchased-from when = company. (Was rental_vendor_id until 2026-08-06.)
             $rules['vendor_id'] = 'nullable|exists:vendors,id';
-            // The billing document this asset arrived on, scoped to the vendor submitted
-            // WITH it. Same guard a billing document's own contract link gets, and for the
-            // same reason: an id from another vendor would file the asset under an invoice
-            // from a company it has nothing to do with, on a page grouped per vendor.
-            //
-            // With NO vendor submitted the field is not invalid, it is INAPPLICABLE — the
-            // operator cleared the vendor, and buildAssetData() drops the invoice with it.
-            // Refusing here instead would bounce that save with an error about a field the
-            // picker was meant to have cleared itself, which reads as a bug in the form.
-            $rules['origin_billing_document_id'] = $request->filled('vendor_id')
-                ? [
-                    'nullable',
-                    Rule::exists('vendor_billing_documents', 'id')
-                        ->where('vendor_id', $request->input('vendor_id')),
-                ]
-                : ['nullable'];
             $rules['rental_vendor_contact'] = 'nullable|string|max:255';
             $rules['rental_cost_per_month'] = 'nullable|numeric|min:0';
             $rules['rental_start_date'] = 'nullable|date';
@@ -1949,10 +1917,6 @@ class AssetController extends Controller
         }
 
         return $request->validate($rules, [
-            // The default ("selected origin billing document id is invalid") does not say
-            // WHY, and the reason is nearly always the same one: the invoice belongs to a
-            // different vendor than the one now picked.
-            'origin_billing_document_id.exists' => 'That invoice does not belong to the selected vendor. Pick the vendor first, then its invoice.',
             // "The decommission reason field is required" does not say why it matters here.
             'decommission_reason.required' => 'State why this asset is being written off — the reason is sent to the e-waste vendor and printed on the final decommissioning report.',
         ]);

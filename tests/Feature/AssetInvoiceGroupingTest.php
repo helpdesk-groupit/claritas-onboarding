@@ -341,60 +341,6 @@ class AssetInvoiceGroupingTest extends TestCase
         $this->assertSame('', $asset->specSummary());
     }
 
-    // ── The asset form ────────────────────────────────────────────────────────
-    public function test_an_invoice_belonging_to_another_vendor_is_refused(): void
-    {
-        $ours = $this->vendor();
-        $theirs = $this->vendor(['name' => 'Someone Else Sdn Bhd']);
-        $theirInvoice = $this->invoice($theirs);
-
-        $asset = $this->asset(['vendor_id' => $ours->id]);
-
-        $this->actingAs($this->itManager())
-            ->put(route('assets.update', $asset), $this->formPayload($asset, [
-                'vendor_id' => $ours->id,
-                'origin_billing_document_id' => $theirInvoice->id,
-            ]))
-            ->assertSessionHasErrors('origin_billing_document_id');
-
-        // Filing it anyway would group this asset under another company's bill.
-        $this->assertNull($asset->fresh()->origin_billing_document_id);
-    }
-
-    public function test_clearing_the_vendor_clears_the_invoice_the_asset_arrived_on(): void
-    {
-        $vendor = $this->vendor();
-        $invoice = $this->invoice($vendor);
-        $asset = $this->asset(['vendor_id' => $vendor->id, 'origin_billing_document_id' => $invoice->id]);
-
-        $this->actingAs($this->itManager())
-            ->put(route('assets.update', $asset), $this->formPayload($asset, [
-                'vendor_id' => null,
-                'origin_billing_document_id' => $invoice->id,
-            ]))
-            ->assertSessionHasNoErrors();
-
-        // A link to an invoice with no vendor beside it would keep grouping the asset under
-        // a company the record no longer claims.
-        $this->assertNull($asset->fresh()->origin_billing_document_id);
-    }
-
-    public function test_an_asset_can_be_linked_to_its_vendors_invoice_from_the_form(): void
-    {
-        $vendor = $this->vendor();
-        $invoice = $this->invoice($vendor);
-        $asset = $this->asset(['vendor_id' => $vendor->id]);
-
-        $this->actingAs($this->itManager())
-            ->put(route('assets.update', $asset), $this->formPayload($asset, [
-                'vendor_id' => $vendor->id,
-                'origin_billing_document_id' => $invoice->id,
-            ]))
-            ->assertSessionHasNoErrors();
-
-        $this->assertSame($invoice->id, $asset->fresh()->origin_billing_document_id);
-    }
-
     // ── Register this invoice ─────────────────────────────────────────────────
     public function test_registering_a_reference_files_it_and_links_every_asset_under_it(): void
     {
@@ -542,25 +488,6 @@ class AssetInvoiceGroupingTest extends TestCase
         $this->assertNotFalse($end, 'No Report pane to bound the Assets pane with — the fixture needs a pending rental asset.');
 
         return substr($html, $start, $end - $start);
-    }
-
-    /**
-     * The asset edit form posts every Section C field; a partial payload would blank the
-     * ones left out and the test would be asserting against a different save than the UI's.
-     */
-    private function formPayload(AssetInventory $asset, array $overrides = []): array
-    {
-        return array_merge([
-            'asset_tag' => $asset->asset_tag,
-            'asset_category' => $asset->asset_category,
-            'asset_type' => $asset->asset_type,
-            'brand' => $asset->brand,
-            'model' => $asset->model,
-            'serial_number' => $asset->serial_number,
-            'ownership_type' => $asset->ownership_type,
-            'status' => $asset->status,
-            'asset_condition' => $asset->asset_condition,
-        ], $overrides);
     }
 
     /** Run the migration's data step against the current rows, without re-running its schema change. */
