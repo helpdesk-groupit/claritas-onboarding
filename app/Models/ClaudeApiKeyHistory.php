@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -16,11 +17,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  */
 class ClaudeApiKeyHistory extends Model
 {
-    protected $fillable = ['label', 'masked_key', 'set_by', 'started_at', 'ended_at'];
+    protected $fillable = ['label', 'masked_key', 'set_by', 'started_at', 'ended_at', 'expiry_reminders_sent'];
 
     protected $casts = [
         'started_at' => 'datetime',
         'ended_at' => 'datetime',
+        'expiry_reminders_sent' => 'array',
     ];
 
     public function setBy(): BelongsTo
@@ -82,5 +84,37 @@ class ClaudeApiKeyHistory extends Model
         $until = $this->ended_at ? $this->ended_at->format('d M Y') : 'present';
 
         return $from.' – '.$until;
+    }
+
+    /**
+     * Company policy (not an Anthropic-enforced limit) treats a key as due for
+     * rotation this many days after it was set. Derived from started_at rather
+     * than stored, so it can never drift from the fact of record.
+     */
+    public function expiresAt(): Carbon
+    {
+        return $this->started_at->copy()->addDays(config('claude.key_expiry.days', 90));
+    }
+
+    /** Signed days remaining until expiry — negative once the key is past due. */
+    public function daysUntilExpiry(): int
+    {
+        return (int) now()->startOfDay()->diffInDays($this->expiresAt()->copy()->startOfDay(), false);
+    }
+
+    /** Which of the configured reminder thresholds (7/3/0, etc.) have already been sent. */
+    public function remindersSent(): array
+    {
+        return $this->expiry_reminders_sent ?? [];
+    }
+
+    /** Records that the $thresholdDays milestone has been emailed, so it never resends. */
+    public function markReminderSent(int $thresholdDays): void
+    {
+        $sent = $this->remindersSent();
+        if (! in_array($thresholdDays, $sent, true)) {
+            $sent[] = $thresholdDays;
+            $this->update(['expiry_reminders_sent' => $sent]);
+        }
     }
 }

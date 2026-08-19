@@ -119,3 +119,8 @@ Schedule::command('queue:work database --stop-when-empty --tries=1 --timeout=360
     ->withoutOverlapping(30)
     ->runInBackground()
     ->appendOutputTo(storage_path('logs/queue-worker.log'));
+
+// Claude API key: this is a company-policy expiry (Anthropic doesn't enforce it), tracked
+// off ClaudeApiKeyHistory.started_at. Daily + self-gating like the claim reminders; fires on
+// daysLeft <= threshold (not ==) so a missed day still catches up rather than going silent.
+Schedule::command('claude-api:remind-key-expiry')->dailyAt('08:30')->withoutOverlapping();

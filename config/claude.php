@@ -43,4 +43,30 @@ return [
 
     'usd_myr_rate' => (float) env('CLAUDE_USD_MYR_RATE', 4.70),
 
+    /*
+    |--------------------------------------------------------------------------
+    | API key expiry reminders
+    |--------------------------------------------------------------------------
+    |
+    | Company policy retires an Anthropic API key `days` after it was set —
+    | Anthropic does not enforce this itself, so it is tracked here against
+    | ClaudeApiKeyHistory.started_at (see ClaudeApiKeyHistory::expiresAt()) and
+    | chased by the `claude-api:remind-key-expiry` command. remind_before_days
+    | is how many days before expiry to email a reminder (0 = the day of).
+    | extra_recipients are named individuals who aren't reached by an IT role
+    | (Group IT already gets every reminder via User::itEmailRecipients()).
+    |
+    */
+
+    'key_expiry' => [
+        'days' => (int) env('CLAUDE_KEY_EXPIRY_DAYS', 90),
+
+        'remind_before_days' => [7, 3, 0],
+
+        'extra_recipients' => array_values(array_filter(array_map('trim', explode(',', env(
+            'CLAUDE_KEY_EXPIRY_EXTRA_RECIPIENTS',
+            'chchang@claritas.asia,kelvin.leow@nurengroup.com'
+        ))))),
+    ],
+
 ];
