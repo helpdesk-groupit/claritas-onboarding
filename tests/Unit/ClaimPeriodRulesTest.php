@@ -21,6 +21,57 @@ class ClaimPeriodRulesTest extends TestCase
         $this->assertFalse(ClaimRulesService::itemDateInPeriod('2025-04-15', 2026, 4));
     }
 
+    public function test_a_receipt_is_claimed_under_the_period_it_pays_for_not_the_day_it_was_paid(): void
+    {
+        // The Jaya One season-parking receipt: settled 30/07/2026, covers 1/08 – 31/08/2026.
+        // Its payment date is in July, but the expense is August's.
+        $this->assertFalse(ClaimRulesService::itemDateInPeriod('2026-07-30', 2026, 8));
+        $this->assertTrue(ClaimRulesService::coverageInPeriod('2026-08-01', '2026-08-31', 2026, 8));
+
+        // ...and it does NOT thereby become a July expense.
+        $this->assertFalse(ClaimRulesService::coverageInPeriod('2026-08-01', '2026-08-31', 2026, 7));
+    }
+
+    public function test_a_coverage_period_overlapping_the_claim_month_counts(): void
+    {
+        // A quarterly pass genuinely is an expense of each month it covers. Claiming the same
+        // document three times is stopped by the receipt-hash dedup and the cap, not here.
+        $this->assertTrue(ClaimRulesService::coverageInPeriod('2026-07-01', '2026-09-30', 2026, 7));
+        $this->assertTrue(ClaimRulesService::coverageInPeriod('2026-07-01', '2026-09-30', 2026, 8));
+        $this->assertTrue(ClaimRulesService::coverageInPeriod('2026-07-01', '2026-09-30', 2026, 9));
+        $this->assertFalse(ClaimRulesService::coverageInPeriod('2026-07-01', '2026-09-30', 2026, 10));
+
+        // Touching the very first / very last day of the month is still an overlap.
+        $this->assertTrue(ClaimRulesService::coverageInPeriod('2026-08-31', '2026-09-30', 2026, 8));
+        $this->assertTrue(ClaimRulesService::coverageInPeriod('2026-07-01', '2026-08-01', 2026, 8));
+    }
+
+    public function test_a_period_that_cannot_be_believed_is_no_period_at_all(): void
+    {
+        // Half a range is not a range — the other end would have to be invented, and the
+        // caller is about to trust it to admit a receipt from outside the month.
+        $this->assertNull(ClaimRulesService::coveragePeriod('2026-08-01', null));
+        $this->assertNull(ClaimRulesService::coveragePeriod(null, '2026-08-31'));
+        $this->assertNull(ClaimRulesService::coveragePeriod('2026-08-01', ''));
+
+        // Backwards, unreadable, or longer than any real season/subscription term.
+        $this->assertNull(ClaimRulesService::coveragePeriod('2026-08-31', '2026-08-01'));
+        $this->assertNull(ClaimRulesService::coveragePeriod('not a date', 'nor this'));
+        $this->assertNull(ClaimRulesService::coveragePeriod('2020-01-01', '2030-12-31'));
+
+        // ...and none of them admits a receipt into a month it doesn't belong to.
+        $this->assertFalse(ClaimRulesService::coverageInPeriod('2026-08-01', null, 2026, 8));
+        $this->assertFalse(ClaimRulesService::coverageInPeriod('2020-01-01', '2030-12-31', 2026, 8));
+    }
+
+    public function test_a_full_year_term_is_still_believed(): void
+    {
+        // An annual licence or insurance policy is a real document; the bound exists to reject
+        // a misread decade, not to disqualify the longest legitimate term.
+        $this->assertNotNull(ClaimRulesService::coveragePeriod('2026-01-01', '2026-12-31'));
+        $this->assertTrue(ClaimRulesService::coverageInPeriod('2026-01-01', '2026-12-31', 2026, 8));
+    }
+
     public function test_current_year_months_are_open_but_future_months_are_not(): void
     {
         $now = Carbon::create(2026, 6, 15);

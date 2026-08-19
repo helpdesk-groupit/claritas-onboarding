@@ -213,6 +213,17 @@
             <label class="form-label small mb-1">Who paid</label>
             <input type="text" class="form-control form-control-sm bg-light cc-c-paidby" readonly placeholder="—">
         </div>
+        {{-- The period the receipt says it PAYS FOR (a season pass, a subscription term). Shown
+             only when the receipt states one — on an ordinary receipt there is nothing to say,
+             and an empty "Covers —" would read as a detail the scan failed to find. It is what
+             lets a receipt paid on 30 Jul for 1–31 Aug be claimed under August, so it is also
+             what the report prints to explain that to the approver. --}}
+        <div class="col-md-4 cc-c-period-wrap d-none">
+            <label class="form-label small mb-1">Covers (period paid for)</label>
+            <input type="text" class="form-control form-control-sm bg-light cc-c-period" readonly placeholder="—">
+            <input type="hidden" class="cc-c-period-start">
+            <input type="hidden" class="cc-c-period-end">
+        </div>
         <div class="col-md-3">
             <label class="form-label small mb-1">Total paid (RM)</label>
             <input type="text" class="form-control form-control-sm bg-light cc-c-total" readonly placeholder="—">

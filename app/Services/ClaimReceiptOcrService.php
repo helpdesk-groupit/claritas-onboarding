@@ -150,6 +150,7 @@ class ClaimReceiptOcrService
             .'"amount" (receipt total paid as a number, no currency symbol, or null), '
             .'"date" (receipt date as YYYY-MM-DD, or null), '
             .self::dateRule()
+            .self::servicePeriodRule()
             .self::taxRule()
             .self::vendorRule()
             .self::itemDescRule()
@@ -269,6 +270,7 @@ class ClaimReceiptOcrService
             .'"amount" (the amount paid for THAT transaction as a number, no currency symbol, or null), '
             .'"date" (that transaction date as YYYY-MM-DD, or null), '
             .self::dateRule()
+            .self::servicePeriodRule()
             .self::taxRule()
             .self::vendorRule()
             .self::itemDescRule()
@@ -854,6 +856,17 @@ class ClaimReceiptOcrService
      * NOT conditional on hitting that escape hatch — it is the rule, full stop — and to give a
      * worked example in exactly this shape (two-digit-and-under, no month name, no >12 tell) so
      * the model has something concrete to pattern-match against next time.
+     *
+     * The rule about a billing RANGE was REVERSED on 2026-08-19. It used to say a single date
+     * "must not land outside" the range, which was written when the only ranged documents we
+     * had seen were invoices billed within the month they cover. The Jaya One season receipt
+     * redesigned in Aug 2026 disproves it outright: it is dated 30/07/2026 and covers
+     * 1/08/2026 - 31/08/2026, because a season pass is paid in advance. Under the old wording
+     * the model's correct reading of 30 July is the one it was told to "fix" — so the service
+     * would have silently reported a payment date the document does not carry, on a form the
+     * approver signs. The range is now REPORTED (servicePeriodRule) instead of being used to
+     * overwrite the date, which is what makes the month guard able to judge the receipt on the
+     * period it pays for rather than the day it was settled.
      */
     protected static function dateRule(): string
     {
@@ -867,12 +880,38 @@ class ClaimReceiptOcrService
             .'for applying this rule ("30/04/2026" can only be 30 April, but "11/08/2026" is no less '
             .'day-first for lacking one). A month written in words is already unambiguous — read '
             .'"2 April 2026" as-is. When the document also shows a validity or billing RANGE such '
-            .'as "1/04/2026 - 30/04/2026", that range tells you the month the document belongs to — a '
-            .'single date on the same document must not land outside it. If a reference / invoice '
+            .'as "1/08/2026 - 31/08/2026", report that range in the service-period fields and read '
+            .'the single date EXACTLY AS PRINTED — never bend it to fall inside the range. A pass, '
+            .'subscription or season ticket is normally PAID BEFORE the period it buys, so a receipt '
+            .'dated 30/07/2026 covering 1/08/2026 - 31/08/2026 is correct as it stands and is NOT an '
+            .'error to fix. If a reference / invoice '
             .'number on the same document embeds an 8-digit date in YYYYMMDD form (e.g. an "InvNo:" '
             .'or "Inv No" reading "20260811…"), that is the same date spelled unambiguously — use it '
             .'to confirm the day/month you read from the numeric date, and prefer it if the two '
             .'disagree. ';
+    }
+
+    /**
+     * The stretch of time a receipt says it PAYS FOR, read separately from the payment date.
+     *
+     * This is the whole point of the pair: on a season pass, subscription, licence or insurance
+     * receipt the two genuinely differ, and it is the PERIOD — not the payment date — that says
+     * which claim month the expense belongs to. Read as two dates rather than the printed
+     * string so the guard can compare them; the string itself is never needed.
+     */
+    protected static function servicePeriodRule(): string
+    {
+        return '"service_period_start" and "service_period_end" (the VALIDITY / BILLING / COVERAGE '
+            .'period the document says the payment PAYS FOR, each as YYYY-MM-DD — the range printed '
+            .'against a line item or in a validity / expiry column, e.g. "1/08/2026 - 31/08/2026" '
+            .'beside a season car-park line, "Period: 01 Aug 2026 to 31 Aug 2026" on a subscription '
+            .'invoice, or a "Valid from … to …" line. Read both DAY-FIRST like every other date '
+            .'here. This is NOT the receipt / payment date and NOT a due date: it is the stretch of '
+            .'time the money buys, and it very often STARTS AFTER the receipt date because a pass or '
+            .'subscription is paid in advance — do not "correct" either one to agree with the other. '
+            .'Return null for BOTH unless the document actually prints such a range: a one-off '
+            .'purchase has none, a single date is not a range, and a guessed month here would file '
+            .'the expense under a month the document never mentions), ';
     }
 
     /** Reusable per-receipt field-rule fragments (shared by extract + scanDocument). */
@@ -1068,7 +1107,12 @@ class ClaimReceiptOcrService
             // claim amount is the magnitude — abs() strips the sign so it passes min:0.
             'amount' => isset($json['amount']) && is_numeric($json['amount']) ? round(abs((float) $json['amount']), 2) : null,
             'tax_amount' => isset($json['tax_amount']) && is_numeric($json['tax_amount']) ? round(abs((float) $json['tax_amount']), 2) : null,
-            'date' => (isset($json['date']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $json['date'])) ? $json['date'] : null,
+            'date' => self::isoDate($json['date'] ?? null),
+            // The period the receipt PAYS FOR — kept apart from 'date', which is when it was
+            // settled. On a season pass or subscription the two legitimately differ, and it is
+            // this pair that decides which claim month the expense belongs to.
+            'period_start' => self::isoDate($json['service_period_start'] ?? null),
+            'period_end' => self::isoDate($json['service_period_end'] ?? null),
             'vendor' => self::clip($json['vendor'] ?? null, 120),
             'item_description' => self::clip($json['item_description'] ?? null, 255),
             'paid_by' => self::payerOrNull(self::clip($json['paid_by'] ?? null, 120)),
@@ -1108,10 +1152,24 @@ class ClaimReceiptOcrService
             $descLabel .= ', +'.(count($descriptions) - 5).' more';
         }
 
+        // The coverage period is printed against ONE line of an over-split receipt (the season
+        // line, the subscription line), so the first row's copy is regularly null while a later
+        // one carries it — take the first row that actually states one, or the whole point of
+        // reading it is lost exactly on the documents that have it.
+        $period = null;
+        foreach ($items as $it) {
+            if (! empty($it['period_start']) && ! empty($it['period_end'])) {
+                $period = $it;
+                break;
+            }
+        }
+
         return [
             'amount' => $receiptTotal ?? $sum,
             'tax_amount' => $taxSum > 0 ? $taxSum : null,
             'date' => $first['date'] ?? null,
+            'period_start' => $period['period_start'] ?? null,
+            'period_end' => $period['period_end'] ?? null,
             'vendor' => $first['vendor'] ?? null,
             'item_description' => self::clip($descLabel, 255),
             'paid_by' => $first['paid_by'] ?? null,
@@ -1149,6 +1207,12 @@ class ClaimReceiptOcrService
     protected static function clip($v, int $len): ?string
     {
         return is_string($v) ? mb_substr(trim($v), 0, $len) : null;
+    }
+
+    /** A model-returned date, but only when it really is YYYY-MM-DD; anything else is null. */
+    protected static function isoDate($v): ?string
+    {
+        return (is_string($v) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $v)) ? $v : null;
     }
 
     /**

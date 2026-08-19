@@ -808,6 +808,29 @@
         m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/); if (m) return m[3]+'-'+String(m[2]).padStart(2,'0')+'-'+String(m[1]).padStart(2,'0');
         return null;
     }
+    function dmy(iso) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || '')); return m ? (m[3]+'/'+m[2]+'/'+m[1]) : ''; }
+
+    // ── The period a receipt says it PAYS FOR, as opposed to the day it was settled ──
+    // A Jaya One season-parking receipt is dated 30/07/2026 and covers 1/08/2026 – 31/08/2026,
+    // because a season pass is paid in advance. That is an AUGUST expense: the payment date is
+    // not the month it belongs to. Mirrors ClaimRulesService::coveragePeriod() — keep the two
+    // in step, or the form offers a date the server then refuses.
+    const MAX_COVERAGE_DAYS = 366; // a season/subscription term, never longer
+
+    // The day inside the claim month that an expense covering periodStart..periodEnd sits on,
+    // or null when there is no usable period or it never reaches this claim's month (the caller
+    // then falls back to the receipt's printed date).
+    function coverageDateInMonth(periodStart, periodEnd, min, max) {
+        const s = normalizeDate(periodStart), e = normalizeDate(periodEnd);
+        if (!s || !e || e < s || !min || !max) return null;
+        if ((Date.parse(e) - Date.parse(s)) / 86400000 > MAX_COVERAGE_DAYS) return null; // a misread range
+        if (e < min || s > max) return null;   // the period never reaches this claim's month
+        return s > min ? s : min;              // the first day of the period that falls in it
+    }
+    function formatCoverage(periodStart, periodEnd) {
+        const s = normalizeDate(periodStart), e = normalizeDate(periodEnd);
+        return (s && e) ? (dmy(s) + ' – ' + dmy(e)) : '';
+    }
     function filterAppr(c, query) {
         query = (query || '').trim().toLowerCase();
         const coEl = q(c,'.cc-appr-company'); const co = coEl ? coEl.value : '';
@@ -830,6 +853,17 @@
         const calc = q(c,'.cc-c-calc'), calcWrap = c.querySelector('.cc-c-calc-wrap');
         if (calc) calc.value = o.calc || '';
         if (calcWrap) calcWrap.classList.toggle('d-none', !o.calc);
+        // The period the receipt pays for. Hidden entirely when the receipt states none — an
+        // empty "Covers —" would read as a detail the scan failed to find rather than one the
+        // document does not carry.
+        const ps = normalizeDate(o.period_start), pe = normalizeDate(o.period_end);
+        const psEl = q(c,'.cc-c-period-start'), peEl = q(c,'.cc-c-period-end');
+        const pTxt = q(c,'.cc-c-period'), pWrap = c.querySelector('.cc-c-period-wrap');
+        const pLabel = formatCoverage(ps, pe);
+        if (psEl) psEl.value = pLabel ? ps : '';
+        if (peEl) peEl.value = pLabel ? pe : '';
+        if (pTxt) pTxt.value = pLabel;
+        if (pWrap) pWrap.classList.toggle('d-none', !pLabel);
     }
     // Mileage: amount = distance × vehicle rate; updates the calculation shown in Category C.
     function computeMileage(c) {
@@ -1127,8 +1161,14 @@
                     // own month and the swap resolves it — see its definition for the full guard.
                     const rawOkDate = d.date && /^\d{4}-\d{2}-\d{2}$/.test(d.date);
                     const fixedSingleDate = rawOkDate ? correctSwappedDate(d.date, date.getAttribute('min'), date.getAttribute('max')) : d.date;
-                    const okDate = fixedSingleDate && /^\d{4}-\d{2}-\d{2}$/.test(fixedSingleDate);
-                    if (okDate) date.value = fixedSingleDate;
+                    // A receipt that states the PERIOD it pays for is dated by that period, not by
+                    // the day it was settled — a season pass paid on 30/07 for 1/08–31/08 is an
+                    // August expense. The printed date still goes into Category C untouched: it is
+                    // what the document says, and the report has to keep saying it.
+                    const coverDate = coverageDateInMonth(d.period_start, d.period_end, date.getAttribute('min'), date.getAttribute('max'));
+                    const chosenDate = coverDate || fixedSingleDate;
+                    const okDate = chosenDate && /^\d{4}-\d{2}-\d{2}$/.test(chosenDate);
+                    if (okDate) date.value = chosenDate;
                     // Be honest when the scan found nothing at all — the two "auto-filled" messages
                     // below were shown even when every field came back empty/null, which read as a
                     // silent no-op (nothing on screen changes, yet the hint claims success). Prefer
@@ -1137,11 +1177,14 @@
                     const gotSomething = !!(d.category_id || d.amount || d.vendor || d.item_description || d.paid_by || okDate);
                     setHint(hint, !gotSomething
                         ? (d.issue || 'Couldn’t make out anything useful on this file — enter the details manually, or try a clearer photo/screenshot.')
-                        : okDate
-                            ? '✨ Category, amount & date auto-filled from the receipt — now add the description.'
-                            : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.', !gotSomething);
+                        : coverDate
+                            ? '✨ This receipt covers ' + formatCoverage(d.period_start, d.period_end) + ' — the date of expense is set to the start of that period. Now add the description.'
+                            : okDate
+                                ? '✨ Category, amount & date auto-filled from the receipt — now add the description.'
+                                : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.', !gotSomething);
                     // Capture Category C (read-only receipt details) into the fields below.
-                    setC(c, { company: d.vendor, itemdesc: d.item_description, date: fixedSingleDate, paidby: d.paid_by, total: d.amount });
+                    setC(c, { company: d.vendor, itemdesc: d.item_description, date: fixedSingleDate,
+                        period_start: d.period_start, period_end: d.period_end, paidby: d.paid_by, total: d.amount });
                     applyReceiptCheck(c); // re-check now that the receipt total is captured
                     // Capped categories: now that the receipt total is known, LOCK the amount to
                     // min(receipt, remaining cap). No-op for non-capped categories.
@@ -1204,6 +1247,7 @@
     function ocrToC(ocr) {
         ocr = ocr || {};
         return { company: ocr.company || '', itemdesc: ocr.item_description || '', date: ocr.date || '',
+            period_start: ocr.period_start || '', period_end: ocr.period_end || '',
             paidby: ocr.paid_by || '', total: (ocr.total !== undefined && ocr.total !== null ? ocr.total : ''), calc: ocr.calculation || '' };
     }
     // Lock/unlock the editable item fields + Save button (used by the "re-scan to edit" flow).
@@ -1384,6 +1428,11 @@
         fd.append('c_company', q(c,'.cc-c-company').value || '');
         fd.append('c_itemdesc', q(c,'.cc-c-itemdesc').value || '');
         fd.append('c_date', q(c,'.cc-c-date').value || '');
+        // The period the receipt pays for — what lets a season pass settled in July be claimed
+        // under August. Empty on every ordinary receipt, and then the printed date decides.
+        const cPs = q(c,'.cc-c-period-start'), cPe = q(c,'.cc-c-period-end');
+        fd.append('c_period_start', (cPs && cPs.value) || '');
+        fd.append('c_period_end', (cPe && cPe.value) || '');
         fd.append('c_paidby', q(c,'.cc-c-paidby').value || '');
         fd.append('c_total', q(c,'.cc-c-total').value || '');
         fd.append('c_calc', q(c,'.cc-c-calc').value || '');
@@ -1493,16 +1542,23 @@
             // Which uploaded file backs this line (multi-file: each row keeps its source).
             tr.dataset.mrFile = (it.file_index !== null && it.file_index !== undefined) ? it.file_index : 0;
             const fixedDate = correctSwappedDate(it.date, rMin, rMax);
+            // A row whose receipt states the period it PAYS FOR is dated by that period, not by
+            // the day it was settled (a season pass paid on 30/07 covering 1/08–31/08 belongs to
+            // August). cDate stays the printed date — Category C reports the document, not our
+            // reading of which month it lands in.
+            const coverDate = coverageDateInMonth(it.period_start, it.period_end, rMin, rMax);
             // Stash the AI-read receipt details so they save as Category C on add.
             tr.dataset.cCompany = it.vendor || '';
             tr.dataset.cItemdesc = it.item_description || '';
             tr.dataset.cDate = fixedDate || '';
+            tr.dataset.cPeriodStart = normalizeDate(it.period_start) || '';
+            tr.dataset.cPeriodEnd = normalizeDate(it.period_end) || '';
             tr.dataset.cPaidby = it.paid_by || '';
             tr.dataset.cTotal = (it.amount !== null && it.amount !== undefined) ? it.amount : '';
             // Pre-fill the Expense Description with the read Item — for a toll row this is the
             // Entry → Exit route (e.g. "DUKE-BATU → 07_AKLEH"). The user can still edit it.
             const desc = it.item_description || '';
-            const dateVal = fixedDate || today;
+            const dateVal = coverDate || fixedDate || today;
             const amt = (it.amount !== null && it.amount !== undefined) ? Number(it.amount).toFixed(2) : '';
             // Default tick: highlighted-only when any highlight exists; else on unless non-claimable.
             // A highlight always wins over the non-claimable default (the user marked it on purpose).
@@ -1514,6 +1570,10 @@
             const extraBits = [];
             if (it.vendor) extraBits.push('Company: ' + escHtml(it.vendor));
             if (it.paid_by) extraBits.push('Paid by: ' + escHtml(it.paid_by));
+            // Say so when the date shown is the coverage period's rather than the printed one —
+            // otherwise the row silently disagrees with the receipt the user is looking at.
+            const coverLabel = coverDate ? formatCoverage(it.period_start, it.period_end) : '';
+            if (coverLabel) extraBits.push('Covers: ' + escHtml(coverLabel) + (fixedDate ? ' (paid ' + escHtml(dmy(fixedDate)) + ')' : ''));
             const extraLine = extraBits.length ? '<div class="small text-muted mt-1"><i class="bi bi-receipt me-1"></i>' + extraBits.join(' · ') + '</div>' : '';
             // All four detail fields are EDITABLE — the OCR pre-fills them; the user can fix
             // anything before ticking the rows to add.
@@ -1603,6 +1663,8 @@
                 fd.append('c_company', tr.dataset.cCompany || '');
                 fd.append('c_itemdesc', tr.dataset.cItemdesc || '');
                 fd.append('c_date', tr.dataset.cDate || '');
+                fd.append('c_period_start', tr.dataset.cPeriodStart || '');
+                fd.append('c_period_end', tr.dataset.cPeriodEnd || '');
                 fd.append('c_paidby', tr.dataset.cPaidby || '');
                 fd.append('c_total', tr.dataset.cTotal || '');
                 fd.append('c_calc', '');
@@ -1737,6 +1799,21 @@
         const v = d.value, min = d.getAttribute('min'), max = d.getAttribute('max');
         const claimMonth = monthLabelFromISO(min);
         const out = v && ((min && v < min) || (max && v > max));
+        // A receipt paid outside the claim month but COVERING it is legitimate here. Say so
+        // explicitly: the user is looking at a receipt printed 30/07 on an August claim, and
+        // silence would read as the system not having noticed.
+        const psEl = q(c, '.cc-c-period-start'), peEl = q(c, '.cc-c-period-end');
+        const ps = psEl ? psEl.value : '', pe = peEl ? peEl.value : '';
+        const printedEl = q(c, '.cc-c-date');
+        const printed = printedEl ? normalizeDate(printedEl.value) : null;
+        if (!out && printed && min && max && (printed < min || printed > max)
+            && coverageDateInMonth(ps, pe, min, max) !== null) {
+            note.style.cssText = 'background:#ecfdf5;border:1px solid #6ee7b7;color:#065f46;';
+            note.innerHTML = '<i class="bi bi-check-circle me-1"></i>This receipt was <strong>paid on ' + escHtml(dmy(printed)) +
+                '</strong> but covers <strong>' + escHtml(formatCoverage(ps, pe)) + '</strong>, so it belongs to this <strong>' +
+                escHtml(claimMonth) + '</strong> claim.';
+            return;
+        }
         if (out) {
             const rcpt = monthLabelFromISO(v);
             note.style.cssText = 'background:#fffbeb;border:1px solid #fcd34d;color:#92400e;';

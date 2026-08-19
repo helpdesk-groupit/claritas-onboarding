@@ -311,11 +311,12 @@ class ExpenseClaimController extends Controller
 
         // ...and the receipt's OWN printed date (read into the read-only Category-C field by
         // the scan) must be in-month too — so a wrong-month receipt can't slip in under a
-        // manually-set Date of Expense.
+        // manually-set Date of Expense. A receipt that states the PERIOD it pays for (a season
+        // pass, a subscription term) is judged on that period instead; see the method.
         if ($ocrDate = $this->ocrReceiptDateOutOfPeriod($request, $claim)) {
             return response()->json([
                 'ok' => false,
-                'message' => $this->outOfMonthMessage($ocrDate, $claim),
+                'message' => $this->outOfMonthMessage($ocrDate, $claim, $this->receiptCoverage($request)),
                 'errors' => ['expense_date' => 'The scanned receipt’s date is not from this claim’s month.'],
             ], 422);
         }
@@ -573,11 +574,12 @@ class ExpenseClaimController extends Controller
             ], 422);
         }
 
-        // ...and the receipt's OWN printed (scanned) date must be in-month too.
+        // ...and the receipt's OWN printed (scanned) date must be in-month too — unless the
+        // receipt states the period it pays for and that period reaches this claim's month.
         if ($ocrDate = $this->ocrReceiptDateOutOfPeriod($request, $claim)) {
             return response()->json([
                 'ok' => false,
-                'message' => $this->outOfMonthMessage($ocrDate, $claim),
+                'message' => $this->outOfMonthMessage($ocrDate, $claim, $this->receiptCoverage($request)),
                 'errors' => ['expense_date' => 'The scanned receipt’s date is not from this claim’s month.'],
             ], 422);
         }
@@ -881,10 +883,18 @@ class ExpenseClaimController extends Controller
      */
     private function ocrDetailsFromRequest(Request $request): ?array
     {
+        // The period the receipt says it pays for, normalised (a backwards, half-read or
+        // absurdly long range becomes nothing rather than something the report would print
+        // as fact). Stored because it is the ONLY thing on the record explaining why a
+        // receipt dated outside the month was accepted into it.
+        $coverage = $this->receiptCoverage($request);
+
         $details = array_filter([
             'company' => $request->input('c_company'),
             'item_description' => $request->input('c_itemdesc'),
             'date' => $request->input('c_date'),
+            'period_start' => $coverage ? $coverage[0]->toDateString() : null,
+            'period_end' => $coverage ? $coverage[1]->toDateString() : null,
             'paid_by' => $request->input('c_paidby'),
             'total' => $request->input('c_total'),
             'calculation' => $request->input('c_calc'),
@@ -3319,6 +3329,8 @@ class ExpenseClaimController extends Controller
                 'amount' => $one['amount'] ?? null,
                 'gst' => $one['gst'] ?? null,
                 'date' => $one['date'] ?? null,
+                'period_start' => $one['period_start'] ?? null,
+                'period_end' => $one['period_end'] ?? null,
                 'vendor' => $one['vendor'] ?? null,
                 'item_description' => $one['item_description'] ?? null,
                 'paid_by' => $one['paid_by'] ?? null,
@@ -3434,6 +3446,10 @@ class ExpenseClaimController extends Controller
             'amount' => $it['amount'] ?? null,
             'gst' => $it['tax_amount'] ?? null,
             'date' => $it['date'] ?? null,
+            // The period this payment covers, when the receipt states one — the form uses it to
+            // pick the Date of Expense and the month guard judges the receipt on it.
+            'period_start' => $it['period_start'] ?? null,
+            'period_end' => $it['period_end'] ?? null,
             'vendor' => $it['vendor'] ?? null,
             'item_description' => $itemDesc,
             'paid_by' => $paidBy,
@@ -3611,11 +3627,29 @@ class ExpenseClaimController extends Controller
         return $employee && str_contains(strtolower((string) $employee->department), 'sales');
     }
 
-    /** Polite, specific message when a receipt's date doesn't fall in the claim's month. */
-    private function outOfMonthMessage(Carbon $receiptDate, ExpenseClaim $claim): string
+    /**
+     * Polite, specific message when a receipt doesn't belong to the claim's month.
+     *
+     * $coverage — the period the receipt SAYS it pays for, when it stated one that still
+     * didn't reach the claim month. Naming it matters: without it the message blames a date
+     * the user can see is not the whole story, and they retry the same upload.
+     *
+     * @param  array{0:Carbon,1:Carbon}|null  $coverage
+     */
+    private function outOfMonthMessage(Carbon $receiptDate, ExpenseClaim $claim, ?array $coverage = null): string
     {
         $receiptMonth = $receiptDate->format('F Y');           // e.g. "April 2026"
         $claimMonth = Carbon::create($claim->year, $claim->month, 1)->format('F Y'); // "June 2026"
+
+        if ($coverage) {
+            $covers = $coverage[0]->format('j M Y').' – '.$coverage[1]->format('j M Y');
+            $moveTo = $coverage[0]->format('F Y');
+
+            return "Sorry — this receipt can’t be added to this report. This report is for {$claimMonth}, "
+                ."but the receipt is dated {$receiptDate->format('j M Y')} and says it covers {$covers} — "
+                .'neither of which falls in '.$claimMonth.'. '
+                ."Please open or create a {$moveTo} claim and add this receipt there instead.";
+        }
 
         return "Sorry — this receipt can’t be added to this report. This report is for {$claimMonth}, "
             ."but the receipt is dated {$receiptDate->format('j M Y')}, which falls in {$receiptMonth}. "
@@ -3624,12 +3658,42 @@ class ExpenseClaimController extends Controller
     }
 
     /**
-     * A receipt can only be claimed under its OWN month. The user-entered "Date of Expense"
-     * is guarded separately, but the scan ALSO captures the receipt's printed date into the
-     * read-only Category-C field (`c_date`). Enforce THAT date is in the claim's period too,
-     * so a receipt the OCR read as (say) April can't be filed under a July claim just because
-     * the Date of Expense was left/typed as July. Returns the offending receipt date, or null
-     * when nothing was scanned (manual / mileage entries have no c_date) or it is in period.
+     * The billing / validity period the scan read off the receipt (Category-C `c_period_*`).
+     *
+     * Normalised through ClaimRulesService so a backwards, half-read or absurdly long range is
+     * simply "no period" rather than something a guard or a printed report has to believe.
+     *
+     * @return array{0:Carbon,1:Carbon}|null
+     */
+    private function receiptCoverage(Request $request): ?array
+    {
+        return ClaimRulesService::coveragePeriod(
+            $request->input('c_period_start'),
+            $request->input('c_period_end'),
+        );
+    }
+
+    /**
+     * A receipt can only be claimed under the month it BELONGS to. The user-entered "Date of
+     * Expense" is guarded separately, but the scan ALSO captures the receipt's printed date
+     * into the read-only Category-C field (`c_date`). Enforce THAT date is in the claim's
+     * period too, so a receipt the OCR read as April can't be filed under a July claim just
+     * because the Date of Expense was left/typed as July.
+     *
+     * The one exception is a receipt that STATES the period it pays for: a Jaya One season
+     * pass dated 30/07/2026 for "1/08/2026 - 31/08/2026" is an August expense settled in July,
+     * and its payment date is not the month it belongs to. When the stated coverage reaches
+     * the claim month, the printed date is no longer the deciding fact.
+     *
+     * Returns the offending receipt date, or null when nothing was scanned (manual / mileage
+     * entries have no c_date), the date is in period, or the stated coverage rescues it.
+     *
+     * NB `c_period_*`, like `c_date`, arrives from the browser — a crafted POST can assert a
+     * period the document does not carry. That is no weaker than what stood here before
+     * (omitting `c_date` entirely already skipped this guard): it is a guard against the
+     * honest mistake, not an authorization control. What backs it is that the period is
+     * STORED in ocr_details and PRINTED in the report's Receipt-details block, so an asserted
+     * coverage is visible to the manager and HR against the receipt image they approve.
      */
     private function ocrReceiptDateOutOfPeriod(Request $request, ExpenseClaim $claim): ?Carbon
     {
@@ -3643,7 +3707,20 @@ class ExpenseClaimController extends Controller
             return null; // unreadable date → fall back to the Date-of-Expense guard, never block on noise
         }
 
-        return ClaimRulesService::itemDateInPeriod($d, $claim->year, $claim->month) ? null : $d;
+        if (ClaimRulesService::itemDateInPeriod($d, $claim->year, $claim->month)) {
+            return null;
+        }
+
+        if (ClaimRulesService::coverageInPeriod(
+            $request->input('c_period_start'),
+            $request->input('c_period_end'),
+            $claim->year,
+            $claim->month,
+        )) {
+            return null;
+        }
+
+        return $d;
     }
 
     private function notifyHr(ExpenseClaim $claim, string $type): void

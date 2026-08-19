@@ -147,6 +147,75 @@ class ClaimRulesService
         return $d->greaterThanOrEqualTo($start) && $d->lessThanOrEqualTo($end);
     }
 
+    /**
+     * Longest coverage range a receipt may state before we stop believing it.
+     *
+     * A season pass, subscription or licence runs a month, a quarter, at most a year.
+     * Anything longer is a misread — and honouring it would let ONE document justify a
+     * claim in any month it happened to span, which is exactly the hole this must not open.
+     */
+    public const MAX_COVERAGE_DAYS = 366;
+
+    /**
+     * The billing / validity PERIOD a receipt says it pays FOR, when it states one.
+     *
+     * A receipt is regularly settled BEFORE the period it covers: the Jaya One season-parking
+     * receipt dated 30/07/2026 carries the line "Unbilled  1/08/2026 - 31/08/2026", so it is an
+     * AUGUST expense paid in advance on 30 July. The printed payment date says only when the
+     * money moved; the stated period is what says which month the money was spent ON.
+     *
+     * Returns [start, end] as Carbon (start-of-day / end-of-day), or null when the range is
+     * absent, unparseable, backwards, or longer than MAX_COVERAGE_DAYS. A HALF-read range is
+     * null too: one end alone is not a period, and guessing the other would invent the very
+     * fact the caller is about to trust.
+     *
+     * @return array{0:Carbon,1:Carbon}|null
+     */
+    public static function coveragePeriod($start, $end): ?array
+    {
+        if ($start === null || $end === null || trim((string) $start) === '' || trim((string) $end) === '') {
+            return null;
+        }
+
+        try {
+            $s = ($start instanceof Carbon ? $start->copy() : Carbon::parse((string) $start))->startOfDay();
+            $e = ($end instanceof Carbon ? $end->copy() : Carbon::parse((string) $end))->endOfDay();
+        } catch (\Throwable $ex) {
+            return null; // unreadable → no period, never a guess
+        }
+
+        if ($e->lessThan($s)) {
+            return null;
+        }
+        // Compared on timestamps rather than diffInDays() so the bound means the same thing
+        // whichever Carbon major version is installed (v3 returns a signed float).
+        if (($e->getTimestamp() - $s->getTimestamp()) > self::MAX_COVERAGE_DAYS * 86400) {
+            return null;
+        }
+
+        return [$s, $e];
+    }
+
+    /**
+     * Does the period a receipt says it covers reach into the claim's reporting month?
+     *
+     * OVERLAP, not containment — a quarterly pass covering 1/07–30/09 is genuinely an expense
+     * of each of those months. Claiming the same document three times is prevented by the
+     * receipt-hash dedup and the category cap, not by narrowing this test.
+     */
+    public static function coverageInPeriod($start, $end, int $year, int $month): bool
+    {
+        $range = self::coveragePeriod($start, $end);
+        if ($range === null) {
+            return false;
+        }
+
+        [$coverStart, $coverEnd] = $range;
+        [$periodStart, $periodEnd] = self::periodBounds($year, $month);
+
+        return $coverStart->lessThanOrEqualTo($periodEnd) && $coverEnd->greaterThanOrEqualTo($periodStart);
+    }
+
     /** Is the employee an intern or still on probation? */
     public static function isInternOrProbationer(Employee $employee): bool
     {

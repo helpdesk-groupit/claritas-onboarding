@@ -217,6 +217,13 @@
                                 <div style="margin-bottom:2px;"><strong>Company:</strong> {{ $oc['company'] ?? '—' }}</div>
                                 <div style="margin-bottom:2px;"><strong>Item:</strong> {{ $oc['item_description'] ?? '—' }}</div>
                                 <div style="margin-bottom:2px;"><strong>Date:</strong> {{ $oc['date'] ?? '—' }}</div>
+                                {{-- The period the receipt says it pays for. Printed ONLY when the
+                                     receipt states one — it is the whole explanation for a receipt
+                                     dated outside the claim month (a season pass paid in advance),
+                                     so the approver has to be able to see it against the image. --}}
+                                @if(! empty($oc['period_start']) && ! empty($oc['period_end']))
+                                <div style="margin-bottom:2px;"><strong>Covers:</strong> {{ fmt_date($oc['period_start']) }} – {{ fmt_date($oc['period_end']) }}</div>
+                                @endif
                                 <div style="margin-bottom:2px;"><strong>Who paid:</strong> {{ $oc['paid_by'] ?? '—' }}</div>
                                 <div><strong>Total paid:</strong> {{ isset($oc['total']) && $oc['total'] !== '' ? 'RM '.number_format((float) $oc['total'], 2) : '—' }}</div>
                                 @if(! empty($oc['calculation']))

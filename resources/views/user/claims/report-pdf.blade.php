@@ -199,6 +199,13 @@
                             <div><strong>Company:</strong> {{ $oc['company'] ?? '—' }}</div>
                             <div><strong>Item:</strong> {{ $oc['item_description'] ?? '—' }}</div>
                             <div><strong>Date:</strong> {{ $oc['date'] ?? '—' }}</div>
+                            {{-- Printed only when the receipt states a period it pays for — it is
+                                 the whole explanation for a receipt dated outside the claim month
+                                 (a season pass paid in advance), and this PDF is the copy of record
+                                 the approver signs, so it has to carry that explanation too. --}}
+                            @if(! empty($oc['period_start']) && ! empty($oc['period_end']))
+                            <div><strong>Covers:</strong> {{ fmt_date($oc['period_start']) }} - {{ fmt_date($oc['period_end']) }}</div>
+                            @endif
                             <div><strong>Who paid:</strong> {{ $oc['paid_by'] ?? '—' }}</div>
                             <div><strong>Total paid:</strong> {{ isset($oc['total']) && $oc['total'] !== '' ? 'RM '.number_format((float) $oc['total'], 2) : '—' }}</div>
                             @if(! empty($oc['calculation']))<div style="margin-top:2px;"><strong>Calculation:</strong> {{ $oc['calculation'] }}</div>@endif
