@@ -18,7 +18,7 @@ use Illuminate\Support\Collection;
  *
  * TWO READERS, and the coupling is deliberate (2026-08-14). Besides e-waste approval, this is
  * also the list the signed AARF is copied to for the company on the form — see
- * notificationEmailsFor() and RentalAssetAcknowledgementController::distributeSignedCopy().
+ * notificationEmailsFor() and RentalAssetAcknowledgement::distributeSignedCopy().
  * It was reused rather than duplicated so the CEO/CTO of each entity are named in ONE place;
  * the price is that the two meanings move together, which the settings screen states in as
  * many words: naming somebody here BOTH grants them disposal authority AND puts them on the

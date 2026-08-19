@@ -2,9 +2,14 @@
 
 namespace App\Models;
 
+use App\Mail\RentalAssetAcknowledgedMail;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * AARF — the form acknowledging that rental assets physically changed hands with a vendor.
@@ -42,6 +47,9 @@ class RentalAssetAcknowledgement extends Model
 
     public const STATUS_ACKNOWLEDGED = 'acknowledged';
 
+    /** Where the signed snapshot PDF is written. Private disk. */
+    public const DIR = 'rental_acknowledgements';
+
     protected $fillable = [
         'reference', 'type', 'vendor_id', 'company_rented_to', 'status',
         'condition_confirmed', 'condition_remarks',
@@ -57,7 +65,7 @@ class RentalAssetAcknowledgement extends Model
         'vendor_rep_remarks', 'vendor_rep_company', 'vendor_rep_name',
         'vendor_rep_ic', 'vendor_rep_phone', 'vendor_rep_acknowledged_at',
         'collector_company', 'collector_name', 'collector_ic', 'collector_phone',
-        'created_by', 'acknowledged_by', 'acknowledged_at', 'pdf_path',
+        'created_by', 'acknowledged_by', 'acknowledged_at', 'pdf_path', 'notified_at',
     ];
 
     protected $casts = [
@@ -65,6 +73,7 @@ class RentalAssetAcknowledgement extends Model
         'acknowledged_at' => 'datetime',
         'vendor_rep_acknowledged_at' => 'datetime',
         'processor_acknowledged_at' => 'datetime',
+        'notified_at' => 'datetime',
     ];
 
     // ── Relations ───────────────────────────────────────────────────────────
@@ -688,5 +697,116 @@ class RentalAssetAcknowledgement extends Model
         return AssetInventory::whereIn('id', $ids)
             ->whereNull('decommissioned_at')
             ->update(['decommissioned_at' => now()]);
+    }
+
+    // ── PDF ───────────────────────────────────────────────────────────────────
+
+    /**
+     * No `orgName` — the form carries no company letterhead (the entity is whoever rented
+     * the assets, stated in section 1). Keep this call shape identical wherever it's reused
+     * (the mailable's attachment fallback included), or one path breaks the moment the view
+     * gains a variable.
+     */
+    public function renderPdf()
+    {
+        return Pdf::loadView('vendors.aarf.pdf', ['aarf' => $this])->setPaper('a4');
+    }
+
+    /** Renders, writes the snapshot to disk, and persists `pdf_path`. Returns the path. */
+    public function storePdf(): string
+    {
+        $path = self::DIR.'/'.$this->vendor_id.'/'.$this->reference.'.pdf';
+        Storage::disk('local')->put($path, $this->renderPdf()->output());
+        $this->update(['pdf_path' => $path]);
+
+        return $path;
+    }
+
+    // ── Notification ─────────────────────────────────────────────────────────
+
+    /**
+     * Email the signed copy to the vendor's PIC, IT, Finance and the company's named
+     * Management — the four parties who need proof a handover happened. Each leg is sent
+     * and caught independently: a bad address on one must never silence the other three, so a
+     * single try/catch around all four would let the first failure silence the rest.
+     *
+     * Fails open: whatever called this has already committed the acknowledgement (and, for a
+     * return, already archived the assets), so a mail outage must never be allowed to look
+     * like it rolled anything back. The caller surfaces a partial failure via the boolean
+     * return rather than an exception. Stamps `notified_at` regardless of per-leg outcome —
+     * a failure is logged and visible, not silently retried on every later call.
+     */
+    public function distributeSignedCopy(): bool
+    {
+        $ok = true;
+
+        // 1 ─ The vendor's PIC. Skipped silently when the vendor has no email on file: that
+        // is a gap in the vendor master, not a failure of this send.
+        if ($pic = $this->vendor?->pic_email) {
+            $ok = $this->sendCopy(
+                fn () => Mail::to($pic)->send(
+                    new RentalAssetAcknowledgedMail($this, RentalAssetAcknowledgedMail::AUDIENCE_VENDOR)
+                ),
+                "vendor PIC ({$pic})"
+            ) && $ok;
+        }
+
+        // 2, 3 & 4 ─ IT, Finance and Management.
+        //
+        // IT and Finance are addressed by ROLE: TO the manager(s), CC the executive(s), work
+        // email only. Management is addressed by COMPANY — the entity named on the FORM
+        // (company_rented_to), never the signer's own employer, because an IT manager at one
+        // group company routinely signs a handover for another's kit and that document is not
+        // their management's to receive. There is no CC line: the named people are peers, and
+        // ranking a CEO under a CTO (or the reverse) differs per entity.
+        //
+        // The management list is EwasteCompanyApprover — the one place the CEO/CTO of each
+        // entity are named. See that model's docblock for what naming somebody there carries.
+        $company = $this->company_rented_to;
+
+        foreach ([
+            [RentalAssetAcknowledgedMail::AUDIENCE_IT, User::itEmailRecipients(), 'IT'],
+            [RentalAssetAcknowledgedMail::AUDIENCE_FINANCE, User::financeEmailRecipients(), 'Finance'],
+            [
+                RentalAssetAcknowledgedMail::AUDIENCE_MANAGEMENT,
+                ['to' => EwasteCompanyApprover::notificationEmailsFor($company), 'cc' => []],
+                // The company is in the LABEL so the warning below names which entity has
+                // nobody behind it — "no Management recipients" alone would leave whoever
+                // reads the log hunting for which of the group companies it meant.
+                'Management ('.($company ?: 'company not stated on the form').')',
+            ],
+        ] as [$audience, $recipients, $label]) {
+            if (empty($recipients['to'])) {
+                Log::warning("AARF {$this->reference}: no {$label} recipients configured, signed copy not sent.");
+                $ok = false;
+
+                continue;
+            }
+
+            $ok = $this->sendCopy(function () use ($recipients, $audience) {
+                $mail = Mail::to($recipients['to']);
+                if (! empty($recipients['cc'])) {
+                    $mail->cc($recipients['cc']);
+                }
+                $mail->send(new RentalAssetAcknowledgedMail($this, $audience));
+            }, $label) && $ok;
+        }
+
+        $this->update(['notified_at' => now()]);
+
+        return $ok;
+    }
+
+    private function sendCopy(callable $send, string $label): bool
+    {
+        try {
+            $send();
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error("AARF {$this->reference}: signed copy to {$label} failed: ".$e->getMessage());
+
+            return false;
+        }
     }
 }

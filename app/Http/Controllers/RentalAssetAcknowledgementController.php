@@ -2,19 +2,14 @@
 
 namespace App\Http\Controllers;
 
-use App\Mail\RentalAssetAcknowledgedMail;
 use App\Models\DisposedAsset;
-use App\Models\EwasteCompanyApprover;
 use App\Models\RentalAssetAcknowledgement;
 use App\Models\RentalAssetAcknowledgementItem;
-use App\Models\User;
 use App\Models\Vendor;
-use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 
 /**
@@ -44,9 +39,6 @@ use Illuminate\Support\Facades\Storage;
  */
 class RentalAssetAcknowledgementController extends Controller
 {
-    /** Where the signed snapshot PDF is written. Private disk. */
-    private const DIR = 'rental_acknowledgements';
-
     private function authorizeView(): void
     {
         if (! Auth::user()->canViewVendors()) {
@@ -410,12 +402,12 @@ class RentalAssetAcknowledgementController extends Controller
         $relations = ['items', 'vendor', 'creator', 'acknowledger', 'processorAcknowledger'];
 
         try {
-            $aarf->update(['pdf_path' => $this->storePdf($aarf->fresh($relations))]);
+            $aarf->fresh($relations)->storePdf();
         } catch (\Throwable $e) {
             Log::error("AARF PDF generation failed for {$aarf->reference}: ".$e->getMessage());
         }
 
-        $sent = $this->distributeSignedCopy($aarf->fresh($relations));
+        $sent = $aarf->fresh($relations)->distributeSignedCopy();
 
         return ' Both parties have now signed'
             .($isReturn ? ', and the assets have been archived out of the inventory' : '').'.'
@@ -612,7 +604,7 @@ class RentalAssetAcknowledgementController extends Controller
             return Storage::disk('local')->download($aarf->pdf_path, $aarf->reference.'.pdf');
         }
 
-        return $this->renderPdf($aarf)->download($aarf->reference.'.pdf');
+        return $aarf->renderPdf()->download($aarf->reference.'.pdf');
     }
 
     /**
@@ -646,106 +638,7 @@ class RentalAssetAcknowledgementController extends Controller
             ->with('success', "Draft AARF {$reference} discarded — its assets are pending again.");
     }
 
-    /**
-     * Send the signed form, with the PDF attached, to the four parties that need it:
-     * the vendor's PIC, the IT team, the Finance team and the company's management.
-     *
-     * Each leg is sent and caught INDEPENDENTLY. One bad address — a vendor PIC with a
-     * typo'd email is the likely one — must not stop the others from being told; a
-     * single try/catch around all four would let the first failure silence the rest.
-     *
-     * The whole thing fails open: the acknowledgement is already committed and the PDF is
-     * downloadable from the page, so a mail outage must never roll back a signature. The
-     * caller surfaces a partial failure in the flash rather than hiding it.
-     */
-    private function distributeSignedCopy(RentalAssetAcknowledgement $aarf): bool
-    {
-        $ok = true;
-
-        // 1 ─ The vendor's PIC. Skipped silently when the vendor has no email on file:
-        // that is a gap in the vendor master, not a failure of this send.
-        if ($pic = $aarf->vendor?->pic_email) {
-            $ok = $this->send(
-                fn () => Mail::to($pic)->send(
-                    new RentalAssetAcknowledgedMail($aarf, RentalAssetAcknowledgedMail::AUDIENCE_VENDOR)
-                ),
-                "vendor PIC ({$pic})",
-                $aarf
-            ) && $ok;
-        }
-
-        // 2, 3 & 4 ─ IT, Finance and Management.
-        //
-        // IT and Finance are addressed by ROLE: TO the manager(s), CC the executive(s), work
-        // email only. Management is addressed by COMPANY — the entity named on the FORM
-        // (company_rented_to), never the signer's own employer, because an IT manager at one
-        // group company routinely signs a handover for another's kit and that document is not
-        // their management's to receive. There is no CC line: the named people are peers, and
-        // ranking a CEO under a CTO (or the reverse) differs per entity.
-        //
-        // The management list is EwasteCompanyApprover — the one place the CEO/CTO of each
-        // entity are named. See that model's docblock for what naming somebody there now
-        // carries with it.
-        $company = $aarf->company_rented_to;
-
-        foreach ([
-            [RentalAssetAcknowledgedMail::AUDIENCE_IT, User::itEmailRecipients(), 'IT'],
-            [RentalAssetAcknowledgedMail::AUDIENCE_FINANCE, User::financeEmailRecipients(), 'Finance'],
-            [
-                RentalAssetAcknowledgedMail::AUDIENCE_MANAGEMENT,
-                ['to' => EwasteCompanyApprover::notificationEmailsFor($company), 'cc' => []],
-                // The company is in the LABEL so the warning below names which entity has
-                // nobody behind it — "no Management recipients" alone would leave whoever
-                // reads the log hunting for which of the group companies it meant.
-                'Management ('.($company ?: 'company not stated on the form').')',
-            ],
-        ] as [$audience, $recipients, $label]) {
-            if (empty($recipients['to'])) {
-                Log::warning("AARF {$aarf->reference}: no {$label} recipients configured, signed copy not sent.");
-                $ok = false;
-
-                continue;
-            }
-
-            $ok = $this->send(function () use ($recipients, $aarf, $audience) {
-                $mail = Mail::to($recipients['to']);
-                if (! empty($recipients['cc'])) {
-                    $mail->cc($recipients['cc']);
-                }
-                $mail->send(new RentalAssetAcknowledgedMail($aarf, $audience));
-            }, $label, $aarf) && $ok;
-        }
-
-        return $ok;
-    }
-
-    private function send(callable $send, string $label, RentalAssetAcknowledgement $aarf): bool
-    {
-        try {
-            $send();
-
-            return true;
-        } catch (\Throwable $e) {
-            Log::error("AARF {$aarf->reference}: signed copy to {$label} failed: ".$e->getMessage());
-
-            return false;
-        }
-    }
-
-    // ── PDF ───────────────────────────────────────────────────────────────────
-    private function renderPdf(RentalAssetAcknowledgement $aarf)
-    {
-        // No `orgName` — the form carries no company letterhead (the entity is whoever
-        // rented the assets, stated in section 1). Keep this call shape identical to the
-        // mailable's fallback render, or one path breaks the moment the view gains a var.
-        return Pdf::loadView('vendors.aarf.pdf', ['aarf' => $aarf])->setPaper('a4');
-    }
-
-    private function storePdf(RentalAssetAcknowledgement $aarf): string
-    {
-        $path = self::DIR.'/'.$aarf->vendor_id.'/'.$aarf->reference.'.pdf';
-        Storage::disk('local')->put($path, $this->renderPdf($aarf)->output());
-
-        return $path;
-    }
+    // distributeSignedCopy(), renderPdf() and storePdf() now live on RentalAssetAcknowledgement
+    // itself — moved 2026-08-19 so the historical-backfill command can call the exact same
+    // notification/PDF logic instead of hand-duplicating it. See the model for both.
 }

@@ -242,7 +242,7 @@ class RentalAssetAcknowledgementTest extends TestCase
      * that can never fail. (The decommission report is different: it goes through FPDI/FPDF,
      * whose literals are readable, which is why CLAUDE.md's advice about escaped brackets
      * applies there and not here.) The call shape mirrors
-     * RentalAssetAcknowledgementController::renderPdf() exactly.
+     * RentalAssetAcknowledgement::renderPdf() exactly.
      */
     private function pdfHtml(RentalAssetAcknowledgement $aarf): string
     {

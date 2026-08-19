@@ -3,7 +3,6 @@
 namespace App\Mail;
 
 use App\Models\RentalAssetAcknowledgement;
-use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Attachment;
@@ -94,7 +93,6 @@ class RentalAssetAcknowledgedMail extends Mailable
             return Storage::disk('local')->get($this->aarf->pdf_path);
         }
 
-        // Same call shape as RentalAssetAcknowledgementController::renderPdf().
-        return Pdf::loadView('vendors.aarf.pdf', ['aarf' => $this->aarf])->setPaper('a4')->output();
+        return $this->aarf->renderPdf()->output();
     }
 }
