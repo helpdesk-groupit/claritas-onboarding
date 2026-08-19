@@ -192,10 +192,11 @@
         </div>
     </div>
 
-    {{-- Category C — receipt details read by OCR (read-only; fill on Scan). Sent with the item. --}}
+    {{-- Category C — receipt details read by OCR (read-only; fill on Scan), EXCEPT the covered
+         period, which the employee may type or correct by hand. Sent with the item. --}}
     <div class="row g-2 mt-1">
         <div class="col-12">
-            <label class="form-label small mb-0 fw-bold"><i class="bi bi-receipt-cutoff me-1 text-info"></i>Receipt details <span class="fw-normal text-muted">(read from the attachment — for the report)</span></label>
+            <label class="form-label small mb-0 fw-bold"><i class="bi bi-receipt-cutoff me-1 text-info"></i>Receipt details <span class="fw-normal text-muted">(read from the attachment — for the report; only the covered period can be corrected by hand)</span></label>
         </div>
         <div class="col-md-3">
             <label class="form-label small mb-1">Company</label>
@@ -213,16 +214,24 @@
             <label class="form-label small mb-1">Who paid</label>
             <input type="text" class="form-control form-control-sm bg-light cc-c-paidby" readonly placeholder="—">
         </div>
-        {{-- The period the receipt says it PAYS FOR (a season pass, a subscription term). Shown
-             only when the receipt states one — on an ordinary receipt there is nothing to say,
-             and an empty "Covers —" would read as a detail the scan failed to find. It is what
-             lets a receipt paid on 30 Jul for 1–31 Aug be claimed under August, so it is also
-             what the report prints to explain that to the approver. --}}
-        <div class="col-md-4 cc-c-period-wrap d-none">
-            <label class="form-label small mb-1">Covers (period paid for)</label>
-            <input type="text" class="form-control form-control-sm bg-light cc-c-period" readonly placeholder="—">
-            <input type="hidden" class="cc-c-period-start">
-            <input type="hidden" class="cc-c-period-end">
+        {{-- The period the receipt says it PAYS FOR (a season pass, a subscription term). It is
+             what lets a receipt paid on 30 Jul for 1–31 Aug be claimed under August, so it is
+             also what the report prints to explain that to the approver.
+
+             Unlike the rest of Category C these two are EDITABLE, and always rendered rather
+             than revealed when the scan finds a period. That is the whole point: the moment the
+             employee needs to type one is the moment the scan read nothing, so a control that
+             appears only when already filled is unreachable exactly when it is needed. A typed
+             value is stamped as entered by hand so the report never passes it off as read from
+             the document. --}}
+        <div class="col-md-4 cc-c-period-wrap">
+            <label class="form-label small mb-1">Covers (period paid for) <span class="text-muted fw-normal">— optional</span></label>
+            <div class="d-flex gap-1 align-items-center">
+                <input type="date" class="form-control form-control-sm cc-c-period-start" aria-label="Period covered — start">
+                <span class="text-muted small">to</span>
+                <input type="date" class="form-control form-control-sm cc-c-period-end" aria-label="Period covered — end">
+            </div>
+            <div class="form-text small cc-c-period-hint">Only for a receipt that pays for a period (season pass, subscription). Fill both dates if the scan didn’t read them.</div>
         </div>
         <div class="col-md-3">
             <label class="form-label small mb-1">Total paid (RM)</label>

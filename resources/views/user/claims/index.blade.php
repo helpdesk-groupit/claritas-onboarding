@@ -831,6 +831,26 @@
         const s = normalizeDate(periodStart), e = normalizeDate(periodEnd);
         return (s && e) ? (dmy(s) + ' – ' + dmy(e)) : '';
     }
+
+    // Move the Date of Expense onto a covered period — but ONLY when the date currently sits
+    // outside the claim month, i.e. is already unusable. A date that works is the employee's
+    // own choice and must never be overwritten by typing in an unrelated field.
+    function applyCoverageDate(c) {
+        const dEl = q(c, '.cc-i-date'); if (!dEl) return;
+        const min = dEl.getAttribute('min'), max = dEl.getAttribute('max'), v = dEl.value;
+        if (v && min && max && v >= min && v <= max) return;
+        const psEl = q(c, '.cc-c-period-start'), peEl = q(c, '.cc-c-period-end');
+        const cd = coverageDateInMonth(psEl ? psEl.value : '', peEl ? peEl.value : '', min, max);
+        if (cd) dEl.value = cd;
+    }
+
+    // The employee typed or picked a covered period by hand.
+    function onCoveragePeriodEdited(c) {
+        c.dataset.periodManual = '1';
+        applyCoverageDate(c);
+        markCoveragePeriod(c);
+        checkItemDateMonth(c);
+    }
     function filterAppr(c, query) {
         query = (query || '').trim().toLowerCase();
         const coEl = q(c,'.cc-appr-company'); const co = coEl ? coEl.value : '';
@@ -853,17 +873,53 @@
         const calc = q(c,'.cc-c-calc'), calcWrap = c.querySelector('.cc-c-calc-wrap');
         if (calc) calc.value = o.calc || '';
         if (calcWrap) calcWrap.classList.toggle('d-none', !o.calc);
-        // The period the receipt pays for. Hidden entirely when the receipt states none — an
-        // empty "Covers —" would read as a detail the scan failed to find rather than one the
-        // document does not carry.
+        // The period the receipt pays for. Editable, so setC only ever writes what it was
+        // given — the two inputs are left blank when there is nothing to write rather than
+        // being hidden, because the employee needs to reach them precisely when empty.
         const ps = normalizeDate(o.period_start), pe = normalizeDate(o.period_end);
         const psEl = q(c,'.cc-c-period-start'), peEl = q(c,'.cc-c-period-end');
-        const pTxt = q(c,'.cc-c-period'), pWrap = c.querySelector('.cc-c-period-wrap');
-        const pLabel = formatCoverage(ps, pe);
-        if (psEl) psEl.value = pLabel ? ps : '';
-        if (peEl) peEl.value = pLabel ? pe : '';
-        if (pTxt) pTxt.value = pLabel;
-        if (pWrap) pWrap.classList.toggle('d-none', !pLabel);
+        if (psEl) psEl.value = ps || '';
+        if (peEl) peEl.value = pe || '';
+        // Provenance: anything setC writes came from the scan or from a stored record, so a
+        // pending "typed by hand" mark is cleared. o.period_manual re-asserts it when we are
+        // restoring an item whose period WAS typed (startEdit).
+        c.dataset.periodManual = o.period_manual ? '1' : '';
+        markCoveragePeriod(c);
+    }
+
+    // Keep the hint under the two date inputs honest about what will be filed, and about
+    // whether the period is doing anything for this claim. A period that does not reach the
+    // claim's month changes nothing, and silence there reads as "accepted".
+    function markCoveragePeriod(c) {
+        const psEl = q(c,'.cc-c-period-start'), peEl = q(c,'.cc-c-period-end');
+        const hint = q(c,'.cc-c-period-hint'), dateEl = q(c,'.cc-i-date');
+        if (!psEl || !peEl || !hint) return;
+        const ps = psEl.value, pe = peEl.value;
+        const manual = c.dataset.periodManual === '1';
+        const base = 'Only for a receipt that pays for a period (season pass, subscription). Fill both dates if the scan didn’t read them.';
+        if (!ps && !pe) { hint.className = 'form-text small cc-c-period-hint'; hint.textContent = base; return; }
+        if (!ps || !pe) {
+            hint.className = 'form-text small cc-c-period-hint text-danger';
+            hint.textContent = 'Enter BOTH the start and end date — one date on its own is not a period, and it will be ignored.';
+            return;
+        }
+        if (pe < ps) {
+            hint.className = 'form-text small cc-c-period-hint text-danger';
+            hint.textContent = 'The end date is before the start date.';
+            return;
+        }
+        if ((Date.parse(pe) - Date.parse(ps)) / 86400000 > MAX_COVERAGE_DAYS) {
+            hint.className = 'form-text small cc-c-period-hint text-danger';
+            hint.textContent = 'A covered period longer than a year isn’t accepted — check the dates.';
+            return;
+        }
+        const min = dateEl ? dateEl.getAttribute('min') : null;
+        const max = dateEl ? dateEl.getAttribute('max') : null;
+        const reaches = coverageDateInMonth(ps, pe, min, max) !== null;
+        hint.className = 'form-text small cc-c-period-hint ' + (reaches ? 'text-success' : 'text-muted');
+        hint.textContent = (manual ? 'Entered by hand' : 'Read from the receipt') + ': covers ' + formatCoverage(ps, pe)
+            + (reaches ? ' — this receipt belongs to ' + monthLabelFromISO(min) + '.'
+                       : ' — that period is outside ' + monthLabelFromISO(min) + ', so it does not apply to this claim.');
     }
     // Mileage: amount = distance × vehicle rate; updates the calculation shown in Category C.
     function computeMileage(c) {
@@ -1248,6 +1304,9 @@
         ocr = ocr || {};
         return { company: ocr.company || '', itemdesc: ocr.item_description || '', date: ocr.date || '',
             period_start: ocr.period_start || '', period_end: ocr.period_end || '',
+            // Restoring an item whose period was typed must keep saying so — otherwise editing
+            // an item silently upgrades a hand-entered period to "read from the receipt".
+            period_manual: ocr.period_source === 'manual',
             paidby: ocr.paid_by || '', total: (ocr.total !== undefined && ocr.total !== null ? ocr.total : ''), calc: ocr.calculation || '' };
     }
     // Lock/unlock the editable item fields + Save button (used by the "re-scan to edit" flow).
@@ -1433,6 +1492,9 @@
         const cPs = q(c,'.cc-c-period-start'), cPe = q(c,'.cc-c-period-end');
         fd.append('c_period_start', (cPs && cPs.value) || '');
         fd.append('c_period_end', (cPe && cPe.value) || '');
+        // Provenance only — it changes the WORDING on the report, never whether the item is
+        // accepted, so a wrong flag cannot buy anything.
+        fd.append('c_period_manual', c.dataset.periodManual === '1' ? '1' : '');
         fd.append('c_paidby', q(c,'.cc-c-paidby').value || '');
         fd.append('c_total', q(c,'.cc-c-total').value || '');
         fd.append('c_calc', q(c,'.cc-c-calc').value || '');
@@ -1828,11 +1890,13 @@
         }
     }
     document.querySelectorAll('[data-claim-card]').forEach(checkItemDateMonth);
+    document.querySelectorAll('[data-claim-card]').forEach(markCoveragePeriod);
 
     // Delegated events ──────────────────────────────────────────────
     document.addEventListener('input', function (e) {
         if (e.target.matches('.cc-i-amount, .cc-i-gst')) { const c = cardOf(e.target); if (c) { syncTotal(c); const er = q(c,'.cc-item-error'); if (er) er.classList.add('d-none'); } }
         if (e.target.matches('.cc-i-date')) { const c = cardOf(e.target); if (c) checkItemDateMonth(c); }
+        if (e.target.matches('.cc-c-period-start, .cc-c-period-end')) { const c = cardOf(e.target); if (c) onCoveragePeriodEdited(c); }
         if (e.target.matches('.cc-i-km')) { const c = cardOf(e.target); if (c) computeMileage(c); }
         if (e.target.matches('.cc-appr-search')) { const c = cardOf(e.target); if (c) { q(c,'.cc-appr-id').value = ''; filterAppr(c, e.target.value); q(c,'.cc-appr-list').classList.remove('d-none'); } }
         // Auto-save the claim header (event / project) as the user types.
@@ -1856,6 +1920,9 @@
         if (e.target.matches('.cc-details [name="event_date"]')) { const c = cardOf(e.target); if (c) autoSaveCatB(c); }
         // Live receipt-month reminder when the expense date changes.
         if (e.target.matches('.cc-i-date')) { const c = cardOf(e.target); if (c) checkItemDateMonth(c); }
+        // A date picker fires change, not always input — bind both or a click-picked period
+        // is never noticed.
+        if (e.target.matches('.cc-c-period-start, .cc-c-period-end')) { const c = cardOf(e.target); if (c) onCoveragePeriodEdited(c); }
         // Approver-company switch (cross-company events): drop a now-out-of-company approver
         // and re-open the filtered list for the newly chosen company.
         if (e.target.matches('.cc-appr-company')) {

@@ -185,6 +185,170 @@ class ClaimReceiptMonthGuardTest extends TestCase
         }
     }
 
+    /**
+     * ── Manual override for the covered period ───────────────────────────────────────────
+     *
+     * The coverage escape is only reachable if the scan reads the period. When it doesn't —
+     * a poor photo, an operator whose receipt is laid out differently — the employee was
+     * blocked with no way to state the period themselves. These pin the hand-entry path.
+     */
+    public function test_a_hand_entered_period_rescues_a_receipt_the_scan_could_not_read(): void
+    {
+        $this->travelTo('2026-08-19');
+
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->augustClaim($owner);
+        $category = $this->category();
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Season parking',
+            'expense_date' => '2026-08-01',
+            'c_date' => '2026-07-30',       // the scan read the payment date...
+            'c_period_start' => '2026-08-01', // ...but the employee typed the period themselves
+            'c_period_end' => '2026-08-31',
+            'c_period_manual' => '1',
+            'amount' => 190,
+        ]);
+
+        $res->assertStatus(200)->assertJsonPath('ok', true);
+
+        // Stamped as hand-entered — the report prints this period as the justification for
+        // accepting an out-of-month receipt, so it must never read as machine-read.
+        $item = $claim->items()->firstWhere('description', 'Season parking');
+        $this->assertSame('2026-08-01', $item->ocr_details['period_start']);
+        $this->assertSame('manual', $item->ocr_details['period_source']);
+    }
+
+    public function test_a_scan_read_period_is_not_stamped_as_hand_entered(): void
+    {
+        $this->travelTo('2026-08-19');
+
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->augustClaim($owner);
+        $category = $this->category();
+
+        $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Season parking',
+            'expense_date' => '2026-08-01',
+            'c_date' => '2026-07-30',
+            'c_period_start' => '2026-08-01',
+            'c_period_end' => '2026-08-31',
+            'amount' => 190,
+        ])->assertStatus(200);
+
+        $item = $claim->items()->firstWhere('description', 'Season parking');
+        $this->assertArrayNotHasKey('period_source', $item->ocr_details);
+    }
+
+    public function test_a_half_typed_period_is_explained_rather_than_silently_dropped(): void
+    {
+        $this->travelTo('2026-08-19');
+
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->augustClaim($owner);
+        $category = $this->category();
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Season parking',
+            'expense_date' => '2026-08-01',
+            'c_date' => '2026-07-30',
+            'c_period_start' => '2026-08-01',   // start only — they forgot the end
+            'c_period_end' => '',
+            'c_period_manual' => '1',
+            'amount' => 190,
+        ]);
+
+        $res->assertStatus(422)->assertJsonPath('ok', false);
+        // Must name the field they were filling in, NOT the receipt's printed date — that
+        // message would say nothing about what they got wrong.
+        $this->assertStringContainsString('BOTH', $res->json('message'));
+        $this->assertStringNotContainsString('30 Jul', $res->json('message'));
+        $this->assertDatabaseMissing('expense_claim_items', ['expense_claim_id' => $claim->id, 'description' => 'Season parking']);
+    }
+
+    public function test_an_over_long_typed_period_is_refused_with_a_reason(): void
+    {
+        $this->travelTo('2026-08-19');
+
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->augustClaim($owner);
+        $category = $this->category();
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Season parking',
+            'expense_date' => '2026-08-01',
+            'c_date' => '2026-07-30',
+            'c_period_start' => '2020-01-01',
+            'c_period_end' => '2030-12-31',
+            'c_period_manual' => '1',
+            'amount' => 190,
+        ]);
+
+        $res->assertStatus(422)->assertJsonPath('ok', false);
+        $this->assertStringContainsString('longer than a year', $res->json('message'));
+    }
+
+    public function test_a_bad_period_from_the_sca_n_never_hard_blocks_the_add(): void
+    {
+        $this->travelTo('2026-08-19');
+
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->augustClaim($owner);
+        $category = $this->category();
+
+        // Same nonsense range, but NOT flagged as typed — it came from OCR. OCR must never
+        // hard-block a claim, so this falls through to the ordinary wrong-month message
+        // rather than an input error about a field the employee never touched.
+        $res = $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Season parking',
+            'expense_date' => '2026-08-01',
+            'c_date' => '2026-07-30',
+            'c_period_start' => '2020-01-01',
+            'c_period_end' => '2030-12-31',
+            'amount' => 190,
+        ]);
+
+        $res->assertStatus(422)->assertJsonPath('ok', false);
+        $this->assertStringNotContainsString('longer than a year', $res->json('message'));
+        $this->assertStringContainsString('30 Jul 2026', $res->json('message'));
+    }
+
+    public function test_a_typed_period_that_does_not_reach_the_month_is_still_refused(): void
+    {
+        $this->travelTo('2026-08-19');
+
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->augustClaim($owner);
+        $category = $this->category();
+
+        // Hand entry is an override for the READING, never for the rule.
+        $res = $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Season parking',
+            'expense_date' => '2026-08-01',
+            'c_date' => '2026-07-30',
+            'c_period_start' => '2026-09-01',
+            'c_period_end' => '2026-09-30',
+            'c_period_manual' => '1',
+            'amount' => 190,
+        ]);
+
+        $res->assertStatus(422)->assertJsonPath('ok', false);
+        $this->assertStringContainsString('covers', $res->json('message'));
+        $this->assertDatabaseMissing('expense_claim_items', ['expense_claim_id' => $claim->id, 'description' => 'Season parking']);
+    }
+
     public function test_receipt_from_the_claim_month_is_accepted(): void
     {
         $user = User::factory()->create(['role' => 'employee']);

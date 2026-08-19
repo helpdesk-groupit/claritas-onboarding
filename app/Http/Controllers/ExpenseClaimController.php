@@ -283,6 +283,10 @@ class ExpenseClaimController extends Controller
             'expense_date' => 'nullable|date|before_or_equal:today|after_or_equal:'.now()->subMonths(18)->toDateString(),
             'amount' => 'nullable|numeric|min:0|max:99999.99',
             'gst_amount' => 'nullable|numeric|min:0|max:99999.99',
+            // The covered period is the ONE Category-C field the employee may type, so it is
+            // the one that needs real input validation rather than a silent normalise.
+            'c_period_start' => 'nullable|date',
+            'c_period_end' => 'nullable|date',
             'receipt' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             'receipt_attachments.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             'support_files' => 'nullable|array|max:10',
@@ -292,6 +296,12 @@ class ExpenseClaimController extends Controller
         $category = ExpenseCategory::findOrFail($validated['expense_category_id']);
         if (! ClaimRulesService::categoryAllowed($employee, $category)) {
             return response()->json(['ok' => false, 'errors' => ['expense_category_id' => 'You are not eligible to claim under this category.']], 422);
+        }
+
+        // A hand-typed covered period is told what is wrong with it, rather than being dropped
+        // and reported as a wrong-month receipt.
+        if ($coverageError = $this->coverageInputError($request)) {
+            return response()->json(['ok' => false, 'message' => $coverageError, 'errors' => ['c_period_start' => $coverageError]], 422);
         }
 
         // Date is per item (each receipt keeps its own date); falls back to the claim's
@@ -548,6 +558,10 @@ class ExpenseClaimController extends Controller
             'expense_date' => 'nullable|date|before_or_equal:today|after_or_equal:'.now()->subMonths(18)->toDateString(),
             'amount' => 'nullable|numeric|min:0|max:99999.99',
             'gst_amount' => 'nullable|numeric|min:0|max:99999.99',
+            // The covered period is the ONE Category-C field the employee may type, so it is
+            // the one that needs real input validation rather than a silent normalise.
+            'c_period_start' => 'nullable|date',
+            'c_period_end' => 'nullable|date',
             // Editing an item REQUIRES re-uploading the receipt — the old attachment is replaced.
             'receipt' => 'required|file|mimes:jpg,jpeg,png,pdf|max:5120|valid_file_content',
             'support_files' => 'nullable|array|max:10',
@@ -559,6 +573,12 @@ class ExpenseClaimController extends Controller
         $category = ExpenseCategory::findOrFail($validated['expense_category_id']);
         if (! ClaimRulesService::categoryAllowed($employee, $category)) {
             return response()->json(['ok' => false, 'errors' => ['expense_category_id' => 'You are not eligible to claim under this category.']], 422);
+        }
+
+        // A hand-typed covered period is told what is wrong with it, rather than being dropped
+        // and reported as a wrong-month receipt.
+        if ($coverageError = $this->coverageInputError($request)) {
+            return response()->json(['ok' => false, 'message' => $coverageError, 'errors' => ['c_period_start' => $coverageError]], 422);
         }
 
         $expenseDate = ! empty($validated['expense_date'])
@@ -895,6 +915,11 @@ class ExpenseClaimController extends Controller
             'date' => $request->input('c_date'),
             'period_start' => $coverage ? $coverage[0]->toDateString() : null,
             'period_end' => $coverage ? $coverage[1]->toDateString() : null,
+            // WHO said so. The report prints this period as the justification for accepting a
+            // receipt dated outside the claim month, so an approver has to be able to tell a
+            // figure read off the document from one a person typed. Only stamped when the
+            // period survived normalisation — labelling nothing would be noise.
+            'period_source' => $coverage && $this->coverageWasTyped($request) ? 'manual' : null,
             'paid_by' => $request->input('c_paidby'),
             'total' => $request->input('c_total'),
             'calculation' => $request->input('c_calc'),
@@ -3671,6 +3696,46 @@ class ExpenseClaimController extends Controller
             $request->input('c_period_start'),
             $request->input('c_period_end'),
         );
+    }
+
+    /** Did the employee type the covered period themselves, rather than the scan reading it? */
+    private function coverageWasTyped(Request $request): bool
+    {
+        return $request->boolean('c_period_manual');
+    }
+
+    /**
+     * A HAND-ENTERED coverage period that can't be believed, as a message the employee can act on.
+     *
+     * Only fires for a typed period. The same rules already live in coveragePeriod(), which
+     * simply returns null — right for a value the SCAN produced, because OCR must never block a
+     * claim, and wrong for a value a person just filled in: dropping their input silently
+     * rejects the receipt with a message about its printed date that says nothing about the
+     * field they were typing in. Same validation, different reporting, decided by who authored
+     * the value. The flag is client-supplied, but getting it wrong only ever costs the employee
+     * a clearer error — it can never admit a receipt, because acceptance still runs through
+     * coveragePeriod() either way.
+     */
+    private function coverageInputError(Request $request): ?string
+    {
+        if (! $this->coverageWasTyped($request)) {
+            return null;
+        }
+
+        $start = trim((string) $request->input('c_period_start'));
+        $end = trim((string) $request->input('c_period_end'));
+
+        if ($start === '' && $end === '') {
+            return null; // cleared the fields again — nothing claimed, nothing to complain about
+        }
+        if ($start === '' || $end === '') {
+            return 'Enter BOTH the start and end date of the period this receipt covers — one date on its own is not a period.';
+        }
+        if (ClaimRulesService::coveragePeriod($start, $end) === null) {
+            return 'That covered period doesn’t look right — the end date must be on or after the start date, and a period can’t be longer than a year.';
+        }
+
+        return null;
     }
 
     /**
