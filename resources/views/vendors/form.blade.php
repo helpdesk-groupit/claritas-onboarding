@@ -133,7 +133,7 @@
                 </div>
 
                 <div class="col-12">
-                    <label class="form-label fw-semibold">SST Category</label>
+                    <label class="form-label fw-semibold">SST Group/Category</label>
                     <div class="form-text text-muted small mt-0 mb-2">
                         Tick <strong>every</strong> service tax group the vendor is registered under &mdash; a vendor can hold
                         more than one. Leave them all blank if it has not been checked yet; that reads as

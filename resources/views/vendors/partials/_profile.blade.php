@@ -65,7 +65,7 @@
                 <div class="vnd-value {{ $vendor->tin_number ? '' : 'vnd-value-muted' }}">{{ $vendor->tin_number ?: 'Not recorded' }}</div>
             </div>
             <div class="col-12">
-                <div class="vnd-label">SST Category</div>
+                <div class="vnd-label">SST Group/Category</div>
                 {{-- One chip per group: a vendor can be registered under several, and joining
                      them into a sentence makes it read as one long category name. --}}
                 @php $vndSstLabels = $vendor->sstCategoryLabels(); @endphp
