@@ -118,6 +118,7 @@ class EwasteQuotationFilingService
         }
 
         $contract->file_path = $target;
+        $contract->file_hash = VendorContract::hashStoredFile($target);
         // The uploader's own filename when the caller still has it. Uploads are given a random
         // name on the way to the private disk, so basename() is a fallback that names the
         // stored file rather than inventing one the vendor never sent.

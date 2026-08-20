@@ -65,6 +65,7 @@ class VendorContractController extends Controller
         $contract = new VendorContract($this->fieldsFromScan($fields, $scan));
         $contract->vendor_id = $vendor->id;
         $contract->file_path = $scan->file_path;
+        $contract->file_hash = VendorContract::hashStoredFile($scan->file_path);
         $contract->original_filename = $scan->original_filename;
         $contract->created_by = Auth::id();
 
@@ -125,6 +126,7 @@ class VendorContractController extends Controller
             $this->deleteFile($contract->file_path);
 
             $contract->file_path = $scan->file_path;
+            $contract->file_hash = VendorContract::hashStoredFile($scan->file_path);
             $contract->original_filename = $scan->original_filename;
 
             // Clears the reading of the file just deleted — including its parties and any

@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Models\Concerns\HasDocumentInsight;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * One contract we hold with a vendor.
@@ -69,7 +70,7 @@ class VendorContract extends Model
         'start_date', 'end_date', 'auto_renew', 'notice_period_days',
         'contract_value', 'currency', 'billing_cycle', 'payment_terms',
         'scope_summary', 'notes',
-        'file_path', 'original_filename', 'created_by',
+        'file_path', 'original_filename', 'file_hash', 'created_by',
         'ai_status', 'ai_summary', 'ai_key_points', 'ai_text', 'ai_at',
         'companies_involved',
     ];
@@ -195,5 +196,44 @@ class VendorContract extends Model
     {
         return 'Contract — '.$this->title
             .($this->contract_reference ? ' (ref. '.$this->contract_reference.')' : '');
+    }
+
+    /**
+     * SHA-256 of a stored file on the private disk, or null when it is not there to hash.
+     * The one place `file_hash` is computed, so every caller that sets `file_path` derives
+     * it the same way.
+     */
+    public static function hashStoredFile(?string $path): ?string
+    {
+        if (blank($path) || ! Storage::disk('local')->exists($path)) {
+            return null;
+        }
+
+        return hash_file('sha256', Storage::disk('local')->path($path));
+    }
+
+    /**
+     * Rental assets whose OWN uploaded contract document is byte-identical to this one.
+     *
+     * There is no `contract_id` on assets and none is being added — a rental contract only
+     * ever describes assets in prose (quantities, models, dates), so a manual picker would
+     * just be a second place to make the same mistake. This compares file hashes instead:
+     * certain, not a guess, because two different files cannot share a SHA-256 digest. An
+     * asset whose copy is a rescan of the same physical contract (different bytes) will
+     * not match here — nothing on this path claims to read prose.
+     *
+     * @param  \Illuminate\Support\Collection<int,AssetInventory>  $assets  this vendor's assets (from `$vendor->assets`)
+     * @return \Illuminate\Support\Collection<int,AssetInventory>
+     */
+    public function matchedAssets($assets): \Illuminate\Support\Collection
+    {
+        if (! $this->file_hash) {
+            return collect();
+        }
+
+        return $assets
+            ->where('ownership_type', 'rental')
+            ->filter(fn ($asset) => in_array($this->file_hash, array_values($asset->rental_contract_document_hashes ?? []), true))
+            ->values();
     }
 }

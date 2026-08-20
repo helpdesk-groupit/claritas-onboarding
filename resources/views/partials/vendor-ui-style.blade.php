@@ -222,6 +222,13 @@
     .vnd-sum-prov { display: inline-flex; align-items: center; }
     .vnd-sum-partial { color: #b45309; font-weight: 600; }
 
+    /* Assets matched to a contract by document hash (Contracts tab). */
+    .vnd-linked-assets {
+        list-style: none; padding: 0; font-size: .76rem; color: #334155;
+    }
+    .vnd-linked-assets li { padding: .1rem 0; }
+    .vnd-linked-assets a { font-weight: 600; }
+
     /* One party per line: these are legal entity names, and running them together on
        one wrapped line makes two companies read as one. */
     .vnd-party {
@@ -433,6 +440,7 @@
     [data-theme="dark"] .vnd-sum-foot { color: #64748b; }
     [data-theme="dark"] .vnd-sum-partial { color: #fcd34d; }
     [data-theme="dark"] .vnd-party { color: #e2e8f0; }
+    [data-theme="dark"] .vnd-linked-assets { color: #cbd5e1; }
     [data-theme="dark"] .vnd-scan-state { background: rgba(59,130,246,.16); border-color: rgba(59,130,246,.32); color: #93c5fd; }
     [data-theme="dark"] .vnd-scan-state.vnd-scan-ok { background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.32); color: #86efac; }
     [data-theme="dark"] .vnd-scan-state.vnd-scan-warn { background: rgba(251,191,36,.14); border-color: rgba(251,191,36,.32); color: #fcd34d; }

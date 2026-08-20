@@ -683,10 +683,15 @@ class AssetController extends Controller
         }
         if ($request->hasFile('rental_contract_documents')) {
             $paths = [];
+            $hashes = [];
             foreach ($request->file('rental_contract_documents') as $file) {
-                $paths[] = $file->store('rental_contracts', 'local');
+                $hash = AssetInventory::hashUploadedFile($file);
+                $path = $file->store('rental_contracts', 'local');
+                $paths[] = $path;
+                $hashes[$path] = $hash;
             }
             $data['rental_contract_documents'] = $paths;
+            $data['rental_contract_document_hashes'] = $hashes;
         }
 
         $asset = AssetInventory::create($data);
@@ -816,8 +821,11 @@ class AssetController extends Controller
             $data['invoice_documents'] = ! empty($invoicePaths) ? $invoicePaths : null;
         }
 
-        // Contract docs: honor per-file keep/remove, then append new uploads
+        // Contract docs: honor per-file keep/remove, then append new uploads. Hashes are
+        // keyed BY PATH (not aligned by index) so dropping one file can never desynchronise
+        // which hash belongs to which of the others that remain.
         $contractPaths = $asset->rental_contract_documents ?? [];
+        $contractHashes = $asset->rental_contract_document_hashes ?? [];
         if ($request->has('contract_keep_submitted')) {
             $keep = (array) $request->input('contract_keep_paths', []);
             $removed = array_diff($contractPaths, $keep);
@@ -825,14 +833,19 @@ class AssetController extends Controller
                 \Illuminate\Support\Facades\Storage::disk('local')->delete($r);
             }
             $contractPaths = array_values(array_intersect($contractPaths, $keep));
+            $contractHashes = array_intersect_key($contractHashes, array_flip($contractPaths));
         }
         if ($request->hasFile('rental_contract_documents')) {
             foreach ($request->file('rental_contract_documents') as $file) {
-                $contractPaths[] = $file->store('rental_contracts', 'local');
+                $hash = AssetInventory::hashUploadedFile($file);
+                $path = $file->store('rental_contracts', 'local');
+                $contractPaths[] = $path;
+                $contractHashes[$path] = $hash;
             }
         }
         if ($request->has('contract_keep_submitted') || $request->hasFile('rental_contract_documents')) {
             $data['rental_contract_documents'] = ! empty($contractPaths) ? $contractPaths : null;
+            $data['rental_contract_document_hashes'] = ! empty($contractHashes) ? $contractHashes : null;
         }
 
         // Handle photo keep/remove + new uploads

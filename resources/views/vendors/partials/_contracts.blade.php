@@ -115,6 +115,46 @@
                              now built around silently blank. --}}
                         @include('vendors.partials._ai-chip', ['doc' => $contract])
                     @endif
+
+                    {{-- Assets covered by this contract, matched by comparing this
+                         document's own bytes against each rental asset's uploaded copy —
+                         a hash match is certain, never a guess. There is no `contract_id`
+                         on an asset and none is being added: a contract only ever
+                         describes assets in prose, so pretending to link one to a
+                         specific serial number would be inventing precision the document
+                         does not contain. Skipped for an e-waste quotation row — it was
+                         never a rental agreement and asking "which assets does this
+                         cover" makes no sense for a disposal offer. --}}
+                    @php $vndContractAssets = $vndFromCycle ? collect() : $contract->matchedAssets($assets); @endphp
+                    @if($vndContractAssets->isNotEmpty())
+                        <div class="vnd-sum-foot">
+                            <button type="button" class="vnd-ai-toggle" data-bs-toggle="collapse"
+                                    data-bs-target="#vndAssetsc{{ $contract->id }}" aria-expanded="false"
+                                    aria-controls="vndAssetsc{{ $contract->id }}">
+                                <i class="bi bi-laptop me-1"></i>{{ $vndContractAssets->count() }} linked {{ \Illuminate\Support\Str::plural('asset', $vndContractAssets->count()) }}
+                            </button>
+                            <span class="vnd-sum-prov" title="Matched because the asset's own uploaded contract document is byte-identical to this one.">
+                                <i class="bi bi-fingerprint me-1"></i>Same document on file
+                            </span>
+                        </div>
+                        <div class="collapse mt-1" id="vndAssetsc{{ $contract->id }}">
+                            <ul class="vnd-linked-assets mb-0">
+                                @foreach($vndContractAssets as $vndAsset)
+                                    <li>
+                                        <a href="{{ route('assets.show', $vndAsset) }}">{{ $vndAsset->asset_tag }}</a>
+                                        — {{ trim($vndAsset->brand.' '.$vndAsset->model) ?: $vndAsset->asset_type }}
+                                    </li>
+                                @endforeach
+                            </ul>
+                        </div>
+                    @elseif($contract->file_hash && ! $vndFromCycle)
+                        {{-- The contract itself was read — just nothing on the Assets tab
+                             shares its exact file yet. Named rather than left blank, so an
+                             empty result doesn't read as "the feature isn't working". --}}
+                        <div class="vnd-sum-foot text-muted">
+                            <i class="bi bi-laptop me-1"></i>No asset on the Assets tab shares this document yet
+                        </div>
+                    @endif
                 </td>
                 <td class="text-center">
                     <span class="badge rounded-pill bg-{{ $vndState['color'] }}">{{ $vndState['label'] }}</span>

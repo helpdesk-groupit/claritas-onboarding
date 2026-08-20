@@ -52,6 +52,7 @@ class AssetInventory extends Model
         'origin_billing_document_id',
         'rental_vendor', 'rental_vendor_contact', 'rental_cost_per_month',
         'rental_start_date', 'rental_end_date', 'rental_contract_reference', 'rental_contract_documents',
+        'rental_contract_document_hashes',
         // Section D – Assignment
         'assigned_employee_id', 'asset_assigned_date', 'expected_return_date',
         // Section E – Condition
@@ -75,7 +76,17 @@ class AssetInventory extends Model
         'asset_photos' => 'array',
         'invoice_documents' => 'array',
         'rental_contract_documents' => 'array',
+        'rental_contract_document_hashes' => 'array',
     ];
+
+    /**
+     * SHA-256 of every file's actual bytes, keyed by its stored path — the fingerprint
+     * `VendorContract::matchedAssets()` compares against a contract's own `file_hash`.
+     */
+    public static function hashUploadedFile(\Illuminate\Http\UploadedFile $file): string
+    {
+        return hash_file('sha256', $file->getRealPath());
+    }
 
     public function assignments()
     {
