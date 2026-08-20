@@ -153,28 +153,22 @@ class AssetDecommissionController extends Controller
             return back()->with('error', 'No companies are registered, so the owning company cannot be confirmed. Register the company first.');
         }
 
-        // The inspect modal's own JS already preselects this field client-side when the
-        // asset's free-text company matches a registered one exactly (see the
-        // `.js-inspect-btn` handler in it/assets/page.blade.php) — this mirrors the same
-        // exact-match rule server-side, so the field is only REQUIRED when neither the form
-        // nor the server can resolve it safely, and the rule is enforced (and testable)
-        // independently of that client-side convenience.
+        // IT no longer picks the company by hand in the common case — the asset's own record
+        // already carries one, so this derives it automatically (case/whitespace-insensitive
+        // match against the registered list, mirrored client-side by the inspect modal's own
+        // JS). It is authoritative rather than a mere preselect: from Phase 4 the company
+        // decides which management approver may authorise the disposal, so a typo'd or stale
+        // company_name must never silently outrank a value the server can compute itself. Only
+        // when the asset's own value does not cleanly match a registered company does the form
+        // fall back to asking IT to confirm it by hand.
         $autoCompany = $this->autoDeriveInspectionCompany($disposedAsset, $companies);
 
         $data = $request->validate([
             'ewaste_completeness' => ['required', Rule::in(array_keys(DisposedAsset::COMPLETENESS))],
-            // Recording WHICH parts came off is the whole substance of an "Incomplete"
-            // verdict — without it the vendor is told the machine is short of something,
-            // but not what, and cannot price it.
-            'ewaste_parts_removed' => ['nullable', 'string', 'max:500', Rule::requiredIf(
-                fn () => $request->input('ewaste_completeness') === 'incomplete'
-            )],
-            // Confirmed against the registered companies, never trusted as free text: from
-            // Phase 4 this decides which management approver may authorise the disposal.
-            // Required only when nothing was submitted AND the asset's own company_name
-            // could not be safely auto-matched — a submitted value (whether it came from the
-            // pre-filled select or IT picking a different one) is still validated here either
-            // way, so IT can always correct a wrong or missing auto-match.
+            // Required only as the FALLBACK, when the asset's own company could not be
+            // resolved automatically. A posted value is still confirmed against the
+            // registered list — never trusted as free text — for the same reason the
+            // derivation above is.
             'company' => ['nullable', 'string', Rule::in($companies->all()), Rule::requiredIf(
                 fn () => $autoCompany === null
             )],
@@ -185,23 +179,17 @@ class AssetDecommissionController extends Controller
                 fn () => blank($disposedAsset->reason)
             )],
         ], [
-            'ewaste_parts_removed.required' => 'List the parts removed — an "Incomplete" asset the vendor cannot itemise cannot be priced.',
-            'company.required' => 'Confirm which company owns this asset.',
+            'company.required' => 'This asset\'s own company could not be matched to a registered one — confirm which company owns it.',
             'company.in' => 'Pick one of the registered companies — the owner decides who approves the disposal.',
             'reason.required' => 'This asset was queued before a reason was required. State why it is being written off.',
         ]);
 
-        // Submitted wins when present (IT may always correct a wrong or missing auto-match);
-        // the auto-derived company is only the fallback for a blank/absent submission.
-        $company = $data['company'] ?? $autoCompany;
-
-        $parts = $data['ewaste_completeness'] === 'incomplete'
-            ? (trim((string) ($data['ewaste_parts_removed'] ?? '')) ?: null)
-            : null;   // a "Complete" verdict must not keep a parts list from an earlier one
+        // The auto-derived company is authoritative whenever it resolves — never overridden by
+        // a submitted value, so a tampered or stale request field can't outrank it.
+        $company = $autoCompany ?? $data['company'];
 
         $disposedAsset->update([
             'ewaste_completeness' => $data['ewaste_completeness'],
-            'ewaste_parts_removed' => $parts,
             'company' => $company,
             'inspected_at' => now(),
             'inspected_by' => Auth::id(),
@@ -210,20 +198,17 @@ class AssetDecommissionController extends Controller
 
         $actor = Auth::user();
         $verdict = DisposedAsset::COMPLETENESS[$data['ewaste_completeness']];
-        $note = $parts ? "{$verdict} — parts removed: {$parts}" : $verdict;
         $disposedAsset->asset?->appendRemark(
-            "E-waste inspection: {$note}. Owner confirmed as {$company}. Inspected by ".($actor->name ?? 'IT').'.'
+            "E-waste inspection: {$verdict}. Owner confirmed as {$company}. Inspected by ".($actor->name ?? 'IT').'.'
         );
 
-        return back()->with('success', "{$disposedAsset->asset_tag} inspected — {$note}.");
+        return back()->with('success', "{$disposedAsset->asset_tag} inspected — {$verdict}.");
     }
 
     /**
-     * The asset's own free-text `company_name`, matched EXACTLY (after trimming) against the
-     * registered companies list — the same rule the inspect modal's client-side preselect
-     * already applies (see it/assets/page.blade.php's `.js-inspect-btn` handler). Null when
-     * the asset carries no company_name, or nothing registered matches it byte-for-byte, so
-     * the caller falls back to asking IT to confirm it rather than guessing.
+     * The asset's own company, matched against the registered list case/whitespace-
+     * insensitively — null when the asset carries no company_name or nothing registered
+     * matches it closely enough to trust.
      */
     private function autoDeriveInspectionCompany(DisposedAsset $disposedAsset, \Illuminate\Support\Collection $companies): ?string
     {
@@ -232,7 +217,9 @@ class AssetDecommissionController extends Controller
             return null;
         }
 
-        return $companies->first(fn ($name) => trim((string) $name) === $raw);
+        $normalise = fn (string $s) => strtolower(preg_replace('/\s+/', ' ', trim($s)));
+
+        return $companies->first(fn ($name) => $normalise($name) === $normalise($raw));
     }
 
     // ═══════════════════════════════════════════════════════════════════════

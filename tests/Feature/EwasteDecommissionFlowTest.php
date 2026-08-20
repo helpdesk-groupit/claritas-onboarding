@@ -228,7 +228,11 @@ class EwasteDecommissionFlowTest extends TestCase
         $this->assertTrue($row->isReadyForCycle());
     }
 
-    public function test_an_incomplete_verdict_cannot_be_recorded_without_naming_the_parts(): void
+    /**
+     * The Inspect Asset modal no longer asks IT to itemise what came off an Incomplete
+     * asset — an Incomplete verdict is recordable on its own, with nothing further required.
+     */
+    public function test_an_incomplete_verdict_is_recordable_with_no_parts_list(): void
     {
         $this->company();
         $row = $this->queued();
@@ -236,34 +240,14 @@ class EwasteDecommissionFlowTest extends TestCase
         $this->actingAs($this->itManager())
             ->post(route('decommission.inspect', $row), [
                 'ewaste_completeness' => 'incomplete',
-                'ewaste_parts_removed' => '',
                 'company' => 'Claritas Asia Sdn Bhd',
             ])
-            ->assertSessionHasErrors('ewaste_parts_removed');
+            ->assertSessionHasNoErrors();
 
-        // "Something is missing, but not what" cannot be priced by the vendor.
-        $this->assertFalse($row->fresh()->isInspected());
-    }
-
-    public function test_switching_a_verdict_back_to_complete_drops_the_parts_list(): void
-    {
-        $this->company();
-        $row = $this->queued();
-        $it = $this->itManager();
-
-        $this->actingAs($it)->post(route('decommission.inspect', $row), [
-            'ewaste_completeness' => 'incomplete',
-            'ewaste_parts_removed' => 'Battery, RAM',
-            'company' => 'Claritas Asia Sdn Bhd',
-        ])->assertSessionHasNoErrors();
-
-        $this->actingAs($it)->post(route('decommission.inspect', $row), [
-            'ewaste_completeness' => 'complete',
-            'company' => 'Claritas Asia Sdn Bhd',
-        ])->assertSessionHasNoErrors();
-
-        // A machine declared intact must not still list parts taken off it.
-        $this->assertNull($row->fresh()->ewaste_parts_removed);
+        $row->refresh();
+        $this->assertTrue($row->isInspected());
+        $this->assertSame('incomplete', $row->ewaste_completeness);
+        $this->assertNull($row->ewaste_parts_removed);
     }
 
     public function test_the_owning_company_must_be_a_registered_one(): void
@@ -309,11 +293,12 @@ class EwasteDecommissionFlowTest extends TestCase
     }
 
     /**
-     * A safe match still leaves IT free to pick a different company — the auto-derived value
-     * is only the fallback for a blank submission, never a value that overrides what IT
-     * actually chose.
+     * The auto-derived company is authoritative once it resolves — a submitted value is not
+     * trusted over it, so a tampered or stale request field can't silently pick a different
+     * owner (and from Phase 4 the owner decides which management approver authorises the
+     * disposal, which is exactly why the server never defers to the client here).
      */
-    public function test_a_submitted_company_overrides_an_auto_derived_one(): void
+    public function test_the_auto_derived_company_is_authoritative_over_a_submitted_one(): void
     {
         $this->company('Claritas Asia Sdn Bhd');
         $this->company('Enlinea Sdn Bhd');
@@ -327,7 +312,7 @@ class EwasteDecommissionFlowTest extends TestCase
             ])
             ->assertSessionHasNoErrors();
 
-        $this->assertSame('Enlinea Sdn Bhd', $row->fresh()->company);
+        $this->assertSame('Claritas Asia Sdn Bhd', $row->fresh()->company);
     }
 
     /**
@@ -464,7 +449,6 @@ class EwasteDecommissionFlowTest extends TestCase
 
         $this->actingAs($this->itManager())->post(route('decommission.inspect', $row), [
             'ewaste_completeness' => 'incomplete',
-            'ewaste_parts_removed' => 'Battery, RAM',
             'company' => 'Claritas Asia Sdn Bhd',
         ])->assertSessionHasNoErrors();
 
@@ -482,7 +466,6 @@ class EwasteDecommissionFlowTest extends TestCase
         $row->refresh();
         $this->assertTrue($row->isInspected());
         $this->assertSame('incomplete', $row->ewaste_completeness);
-        $this->assertSame('Battery, RAM', $row->ewaste_parts_removed);
     }
 
     public function test_restaging_an_inspected_asset_as_a_vendor_return_clears_its_inspection(): void
@@ -494,7 +477,6 @@ class EwasteDecommissionFlowTest extends TestCase
 
         $this->actingAs($this->itManager())->post(route('decommission.inspect', $row), [
             'ewaste_completeness' => 'incomplete',
-            'ewaste_parts_removed' => 'Battery',
             'company' => 'Claritas Asia Sdn Bhd',
         ])->assertSessionHasNoErrors();
 

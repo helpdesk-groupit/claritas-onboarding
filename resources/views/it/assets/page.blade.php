@@ -463,7 +463,6 @@
                                             data-tag="{{ $d->asset_tag }}"
                                             data-label="{{ trim(($d->brand ?? '').' '.($d->model ?? '')) }}"
                                             data-completeness="{{ $d->ewaste_completeness ?? '' }}"
-                                            data-parts="{{ $d->ewaste_parts_removed ?? '' }}"
                                             data-company="{{ $d->company ?? $d->asset?->company_name ?? '' }}"
                                             data-reason="{{ $d->reason ?? '' }}"
                                             data-needs-reason="{{ blank($d->reason) ? '1' : '0' }}">
@@ -614,22 +613,25 @@
                         <div class="form-text">The e-waste vendor prices against this.</div>
                     </div>
 
-                    <div class="mb-3" id="inspectPartsWrap" style="display:none;">
-                        <label class="form-label fw-semibold">Parts Removed <span class="text-danger">*</span></label>
-                        <input type="text" name="ewaste_parts_removed" id="inspectParts" class="form-control"
-                               placeholder="e.g. Battery, RAM, Hard disk, Charger" maxlength="500">
-                        <div class="form-text">List what came off — "Incomplete" without the list cannot be priced.</div>
+                    {{-- The company is read off the asset's own record — IT no longer picks it by
+                         hand in the common case. The select stays as a FALLBACK, shown only when
+                         the asset's own company does not cleanly match a registered one, matching
+                         what the server independently re-derives (it never trusts this field's
+                         value when it can resolve one itself). --}}
+                    <div class="mb-3" id="inspectCompanyConfirmed" style="display:none;">
+                        <label class="form-label fw-semibold">Owning Company</label>
+                        <div class="form-control-plaintext py-1"><i class="bi bi-building me-1 text-muted"></i><strong id="inspectCompanyName"></strong></div>
+                        <div class="form-text">Read from the asset's own record — decides which company's management approves this disposal.</div>
                     </div>
-
-                    <div class="mb-3">
+                    <div class="mb-3" id="inspectCompanyPicker" style="display:none;">
                         <label class="form-label fw-semibold">Owning Company <span class="text-danger">*</span></label>
-                        <select name="company" id="inspectCompany" class="form-select" required>
+                        <select name="company" id="inspectCompany" class="form-select">
                             <option value="">— select —</option>
                             @foreach($registeredCompanies as $co)
                                 <option value="{{ $co->name }}">{{ $co->name }}</option>
                             @endforeach
                         </select>
-                        <div class="form-text">Decides which company's management approves this disposal.</div>
+                        <div class="form-text">This asset's own company could not be matched to a registered one — confirm which company owns it.</div>
                     </div>
 
                     <div class="mb-1" id="inspectReasonWrap" style="display:none;">
@@ -1723,20 +1725,8 @@ document.addEventListener('click', function (e) {
     if (!modalEl || !form) return;
 
     const compSel    = document.getElementById('inspectCompleteness');
-    const partsWrap  = document.getElementById('inspectPartsWrap');
-    const partsInput = document.getElementById('inspectParts');
     const reasonWrap = document.getElementById('inspectReasonWrap');
     const reasonIn   = document.getElementById('inspectReason');
-
-    // Parts are required exactly when the verdict is Incomplete. Toggling `required` (not just
-    // visibility) matters both ways: a hidden-but-required field makes the browser refuse the
-    // submit with nothing focusable to point at.
-    function syncParts() {
-        const show = compSel && compSel.value === 'incomplete';
-        if (partsWrap) partsWrap.style.display = show ? '' : 'none';
-        if (partsInput) partsInput.required = !!show;
-    }
-    if (compSel) compSel.addEventListener('change', syncParts);
 
     document.addEventListener('click', function (e) {
         const btn = e.target.closest('.js-inspect-btn');
@@ -1749,19 +1739,38 @@ document.addEventListener('click', function (e) {
         if (tagEl) tagEl.textContent = btn.dataset.tag || '';
         if (lblEl) lblEl.textContent = btn.dataset.label ? ' — ' + btn.dataset.label : '';
 
-        if (compSel)  compSel.value  = btn.dataset.completeness || '';
-        if (partsInput) partsInput.value = btn.dataset.parts || '';
+        if (compSel) compSel.value = btn.dataset.completeness || '';
 
-        // Pre-select the owner only when the asset's free-text company matches a registered
-        // one exactly. A near-miss is left blank on purpose: this field decides who may
-        // authorise the disposal, so a guess presented as an answer is worse than no answer.
-        const coSel = document.getElementById('inspectCompany');
+        // Match the asset's own company against the registered list case/whitespace-
+        // insensitively — the SAME test AssetDecommissionController::inspect() runs
+        // server-side, so what is shown here can never disagree with what actually gets
+        // saved. A clean match is shown read-only and the picker is not even rendered into
+        // the submit; only when nothing matches does IT need to confirm one by hand, since a
+        // guess at an unregistered name is worse than no answer.
+        const coSel     = document.getElementById('inspectCompany');
+        const coConfirm = document.getElementById('inspectCompanyConfirmed');
+        const coPicker  = document.getElementById('inspectCompanyPicker');
+        const coName    = document.getElementById('inspectCompanyName');
+        const normalise = s => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        let matched = null;
         if (coSel) {
-            const want = (btn.dataset.company || '').trim();
+            const want = normalise(btn.dataset.company);
             coSel.value = '';
-            for (const opt of coSel.options) {
-                if (opt.value && opt.value === want) { coSel.value = opt.value; break; }
+            if (want) {
+                for (const opt of coSel.options) {
+                    if (opt.value && normalise(opt.value) === want) { matched = opt.value; break; }
+                }
             }
+        }
+        if (matched) {
+            if (coName) coName.textContent = matched;
+            if (coConfirm) coConfirm.style.display = '';
+            if (coPicker) coPicker.style.display = 'none';
+            if (coSel) { coSel.required = false; coSel.value = matched; }
+        } else {
+            if (coConfirm) coConfirm.style.display = 'none';
+            if (coPicker) coPicker.style.display = '';
+            if (coSel) coSel.required = true;
         }
 
         const needsReason = btn.dataset.needsReason === '1';
@@ -1771,7 +1780,6 @@ document.addEventListener('click', function (e) {
             reasonIn.value = needsReason ? '' : (btn.dataset.reason || '');
         }
 
-        syncParts();
         bootstrap.Modal.getOrCreateInstance(modalEl).show();
     });
 })();
