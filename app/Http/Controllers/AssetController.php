@@ -4,13 +4,16 @@ namespace App\Http\Controllers;
 
 use App\Models\Aarf;
 use App\Models\AssetAssignment;
+use App\Models\AssetDecommissionBatch;
 use App\Models\AssetInventory;
 use App\Models\DisposedAsset;
 use App\Models\Employee;
 use App\Models\Onboarding;
 use App\Models\RentalAssetAcknowledgement;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
@@ -18,7 +21,32 @@ class AssetController extends Controller
 {
     public function index(Request $request)
     {
-        $this->authorizeItAccess();
+        // Asset Listing proper is IT/HR-only (canViewAssets()). Finance and named e-waste
+        // management approvers hold neither, but the "Company Asset Decommissioning" review —
+        // stats, cycles-in-review decide panel, archive — moved here, and they are the only
+        // two audiences that page ever served. Every tab-pane on the full page renders into
+        // the DOM regardless of which is active (a documented CSP/JS trap in this codebase),
+        // so a decom-only viewer gets a separate, minimal view rather than the full inventory
+        // page with tabs hidden by CSS — hiding it client-side would still ship the whole
+        // asset table in the response. That minimal view still carries its OWN Company Asset
+        // Decommissioning / Reports tab bar (it.assets.decommission-review), styled identically
+        // to the full page's, so this audience lands on the same tabbed experience — just
+        // without the two inventory tabs (Asset Listing, Decommissioning Assets) they have no
+        // legitimate reason to see.
+        $user = Auth::user();
+        $fullAccess = $user->canViewAssets();
+        abort_unless($fullAccess || $user->canViewDecommissionReports(), 403);
+
+        if (! $fullAccess) {
+            $decomReview = $this->buildDecommissionReview($user, $request->integer('year') ?: null);
+            $reports = $this->ewasteCycleReportsFor($user->reachableDecommissionCompanies());
+
+            return view('it.assets.decommission-review', array_merge($decomReview, [
+                'activeTab' => $request->query('tab') === 'reports' ? 'reports' : 'company-decom',
+                'reportGroups' => $reports['groups'],
+                'reportsCount' => $reports['count'],
+            ]));
+        }
 
         // Exclude decommissioning conditions (not_good / returned) and soft-archived assets —
         // the former show in the Decommissioning tab, the latter have left every inventory view.
@@ -248,14 +276,180 @@ class AssetController extends Controller
             ->whereHas('asset', fn ($q) => $q->whereNull('decommissioned_at'))
             ->count();
 
+        // ── Company Asset Decommissioning tab ──
+        // Assets that have COMPLETED inspection (Complete or Incomplete) and are not yet
+        // gathered into a cycle — the "become available under Company Asset Decommissioning"
+        // step in the required workflow. The complement of awaitingInspection()'s own scope,
+        // so a row can never appear in both this list and the still-uninspected queue.
+        $readyForSweep = DisposedAsset::where('decommission_type', 'e_waste')
+            ->whereNull('decommission_batch_id')
+            ->whereNotNull('inspected_at')
+            ->whereNotNull('company')
+            ->whereHas('asset', fn ($q) => $q->whereNull('decommissioned_at'))
+            ->with('asset')
+            ->orderBy('inspected_at')
+            ->get();
+
+        // "Company Asset Decommissioning" + "Reports" tabs — same data + query shape as the
+        // reduced Finance/management-only page above, so the two access points can never
+        // disagree on what counts as a pending decision.
+        $decomReview = $this->buildDecommissionReview($user, $request->integer('year') ?: null);
+        $reports = $this->ewasteCycleReportsFor($user->reachableDecommissionCompanies());
+        $reportGroups = $reports['groups'];
+        $reportsCount = $reports['count'];
+        ['activeByCompany' => $activeByCompany, 'year' => $year, 'decomStats' => $decomStats,
+            'awaiting' => $awaiting, 'canFinance' => $canFinance, 'ewasteVendors' => $ewasteVendors] = $decomReview;
+
         return view('it.assets.page', compact('assets', 'stats', 'employees', 'pendingOnboardings', 'disposed', 'rentalVendors',
-            'registeredCompanies', 'filterBrands', 'awaitingInspection',
+            'registeredCompanies', 'filterBrands', 'awaitingInspection', 'readyForSweep',
             'overviewAllTotal', 'overviewAllByType', 'overviewAllByCompany',
             'overviewCompanyTotal', 'overviewCompanyByType', 'overviewCompanyByCompany',
             'overviewRentalTotal', 'overviewRentalByCompany',
             'ewasteRfqVendorCount', 'openBatches', 'openReturnForms', 'returnForms', 'canDecommission',
-            'vendorOptions'
+            'vendorOptions', 'activeByCompany', 'year', 'decomStats', 'awaiting', 'canFinance',
+            'ewasteVendors', 'reportGroups', 'reportsCount'
         ));
+    }
+
+    /**
+     * Everything the "Company Asset Decommissioning" review needs — stats, the by-company
+     * working queue, and the cycles awaiting THIS user's own decision. Shared by both shapes
+     * of index() (the full page's tab and the reduced Finance/management-only page), so the
+     * two access points can never disagree on what counts as a pending decision.
+     */
+    private function buildDecommissionReview(User $user, ?int $year): array
+    {
+        // Null = every company. A user who reaches this only as a named approver is scoped to
+        // their own entities — another company's disposal is not theirs to read.
+        $companies = $user->reachableDecommissionCompanies();
+
+        $scoped = fn ($q) => $companies === null ? $q : $q->whereIn('company', $companies->all());
+
+        // Every non-cancelled cycle, in-flight ones included: this is the review surface now,
+        // so a cycle awaiting a decision has to appear on it. `cancelled` stays out — it is
+        // not a record of anything. Each row is labelled by ewasteStageBadge().
+        $query = $scoped(
+            AssetDecommissionBatch::with('vendor')->withCount('items')
+                ->where('type', AssetDecommissionBatch::TYPE_EWASTE)
+                ->where('status', '!=', 'cancelled')
+        );
+        if ($year) {
+            $query->whereYear('created_at', $year);
+        }
+
+        // ── Headline figures: FINISHED CYCLES ONLY, and that is load-bearing ──
+        // Computed over the whole filtered set, but ALSO restricted to cycles that actually
+        // completed. Admitting in-flight ones to `recovered` — COALESCE(receipt, quotation, 0)
+        // — would book an approved-but-uncollected offer as money received.
+        $finished = (clone $query)->where(fn ($q) => $q->whereNotNull('finalized_at')->orWhere('status', 'completed'));
+        // Named decomStats, not stats: the full Asset Listing page already has its own $stats
+        // (asset total/available/assigned/unavailable counts) — merging this under the same
+        // key would silently clobber it.
+        $decomStats = [
+            'batches' => (clone $finished)->count(),
+            'assets' => DisposedAsset::whereIn('decommission_batch_id', (clone $finished)->select('asset_decommission_batches.id'))->count(),
+            'recovered' => (float) (clone $finished)->sum(DB::raw('COALESCE(receipt_amount, quotation_amount, 0)')),
+        ];
+
+        // ── Every cycle NOT YET completed, nested Year → Month → Company ──
+        // Completed cycles are the Reports tab's job now (ewasteCycleReportsFor(), completed
+        // only) — this is the working queue: whatever stage a cycle is at before that
+        // (gathering quotes, awaiting a decision, awaiting collection & payment, rejected and
+        // awaiting a re-quote), labelled by its own ewasteStageBadge(). Grouped by the SAME
+        // Year → Month → Company shape ewasteCycleReportsFor() builds for the Reports tab —
+        // keyed off created_at rather than finalized_at, since an in-flight cycle has no
+        // finalized_at yet.
+        $activeByCompany = (clone $query)
+            ->whereNull('finalized_at')
+            ->where('status', '!=', 'completed')
+            ->latest()
+            ->get()
+            ->groupBy(fn ($b) => $b->created_at->format('Y'))
+            ->sortKeysDesc()
+            ->map(fn ($yearBatches) => $yearBatches
+                ->groupBy(fn ($b) => $b->created_at->format('Y-m'))
+                ->sortKeysDesc()
+                ->map(fn ($monthBatches) => $monthBatches
+                    ->groupBy(fn ($b) => $b->company ?: 'Unspecified company')
+                    ->sortKeys()));
+
+        // ── The cycles awaiting THIS user's decision ──
+        // Loaded separately: an approver must reach a pending cycle wherever it sits in the
+        // by-company list, and the full comparison is only rendered for the handful that need
+        // one rather than for every row.
+        $awaiting = $scoped(
+            AssetDecommissionBatch::where('type', AssetDecommissionBatch::TYPE_EWASTE)
+                ->where('status', 'pending_approval')
+                ->with([
+                    'vendor', 'items', 'creator', 'financeReviewer', 'managementReviewer',
+                    'quotations.uploader', 'quotations.financeReviewer', 'quotations.vendor',
+                    'recommendedQuotation.vendor', 'selectedQuotation.vendor',
+                ])
+                ->withCount('items')
+        )->latest()->get();
+
+        // Per cycle, because management authority is per company: a group CFO may sign nothing
+        // while a named CEO signs only their own entity's. Finance's gate is role-wide, but it
+        // is still evaluated per row so both flags read the same way in the view. A cycle
+        // belongs in "awaiting your decision" only while THIS party's own verdict is still
+        // outstanding.
+        $canFinance = $user->canApproveEwasteQuotation();
+        $awaiting = $awaiting->filter(
+            fn ($b) => ($canFinance && $b->finance_status === 'pending')
+                || ($b->management_status === 'pending' && $user->canApproveEwasteAsManagement($b->company))
+        )->values();
+
+        return [
+            'activeByCompany' => $activeByCompany,
+            'year' => $year,
+            'decomStats' => $decomStats,
+            'awaiting' => $awaiting,
+            'canFinance' => $canFinance,
+            // Who may be named as the sender of a filed quotation — unused here (IT does not
+            // upload from this surface), but the shared comparison partial expects the variable.
+            'ewasteVendors' => collect(),
+        ];
+    }
+
+    /**
+     * Every non-cancelled e-waste cycle for the "Reports" tab, nested Year → Month → Company —
+     * the SAME data + query shape wherever it's shown (the full Asset Listing page, and the
+     * reduced Finance/management-only page), so the two access points can never disagree.
+     * $companies = null means every company (canViewAssets() holders); a named approver
+     * reaching this only via canViewDecommissionReports() is scoped to their own entities, same
+     * as buildDecommissionReview()'s $awaiting/$activeByCompany — another company's disposal
+     * record is not theirs to read.
+     *
+     * COMPLETED cycles only — a cycle still in flight belongs in buildDecommissionReview()'s
+     * $activeByCompany on the "Company Asset Decommissioning" tab instead, with its own
+     * ewasteStageBadge().
+     *
+     * @return array{groups: \Illuminate\Support\Collection, count: int}
+     */
+    private function ewasteCycleReportsFor(?\Illuminate\Support\Collection $companies): array
+    {
+        $query = AssetDecommissionBatch::where('type', AssetDecommissionBatch::TYPE_EWASTE)
+            ->where(fn ($q) => $q->whereNotNull('finalized_at')->orWhere('status', 'completed'))
+            ->with('vendor')->withCount('items');
+
+        if ($companies !== null) {
+            $query->whereIn('company', $companies->all());
+        }
+
+        $batches = $query->orderByDesc('finalized_at')->orderByDesc('created_at')->get();
+
+        // finalized_at falls back to created_at for the rare legacy row completed without one.
+        $groups = $batches
+            ->groupBy(fn ($b) => ($b->finalized_at ?? $b->created_at)->format('Y'))
+            ->sortKeysDesc()
+            ->map(fn ($yearBatches) => $yearBatches
+                ->groupBy(fn ($b) => ($b->finalized_at ?? $b->created_at)->format('Y-m'))
+                ->sortKeysDesc()
+                ->map(fn ($monthBatches) => $monthBatches
+                    ->groupBy(fn ($b) => $b->company ?: 'Unspecified company')
+                    ->sortKeys()));
+
+        return ['groups' => $groups, 'count' => $batches->count()];
     }
 
     /**

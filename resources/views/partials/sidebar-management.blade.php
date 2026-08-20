@@ -11,12 +11,13 @@
     $mCanTeamLeave  = $u->isSuperadmin();                                                 // Team Leave (approver view)
     $mCanTeamClaims = $u->canViewTeamClaims();
     $mCanVendors    = $u->canViewVendors();                                               // Vendor Management (IT + Finance + admins)
-    // Decommissioning — the single e-waste review surface AND the archive (C-Suite, IT mgr,
-    // Finance, and anyone named as a management approver). Finance was excluded here until
-    // 2026-08-14, when their quotation review moved off Accounting → Assets → "Disposed":
-    // this is now the only way in, so hiding it would leave them no route to the decision
-    // their approval email links to.
-    $mCanDecomm     = $u->canViewDecommissionReports();
+    // Decommissioning — the e-waste review surface AND the archive, now on the Asset Listing's
+    // Company Asset Decommissioning tab (C-Suite, IT mgr, Finance, and anyone named as a
+    // management approver). Suppressed for anyone who ALSO holds canViewAssets() — for them
+    // the identical assets.index?tab=company-decom link already sits under "Asset Listing"
+    // above; showing both would be a literal duplicate nav item. Finance/named approvers see
+    // it labelled "Asset Listing", matching every other role's entry point into the same route.
+    $mCanDecomm     = $u->canViewDecommissionReports() && ! $u->canViewAssets();
     $mCanCompanyReg = $u->isSuperadmin() || $u->isHrManager() || $u->isHrExecutive();
     $mShow = $mCanTask || $mCanAutomation || $mCanStrategist || $mCanTicket || $mCanTeamLeave || $mCanTeamClaims || $mCanVendors || $mCanDecomm || $mCanCompanyReg;
     $mAutomationOpen = request()->routeIs('it.automation.*');
@@ -101,8 +102,8 @@
 
 @if($mCanDecomm)
 <div class="nav-item">
-    <a href="{{ route('reports.decommission') }}" class="nav-link {{ request()->routeIs('reports.decommission') ? 'active' : '' }}">
-        <i class="bi bi-recycle"></i> Decommissioning
+    <a href="{{ route('assets.index', ['tab' => 'company-decom']) }}" class="nav-link {{ request()->routeIs('assets.index') && request('tab') === 'company-decom' ? 'active' : '' }}">
+        <i class="bi bi-recycle"></i> Asset Listing
     </a>
 </div>
 @endif

@@ -251,17 +251,18 @@ class EwasteQuotationRevisionTest extends TestCase
 
         $this->upload($it, $batch, 'first.pdf', 1000);
         $this->submit($it, $batch);
-        $this->actingAs($this->financeManager())
-            ->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Too low.'])->assertRedirect();
+        // Finance's decision is now a mandatory, co-equal gate — either party rejecting closes
+        // the cycle outright, so the other can no longer also weigh in on the same revision
+        // (management.ewaste.reject would be refused once the cycle is no longer awaiting a
+        // decision). Management's rejection alone is enough to demonstrate the reupload form
+        // states the rejection it is answering.
         $this->actingAs($mgmt)->post(route('management.ewaste.reject', $batch), [
             'remarks' => 'Go back for a better price.',
         ])->assertRedirect();
 
         $this->actingAs($it)->get(route('decommission.show', $batch))->assertOk()
             ->assertSee('Management rejected this disposal', false)
-            ->assertSee('Go back for a better price.', false)
-            // Finance's objection stays visible in the cycle log beside the offer it was made about.
-            ->assertSee('Too low.', false);
+            ->assertSee('Go back for a better price.', false);
     }
 
     public function test_the_report_lists_every_revision_and_reproduces_both_documents(): void

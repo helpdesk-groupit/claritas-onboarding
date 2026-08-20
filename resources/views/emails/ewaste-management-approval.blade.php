@@ -63,15 +63,16 @@
          reads as the only option on the table. --}}
     <p>
       You may approve the recommended offer or select a different vendor's quotation when you approve.
-      Finance are reviewing the same comparison; their position is recorded alongside yours, and
-      <strong>your decision is the one that authorises the disposal</strong>.
+      Finance are reviewing the same comparison and casting their own decision — approval requires
+      <strong>BOTH Finance and management to approve</strong>; either one rejecting sends it back for
+      a corrected quotation.
     </p>
 
-    {{-- Decommissioning, not the cycle page: the decision moved there on 2026-08-14 and the
-         cycle page is IT's working surface now. A button landing somewhere with no approve
-         control is worse than no button. --}}
+    {{-- Decommissioning tab on the Asset Listing, not the cycle page: that is where both Finance
+         and management review and decide, and the cycle page is IT's working surface only. A
+         button landing somewhere with no approve control is worse than no button. --}}
     <p style="text-align:center;margin:26px 0;">
-      <a href="{{ route('reports.decommission') }}" class="btn">Review and decide</a>
+      <a href="{{ route('assets.index', ['tab' => 'company-decom']) }}" class="btn">Review and decide</a>
     </p>
   </div>
   <div class="footer">This is an automated message from {{ $org }}. Please do not reply directly to this email.</div>

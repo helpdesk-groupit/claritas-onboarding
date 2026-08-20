@@ -13,18 +13,30 @@
 </style>
 </head>
 <body>
-@php $org = config('decommission.org_name'); @endphp
+@php
+  $org = config('decommission.org_name');
+  $forManagement = $audience === 'management';
+@endphp
 <div class="email-wrap">
   <div class="header"><h1>E-Waste Cycle Opened — Assets Awaiting Decommissioning</h1></div>
   <div class="body">
-    <p>Dear Finance Team,</p>
-    <p>A new quarterly e-waste decommissioning cycle has been opened. The full asset list is attached as a PDF for your records.</p>
+    <p>Dear {{ $forManagement ? ($batch->company ?: 'Management').' Management' : 'Finance Team' }},</p>
+    @if($forManagement)
+      <p>A new quarterly e-waste decommissioning cycle has opened for {{ $batch->company ?: 'your company' }}. Quotations are now being requested from every registered e-waste vendor. The full asset list is attached as a PDF for your records.</p>
+    @else
+      <p>A new quarterly e-waste decommissioning cycle has been opened. The full asset list is attached as a PDF for your records.</p>
+    @endif
     <div class="info-box">
       <div><strong>Cycle:</strong> {{ $batch->batch_number }}</div>
+      <div><strong>Company:</strong> {{ $batch->company ?: 'not recorded' }}</div>
       <div><strong>Assets awaiting decommissioning:</strong> {{ $batch->items->count() }}</div>
       <div><strong>Quotations requested from:</strong> {{ $batch->rfq_sent_at ? 'every active e-waste vendor on file' : 'nobody yet — no e-waste vendor has a PIC email on file' }}</div>
     </div>
-    <p>Every e-waste vendor we hold has been sent the same Request for Quotation, so their offers can be compared. Once IT uploads the quotations and recommends one, you will be asked to approve it in the system.</p>
+    @if($forManagement)
+      <p>Every e-waste vendor we hold has been sent the same Request for Quotation, so their offers can be compared. Once IT uploads the quotations and recommends one, you and Finance will each be asked to approve it independently — the disposal is authorised only once both of you have.</p>
+    @else
+      <p>Every e-waste vendor we hold has been sent the same Request for Quotation, so their offers can be compared. Once IT uploads the quotations and recommends one, you will be asked to approve it in the system.</p>
+    @endif
   </div>
   <div class="footer">This is an automated message from {{ $org }}. Please do not reply directly to this email.</div>
 </div>

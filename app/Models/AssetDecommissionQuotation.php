@@ -152,12 +152,22 @@ class AssetDecommissionQuotation extends Model
         return $this->finance_status === 'rejected';
     }
 
+    /**
+     * Finance left remarks with no verdict either way — a state legacy rows can still carry
+     * from before the mandatory gate was reinstated. Nothing writes it any more.
+     */
+    public function isNoted(): bool
+    {
+        return $this->finance_status === 'noted';
+    }
+
     /** Bootstrap badge [class, label] for this revision's Finance decision. */
     public function decisionBadge(): array
     {
         return match ($this->finance_status) {
             'approved' => ['success', 'Approved by Finance'],
             'rejected' => ['danger', 'Rejected by Finance'],
+            'noted' => ['info', 'Finance commented (legacy)'],
             'pending' => ['warning', 'Awaiting Finance review'],
             default => ['secondary', 'Not submitted for review'],
         };
@@ -177,7 +187,11 @@ class AssetDecommissionQuotation extends Model
         }
 
         $who = AssetDecommissionBatch::actorIdentity($this->financeReviewer);
-        $line = ($this->isApproved() ? 'Approved' : 'Rejected').' by Finance';
+        $line = match ($this->finance_status) {
+            'approved' => 'Approved by Finance',
+            'rejected' => 'Rejected by Finance',
+            default => 'Reviewed by Finance',
+        };
 
         if ($this->finance_reviewed_at) {
             $line .= ' on '.fmt_datetime($this->finance_reviewed_at);

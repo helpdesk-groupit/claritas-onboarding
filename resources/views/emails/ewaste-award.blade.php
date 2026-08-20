@@ -83,9 +83,9 @@
       @if($batch->management_remarks)
         <p style="font-size:13px;"><strong>Management's remarks:</strong> {{ $batch->management_remarks }}</p>
       @endif
-      @if($batch->finance_status)
+      @if($batch->financeDecided())
         <p style="font-size:13px;">
-          <strong>Finance's position:</strong> {{ $batch->financeDecisionBadge()[1] }}{{ $batch->finance_remarks ? ' — '.$batch->finance_remarks : '' }}
+          <strong>Finance's decision:</strong> {{ $batch->financeDecisionBadge()[1] }}{{ $batch->finance_remarks ? ' — '.$batch->finance_remarks : '' }}
         </p>
       @endif
     @endunless

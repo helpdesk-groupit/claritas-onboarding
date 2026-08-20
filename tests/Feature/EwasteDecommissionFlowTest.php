@@ -1084,7 +1084,13 @@ class EwasteDecommissionFlowTest extends TestCase
         $this->assertNull($batch->fresh()->receipt_path);
     }
 
-    public function test_management_approval_advances_the_cycle_over_a_finance_objection(): void
+    /**
+     * Finance's decision is one of two mandatory, independent gates — a rejection from either
+     * side closes the cycle outright, and management can no longer approve OVER it (that was
+     * the old advisory-model behaviour; see decided() for how a historical row like that is
+     * still read honestly by the report).
+     */
+    public function test_a_finance_rejection_blocks_the_cycle_even_before_management_decides(): void
     {
         Mail::fake();
         $batch = $this->submitted();
@@ -1093,12 +1099,17 @@ class EwasteDecommissionFlowTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => 'finance_manager']))
             ->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Too cheap']);
 
-        $this->actingAs($kelvin)->post(route('management.ewaste.approve', $batch))->assertSessionHasNoErrors();
+        $batch->refresh();
+        $this->assertSame('rejected', $batch->finance_status);
+        $this->assertSame('rejected', $batch->status, 'Either gate rejecting closes the cycle outright.');
+
+        $this->actingAs($kelvin)
+            ->post(route('management.ewaste.approve', $batch))
+            ->assertSessionHas('error');
 
         $batch->refresh();
-        $this->assertSame('rejected', $batch->finance_status, "Finance's objection stays on record.");
-        $this->assertSame('approved', $batch->management_status);
-        $this->assertTrue($batch->isApproved(), 'Management overrides Finance.');
+        $this->assertSame('pending', $batch->management_status, 'Management never got to decide — the cycle had already closed.');
+        $this->assertFalse($batch->isApproved());
     }
 
     public function test_management_can_select_a_different_vendor_than_it_recommended(): void
@@ -1145,6 +1156,9 @@ class EwasteDecommissionFlowTest extends TestCase
         $this->actingAs($this->itManager())->post(route('ewaste.submit', $batch), [
             'recommended_quotation_id' => $winner->id,
         ]);
+        // Both mandatory gates have to approve before the award notice goes out.
+        $this->actingAs(User::factory()->create(['role' => 'finance_manager']))
+            ->post(route('finance.ewaste.approve', $batch))->assertSessionHasNoErrors();
         $this->actingAs($this->approver('Claritas Asia Sdn Bhd'))
             ->post(route('management.ewaste.approve', $batch))->assertSessionHasNoErrors();
 
@@ -1284,7 +1298,17 @@ class EwasteDecommissionFlowTest extends TestCase
 
     // ── Phase 6 — The final report and the vendor archive ─────────────────────
 
-    /** A decided cycle: two vendors quoted, management approved the cheaper one. */
+    /**
+     * A decided cycle: two vendors quoted, management approved the cheaper one OVER Finance's
+     * objection. This exact combination can no longer be PRODUCED through the live app — since
+     * Finance's decision became a real, mandatory, co-equal gate, a rejection from either side
+     * closes the cycle outright and management can no longer override it (recordManagementDecision()
+     * would be refused by the controller's isAwaitingDecision() guard). It can still exist as
+     * HISTORICAL data from before that gate was reinstated, and report-pdf/DecommissionReportRenderer
+     * must keep reading such a row honestly rather than reinterpreting it under the current rule —
+     * so this helper writes the row directly (as a migration/backfill would find it), rather than
+     * through the HTTP flow that can no longer create it.
+     */
     private function decided(): array
     {
         Storage::fake('local');
@@ -1302,13 +1326,23 @@ class EwasteDecommissionFlowTest extends TestCase
             'recommended_quotation_id' => $recommended->id,
             'recommendation_note' => 'Highest offer',
         ]);
-        $this->actingAs(User::factory()->create(['role' => 'finance_manager']))
-            ->post(route('finance.ewaste.reject', $batch), ['remarks' => 'Prefer the local firm']);
-        $this->actingAs($this->approver('Claritas Asia Sdn Bhd', ['name' => 'Kelvin Approver']))
-            ->post(route('management.ewaste.approve', $batch), [
-                'selected_quotation_id' => $other->id,
-                'remarks' => 'They collect from both sites',
-            ]);
+
+        $financeReviewer = User::factory()->create(['role' => 'finance_manager']);
+        $kelvin = $this->approver('Claritas Asia Sdn Bhd', ['name' => 'Kelvin Approver']);
+        $now = now();
+
+        $batch->refresh();
+        $batch->quotationUnderReview()?->update([
+            'finance_status' => 'rejected', 'finance_reviewed_by' => $financeReviewer->id,
+            'finance_reviewed_at' => $now, 'finance_remarks' => 'Prefer the local firm',
+        ]);
+        $batch->update([
+            'finance_status' => 'rejected', 'finance_reviewed_by' => $financeReviewer->id,
+            'finance_reviewed_at' => $now, 'finance_remarks' => 'Prefer the local firm',
+            'management_status' => 'approved', 'management_reviewed_by' => $kelvin->id,
+            'management_reviewed_at' => $now, 'management_remarks' => 'They collect from both sites',
+            'selected_quotation_id' => $other->id, 'status' => 'approved',
+        ]);
 
         return [$batch->fresh(), $low, $high];
     }

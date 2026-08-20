@@ -83,6 +83,28 @@ class AssetDecommissionBatch extends Model
         return $this->belongsTo(Vendor::class, 'vendor_id');
     }
 
+    /**
+     * The vendor management actually decided on, not the RFQ placeholder — display code should
+     * read this rather than `vendor?->name` directly. `vendor_id` is kept in sync with it
+     * (syncQuotationCache()) purely so the FK still resolves for old code paths; this reads the
+     * source of truth directly.
+     *
+     * Falls back to the cached `vendor_id` only for a finalized/completed legacy cycle that
+     * predates `selected_quotation_id` — there the cache IS the only record of who collected.
+     */
+    public function decidedVendorName(): ?string
+    {
+        if ($this->selectedQuotation) {
+            return $this->selectedQuotation->vendorName();
+        }
+
+        if ($this->isFinalized() || $this->status === 'completed') {
+            return $this->vendor?->name;
+        }
+
+        return null;
+    }
+
     /** Snapshot line items (tag/serial/brand/model), one per collected asset. */
     public function items()
     {
@@ -233,6 +255,16 @@ class AssetDecommissionBatch extends Model
     public function financeRejected(): bool
     {
         return $this->finance_status === 'rejected';
+    }
+
+    /**
+     * Finance left remarks with no verdict either way — a state legacy rows can still carry
+     * from before the mandatory gate was reinstated. Nothing writes it any more: Finance's
+     * decision is now a required approve/reject, not an optional comment.
+     */
+    public function financeCommented(): bool
+    {
+        return $this->finance_status === 'noted';
     }
 
     public function typeLabel(): string
@@ -459,6 +491,26 @@ class AssetDecommissionBatch extends Model
         return $this->quotationsForComparison()->first(fn ($q) => $q->amount !== null);
     }
 
+    /**
+     * The comparison set ordered for DISPLAY: once IT has named a recommendation, it leads —
+     * so Finance/management read the table as IT's complete case for the disposal, not a race
+     * to spot the recommended row further down. Before a recommendation exists this is a no-op
+     * and keeps quotationsForComparison()'s normal best-offer-first order.
+     */
+    public function quotationsForDisplay()
+    {
+        $comparison = $this->quotationsForComparison();
+        $recommended = $this->recommendedQuotation;
+
+        if (! $recommended) {
+            return $comparison;
+        }
+
+        return collect([$recommended])
+            ->merge($comparison->reject(fn ($q) => $q->id === $recommended->id))
+            ->values();
+    }
+
     /** Every vendor's current offer carries a figure — the precondition for comparing them. */
     public function everyQuotationHasAnAmount(): bool
     {
@@ -473,6 +525,11 @@ class AssetDecommissionBatch extends Model
      *
      * A legacy batch with no revision row still gets its cache updated — the decision is
      * never lost just because the history table postdates the cycle.
+     *
+     * Finance's decision is one of two mandatory, independent gates (see
+     * recordManagementDecision() for management's) — reinstated as a real, binding gate rather
+     * than an advisory position: either party rejecting sends the cycle to 'rejected' outright,
+     * and full approval requires BOTH to have approved. See reconcileApprovalStatus().
      */
     public function recordFinanceDecision(string $status, ?int $reviewerId, ?string $remarks): void
     {
@@ -492,10 +549,6 @@ class AssetDecommissionBatch extends Model
                 'finance_remarks' => $remarks,
             ]);
 
-            // NOTE: `status` is deliberately NOT touched. Finance's position is recorded, not
-            // acted on — only management's decision moves the cycle. Writing finance_approved
-            // here (as this did before Phase 5) would let a Finance approval release assets to
-            // a vendor before the authority that actually signs had looked at it.
             $this->update([
                 'finance_status' => $status,
                 'finance_reviewed_by' => $reviewerId,
@@ -503,8 +556,11 @@ class AssetDecommissionBatch extends Model
                 'finance_remarks' => $remarks,
             ]);
 
+            $this->reconcileApprovalStatus();
             $this->unsetRelation('quotations');
         });
+
+        $this->refresh();
     }
 
     /**
@@ -552,7 +608,10 @@ class AssetDecommissionBatch extends Model
     }
 
     /**
-     * The decision that moves the cycle.
+     * Management's decision — the other of the two mandatory, independent gates (see
+     * recordFinanceDecision() for Finance's). Neither is sequenced ahead of the other; whoever
+     * decides second is the one whose write can actually move the cycle to 'approved' or
+     * 'rejected' — see reconcileApprovalStatus().
      *
      * $selected lets management authorise a DIFFERENT vendor's offer than the one IT put
      * forward — "or go with other company choices". Both are kept on the row, because what we
@@ -580,18 +639,46 @@ class AssetDecommissionBatch extends Model
                 'management_reviewed_by' => $reviewerId,
                 'management_reviewed_at' => $at,
                 'management_remarks' => $remarks,
-                'selected_quotation_id' => $winner?->id,
-                'status' => $status === 'approved' ? 'approved' : 'rejected',
+                'selected_quotation_id' => $winner?->id ?? $this->selected_quotation_id,
             ]);
 
             if ($winner) {
                 $this->syncQuotationCache($winner);
             }
 
+            $this->reconcileApprovalStatus();
             $this->unsetRelation('quotations');
         });
 
         $this->refresh();
+    }
+
+    /**
+     * Recompute the cycle's overall status from the two independent verdicts, after either one
+     * is written. A REJECT from either side wins outright — the disposal becomes 'rejected'
+     * whatever the other party said or has yet to say. Full approval requires BOTH to have
+     * approved. Anything short of that (one approved and the other still pending, or neither
+     * has decided) leaves the cycle at 'pending_approval', which is what keeps it open for
+     * whichever party has not yet acted.
+     *
+     * Called from inside the same transaction as the write that changed a verdict, so the two
+     * mandatory gates and the derived status can never disagree.
+     */
+    protected function reconcileApprovalStatus(): void
+    {
+        if ($this->finance_status === 'rejected' || $this->management_status === 'rejected') {
+            $this->update(['status' => 'rejected']);
+        } elseif ($this->finance_status === 'approved' && $this->management_status === 'approved') {
+            $this->update(['status' => 'approved']);
+        } else {
+            $this->update(['status' => 'pending_approval']);
+        }
+    }
+
+    /** True once BOTH mandatory gates have approved — the only state that authorises the disposal. */
+    public function fullyApproved(): bool
+    {
+        return $this->finance_status === 'approved' && $this->management_status === 'approved';
     }
 
     /**

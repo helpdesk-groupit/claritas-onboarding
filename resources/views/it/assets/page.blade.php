@@ -5,6 +5,10 @@
 @section('content')
 
 @include('partials.asset-overview-widget')
+{{-- Backs the ewx- classes used throughout the "Company Asset Decommissioning" tab (gradient
+     card heads, chips, the archive table) — this page never included it before, so that whole
+     tab rendered with none of its intended styling. --}}
+@include('partials.decommission-ui-style')
 
 {{-- ─── PAGE HEADER ─── --}}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -31,6 +35,20 @@
                 data-bs-toggle="tab" data-bs-target="#pane-damaged" type="button" role="tab">
             <i class="bi bi-archive me-1 text-danger"></i>Decommissioning Assets
             <span class="badge bg-danger ms-1" style="font-size:10px;">{{ $disposed->total() }}</span>
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {{ $activeTab === 'company-decom' ? 'active' : '' }}" id="tab-company-decom"
+                data-bs-toggle="tab" data-bs-target="#pane-company-decom" type="button" role="tab">
+            <i class="bi bi-building-gear me-1 text-warning"></i>Company Asset Decommissioning
+            <span class="badge bg-warning text-dark ms-1" style="font-size:10px;">{{ $readyForSweep->count() + $openBatches->count() }}</span>
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {{ $activeTab === 'reports' ? 'active' : '' }}" id="tab-reports"
+                data-bs-toggle="tab" data-bs-target="#pane-reports" type="button" role="tab">
+            <i class="bi bi-file-earmark-text me-1 text-success"></i>Reports
+            <span class="badge bg-success ms-1" style="font-size:10px;">{{ $reportsCount }}</span>
         </button>
     </li>
 </ul>
@@ -192,20 +210,16 @@
 <div class="tab-pane fade {{ $activeTab === 'damaged' ? 'show active' : '' }}" id="pane-damaged" role="tabpanel">
 <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
 
-    {{-- Decommissioning action bar (IT managers + IT executives, per canManageDecommission) --}}
+    {{-- Create Collection Batch stays here — it raises RETURN AARFs (rental), not e-waste
+         cycles, so it belongs beside the queue it selects rows from, not the e-waste tab. The
+         "Run e-waste sweep now" button moved to the Company Asset Decommissioning tab so there
+         is one, not two. --}}
     @if($canDecommission)
     <div class="card-body border-bottom d-flex flex-wrap gap-2 align-items-center">
         <button type="button" class="btn btn-sm btn-primary" id="createBatchBtn" data-bs-toggle="modal" data-bs-target="#createBatchModal" disabled>
             <i class="bi bi-box-arrow-up me-1"></i>Create Collection Batch
             <span class="badge bg-light text-dark ms-1" id="batchSelCount">0</span>
         </button>
-        <form action="{{ route('ewaste.sweep') }}" method="POST" class="js-confirm" data-confirm="Run the e-waste sweep now? This gathers all Not-Good assets into a new quarterly cycle and requests a quotation from every e-waste vendor, then reports to Finance." data-confirm-title="Run e-waste sweep" data-confirm-ok="Run sweep" data-confirm-variant="success">@csrf
-            <button class="btn btn-sm btn-outline-success"><i class="bi bi-recycle me-1"></i>Run e-waste sweep now</button>
-        </form>
-        <span class="text-muted small ms-auto">
-            E-waste RFQ goes to
-            @if($ewasteRfqVendorCount)<strong>{{ $ewasteRfqVendorCount }}</strong> vendor{{ $ewasteRfqVendorCount === 1 ? '' : 's' }}@else<span class="text-danger">no vendor</span> — <a href="{{ route('vendors.index') }}">configure</a>@endif
-        </span>
     </div>
     @endif
 
@@ -482,6 +496,93 @@
     </div>
 </div>
 </div>{{-- /pane-damaged --}}
+
+{{-- ══════════════ TAB 3: COMPANY ASSET DECOMMISSIONING ══════════════ --}}
+<div class="tab-pane fade {{ $activeTab === 'company-decom' ? 'show active' : '' }}" id="pane-company-decom" role="tabpanel">
+
+{{-- ══════════════ Operations ══════════════
+     IT's own working queue: what the next sweep will gather, and the button that runs it.
+     Placed first — this is IT's own tab, and the queue/sweep button is what an IT operator
+     is here to act on; the Finance/management review surface below is largely read-only for
+     them. Ready-for-sweep sits ABOVE the sweep button so the operator sees what is about to
+     be gathered before pressing it, not after. The full cycle history (including these same
+     in-flight cycles) follows immediately below as the archive table — one continuous zone,
+     not two competing lists. --}}
+<div class="section-header mb-3">
+    <h6 class="mb-0"><i class="bi bi-gear-wide-connected me-2 text-primary"></i>Operations</h6>
+</div>
+<div class="card ewx-card mb-4">
+    <div class="ewx-head">
+        <span class="ewx-chip ewx-chip-blue"><i class="bi bi-clipboard-check"></i></span>
+        <div class="me-2">
+            <span class="ewx-title">Ready for the next sweep</span>
+            <span class="ewx-sub">Inspected assets waiting to be gathered into a cycle.</span>
+        </div>
+        <span class="ewx-count">{{ $readyForSweep->count() }}</span>
+    </div>
+    <div class="card-body border-bottom">
+        @if($readyForSweep->isEmpty())
+            <p class="text-muted small mb-0">No inspected assets waiting — everything ready has already been swept into a cycle.</p>
+        @else
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0" style="font-size:13px;">
+                <thead style="background:#f8fafc;">
+                    <tr><th>Asset Tag</th><th>Type</th><th>Brand / Model</th><th>Company</th><th>Completeness</th><th>Inspected</th></tr>
+                </thead>
+                <tbody>
+                @foreach($readyForSweep as $r)
+                    <tr>
+                        <td>{{ $r->asset_tag }}</td>
+                        <td>{{ ucfirst(str_replace('_', ' ', $r->asset_type ?? '—')) }}</td>
+                        <td>{{ trim(($r->brand ?? '').' '.($r->model ?? '')) ?: '—' }}</td>
+                        <td>{{ $r->company }}</td>
+                        <td>
+                            @php $badge = $r->inspectionBadge(); @endphp
+                            <span class="badge bg-{{ $badge['color'] }}">{{ $badge['label'] }}</span>
+                        </td>
+                        <td class="text-muted">{{ fmt_datetime($r->inspected_at) }}</td>
+                    </tr>
+                @endforeach
+                </tbody>
+            </table>
+        </div>
+        @endif
+    </div>
+
+    @if($canDecommission)
+    <div class="card-body d-flex flex-wrap gap-2 align-items-center">
+        <form action="{{ route('ewaste.sweep') }}" method="POST" class="js-confirm" data-confirm="Run the e-waste sweep now? This gathers all inspected Not-Good assets into a new quarterly cycle and requests a quotation from every e-waste vendor, then reports to Finance and management." data-confirm-title="Run e-waste sweep" data-confirm-ok="Run sweep" data-confirm-variant="success">@csrf
+            <button class="btn btn-sm btn-success"><i class="bi bi-recycle me-1"></i>Run e-waste sweep now</button>
+        </form>
+        <span class="text-muted small">
+            RFQ goes to
+            @if($ewasteRfqVendorCount)<strong>{{ $ewasteRfqVendorCount }}</strong> vendor{{ $ewasteRfqVendorCount === 1 ? '' : 's' }}@else<span class="text-danger">no vendor</span> — <a href="{{ route('vendors.index') }}">configure</a>@endif
+        </span>
+    </div>
+    @endif
+</div>
+
+{{-- The Finance/management review surface (stat strip, filter, cycles-in-review decide panel).
+     $awaiting is normally empty for an ordinary IT/HR viewer (they aren't Finance/management);
+     it only shows a decision to a superadmin who is also a named approver. --}}
+@include('it.assets._decommission-review-summary', [
+    'year' => $year, 'decomStats' => $decomStats,
+    'awaiting' => $awaiting, 'canFinance' => $canFinance, 'ewasteVendors' => $ewasteVendors,
+])
+
+{{-- Every cycle still in flight, grouped by company — completed cycles are the Reports tab's
+     job now (see AssetController::ewasteCycleReportsFor()). --}}
+@include('it.assets._decommission-review-by-company', ['activeByCompany' => $activeByCompany, 'year' => $year])
+</div>{{-- /pane-company-decom --}}
+
+{{-- ══════════════ TAB 4: REPORTS ══════════════
+     Completed e-waste cycles only, nested Year → Month → Company, archived here. Reuses the
+     SAME batches, the SAME PDF and the SAME view/download routes as the Finance/management-only
+     decommission-review.blade.php; this is another access point onto the same records, not a
+     second report-generation path. --}}
+<div class="tab-pane fade {{ $activeTab === 'reports' ? 'show active' : '' }}" id="pane-reports" role="tabpanel">
+@include('it.assets._decommission-reports-pane', ['reportGroups' => $reportGroups, 'reportsCount' => $reportsCount])
+</div>{{-- /pane-reports --}}
 
 {{-- Inspection modal (Phase 2). ONE modal for every row, populated from the clicked button's
      data-* attributes — a modal per row would multiply with the queue, and `old()` is global,

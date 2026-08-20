@@ -447,73 +447,95 @@ class AssetDecommissionController extends Controller
     }
 
     /**
-     * Finance records its POSITION on the comparison.
-     *
-     * It does not move the cycle — management's decision does. Finance approving alone must
-     * never release assets to a vendor, because that is what keeps a later management
-     * rejection able to stop something that has not happened yet.
+     * Finance approves the offer under review — one of the two mandatory, independent gates
+     * (see managementApprove() for the other). Neither is sequenced ahead of the other: this
+     * only fully approves the disposal when management have ALSO already approved; otherwise
+     * it records Finance's half and the cycle stays open, awaiting management.
      */
     public function financeApprove(Request $request, AssetDecommissionBatch $batch)
     {
         $this->authorizeFinance();
 
-        if (! $batch->isEwaste() || $batch->finance_status !== 'pending') {
-            return back()->with('error', 'This cycle is not awaiting your review.');
+        if (! $batch->isEwaste() || $batch->finance_status !== 'pending' || ! $batch->isAwaitingDecision()) {
+            return back()->with('error', 'This cycle is not awaiting a Finance decision.');
         }
 
-        $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
+        $data = $request->validate(['remarks' => 'nullable|string|max:1000']);
+        $remarks = mb_substr(strip_tags((string) ($data['remarks'] ?? '')), 0, 1000);
+
         $batch->recordFinanceDecision('approved', Auth::id(), $remarks ?: null);
 
-        Log::info('E-waste quotation: Finance position recorded', [
+        Log::info('E-waste quotation: Finance approved', [
             'batch' => $batch->batch_number,
-            'position' => 'approved',
             'quotation_id' => $batch->quotationUnderReview()?->id,
             'actor_id' => Auth::id(),
         ]);
 
-        EwasteSweepService::notifyIt(new DecommissionNotification(
-            event: 'ewaste.finance_position',
-            batchNumber: $batch->batch_number,
-            subject: 'Finance approved the e-waste quotation',
-            message: "Finance approved the quotation for {$batch->batch_number}. The cycle proceeds once "
-                .$batch->company.' management have also approved.',
-            url: route('decommission.show', $batch),
-            icon: 'bi-check-circle',
-            color: 'info',
-        ));
-
-        return redirect()->route('reports.decommission')
-            ->with('success', "Your approval for {$batch->batch_number} is recorded. It proceeds once management approve.");
+        return $this->afterApprovalDecision($batch, 'Finance');
     }
 
-    /** Finance objects to the comparison (reason required). Management may still override. */
+    /** Finance rejects the offer under review. A reason is required — IT have to act on it. */
     public function financeReject(Request $request, AssetDecommissionBatch $batch)
     {
         $this->authorizeFinance();
 
-        if (! $batch->isEwaste() || $batch->finance_status !== 'pending') {
-            return back()->with('error', 'This cycle is not awaiting your review.');
+        if (! $batch->isEwaste() || $batch->finance_status !== 'pending' || ! $batch->isAwaitingDecision()) {
+            return back()->with('error', 'This cycle is not awaiting a Finance decision.');
         }
 
-        $request->validate(['remarks' => 'required|string|max:1000']);
+        $request->validate(['remarks' => 'required|string|max:1000'], [
+            'remarks.required' => 'State why this offer is refused — IT have to act on the reason.',
+        ]);
         $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
 
         // Recorded ON the quotation under review, so a later re-quote cannot erase it.
         $batch->recordFinanceDecision('rejected', Auth::id(), $remarks);
 
+        Log::info('E-waste quotation: Finance rejected', [
+            'batch' => $batch->batch_number,
+            'quotation_id' => $batch->quotationUnderReview()?->id,
+            'actor_id' => Auth::id(),
+            'reason' => $remarks,
+        ]);
+
         EwasteSweepService::notifyIt(new DecommissionNotification(
-            event: 'ewaste.finance_position',
+            event: 'ewaste.finance_rejected',
             batchNumber: $batch->batch_number,
-            subject: 'Finance objected to the e-waste quotation',
-            message: "Finance objected to the quotation for {$batch->batch_number}: {$remarks}. "
-                .$batch->company.' management still have to decide.',
+            subject: 'E-waste disposal rejected by Finance',
+            message: "Finance rejected the disposal for {$batch->batch_number}: {$remarks}. "
+                .'Collect revised quotations or cancel the cycle.',
             url: route('decommission.show', $batch),
-            icon: 'bi-exclamation-circle',
-            color: 'warning',
+            icon: 'bi-x-circle',
+            color: 'danger',
         ));
 
-        return redirect()->route('reports.decommission')
-            ->with('success', "Your objection to {$batch->batch_number} is recorded and shown to management.");
+        return redirect()->route('assets.index', ['tab' => 'company-decom'])
+            ->with('success', "Disposal for {$batch->batch_number} rejected — IT notified.");
+    }
+
+    /**
+     * After either party records an approve, tell the other what happened: if the cycle is now
+     * fully approved (the other side had already approved), notify the vendor + IT; if only
+     * half-approved, say so and that it is still awaiting the other party.
+     */
+    private function afterApprovalDecision(AssetDecommissionBatch $batch, string $actor)
+    {
+        $fresh = $batch->fresh();
+
+        if ($fresh->isApproved()) {
+            $winner = $fresh->fresh(['selectedQuotation.vendor'])->selectedQuotation;
+            $this->notifyApproved($fresh, $winner);
+
+            return redirect()->route('assets.index', ['tab' => 'company-decom'])->with('success',
+                "Disposal for {$batch->batch_number} is now FULLY APPROVED"
+                .($winner?->vendor ? ' — '.$winner->vendor->name.' selected' : '')
+                .'. The vendor and IT have been notified.');
+        }
+
+        $waitingOn = $actor === 'Finance' ? $batch->company.' management' : 'Finance';
+
+        return redirect()->route('assets.index', ['tab' => 'company-decom'])->with('success',
+            "{$actor}'s approval on {$batch->batch_number} is recorded — awaiting {$waitingOn} before this disposal is authorised.");
     }
 
     // ── Management: the decision that moves the cycle ─────────────────────────
@@ -526,8 +548,11 @@ class AssetDecommissionController extends Controller
     }
 
     /**
-     * Management authorise the disposal — optionally on a DIFFERENT vendor's offer than the
-     * one IT recommended ("or go with other company choices").
+     * Management approve the disposal — the other of the two mandatory, independent gates
+     * (see financeApprove()). Optionally on a DIFFERENT vendor's offer than the one IT
+     * recommended ("or go with other company choices"). This only fully approves the disposal
+     * when Finance have ALSO already approved; otherwise it records management's half and the
+     * cycle stays open, awaiting Finance.
      *
      * First decision wins where a company names several approvers: waiting for all of them
      * would stall a cycle behind whoever is on leave.
@@ -536,7 +561,7 @@ class AssetDecommissionController extends Controller
     {
         $this->authorizeManagement($batch);
 
-        if (! $batch->isEwaste() || $batch->management_status !== 'pending') {
+        if (! $batch->isEwaste() || $batch->management_status !== 'pending' || ! $batch->isAwaitingDecision()) {
             return back()->with('error', 'This cycle is not awaiting a management decision.');
         }
 
@@ -562,16 +587,12 @@ class AssetDecommissionController extends Controller
             $selected,
         );
 
-        $winner = $batch->fresh(['selectedQuotation.vendor'])->selectedQuotation;
-        $this->notifyApproved($batch, $winner);
+        Log::info('E-waste quotation: management approved', [
+            'batch' => $batch->batch_number, 'actor_id' => Auth::id(),
+            'selected_quotation_id' => $selected?->id,
+        ]);
 
-        $overrode = $selected && $batch->recommended_quotation_id !== $selected->id;
-
-        return redirect()->route('decommission.show', $batch)->with('success',
-            "Disposal for {$batch->batch_number} approved"
-            .($winner?->vendor ? ' — '.$winner->vendor->name.' selected' : '')
-            .($overrode ? ' (not the vendor IT recommended).' : '.')
-            .' The vendor and IT have been notified.');
+        return $this->afterApprovalDecision($batch, 'Management');
     }
 
     /** Management refuse the disposal. A reason is required — IT have to act on it. */
@@ -579,7 +600,7 @@ class AssetDecommissionController extends Controller
     {
         $this->authorizeManagement($batch);
 
-        if (! $batch->isEwaste() || $batch->management_status !== 'pending') {
+        if (! $batch->isEwaste() || $batch->management_status !== 'pending' || ! $batch->isAwaitingDecision()) {
             return back()->with('error', 'This cycle is not awaiting a management decision.');
         }
 
@@ -589,6 +610,10 @@ class AssetDecommissionController extends Controller
         $remarks = mb_substr(strip_tags((string) $request->input('remarks')), 0, 1000);
 
         $batch->recordManagementDecision('rejected', Auth::id(), $remarks);
+
+        Log::info('E-waste quotation: management rejected', [
+            'batch' => $batch->batch_number, 'actor_id' => Auth::id(), 'reason' => $remarks,
+        ]);
 
         EwasteSweepService::notifyIt(new DecommissionNotification(
             event: 'ewaste.management_rejected',
@@ -610,8 +635,8 @@ class AssetDecommissionController extends Controller
     {
         $this->authorizeManage();
 
-        // Gated on the CYCLE being approved, not on Finance's position: management authorise
-        // the disposal, and since Phase 5 a Finance approval alone leaves the cycle pending.
+        // Gated on the CYCLE being fully approved — BOTH Finance AND management have to have
+        // approved; either one alone leaves the cycle at 'pending_approval'.
         // (isApproved() also covers the legacy `finance_approved` status.)
         if (! $batch->isEwaste() || ! $batch->isApproved()) {
             return back()->with('error', 'A receipt can only be uploaded once management have approved the disposal.');

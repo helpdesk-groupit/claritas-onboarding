@@ -10,8 +10,10 @@ use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
 /**
- * Flow 2 — tells Finance a quotation has been uploaded and links to the in-app
- * Pending Quotations approval screen.
+ * Flow 2 — tells Finance a quotation comparison is ready for their decision and links to
+ * the Asset Listing's Company Asset Decommissioning tab, the review surface both Finance
+ * and management decide on. Finance's decision is one of two mandatory, independent gates —
+ * see AssetDecommissionBatch::recordFinanceDecision().
  */
 class EwasteQuotationApprovalMail extends Mailable
 {
@@ -28,7 +30,7 @@ class EwasteQuotationApprovalMail extends Mailable
     {
         return new Content(view: 'emails.ewaste-quotation-approval', with: [
             'batch' => $this->batch,
-            'approveUrl' => route('reports.decommission'),
+            'approveUrl' => route('assets.index', ['tab' => 'company-decom']),
         ]);
     }
 }

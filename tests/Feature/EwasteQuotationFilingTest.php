@@ -204,6 +204,8 @@ class EwasteQuotationFilingTest extends TestCase
         $batch->submitForApproval($revision, null, $it->id);
         $this->assertSame('Under review', $contract->fresh()->stateBadge()['label']);
 
+        // Both mandatory gates have to approve before the badge reads "Approved".
+        $batch->fresh()->recordFinanceDecision('approved', $it->id, null);
         $batch->fresh()->recordManagementDecision('approved', $it->id, null, $revision);
         $this->assertSame('Approved', $contract->fresh()->stateBadge()['label']);
     }
@@ -222,6 +224,8 @@ class EwasteQuotationFilingTest extends TestCase
         $fresh = $batch->fresh();
         $winner = $fresh->quotations()->where('vendor_id', $b->id)->first();
         $fresh->submitForApproval($winner, null, $it->id);
+        // Both mandatory gates have to approve before the badge reads "Approved".
+        $fresh->fresh()->recordFinanceDecision('approved', $it->id, null);
         $fresh->fresh()->recordManagementDecision('approved', $it->id, null, $winner);
 
         $byQuotation = fn ($q) => VendorContract::where('asset_decommission_quotation_id', $q->id)->firstOrFail();

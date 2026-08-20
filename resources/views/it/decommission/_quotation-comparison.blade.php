@@ -4,8 +4,9 @@
 
     The cycle asks every active e-waste vendor to quote, so this panel is where the offers are
     gathered and ranked, optionally compared by AI, submitted for approval with a
-    recommendation, and then decided by both Finance and management. Finance's position is
-    recorded but never binding — only management's decision moves the cycle.
+    recommendation, and then decided. Finance and management each cast a real approve/reject —
+    neither is sequenced ahead of the other, and the disposal is authorised only once BOTH have
+    approved (see AssetDecommissionBatch::recordFinanceDecision() / recordManagementDecision()).
 
     The vendor pays US for scrap, so the BEST offer is the HIGHEST — the sign is the opposite of
     a purchase, and every ordering and label here depends on getting that right.
@@ -17,15 +18,32 @@
         Decommissioning    canManage=false  canDecide=per-company  canFinance=per-gate
 
     Expects: $batch, $canManage (IT), $canDecide (this user may cast the management decision),
-             $canFinance (this user may record Finance's position), $ewasteVendors.
+             $canFinance (this user may cast Finance's decision), $ewasteVendors.
+    Optional: $hideStatusBadges — the Decommissioning review page's collapsed cycle-summary row
+              already shows the Finance/management status pills before this panel is ever
+              expanded, so its own call site suppresses the repeat here. Every other caller
+              leaves this unset and keeps the badges, unchanged.
+    Optional: $hideQuotationsTable — the IT cycle page hides the vendor-by-vendor comparison
+              table for anyone reaching it via canRead (Finance/management/HR), who decide from
+              the Company Asset Decommissioning tab and must not be shown a second, uncontrolled
+              copy of the comparison here. IT's own view (canManage=true) never sets this — they
+              still manage/compare/submit offers here. Never hides the decision forms themselves,
+              only the comparison table above them.
 --}}
 @php
     // Defaulted rather than required: the cycle page renders this without the finance flag,
     // and an undefined variable there would be a ViewException on IT's own working page.
     $canFinance = $canFinance ?? false;
+    $hideStatusBadges = $hideStatusBadges ?? false;
+    $hideQuotationsTable = $hideQuotationsTable ?? false;
 @endphp
 @php
-    $comparison = $batch->quotationsForComparison();
+    // Display order: once IT has named a recommendation, lead with it (and its "Why" note,
+    // rendered under that row below) so Finance/management read the comparison as IT's
+    // complete case for the disposal, not a race to spot the recommended row further down.
+    // Before a recommendation exists this is a no-op — quotationsForDisplay() keeps the
+    // normal best-offer-first order.
+    $comparison = $batch->quotationsForDisplay();
     $best = $batch->bestOffer();
     $recommended = $batch->recommendedQuotation;
     $selected = $batch->selectedQuotation;
@@ -41,6 +59,7 @@
 @endphp
 
 <div class="ewx-section mb-3">
+    @unless($hideStatusBadges)
     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
         <h6 class="fw-bold mb-0"><i class="bi bi-cash-stack me-2 text-primary"></i>Vendor Quotations</h6>
         <div class="d-flex gap-2">
@@ -48,7 +67,9 @@
             <span class="badge bg-{{ $batch->managementDecisionBadge()[0] }}">{{ $batch->managementDecisionBadge()[1] }}</span>
         </div>
     </div>
+    @endunless
 
+    @unless($hideQuotationsTable)
     @if($comparison->isEmpty())
         <p class="text-muted small mb-3">
             No quotations filed yet. Every active e-waste vendor has been sent the RFQ; file each reply below.
@@ -152,6 +173,7 @@
             <p class="small text-muted mb-2"><strong>IT's reason:</strong> {{ $batch->recommendation_note }}</p>
         @endif
     @endif
+    @endunless
 
     {{-- ── File a quotation (one per vendor; a re-quote is a new revision) ── --}}
     @if($canManage && $collecting)
@@ -259,17 +281,17 @@
             </div>
             <div class="form-text mt-1">
                 Sends the comparison to Finance and to {{ $batch->company ?: 'the company' }}'s management together.
-                Management's decision is what authorises the disposal.
+                Both have to approve — either rejecting sends it back for a corrected quotation.
             </div>
         </form>
         @endif
     @endif
 
-    {{-- ── Finance's position ──
-         RECORDED, never binding. Finance approving does not release anything and does not
-         move the cycle: only management's decision does. That is what keeps a later
-         management rejection able to stop a collection that has not happened yet, so the
-         wording here must never suggest this approval authorises the disposal. --}}
+    {{-- ── Finance's decision ──
+         One of the two mandatory, independent gates. Approving alone does not release
+         anything — the disposal is authorised only once management have ALSO approved — and
+         rejecting sends the cycle to 'rejected' outright, whatever management said or has yet
+         to say. See AssetDecommissionBatch::recordFinanceDecision(). --}}
     @if($canFinance && $batch->finance_status === 'pending')
     <div class="ewx-subsection mt-3">
         <h6 class="fw-bold small text-uppercase text-muted mb-2">Finance review</h6>
@@ -335,7 +357,8 @@
         </form>
 
         <div class="form-text mt-1">
-            Your position is recorded alongside management's, who authorise the disposal.
+            This is one of two mandatory gates — the disposal is authorised only once
+            management have ALSO approved.
         </div>
     </div>
     @endif
@@ -346,14 +369,14 @@
         <h6 class="fw-bold small text-uppercase text-muted mb-2">Your decision</h6>
 
         @if($batch->financeDecided())
-            {{-- Finance's position is shown but explicitly not binding — management may
-                 approve over an objection, which is the whole point of the override rule. --}}
+            {{-- Both gates are mandatory and independent — Finance's decision is shown for
+                 context, but this party's own approve/reject is what this form records. --}}
             <p class="small mb-2">
                 <span class="badge bg-{{ $batch->financeDecisionBadge()[0] }}">{{ $batch->financeDecisionBadge()[1] }}</span>
                 @if($batch->finance_remarks)<span class="text-muted">— {{ $batch->finance_remarks }}</span>@endif
             </p>
         @else
-            <p class="small text-muted mb-2">Finance have not recorded a position yet. You may still decide.</p>
+            <p class="small text-muted mb-2">Finance have not decided yet — your approval records your own half; the disposal needs both.</p>
         @endif
 
         <form action="{{ route('management.ewaste.approve', $batch) }}" method="POST" class="row g-2 align-items-end mb-2">@csrf

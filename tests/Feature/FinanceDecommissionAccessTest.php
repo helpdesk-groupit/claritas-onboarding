@@ -37,7 +37,7 @@ class FinanceDecommissionAccessTest extends TestCase
 
     private function reviewUrl(): string
     {
-        return route('reports.decommission');
+        return route('assets.index', ['tab' => 'company-decom']);
     }
 
     private function disposedUrl(): string
@@ -175,7 +175,7 @@ class FinanceDecommissionAccessTest extends TestCase
 
         $this->actingAs($finance)->get($this->reviewUrl())
             ->assertOk()
-            ->assertSee('Awaiting your decision')
+            ->assertSee('Needs Your Decision')
             ->assertSee('EWA-2026-Q4')
             ->assertSee(route('finance.ewaste.approve', $batch), false)
             ->assertSee(route('finance.ewaste.reject', $batch), false);
@@ -191,14 +191,14 @@ class FinanceDecommissionAccessTest extends TestCase
             ->assertRedirect($this->reviewUrl());
 
         $this->assertSame('approved', $batch->fresh()->finance_status);
-        // Their approval is a recorded position, not the release: management authorise the
-        // disposal, so the cycle is still awaiting a decision.
+        // Finance's approval is one of two mandatory, independent gates — the cycle stays
+        // awaiting a decision until management have ALSO approved.
         $this->assertSame('pending_approval', $batch->fresh()->status);
 
         // Decided, so it drops out of the awaiting-decision block — but stays in the list.
         $this->actingAs($finance)->get($this->reviewUrl())
             ->assertOk()
-            ->assertDontSee('Awaiting your decision')
+            ->assertDontSee('Needs Your Decision')
             ->assertSee('EWA-2026-Q4');
     }
 
@@ -229,7 +229,7 @@ class FinanceDecommissionAccessTest extends TestCase
             ->assertOk()
             ->assertSee('EWA-2026-Q1')
             // The decision block is what they must not get.
-            ->assertDontSee('Awaiting your decision')
+            ->assertDontSee('Needs Your Decision')
             ->assertDontSee(route('finance.ewaste.approve', $batch), false)
             ->assertDontSee(route('management.ewaste.approve', $batch), false)
             // But the cycle itself belongs in the record they are allowed to read — they
@@ -252,17 +252,19 @@ class FinanceDecommissionAccessTest extends TestCase
 
         $this->actingAs($ceo)->get($this->reviewUrl())
             ->assertOk()
-            ->assertSee('Awaiting your decision')
+            ->assertSee('Needs Your Decision')
             ->assertSee(route('management.ewaste.approve', $batch), false)
             // Finance's controls are not theirs.
             ->assertDontSee(route('finance.ewaste.approve', $batch), false);
 
         $this->actingAs($ceo)
             ->post(route('management.ewaste.approve', $batch), ['remarks' => 'Approved'])
-            ->assertRedirect(route('decommission.show', $batch));
+            ->assertRedirect($this->reviewUrl());
 
         $this->assertSame('approved', $batch->fresh()->management_status);
-        $this->assertSame('approved', $batch->fresh()->status);
+        // Management's approval is the other of the two mandatory, independent gates — Finance
+        // is still 'pending' in pendingQuotation(), so the cycle stays awaiting their decision.
+        $this->assertSame('pending_approval', $batch->fresh()->status);
     }
 
     /**
@@ -346,7 +348,7 @@ class FinanceDecommissionAccessTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => 'finance_executive']))
             ->get(route('accounting.fixed-assets.index'))
             ->assertOk()
-            ->assertSee(route('reports.decommission'), false);
+            ->assertSee($this->reviewUrl(), false);
     }
 
     public function test_non_finance_roles_keep_their_decommissioning_sidebar_link(): void

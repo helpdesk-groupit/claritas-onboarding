@@ -172,7 +172,7 @@
             <span class="ewx-chip ewx-chip-green"><i class="bi bi-recycle"></i></span>
             <div class="me-2">
                 <span class="ewx-title">E-Waste Cycle</span>
-                <span class="ewx-sub">RFQ &rarr; quotation &rarr; Finance approval &rarr; receipt &rarr; completion.</span>
+                <span class="ewx-sub">RFQ &rarr; quotation &rarr; Finance &amp; management approval &rarr; receipt &rarr; completion.</span>
             </div>
         </div>
         <div class="card-body">
@@ -190,6 +190,37 @@
                 {{-- One Uploaded + Finance-decision pair per quotation REVISION, so a cycle
                      Finance rejected once keeps both offers and both decisions on the log. --}}
                 @include('it.decommission._quotation-steps', ['batch' => $batch, 'canManage' => $canManage])
+                {{-- Management's decision is the SECOND of the two mandatory, independent
+                     gates — it lives on the batch itself (one decision per cycle), not per
+                     quotation revision like Finance's, which is why it isn't part of
+                     _quotation-steps above. Both are required before a receipt can be
+                     uploaded (isApproved() = both approved) — see recordManagementDecision(). --}}
+                @php
+                    $mgmtDot = $batch->management_status === 'approved' ? 'dcm-dot-done'
+                        : ($batch->management_status === 'rejected' ? 'dcm-dot-fail'
+                        : ($batch->management_status === 'pending' ? 'dcm-dot-active' : 'dcm-dot-todo'));
+                @endphp
+                <li class="dcm-step {{ $batch->management_status ? '' : 'dcm-step-todo' }}">
+                    <span class="dcm-dot {{ $mgmtDot }}">
+                        @if($batch->management_status === 'approved')<i class="bi bi-check"></i>@elseif($batch->management_status === 'rejected')<i class="bi bi-x"></i>@endif
+                    </span>
+                    <div class="dcm-step-title">Management&rsquo;s decision <span class="text-muted fw-normal">(required — independent of Finance)</span></div>
+                    <div class="dcm-step-meta">
+                        @if($batch->management_reviewed_at)
+                            {{ $batch->management_status === 'approved' ? 'Approved' : ($batch->management_status === 'rejected' ? 'Rejected' : 'Reviewed') }}
+                            &middot; {{ fmt_datetime($batch->management_reviewed_at) }}
+                            @if($batch->managementReviewer) &middot; {{ $batch->managementReviewer->name }} @endif
+                            @if($batch->management_status === 'approved' && $batch->selectedQuotation)
+                                &middot; <strong>{{ $batch->selectedQuotation->vendorName() }}</strong> selected
+                            @endif
+                            @if($batch->management_remarks)
+                                <div class="mt-1">Remarks: {{ $batch->management_remarks }}</div>
+                            @endif
+                        @else
+                            {{ $batch->management_status === 'pending' ? 'Not yet reviewed by management' : 'Not yet submitted' }}
+                        @endif
+                    </div>
+                </li>
                 <li class="dcm-step {{ $batch->receipt_uploaded_at ? '' : 'dcm-step-todo' }}">
                     <span class="dcm-dot {{ $batch->receipt_uploaded_at ? 'dcm-dot-done' : 'dcm-dot-todo' }}">@if($batch->receipt_uploaded_at)<i class="bi bi-check"></i>@endif</span>
                     <div class="dcm-step-title">Payment receipt uploaded <span class="text-muted fw-normal">(proof the vendor paid us)</span></div>
@@ -215,23 +246,28 @@
             </ul>
 
             {{-- ── Phase 5: the comparison and IT's recommendation ──
-                 The DECISIONS are not made here. Both Finance's position and management's
-                 authorisation moved to Management → Decommissioning on 2026-08-14, so this
-                 renders the comparison read-only for anyone but IT. --}}
+                 The DECISIONS are not made here. Both Finance's and management's decisions
+                 are cast on the Company Asset Decommissioning tab. This page is IT's working
+                 page — a Finance/management/HR viewer only reaches it via canRead (see
+                 AssetDecommissionController::show()), never via canManage, so the vendor-by-
+                 vendor "Vendor Quotations" table is hidden for them here too — they decide
+                 from the report + comparison on that tab, and clicking through to this one
+                 must not surface a second, uncontrolled copy of the same comparison. --}}
             @include('it.decommission._quotation-comparison', [
                 'batch' => $batch,
                 'canManage' => $canManage,
                 'canDecide' => $canDecide,
                 'canFinance' => false,
                 'ewasteVendors' => $ewasteVendors,
+                'hideQuotationsTable' => ! $canManage,
             ])
 
             @if($batch->isAwaitingDecision() && (Auth::user()->canApproveEwasteQuotation() || Auth::user()->canApproveEwasteAsManagement($batch->company)))
             {{-- Says where the control is, rather than leaving somebody who was emailed about
                  this cycle hunting a button that used to be on this page. --}}
             <div class="alert alert-info py-2 px-3 small d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
-                <span><i class="bi bi-shield-check me-1"></i>This cycle is awaiting management's decision.</span>
-                <a href="{{ route('reports.decommission') }}" class="btn btn-sm btn-primary">
+                <span><i class="bi bi-shield-check me-1"></i>This cycle is awaiting Finance's and/or management's decision.</span>
+                <a href="{{ route('assets.index', ['tab' => 'company-decom']) }}" class="btn btn-sm btn-primary">
                     Review on Decommissioning <i class="bi bi-arrow-right ms-1"></i>
                 </a>
             </div>

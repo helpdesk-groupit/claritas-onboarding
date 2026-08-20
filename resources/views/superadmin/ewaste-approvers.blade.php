@@ -24,9 +24,9 @@
     <div class="alert alert-light border small">
         <i class="bi bi-info-circle me-1"></i>
         Approvers are named people, not a role: the same person is often CEO of one company and an
-        officer of another, and an employee record carries only one company. <strong>The management
-        decision is the one that authorises a disposal</strong> — Finance review the same comparison and
-        their position is recorded alongside, but it does not release assets on its own.
+        officer of another, and an employee record carries only one company. <strong>Management's
+        decision is mandatory and independent of Finance's</strong> — both have to approve for a
+        disposal to be authorised; either one rejecting sends it back for a corrected quotation.
         Where several people are named for one company, the <strong>first decision counts</strong>.
     </div>
 

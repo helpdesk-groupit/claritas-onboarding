@@ -12,14 +12,20 @@ use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
 /**
- * Flow 2 — the "assets awaiting decommissioning" report emailed to Finance when
- * a quarterly cycle opens. Asset list attached as a PDF.
+ * Phase 5A — the "assets awaiting decommissioning" report emailed when a quarterly cycle
+ * opens, telling Finance AND the company's management that the quotation process has
+ * started. One mailable, two audiences (`$audience` changes only the greeting and closing
+ * line — never the figures or the attachment), same pattern as EwasteAwardMail. Asset list
+ * attached as a PDF.
  */
 class EwasteAwaitingReportMail extends Mailable
 {
     use Queueable, SerializesModels;
 
-    public function __construct(public AssetDecommissionBatch $batch) {}
+    public function __construct(
+        public AssetDecommissionBatch $batch,
+        public string $audience = 'finance',
+    ) {}
 
     public function envelope(): Envelope
     {
@@ -28,7 +34,7 @@ class EwasteAwaitingReportMail extends Mailable
 
     public function content(): Content
     {
-        return new Content(view: 'emails.ewaste-awaiting', with: ['batch' => $this->batch]);
+        return new Content(view: 'emails.ewaste-awaiting', with: ['batch' => $this->batch, 'audience' => $this->audience]);
     }
 
     public function attachments(): array

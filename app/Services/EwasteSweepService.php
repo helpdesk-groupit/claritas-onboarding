@@ -8,6 +8,7 @@ use App\Mail\EwasteRfqMail;
 use App\Models\AssetDecommissionBatch;
 use App\Models\AssetInventory;
 use App\Models\DisposedAsset;
+use App\Models\EwasteCompanyApprover;
 use App\Models\User;
 use App\Models\Vendor;
 use App\Notifications\DecommissionNotification;
@@ -93,12 +94,19 @@ class EwasteSweepService
                 $rfqSentAny = true;
             }
 
-            // ── "Assets awaiting decommissioning" report to Finance ──
+            // ── Phase 5A — Finance AND management are told the process has started ──
             // One email per cycle: TO the Finance Manager(s), CC the Finance Executive(s).
-            if (self::mailFinance(new EwasteAwaitingReportMail($batch->fresh(['vendor', 'items.asset'])))) {
+            $fresh = $batch->fresh(['vendor', 'items.asset']);
+            if (self::mailFinance(new EwasteAwaitingReportMail($fresh))) {
                 $batch->update(['finance_report_sent_at' => now()]);
                 $financeNotifiedAny = true;
             }
+
+            // Management is notified now — that quotations are being requested — separately
+            // from being ASKED TO DECIDE, which happens later once IT submits the comparison.
+            // Named per company, same as the decision request, so an entity with nobody
+            // configured is flagged rather than silently skipped.
+            self::notifyManagementOfSweep($batch, $fresh);
 
             $batches->push($batch->fresh());
         }
@@ -194,6 +202,53 @@ class EwasteSweepService
         }
 
         return $sentAny;
+    }
+
+    /**
+     * Phase 5A — tell the cycle's company management that the quotation process has started,
+     * at the SAME moment Finance is told (sweep time), not only once IT later submits a
+     * comparison for their decision. Named per company, same as the later decision request —
+     * an unnamed company falls back to nobody here (unlike the decision request, which falls
+     * back to superadmins), so a missing configuration is flagged to IT rather than quietly
+     * emailing a superadmin about a cycle they may have no stake in.
+     */
+    private static function notifyManagementOfSweep(AssetDecommissionBatch $batch, AssetDecommissionBatch $fresh): void
+    {
+        $approvers = EwasteCompanyApprover::configuredFor($batch->company);
+
+        if ($approvers->isEmpty()) {
+            self::notifyIt(new DecommissionNotification(
+                event: 'ewaste.no_management_approver_at_sweep',
+                batchNumber: $batch->batch_number,
+                subject: 'No management approver configured',
+                message: "Cycle {$batch->batch_number} opened for ".($batch->company ?: 'an unnamed company')
+                    .', but no management approver is set for it — set one in Settings → E-Waste Approvers so they are told the process has started.',
+                url: route('decommission.show', $batch),
+                icon: 'bi-exclamation-triangle',
+                color: 'warning',
+            ));
+
+            return;
+        }
+
+        $emails = $approvers->pluck('work_email')->filter()->unique()->values()->all();
+        if ($emails) {
+            try {
+                Mail::to($emails)->send(new EwasteAwaitingReportMail($fresh, audience: 'management'));
+            } catch (\Throwable $e) {
+                Log::error('E-waste sweep-start email to management failed for '.$batch->batch_number.': '.$e->getMessage());
+            }
+        }
+
+        Notification::send($approvers, new DecommissionNotification(
+            event: 'ewaste.quotation_process_started',
+            batchNumber: $batch->batch_number,
+            subject: 'E-waste quotation process started',
+            message: "Cycle {$batch->batch_number} for {$batch->company} has opened — quotations are being requested from every registered e-waste vendor. You'll be asked to approve once IT submits a comparison.",
+            url: route('assets.index', ['tab' => 'company-decom']),
+            icon: 'bi-recycle',
+            color: 'info',
+        ));
     }
 
     /**
