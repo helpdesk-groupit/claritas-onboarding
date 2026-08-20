@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Employee;
+use App\Models\EwasteCompanyApprover;
 use App\Models\ExpenseCategory;
 use App\Models\ExpenseClaim;
 use App\Models\User;
@@ -111,6 +112,35 @@ class SecureFileAccessTest extends TestCase
 
         $response = $this->actingAs($user)->get('/secure-file/claim_receipts/receipt.pdf');
         $response->assertStatus(200);
+    }
+
+    /**
+     * A named e-waste management approver (ewaste_company_approvers) reads the same quotation/
+     * receipt documents the Company Asset Decommissioning review panel embeds inline
+     * (decommission._report-preview → _appendix-document, via secure_file_url()). They routinely
+     * carry users.role='employee' and hold none of DIRECTORY_PERMISSIONS' listed roles, so
+     * without the dynamic canViewDecommissionReports() check the embed 403s for exactly the
+     * audience the panel exists to show it to.
+     */
+    public function test_named_ewaste_management_approver_can_access_quotation_and_receipt_documents(): void
+    {
+        $approver = User::factory()->create(['role' => 'employee']);
+        EwasteCompanyApprover::create(['company' => 'Claritas Asia Sdn Bhd', 'user_id' => $approver->id]);
+        Storage::disk('local')->put('ewaste_quotations/quote.pdf', 'fake-content');
+        Storage::disk('local')->put('ewaste_receipts/receipt.pdf', 'fake-content');
+
+        $this->actingAs($approver)->get('/secure-file/ewaste_quotations/quote.pdf')->assertStatus(200);
+        $this->actingAs($approver)->get('/secure-file/ewaste_receipts/receipt.pdf')->assertStatus(200);
+    }
+
+    /** A plain employee with no ewaste_company_approvers row must still be refused. */
+    public function test_a_plain_employee_cannot_access_ewaste_quotation_documents(): void
+    {
+        $user = User::factory()->create(['role' => 'employee']);
+        Storage::disk('local')->put('ewaste_quotations/quote.pdf', 'fake-content');
+
+        $response = $this->actingAs($user)->get('/secure-file/ewaste_quotations/quote.pdf');
+        $response->assertStatus(403);
     }
 
     /**

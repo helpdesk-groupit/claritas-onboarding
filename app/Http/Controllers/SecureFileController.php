@@ -27,9 +27,12 @@ class SecureFileController extends Controller
         'rental_contracts' => ['hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
         'claim_receipts' => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
         'claim_supporting' => ['hr_manager', 'hr_executive', 'superadmin', 'system_admin', 'self'],
-        // Asset Decommissioning — quotation/receipt/report docs (Finance + IT).
-        'ewaste_quotations' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
-        'ewaste_receipts' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
+        // Asset Decommissioning — quotation/receipt/report docs (Finance + IT). Named e-waste
+        // management approvers (ewaste_company_approvers) also read these — see the dynamic
+        // check in hasAccess(), since they routinely carry users.role='employee' and can't be
+        // listed here.
+        'ewaste_quotations' => ['finance_manager', 'finance_executive', 'hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
+        'ewaste_receipts' => ['finance_manager', 'finance_executive', 'hr_manager', 'it_manager', 'it_executive', 'superadmin', 'system_admin'],
         'decommission_reports' => ['finance_manager', 'finance_executive', 'it_manager', 'it_executive', 'hr_manager', 'superadmin', 'system_admin'],
         // Vendor Management — contracts, quotations and invoices. Mirrors User::VENDOR_ROLES;
         // keep the two in step or a role reaches the page but 403s on every document on it.
@@ -128,6 +131,19 @@ class SecureFileController extends Controller
         // Check 'self' access — employee can view their own files
         if (in_array('self', $permissions) && $user->employee) {
             return $this->isOwnFile($user, $path);
+        }
+
+        // A named e-waste management approver (ewaste_company_approvers) reads the same
+        // quotation/receipt/report documents as the Company Asset Decommissioning review
+        // surface they're embedded in (decommission._report-preview → _appendix-document,
+        // via secure_file_url()) — they hold none of the roles listed above, typically
+        // users.role='employee', so User::canViewDecommissionReports() (which already
+        // grants them read access to that surface) is the right predicate here too.
+        // Without this, the embedded quotation/receipt <embed>/<img> 403s for exactly the
+        // audience the review panel was built to show it to.
+        if (in_array($directory, ['ewaste_quotations', 'ewaste_receipts', 'decommission_reports'], true)
+            && $user->canViewDecommissionReports()) {
+            return true;
         }
 
         return false;
