@@ -565,13 +565,13 @@
      $awaiting is normally empty for an ordinary IT/HR viewer (they aren't Finance/management);
      it only shows a decision to a superadmin who is also a named approver. --}}
 @include('it.assets._decommission-review-summary', [
-    'year' => $year, 'decomStats' => $decomStats,
+    'decomStats' => $decomStats, 'cdFilters' => $cdFilters, 'companyOptions' => $companyOptions, 'statusOptions' => $statusOptions,
     'awaiting' => $awaiting, 'canFinance' => $canFinance, 'ewasteVendors' => $ewasteVendors,
 ])
 
 {{-- Every cycle still in flight, grouped by company — completed cycles are the Reports tab's
      job now (see AssetController::ewasteCycleReportsFor()). --}}
-@include('it.assets._decommission-review-by-company', ['activeByCompany' => $activeByCompany, 'year' => $year])
+@include('it.assets._decommission-review-by-company', ['activeByCompany' => $activeByCompany, 'cdFilters' => $cdFilters])
 </div>{{-- /pane-company-decom --}}
 
 {{-- ══════════════ TAB 4: REPORTS ══════════════
@@ -580,7 +580,10 @@
      decommission-review.blade.php; this is another access point onto the same records, not a
      second report-generation path. --}}
 <div class="tab-pane fade {{ $activeTab === 'reports' ? 'show active' : '' }}" id="pane-reports" role="tabpanel">
-@include('it.assets._decommission-reports-pane', ['reportGroups' => $reportGroups, 'reportsCount' => $reportsCount])
+@include('it.assets._decommission-reports-pane', [
+    'reportGroups' => $reportGroups, 'reportsCount' => $reportsCount, 'reportFilteredCount' => $reportFilteredCount,
+    'reportCompanyOptions' => $reportCompanyOptions, 'reportVendorOptions' => $reportVendorOptions, 'rpFilters' => $rpFilters,
+])
 </div>{{-- /pane-reports --}}
 
 {{-- Inspection modal (Phase 2). ONE modal for every row, populated from the clicked button's

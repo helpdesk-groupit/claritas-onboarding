@@ -10,8 +10,14 @@
        - it/assets/decommission-review.blade.php — the whole page, for Finance + named
          management approvers who do NOT have canViewAssets() at all.
 
-     Expects: $year, $decomStats, $awaiting, $canFinance, $ewasteVendors — built by
-     AssetController::buildDecommissionReview(). --}}
+     The filter panel (year/month/company/status) lives at the BOTTOM of this partial, under
+     "Cycles in review" — it narrows the "Cycles by Company" list that
+     `_decommission-review-by-company.blade.php` renders immediately after this include, not the
+     stat strip or "Needs Your Decision" above it (see AssetController::buildDecommissionReview()
+     for why those two stay unfiltered).
+
+     Expects: $decomStats, $awaiting, $canFinance, $ewasteVendors, $cdFilters, $companyOptions,
+     $statusOptions — built by AssetController::buildDecommissionReview(). --}}
 
 {{-- Overview strip — computed controller-side over the full filtered set, not this page.
      One slim row rather than three dashboard cards: this is a working page, not an executive
@@ -40,26 +46,6 @@
                 <div class="ewx-stat-label">Recovered from e-waste</div>
             </div>
         </div>
-    </div>
-</div>
-
-{{-- Filter toolbar --}}
-<div class="card mb-3">
-    <div class="card-body py-2 d-flex align-items-center gap-2 flex-wrap">
-        <form method="GET" class="d-flex align-items-center gap-2 flex-wrap">
-            <input type="hidden" name="tab" value="company-decom">
-            <label class="form-label mb-0 small fw-semibold text-muted">Year</label>
-            <select name="year" class="form-select form-select-sm" style="width:110px;">
-                <option value="">All</option>
-                @for($y = now()->year; $y >= now()->year - 5; $y--)
-                    <option value="{{ $y }}" {{ (string) $year === (string) $y ? 'selected' : '' }}>{{ $y }}</option>
-                @endfor
-            </select>
-            <button class="btn btn-sm btn-primary"><i class="bi bi-funnel me-1"></i>Filter</button>
-            @if($year)
-            <a href="{{ route('assets.index', ['tab' => 'company-decom']) }}" class="btn btn-sm btn-outline-secondary">Reset</a>
-            @endif
-        </form>
     </div>
 </div>
 
@@ -158,3 +144,53 @@
     </div>
 </div>
 @endif
+
+{{-- Filter toolbar — narrows "Cycles by Company" immediately below (see the docblock note
+     above on why the stat strip and "Needs Your Decision" are deliberately unaffected). --}}
+<div class="card mb-3">
+    <div class="card-body py-2">
+        <form method="GET" class="d-flex align-items-end gap-2 flex-wrap">
+            <input type="hidden" name="tab" value="company-decom">
+            <div>
+                <label class="form-label mb-1 small fw-semibold text-muted">Year</label>
+                <select name="cd_year" class="form-select form-select-sm" style="width:110px;">
+                    <option value="">All</option>
+                    @for($y = now()->year; $y >= now()->year - 5; $y--)
+                        <option value="{{ $y }}" {{ (string) $cdFilters['year'] === (string) $y ? 'selected' : '' }}>{{ $y }}</option>
+                    @endfor
+                </select>
+            </div>
+            <div>
+                <label class="form-label mb-1 small fw-semibold text-muted">Month</label>
+                <select name="cd_month" class="form-select form-select-sm" style="width:130px;">
+                    <option value="">All</option>
+                    @for($m = 1; $m <= 12; $m++)
+                        <option value="{{ $m }}" {{ (string) $cdFilters['month'] === (string) $m ? 'selected' : '' }}>{{ \Carbon\Carbon::create()->month($m)->format('F') }}</option>
+                    @endfor
+                </select>
+            </div>
+            <div>
+                <label class="form-label mb-1 small fw-semibold text-muted">Company</label>
+                <select name="cd_company" class="form-select form-select-sm" style="width:200px;">
+                    <option value="">All</option>
+                    @foreach($companyOptions as $co)
+                        <option value="{{ $co }}" {{ $cdFilters['company'] === $co ? 'selected' : '' }}>{{ $co }}</option>
+                    @endforeach
+                </select>
+            </div>
+            <div>
+                <label class="form-label mb-1 small fw-semibold text-muted">Status</label>
+                <select name="cd_status" class="form-select form-select-sm" style="width:200px;">
+                    <option value="">All</option>
+                    @foreach($statusOptions as $value => $label)
+                        <option value="{{ $value }}" {{ $cdFilters['status'] === $value ? 'selected' : '' }}>{{ $label }}</option>
+                    @endforeach
+                </select>
+            </div>
+            <button class="btn btn-sm btn-primary"><i class="bi bi-funnel me-1"></i>Filter</button>
+            @if(array_filter($cdFilters))
+            <a href="{{ route('assets.index', ['tab' => 'company-decom']) }}" class="btn btn-sm btn-outline-secondary">Reset</a>
+            @endif
+        </form>
+    </div>
+</div>

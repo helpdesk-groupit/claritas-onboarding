@@ -15,12 +15,16 @@
      directly, since that host has no Operations block at all.
 
      Expects: $activeByCompany (Year => [Y-m => [Company => Collection<AssetDecommissionBatch>]],
-     already sorted by the controller, newest first), $year — built by
-     AssetController::buildDecommissionReview(). --}}
+     already sorted by the controller, newest first), $cdFilters — built by
+     AssetController::buildDecommissionReview(). $cdFilters is the year/month/company/status
+     panel rendered at the bottom of the summary partial just above this include; it has
+     already been applied to $activeByCompany server-side, so this partial only reads it back
+     to phrase the empty state. --}}
 @php
     $vndActGroupCount = fn ($companies) => $companies->sum(fn ($batches) => $batches->count());
     $vndActTotal = $activeByCompany->sum(fn ($months) => $months->sum($vndActGroupCount));
     $vndActFirstYear = $activeByCompany->keys()->first();
+    $vndActFiltered = ! empty(array_filter($cdFilters));
 @endphp
 <div class="card ewx-card">
     <div class="ewx-head">
@@ -37,7 +41,7 @@
         @if($activeByCompany->isEmpty())
             <div class="ewx-empty">
                 <i class="bi bi-inbox"></i>
-                No cycle currently in flight{{ $year ? ' for this year' : '' }}.
+                No cycle currently in flight{{ $vndActFiltered ? ' matching these filters' : '' }}.
             </div>
         @else
         @foreach($activeByCompany as $yr => $yearMonths)

@@ -43,14 +43,17 @@
 
 <div class="tab-pane fade {{ $activeTab === 'company-decom' ? 'show active' : '' }}" id="pane-company-decom" role="tabpanel">
 @include('it.assets._decommission-review-summary', [
-    'year' => $year, 'decomStats' => $decomStats,
+    'decomStats' => $decomStats, 'cdFilters' => $cdFilters, 'companyOptions' => $companyOptions, 'statusOptions' => $statusOptions,
     'awaiting' => $awaiting, 'canFinance' => $canFinance, 'ewasteVendors' => $ewasteVendors,
 ])
-@include('it.assets._decommission-review-by-company', ['activeByCompany' => $activeByCompany, 'year' => $year])
+@include('it.assets._decommission-review-by-company', ['activeByCompany' => $activeByCompany, 'cdFilters' => $cdFilters])
 </div>{{-- /pane-company-decom --}}
 
 <div class="tab-pane fade {{ $activeTab === 'reports' ? 'show active' : '' }}" id="pane-reports" role="tabpanel">
-@include('it.assets._decommission-reports-pane', ['reportGroups' => $reportGroups, 'reportsCount' => $reportsCount])
+@include('it.assets._decommission-reports-pane', [
+    'reportGroups' => $reportGroups, 'reportsCount' => $reportsCount, 'reportFilteredCount' => $reportFilteredCount,
+    'reportCompanyOptions' => $reportCompanyOptions, 'reportVendorOptions' => $reportVendorOptions, 'rpFilters' => $rpFilters,
+])
 </div>{{-- /pane-reports --}}
 
 </div>

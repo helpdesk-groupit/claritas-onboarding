@@ -16,7 +16,9 @@
          AssetController::ewasteCycleReportsFor()).
 
      Expects: $reportGroups (Year => [Y-m => [Company => Collection<AssetDecommissionBatch>]],
-     each level already sorted by the controller), $reportsCount. --}}
+     each level already sorted by the controller), $reportsCount (TOTAL reachable reports,
+     unaffected by $rpFilters — it backs the tab nav badge), $reportFilteredCount (count after
+     $rpFilters), $reportCompanyOptions, $reportVendorOptions, $rpFilters. --}}
 @php
     $vndFinished = fn ($b) => $b->isFinalized() || $b->status === 'completed';
     $vndGroupCount = fn ($companies) => $companies->sum(fn ($batches) => $batches->count());
@@ -24,11 +26,65 @@
         fn ($batches) => $batches->filter($vndFinished)->sum(fn ($b) => $b->reportAmount() ?? 0)
     );
     $vndFirstYear = $reportGroups->keys()->first();
+    $vndRpFiltered = ! empty(array_filter($rpFilters));
 @endphp
+
+{{-- Filter toolbar — Year / Month / Company / Vendor, narrowing the groups rendered below.
+     Namespaced `rp_*` so it can never collide with the Company Asset Decommissioning tab's own
+     `cd_*` filter panel or the Asset Listing search fields — all render into the same page. --}}
+<div class="card mb-3" style="border-top-left-radius:0;border-top-right-radius:0;">
+    <div class="card-body py-2">
+        <form method="GET" class="d-flex align-items-end gap-2 flex-wrap">
+            <input type="hidden" name="tab" value="reports">
+            <div>
+                <label class="form-label mb-1 small fw-semibold text-muted">Year</label>
+                <select name="rp_year" class="form-select form-select-sm" style="width:110px;">
+                    <option value="">All</option>
+                    @for($y = now()->year; $y >= now()->year - 5; $y--)
+                        <option value="{{ $y }}" {{ (string) $rpFilters['year'] === (string) $y ? 'selected' : '' }}>{{ $y }}</option>
+                    @endfor
+                </select>
+            </div>
+            <div>
+                <label class="form-label mb-1 small fw-semibold text-muted">Month</label>
+                <select name="rp_month" class="form-select form-select-sm" style="width:130px;">
+                    <option value="">All</option>
+                    @for($m = 1; $m <= 12; $m++)
+                        <option value="{{ $m }}" {{ (string) $rpFilters['month'] === (string) $m ? 'selected' : '' }}>{{ \Carbon\Carbon::create()->month($m)->format('F') }}</option>
+                    @endfor
+                </select>
+            </div>
+            <div>
+                <label class="form-label mb-1 small fw-semibold text-muted">Company</label>
+                <select name="rp_company" class="form-select form-select-sm" style="width:200px;">
+                    <option value="">All</option>
+                    @foreach($reportCompanyOptions as $co)
+                        <option value="{{ $co }}" {{ $rpFilters['company'] === $co ? 'selected' : '' }}>{{ $co }}</option>
+                    @endforeach
+                </select>
+            </div>
+            <div>
+                <label class="form-label mb-1 small fw-semibold text-muted">Vendor</label>
+                <select name="rp_vendor" class="form-select form-select-sm" style="width:200px;">
+                    <option value="">All</option>
+                    @foreach($reportVendorOptions as $v)
+                        <option value="{{ $v->id }}" {{ (string) $rpFilters['vendor_id'] === (string) $v->id ? 'selected' : '' }}>{{ $v->name }}</option>
+                    @endforeach
+                </select>
+            </div>
+            <button class="btn btn-sm btn-primary"><i class="bi bi-funnel me-1"></i>Filter</button>
+            @if($vndRpFiltered)
+            <a href="{{ route('assets.index', ['tab' => 'reports']) }}" class="btn btn-sm btn-outline-secondary">Reset</a>
+            <span class="small text-muted ms-1">Showing {{ $reportFilteredCount }} of {{ $reportsCount }} report{{ $reportsCount === 1 ? '' : 's' }}</span>
+            @endif
+        </form>
+    </div>
+</div>
+
 <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;">
     <div class="card-body">
         @if($reportGroups->isEmpty())
-            <p class="text-muted small mb-0">No decommissioning cycle recorded yet.</p>
+            <p class="text-muted small mb-0">{{ $vndRpFiltered ? 'No decommissioning cycle matches these filters.' : 'No decommissioning cycle recorded yet.' }}</p>
         @else
         @foreach($reportGroups as $yr => $yearMonths)
         @php
