@@ -32,12 +32,12 @@
 <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
     <div>
         <div class="fw-semibold">Billing Documents</div>
-        <div class="text-muted small">Upload a quotation or invoice &mdash; it is read for a summary you can correct before saving. Nothing here posts to Accounting.</div>
+        <div class="text-muted small">Upload a quotation, invoice or credit note &mdash; it is read for a summary you can correct before saving. Nothing here posts to Accounting.</div>
     </div>
     @if($canManage)
     <div class="d-flex gap-2 flex-wrap">
         <button type="button" class="btn btn-sm btn-primary" id="addBillingBtn" data-bs-toggle="modal" data-bs-target="#billingModalNew">
-            <i class="bi bi-plus-lg me-1"></i>Add Quotation / Invoice
+            <i class="bi bi-plus-lg me-1"></i>Add Billing Document
         </button>
         {{-- Rendered even when there is no invoice to pay yet. The modal states that in
              words; a button that disappears reads as a missing feature rather than as one
@@ -61,7 +61,7 @@
 @if($vendor->billingDocuments->isEmpty())
     <div class="ewx-empty">
         <i class="bi bi-receipt"></i>
-        No quotations or invoices recorded for this vendor.
+        No quotations, invoices or credit notes recorded for this vendor.
     </div>
 @else
 <div class="table-responsive">
@@ -91,7 +91,7 @@
                      counterparty. --}}
                 <td class="ps-3">
                     <div class="vnd-doc-name">
-                        <span class="vnd-type {{ $doc->doc_type === 'invoice' ? 'vnd-type-purchase' : 'vnd-type-rental' }}">{{ $doc->typeLabel() }}</span>
+                        <span class="vnd-type {{ $doc->typeBadgeClass() }}">{{ $doc->typeLabel() }}</span>
                         {{ $doc->doc_number ?: 'No number' }}
                     </div>
                     @forelse($vndParties as $vndParty)

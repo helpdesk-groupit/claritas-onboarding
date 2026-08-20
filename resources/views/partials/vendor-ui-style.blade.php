@@ -86,6 +86,9 @@
     .vnd-type-repair { background: #ede9fe; color: #5b21b6; }
     .vnd-type-ewaste { background: #dcfce7; color: #166534; }
     .vnd-type-purchase { background: #fef3c7; color: #92400e; }
+    /* Credit note — a rose tone, distinct from the invoice/quotation colours, since it is
+       money moving the OTHER way (a reduction/refund, not a bill). */
+    .vnd-type-credit { background: #fee2e2; color: #b91c1c; }
 
     .vnd-pic { font-weight: 600; color: #1e293b; line-height: 1.2; }
     .vnd-pic-meta { font-size: .72rem; color: #64748b; }
@@ -153,6 +156,7 @@
     [data-theme="dark"] .vnd-type-repair { background: rgba(139,92,246,.18); color: #c4b5fd; }
     [data-theme="dark"] .vnd-type-ewaste { background: rgba(34,197,94,.18); color: #86efac; }
     [data-theme="dark"] .vnd-type-purchase { background: rgba(251,191,36,.18); color: #fcd34d; }
+    [data-theme="dark"] .vnd-type-credit { background: rgba(248,113,113,.18); color: #fca5a5; }
     [data-theme="dark"] .vnd-sst-exempt,
     [data-theme="dark"] .vnd-sst-not_registered { background: rgba(16,185,129,.12); border-color: rgba(16,185,129,.3); color: #6ee7b7; }
     [data-theme="dark"] .vnd-sst-chargeable { background: rgba(59,130,246,.12); border-color: rgba(59,130,246,.3); color: #93c5fd; }

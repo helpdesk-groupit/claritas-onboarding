@@ -226,14 +226,22 @@ TXT;
             'quotation' => 'It is a QUOTATION issued to us by a vendor. The summary must cover what is being '
                 .'quoted, the figures, what the price includes and excludes, and how long the quotation is '
                 .'valid for.',
-            // Used when the document is being read BEFORE anyone has said which of the two
-            // it is — the Add-Document modal no longer asks, so the reading has to work
-            // that out. Framed to cover both rather than guessing one and summarising an
-            // offer as though it were a bill.
-            'billing' => 'It is either a QUOTATION or an INVOICE issued to us by a vendor. Say which it is. '
-                .'The summary must cover what is being quoted or billed, the figures including any tax line, '
-                .'and — for a quotation — how long it is valid for, or — for an invoice — the period it '
-                .'covers and its payment due date and terms.',
+            // Used when the document is being read BEFORE anyone has said which of the
+            // three it is — the Add-Document modal no longer asks, so the reading has to
+            // work that out. Framed to cover all three rather than guessing one and
+            // summarising a refund as though it were a fresh bill.
+            'billing' => 'It is a QUOTATION, an INVOICE, or a CREDIT NOTE (credit memo) issued to us by a '
+                .'vendor. Say which it is. A credit note REDUCES or REFUNDS an earlier bill rather than '
+                .'billing for something new — look for wording like "Credit Note" / "Credit Memo" in the '
+                .'title, or a credited/refunded amount rather than an amount owed. The summary must cover '
+                .'what is being quoted, billed or credited, the figures including any tax line, and — for a '
+                .'quotation — how long it is valid for, or — for an invoice — the period it covers and its '
+                .'payment due date and terms, or — for a credit note — which earlier invoice or bill it '
+                .'relates to (if stated) and the reason for the credit.',
+            'credit_note' => 'It is a CREDIT NOTE (credit memo) issued to us by a vendor — a document that '
+                .'REDUCES or REFUNDS an earlier bill rather than billing us for something new. The summary '
+                .'must state the amount credited, which invoice or bill it relates to (if the document names '
+                .'one), and the stated reason for the credit.',
             // Proof that a bill was settled — a transfer slip, remittance advice or receipt.
             // A different document from the invoice it pays and framed as one: what matters
             // is the amount that actually left the account, when, and which bill it names.
@@ -359,7 +367,12 @@ TXT;
                 .'"invoice_reference": string|null (the invoice or bill number this payment is '
                 .'stated to be FOR, exactly as printed; null if the document does not name one), '
                 .'"currency": 3-letter code|null',
-            default => '"doc_type": "quotation" or "invoice", "doc_number": string|null, '
+            default => '"doc_type": "quotation", "invoice", or "credit_note" — a QUOTATION is an offer for '
+                .'something not yet billed; an INVOICE bills us for goods/services and asks for payment; a '
+                .'CREDIT NOTE (credit memo) REDUCES or REFUNDS an earlier invoice rather than billing for '
+                .'something new — look for "Credit Note" / "Credit Memo" in the document\'s own title, or a '
+                .'credited/refunded amount rather than an amount owed, '
+                .'"doc_number": string|null, '
                 .'"doc_date": "YYYY-MM-DD"|null, "due_date": "YYYY-MM-DD"|null, '
                 .'"subtotal": number|null, "sst_amount": number|null, "total": number|null, '
                 .'"currency": 3-letter code|null, '
@@ -565,9 +578,10 @@ TXT;
     }
 
     /**
-     * A figure the column can hold. Negative is refused (a credit note is not modelled here
-     * and a minus sign is far more often a misread), as is anything past the column's own
-     * 15,2 ceiling — which would otherwise throw on write rather than fail open.
+     * A figure the column can hold. Negative is refused — a credit note's own total is
+     * printed as the positive amount being credited, not as a negative invoice figure, so a
+     * minus sign here is far more often a misread — as is anything past the column's own
+     * 15,2 ceiling, which would otherwise throw on write rather than fail open.
      */
     protected static function money($value): ?float
     {

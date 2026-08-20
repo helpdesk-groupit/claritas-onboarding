@@ -30,6 +30,12 @@ class VendorBillingDocument extends Model
     public const TYPES = [
         'quotation' => 'Quotation',
         'invoice' => 'Invoice',
+        // A credit note/credit memo REDUCES or REFUNDS an earlier bill rather than billing
+        // for something new. Added 2026-08-20 — before this the classifier only had
+        // quotation/invoice to choose from, so a credit note was forced into whichever of
+        // the two the model guessed (usually the wrong one, since it is neither an offer
+        // nor a fresh bill).
+        'credit_note' => 'Credit Note',
     ];
 
     /** Mirrors the column default; used to coerce a cleared Currency input back to a value. */
@@ -158,6 +164,20 @@ class VendorBillingDocument extends Model
     }
 
     /**
+     * Which `.vnd-type-*` colour this document's chip takes. On the model, not the row
+     * partial, for the same reason typeLabel() is — a colour keyed by doc_type must not be
+     * decided twice and drift.
+     */
+    public function typeBadgeClass(): string
+    {
+        return match ($this->doc_type) {
+            'invoice' => 'vnd-type-purchase',
+            'credit_note' => 'vnd-type-credit',
+            default => 'vnd-type-rental',
+        };
+    }
+
+    /**
      * The proof that this invoice was paid — at most one, guaranteed by a unique index on
      * the slip's side rather than by this relation.
      */
@@ -270,13 +290,18 @@ class VendorBillingDocument extends Model
     }
 
     /**
-     * 'quotation' or 'invoice' — which prompt the summariser frames this document with.
-     * Read off doc_type rather than hard-coded: the two are summarised differently (an
-     * offer's validity period vs a bill's due date).
+     * 'quotation', 'credit_note' or 'invoice' — which prompt the summariser frames this
+     * document with. Read off doc_type rather than hard-coded: the three are summarised
+     * differently (an offer's validity period vs a bill's due date vs what a credit relates
+     * to and why).
      */
     public function aiKind(): string
     {
-        return $this->doc_type === 'quotation' ? 'quotation' : 'invoice';
+        return match ($this->doc_type) {
+            'quotation' => 'quotation',
+            'credit_note' => 'credit_note',
+            default => 'invoice',
+        };
     }
 
     /** How the assistant names this document when it cites it. */
