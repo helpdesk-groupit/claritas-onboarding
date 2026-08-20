@@ -12,14 +12,22 @@ use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
 /**
- * Flow 2 — the final report to Finance on completion: asset list + quotation +
- * payment receipt + the Finance approval stamp, all bundled in the PDF.
+ * Flow 2 — the final report on completion: asset list + quotation + payment receipt +
+ * the Finance approval stamp, all bundled in the PDF.
+ *
+ * One mailable, three audiences (`$audience` changes only the greeting — never the
+ * figures or the attachment), same pattern as EwasteAwaitingReportMail/EwasteAwardMail.
+ * Sent to Finance, IT, and the cycle's confirmed company management once a disposal is
+ * finalized (see AssetDecommissionController::distributeFinalReport()).
  */
 class EwasteFinalReportMail extends Mailable
 {
     use Queueable, SerializesModels;
 
-    public function __construct(public AssetDecommissionBatch $batch) {}
+    public function __construct(
+        public AssetDecommissionBatch $batch,
+        public string $audience = 'finance',
+    ) {}
 
     public function envelope(): Envelope
     {
@@ -28,7 +36,7 @@ class EwasteFinalReportMail extends Mailable
 
     public function content(): Content
     {
-        return new Content(view: 'emails.ewaste-final', with: ['batch' => $this->batch]);
+        return new Content(view: 'emails.ewaste-final', with: ['batch' => $this->batch, 'audience' => $this->audience]);
     }
 
     public function attachments(): array

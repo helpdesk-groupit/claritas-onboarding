@@ -402,4 +402,34 @@ class FinanceDecommissionAccessTest extends TestCase
             $this->actingAs($finance)->get($dead)->assertNotFound();
         }
     }
+
+    /**
+     * The standalone reports.decommission page is retired (2026-08-20) — a bookmarked link,
+     * an old emailed URL, or a stale bell notification must still land somewhere useful
+     * rather than 404, so the route survives as a redirect to the current review surface.
+     */
+    public function test_the_old_standalone_report_url_redirects_to_the_review_tab(): void
+    {
+        $finance = User::factory()->create(['role' => 'finance_manager']);
+
+        $this->actingAs($finance)->get(route('reports.decommission'))
+            ->assertRedirect($this->reviewUrl());
+    }
+
+    /** A year filter carried on the old URL still lands the visitor on the same year. */
+    public function test_the_old_standalone_report_url_forwards_its_year_filter(): void
+    {
+        $finance = User::factory()->create(['role' => 'finance_manager']);
+
+        $this->actingAs($finance)->get(route('reports.decommission', ['year' => 2025]))
+            ->assertRedirect(route('assets.index', ['tab' => 'company-decom', 'year' => 2025]));
+    }
+
+    /** The retirement is a redirect, not an access-control change — the gate still applies. */
+    public function test_the_old_standalone_report_url_still_403s_for_someone_with_no_decommission_access(): void
+    {
+        $outsider = User::factory()->create(['role' => 'employee']);
+
+        $this->actingAs($outsider)->get(route('reports.decommission'))->assertForbidden();
+    }
 }

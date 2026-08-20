@@ -11,6 +11,7 @@ use App\Models\AssetDecommissionQuotation;
 use App\Models\AssetInventory;
 use App\Models\Company;
 use App\Models\DisposedAsset;
+use App\Models\EwasteCompanyApprover;
 use App\Models\User;
 use App\Models\Vendor;
 use App\Notifications\DecommissionNotification;
@@ -152,6 +153,14 @@ class AssetDecommissionController extends Controller
             return back()->with('error', 'No companies are registered, so the owning company cannot be confirmed. Register the company first.');
         }
 
+        // The inspect modal's own JS already preselects this field client-side when the
+        // asset's free-text company matches a registered one exactly (see the
+        // `.js-inspect-btn` handler in it/assets/page.blade.php) — this mirrors the same
+        // exact-match rule server-side, so the field is only REQUIRED when neither the form
+        // nor the server can resolve it safely, and the rule is enforced (and testable)
+        // independently of that client-side convenience.
+        $autoCompany = $this->autoDeriveInspectionCompany($disposedAsset, $companies);
+
         $data = $request->validate([
             'ewaste_completeness' => ['required', Rule::in(array_keys(DisposedAsset::COMPLETENESS))],
             // Recording WHICH parts came off is the whole substance of an "Incomplete"
@@ -160,10 +169,15 @@ class AssetDecommissionController extends Controller
             'ewaste_parts_removed' => ['nullable', 'string', 'max:500', Rule::requiredIf(
                 fn () => $request->input('ewaste_completeness') === 'incomplete'
             )],
-            // Confirmed against the registered companies, never the asset's own free-text
-            // company_name: from Phase 4 this decides which management approver may authorise
-            // the disposal, and a fuzzy match is not a good enough basis for that.
-            'company' => ['required', 'string', Rule::in($companies->all())],
+            // Confirmed against the registered companies, never trusted as free text: from
+            // Phase 4 this decides which management approver may authorise the disposal.
+            // Required only when nothing was submitted AND the asset's own company_name
+            // could not be safely auto-matched — a submitted value (whether it came from the
+            // pre-filled select or IT picking a different one) is still validated here either
+            // way, so IT can always correct a wrong or missing auto-match.
+            'company' => ['nullable', 'string', Rule::in($companies->all()), Rule::requiredIf(
+                fn () => $autoCompany === null
+            )],
             // Rows staged before the reason became mandatory have none, and the queue is
             // where that gap is closed — required only for those, so an inspection of a
             // properly-marked asset is not made to re-type what is already on file.
@@ -177,6 +191,10 @@ class AssetDecommissionController extends Controller
             'reason.required' => 'This asset was queued before a reason was required. State why it is being written off.',
         ]);
 
+        // Submitted wins when present (IT may always correct a wrong or missing auto-match);
+        // the auto-derived company is only the fallback for a blank/absent submission.
+        $company = $data['company'] ?? $autoCompany;
+
         $parts = $data['ewaste_completeness'] === 'incomplete'
             ? (trim((string) ($data['ewaste_parts_removed'] ?? '')) ?: null)
             : null;   // a "Complete" verdict must not keep a parts list from an earlier one
@@ -184,7 +202,7 @@ class AssetDecommissionController extends Controller
         $disposedAsset->update([
             'ewaste_completeness' => $data['ewaste_completeness'],
             'ewaste_parts_removed' => $parts,
-            'company' => $data['company'],
+            'company' => $company,
             'inspected_at' => now(),
             'inspected_by' => Auth::id(),
             'reason' => filled($data['reason'] ?? null) ? $data['reason'] : $disposedAsset->reason,
@@ -194,10 +212,27 @@ class AssetDecommissionController extends Controller
         $verdict = DisposedAsset::COMPLETENESS[$data['ewaste_completeness']];
         $note = $parts ? "{$verdict} — parts removed: {$parts}" : $verdict;
         $disposedAsset->asset?->appendRemark(
-            "E-waste inspection: {$note}. Owner confirmed as {$data['company']}. Inspected by ".($actor->name ?? 'IT').'.'
+            "E-waste inspection: {$note}. Owner confirmed as {$company}. Inspected by ".($actor->name ?? 'IT').'.'
         );
 
         return back()->with('success', "{$disposedAsset->asset_tag} inspected — {$note}.");
+    }
+
+    /**
+     * The asset's own free-text `company_name`, matched EXACTLY (after trimming) against the
+     * registered companies list — the same rule the inspect modal's client-side preselect
+     * already applies (see it/assets/page.blade.php's `.js-inspect-btn` handler). Null when
+     * the asset carries no company_name, or nothing registered matches it byte-for-byte, so
+     * the caller falls back to asking IT to confirm it rather than guessing.
+     */
+    private function autoDeriveInspectionCompany(DisposedAsset $disposedAsset, \Illuminate\Support\Collection $companies): ?string
+    {
+        $raw = trim((string) ($disposedAsset->asset?->company_name ?? ''));
+        if ($raw === '') {
+            return null;
+        }
+
+        return $companies->first(fn ($name) => trim((string) $name) === $raw);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -389,7 +424,7 @@ class AssetDecommissionController extends Controller
                 subject: 'E-waste quotation comparison awaiting your review',
                 message: "Cycle {$batch->batch_number} has ".$batch->quotationsForComparison()->count()
                     .' vendor quotation(s) for review. Your position is recorded alongside management\'s, who authorise the disposal.',
-                url: route('reports.decommission'),
+                url: route('assets.index', ['tab' => 'company-decom']),
                 icon: 'bi-cash-coin',
                 color: 'warning',
             )
@@ -676,8 +711,8 @@ class AssetDecommissionController extends Controller
                 ->with('error', 'Receipt uploaded, but finalizing the cycle failed — please click "Finalize cycle" to retry.');
         }
 
-        return redirect()->route('reports.decommission')
-            ->with('success', "Receipt uploaded — cycle {$batch->batch_number} completed, assets archived, and the final report sent to Finance.");
+        return redirect()->route('assets.index', ['tab' => 'company-decom'])
+            ->with('success', "Receipt uploaded — cycle {$batch->batch_number} completed, assets archived, and the final report sent to Finance, IT and ".($batch->company ?: 'the company')."'s management.");
     }
 
     /**
@@ -695,13 +730,13 @@ class AssetDecommissionController extends Controller
 
         $this->finalizeEwasteCycle($batch->fresh(['vendor', 'items.asset']));
 
-        return redirect()->route('reports.decommission')
-            ->with('success', "Cycle {$batch->batch_number} completed — assets archived and the final report sent to Finance.");
+        return redirect()->route('assets.index', ['tab' => 'company-decom'])
+            ->with('success', "Cycle {$batch->batch_number} completed — assets archived and the final report sent to Finance, IT and ".($batch->company ?: 'the company')."'s management.");
     }
 
     /**
      * Finalize an e-waste cycle: soft-archive the assets, render + store the report PDF,
-     * email Finance the final report. Idempotent — a re-run on a finalized batch is a no-op.
+     * distribute the final report. Idempotent — a re-run on a finalized batch is a no-op.
      */
     private function finalizeEwasteCycle(AssetDecommissionBatch $batch): void
     {
@@ -721,9 +756,73 @@ class AssetDecommissionController extends Controller
             'finalized_at' => now(),
         ]);
 
-        // Final report (assets + quotation + receipt) to Finance:
-        // TO the Finance Manager(s), CC the Finance Executive(s) — work email only.
-        EwasteSweepService::mailFinance(new EwasteFinalReportMail($batch->fresh(['vendor', 'items.asset'])));
+        $this->distributeFinalReport($batch->fresh(['vendor', 'items.asset']));
+    }
+
+    /**
+     * Final report distribution: Finance, IT, AND the cycle's confirmed company management —
+     * all three told once a disposal is finalized, reusing the same TO/CC email plumbing the
+     * rest of the module uses (User::financeEmailRecipients()/itEmailRecipients(),
+     * EwasteCompanyApprover::notificationEmailsFor()). Each leg sent and caught
+     * INDEPENDENTLY, same rule as notifyApproved() — a bad address on one leg must never
+     * silence the others, and the assets are already archived by the time this runs.
+     */
+    private function distributeFinalReport(AssetDecommissionBatch $batch): void
+    {
+        $sent = [];   // lower-cased emails already addressed, across all three legs below
+
+        $finance = User::financeEmailRecipients();
+        $this->sendFinalReportLeg($batch, 'finance', $finance['to'], $finance['cc'], $sent);
+
+        $it = User::itEmailRecipients();
+        $this->sendFinalReportLeg($batch, 'it', $it['to'], $it['cc'], $sent);
+
+        // Named per the cycle's own confirmed company (Phase 4), with the superadmin
+        // fallback approversFor() already applies — a completed disposal's record must
+        // always land somewhere, unlike the earlier "process started" notices.
+        $management = EwasteCompanyApprover::notificationEmailsFor($batch->company);
+        $this->sendFinalReportLeg($batch, 'management', $management, [], $sent);
+    }
+
+    /**
+     * One leg of the final-report distribution. Drops any address already addressed on an
+     * earlier leg (so nobody standing in for two unconfigured seats — e.g. a superadmin
+     * fallback on both Finance and management — receives the same PDF twice), promotes CC
+     * survivors to TO if every original TO address was a duplicate, and never throws: a
+     * failed leg is logged, not fatal — the assets are already archived by this point.
+     */
+    private function sendFinalReportLeg(AssetDecommissionBatch $batch, string $audience, array $to, array $cc, array &$sent): void
+    {
+        $seen = fn (string $email) => in_array(strtolower($email), $sent, true);
+
+        $to = array_values(array_filter($to, fn ($e) => ! $seen($e)));
+        $cc = array_values(array_filter($cc, fn ($e) => ! $seen($e)));
+
+        if (empty($to) && ! empty($cc)) {
+            $to = $cc;
+            $cc = [];
+        }
+
+        if (empty($to)) {
+            Log::warning("E-waste final report: no {$audience} recipient for ".$batch->batch_number
+                .' ('.($audience === 'management' ? ($batch->company ?: 'no company') : 'all addresses already used on an earlier leg').').');
+
+            return;
+        }
+
+        foreach (array_merge($to, $cc) as $email) {
+            $sent[] = strtolower($email);
+        }
+
+        try {
+            $mail = Mail::to($to);
+            if ($cc) {
+                $mail->cc($cc);
+            }
+            $mail->send(new EwasteFinalReportMail($batch, audience: $audience));
+        } catch (\Throwable $e) {
+            Log::error("E-waste final report email to {$audience} failed for ".$batch->batch_number.': '.$e->getMessage());
+        }
     }
 
     // pendingQuotationsQuery() lived here as the shared `finance_status = pending` query behind
@@ -920,7 +1019,7 @@ class AssetDecommissionController extends Controller
                 .$batch->quotationsForComparison()->count().' vendor quotation(s) to compare.',
             // Decommissioning, not the cycle page — that is where the decision is cast, and it
             // is where the approval EMAIL lands, so the bell must not send them somewhere else.
-            url: route('reports.decommission'),
+            url: route('assets.index', ['tab' => 'company-decom']),
             icon: 'bi-shield-check',
             color: 'warning',
         ));

@@ -9,6 +9,7 @@ use App\Mail\EwasteRfqMail;
 use App\Models\AssetDecommissionBatch;
 use App\Models\AssetInventory;
 use App\Models\DisposedAsset;
+use App\Models\EwasteCompanyApprover;
 use App\Models\User;
 use App\Models\Vendor;
 use App\Services\EwasteSweepService;
@@ -232,7 +233,7 @@ class EwasteCycleTest extends TestCase
         $receipt = UploadedFile::fake()->createWithContent('receipt.png', $png);
 
         $this->actingAs($it)->post(route('ewaste.receipt', $batch), ['receipt_file' => $receipt])
-            ->assertRedirect(route('reports.decommission'));
+            ->assertRedirect(route('assets.index', ['tab' => 'company-decom']));
 
         $batch->refresh();
         $this->assertSame('completed', $batch->status);          // auto-completed — no manual button
@@ -263,13 +264,91 @@ class EwasteCycleTest extends TestCase
             'disposed_by' => 'IT', 'disposed_at' => now(),
         ]);
 
-        $this->actingAs($it)->post(route('ewaste.complete', $batch))->assertRedirect(route('reports.decommission'));
+        $this->actingAs($it)->post(route('ewaste.complete', $batch))->assertRedirect(route('assets.index', ['tab' => 'company-decom']));
 
         $batch->refresh();
         $this->assertSame('completed', $batch->status);
         $this->assertNotNull($batch->finalized_at);
         $this->assertNotNull($asset->fresh()->decommissioned_at);
         Mail::assertSent(EwasteFinalReportMail::class);
+    }
+
+    /**
+     * The final report goes to all three parties once a disposal is finalized: Finance, IT,
+     * and the cycle's confirmed company management — not Finance alone.
+     */
+    public function test_final_report_reaches_finance_it_and_named_management(): void
+    {
+        Mail::fake();
+        Storage::fake('local');
+        $it = User::factory()->create(['role' => 'it_manager', 'work_email' => 'it.manager@claritas.com']);
+        User::factory()->create(['role' => 'finance_manager', 'work_email' => 'fin.manager@claritas.com']);
+        $approver = User::factory()->create(['role' => 'employee', 'work_email' => 'mgmt@claritas.com']);
+        EwasteCompanyApprover::create(['company' => 'Claritas Asia Sdn Bhd', 'user_id' => $approver->id]);
+
+        $batch = AssetDecommissionBatch::create([
+            'batch_number' => 'EWA-2026-Q3', 'type' => 'e_waste', 'status' => 'collected',
+            'company' => 'Claritas Asia Sdn Bhd',
+            'finance_status' => 'approved', 'quotation_amount' => 350, 'receipt_amount' => 350,
+            'receipt_path' => 'ewaste_receipts/EWA/r.pdf',
+        ]);
+        $asset = AssetInventory::factory()->create(['asset_condition' => 'not_good', 'decommission_batch_id' => $batch->id]);
+        DisposedAsset::create([
+            'asset_inventory_id' => $asset->id, 'asset_tag' => $asset->asset_tag, 'asset_type' => $asset->asset_type,
+            'brand' => $asset->brand, 'model' => $asset->model, 'serial_number' => $asset->serial_number,
+            'asset_condition' => 'not_good', 'decommission_type' => 'e_waste', 'decommission_batch_id' => $batch->id,
+            'disposed_by' => 'IT', 'disposed_at' => now(),
+        ]);
+
+        $this->actingAs($it)->post(route('ewaste.complete', $batch));
+
+        Mail::assertSent(EwasteFinalReportMail::class, 3);
+        Mail::assertSent(EwasteFinalReportMail::class, function ($mail) {
+            return $mail->audience === 'finance' && $mail->hasTo('fin.manager@claritas.com');
+        });
+        Mail::assertSent(EwasteFinalReportMail::class, function ($mail) {
+            return $mail->audience === 'it' && $mail->hasTo('it.manager@claritas.com');
+        });
+        Mail::assertSent(EwasteFinalReportMail::class, function ($mail) {
+            return $mail->audience === 'management' && $mail->hasTo('mgmt@claritas.com');
+        });
+    }
+
+    /**
+     * The same person can wear two hats — here the Finance Manager is also named as the
+     * company's management approver. The final report must not land in their inbox twice.
+     */
+    public function test_final_report_does_not_address_the_same_person_twice(): void
+    {
+        Mail::fake();
+        Storage::fake('local');
+        $it = User::factory()->create(['role' => 'it_manager']);
+        $finance = User::factory()->create(['role' => 'finance_manager', 'work_email' => 'fin.manager@claritas.com']);
+        EwasteCompanyApprover::create(['company' => 'Claritas Asia Sdn Bhd', 'user_id' => $finance->id]);
+
+        $batch = AssetDecommissionBatch::create([
+            'batch_number' => 'EWA-2026-Q4', 'type' => 'e_waste', 'status' => 'collected',
+            'company' => 'Claritas Asia Sdn Bhd',
+            'finance_status' => 'approved', 'quotation_amount' => 200, 'receipt_amount' => 200,
+            'receipt_path' => 'ewaste_receipts/EWA/r2.pdf',
+        ]);
+        $asset = AssetInventory::factory()->create(['asset_condition' => 'not_good', 'decommission_batch_id' => $batch->id]);
+        DisposedAsset::create([
+            'asset_inventory_id' => $asset->id, 'asset_tag' => $asset->asset_tag, 'asset_type' => $asset->asset_type,
+            'brand' => $asset->brand, 'model' => $asset->model, 'serial_number' => $asset->serial_number,
+            'asset_condition' => 'not_good', 'decommission_type' => 'e_waste', 'decommission_batch_id' => $batch->id,
+            'disposed_by' => 'IT', 'disposed_at' => now(),
+        ]);
+
+        $this->actingAs($it)->post(route('ewaste.complete', $batch));
+
+        // fin.manager@claritas.com is addressed once, on the Finance leg — the management
+        // leg has nobody left to address once the duplicate is removed, so it sends nothing.
+        Mail::assertSent(EwasteFinalReportMail::class, 2);
+        Mail::assertSent(EwasteFinalReportMail::class, function ($mail) {
+            return $mail->audience === 'finance' && $mail->hasTo('fin.manager@claritas.com');
+        });
+        Mail::assertNotSent(EwasteFinalReportMail::class, fn ($mail) => $mail->audience === 'management');
     }
 
     public function test_report_states_ewaste_completeness_in_the_assets_table(): void

@@ -283,6 +283,88 @@ class EwasteDecommissionFlowTest extends TestCase
         $this->assertFalse($row->fresh()->isInspected());
     }
 
+    /**
+     * When the asset's own free-text company_name matches a registered company exactly, IT
+     * does not have to type it again — mirroring the inspect modal's own client-side
+     * preselect (it/assets/page.blade.php), but enforced and testable server-side.
+     */
+    public function test_a_matching_company_name_is_auto_derived_when_none_is_submitted(): void
+    {
+        $this->company();
+        $row = $this->queued();
+        $row->asset->update(['company_name' => 'Claritas Asia Sdn Bhd']);
+        $it = $this->itManager();
+
+        $this->actingAs($it)
+            ->post(route('decommission.inspect', $row), [
+                'ewaste_completeness' => 'complete',
+                // No `company` field at all — the server must resolve it on its own.
+            ])
+            ->assertSessionHasNoErrors();
+
+        $row->refresh();
+        $this->assertTrue($row->isInspected());
+        $this->assertSame('Claritas Asia Sdn Bhd', $row->company);
+        $this->assertTrue($row->isReadyForCycle());
+    }
+
+    /**
+     * A safe match still leaves IT free to pick a different company — the auto-derived value
+     * is only the fallback for a blank submission, never a value that overrides what IT
+     * actually chose.
+     */
+    public function test_a_submitted_company_overrides_an_auto_derived_one(): void
+    {
+        $this->company('Claritas Asia Sdn Bhd');
+        $this->company('Enlinea Sdn Bhd');
+        $row = $this->queued();
+        $row->asset->update(['company_name' => 'Claritas Asia Sdn Bhd']);
+
+        $this->actingAs($this->itManager())
+            ->post(route('decommission.inspect', $row), [
+                'ewaste_completeness' => 'complete',
+                'company' => 'Enlinea Sdn Bhd',
+            ])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame('Enlinea Sdn Bhd', $row->fresh()->company);
+    }
+
+    /**
+     * No company_name on the asset at all — the same as no safe match: manual selection is
+     * still required, the auto-derive gate does not relax the existing rule.
+     */
+    public function test_no_company_name_on_the_asset_still_requires_manual_selection(): void
+    {
+        $this->company();
+        $row = $this->queued();
+        $row->asset->update(['company_name' => null]);
+
+        $this->actingAs($this->itManager())
+            ->post(route('decommission.inspect', $row), ['ewaste_completeness' => 'complete'])
+            ->assertSessionHasErrors('company');
+
+        $this->assertFalse($row->fresh()->isInspected());
+    }
+
+    /**
+     * The auto-derive match is exact, not fuzzy — the same near-miss that a submitted value
+     * is refused for (test_the_owning_company_must_be_a_registered_one) must not be silently
+     * accepted just because it came off the asset's own record instead of the form.
+     */
+    public function test_a_near_miss_company_name_is_not_auto_derived(): void
+    {
+        $this->company('Claritas Asia Sdn Bhd');
+        $row = $this->queued();
+        $row->asset->update(['company_name' => 'Claritas Asia Sdn. Bhd.']);   // near-miss
+
+        $this->actingAs($this->itManager())
+            ->post(route('decommission.inspect', $row), ['ewaste_completeness' => 'complete'])
+            ->assertSessionHasErrors('company');
+
+        $this->assertFalse($row->fresh()->isInspected());
+    }
+
     public function test_an_asset_already_in_a_cycle_can_no_longer_be_re_inspected(): void
     {
         $this->company();

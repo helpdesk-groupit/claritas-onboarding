@@ -364,9 +364,10 @@ class EwasteQuotationRevisionTest extends TestCase
         $this->upload($it, $batch, 'second.pdf', 1450);
         $this->submit($it, $batch);
 
-        // Management → Decommissioning since 2026-08-14 — Finance's review moved off
-        // Accounting → Assets → "Disposed" onto the single e-waste review surface.
-        $this->actingAs($finance)->get(route('reports.decommission'))
+        // The single e-waste review surface is the Asset Listing's Company Asset
+        // Decommissioning tab (2026-08-20) — the standalone reports.decommission page that
+        // used to hold this is retired and now only redirects here.
+        $this->actingAs($finance)->get(route('assets.index', ['tab' => 'company-decom']))
             ->assertOk()
             ->assertSee('Revision 2', false)
             ->assertSee('you rejected revision 1', false)

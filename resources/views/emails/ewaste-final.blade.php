@@ -13,11 +13,18 @@
 </style>
 </head>
 <body>
-@php $org = config('decommission.org_name'); @endphp
+@php
+  $org = config('decommission.org_name');
+  $greeting = match($audience ?? 'finance') {
+      'it' => 'IT Team',
+      'management' => ($batch->company ?: 'Management').' Management',
+      default => 'Finance Team',
+  };
+@endphp
 <div class="email-wrap">
   <div class="header"><h1>E-Waste Cycle Completed — Final Report ✓</h1></div>
   <div class="body">
-    <p>Dear Finance Team,</p>
+    <p>Dear {{ $greeting }},</p>
     <p>The following e-waste decommissioning cycle is complete. The full audit trail — asset list, vendor quotation, and payment receipt — is attached as a PDF.</p>
     <div class="info-box">
       <div><strong>Cycle:</strong> {{ $batch->batch_number }}</div>
@@ -43,7 +50,7 @@
         @endif
       </div>
     </div>
-    <p>These assets have been archived out of the active inventory and now live only in Reports → Decommissioning.</p>
+    <p>These assets have been archived out of the active inventory. The full record is available on the Company Asset Decommissioning tab of the Asset Listing.</p>
   </div>
   <div class="footer">This is an automated message from {{ $org }}. Please do not reply directly to this email.</div>
 </div>
