@@ -12,8 +12,8 @@ use App\Models\ExpenseClaim;
 use App\Models\ExpenseClaimItem;
 use App\Models\ExpenseClaimPolicy;
 use App\Services\ClaimReceiptOcrService;
+use App\Services\ClaimReportRenderer;
 use App\Services\ClaimRulesService;
-use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -22,6 +22,8 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\HeaderUtils;
 
 class ExpenseClaimController extends Controller
 {
@@ -1576,8 +1578,12 @@ class ExpenseClaimController extends Controller
         return view('user.claims.report-print', compact('claim', 'company', 'items', 'approver'));
     }
 
-    /** Render one claim to a dompdf PDF instance (form + embedded receipt images). */
-    private function buildClaimPdf(ExpenseClaim $claim)
+    /**
+     * Render one claim to raw PDF bytes: the dompdf form (with embedded receipt images)
+     * plus, via ClaimReportRenderer, any PDF receipts/supporting documents reproduced as
+     * real pages after it — dompdf itself can never embed another PDF.
+     */
+    private function buildClaimPdf(ExpenseClaim $claim): string
     {
         // Per-IMAGE cost, so this matters for a single claim too, not just the batch export:
         // one 5-megapixel receipt is ~22 MB of GD buffer inside dompdf and a claim may carry
@@ -1588,7 +1594,7 @@ class ExpenseClaimController extends Controller
         $company = \App\Models\Company::forName($claim->resolvedCompany());
         $items = $claim->items;
 
-        return Pdf::loadView('user.claims.report-pdf', compact('claim', 'company', 'items'))->setPaper('a4');
+        return ClaimReportRenderer::render($claim, $company, $items);
     }
 
     /** Download one claim as a PDF, named like the original forms. Owner or reviewer. */
@@ -1600,7 +1606,19 @@ class ExpenseClaimController extends Controller
             $this->authorizeReview($claim);
         }
 
-        return $this->buildClaimPdf($claim)->download($claim->pdfFilename());
+        $bytes = $this->buildClaimPdf($claim);
+        $filename = $claim->pdfFilename();
+
+        // Mirrors Barryvdh\DomPDF\PDF::download() exactly (content-type, content-length,
+        // and an ASCII fallback filename for the Content-Disposition header) — the bytes
+        // now come from ClaimReportRenderer rather than the dompdf wrapper's own output().
+        return response($bytes, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => HeaderUtils::makeDisposition(
+                'attachment', $filename, str_replace('%', '', Str::ascii($filename))
+            ),
+            'Content-Length' => strlen($bytes),
+        ]);
     }
 
     /**
@@ -1781,7 +1799,7 @@ class ExpenseClaimController extends Controller
                 $pdfPath = $tmpDir.DIRECTORY_SEPARATOR.$index.'.pdf';
                 try {
                     $pdf = $this->buildClaimPdf($claim);
-                    file_put_contents($pdfPath, $pdf->output());
+                    file_put_contents($pdfPath, $pdf);
                     unset($pdf);
                     gc_collect_cycles();
                 } catch (\Throwable $e) {

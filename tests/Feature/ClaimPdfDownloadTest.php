@@ -8,6 +8,8 @@ use App\Models\ExpenseClaim;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
+use setasign\Fpdi\Fpdi;
+use setasign\Fpdi\PdfParser\StreamReader;
 use Tests\TestCase;
 
 /**
@@ -123,6 +125,26 @@ class ClaimPdfDownloadTest extends TestCase
         return (string) $response->getContent();
     }
 
+    private function pageCount(string $pdf): int
+    {
+        return (new Fpdi)->setSourceFile(StreamReader::createByString($pdf));
+    }
+
+    /** Page content streams are deflated, so caption text has to be inflated to be read. */
+    private function inflatedText(string $pdf): string
+    {
+        preg_match_all('/stream\r?\n(.*?)endstream/s', $pdf, $m);
+        $out = '';
+        foreach ($m[1] as $stream) {
+            $data = @gzuncompress($stream) ?: @gzinflate($stream);
+            if ($data !== false) {
+                $out .= $data."\n";
+            }
+        }
+
+        return $out;
+    }
+
     public function test_the_owner_can_download_their_approved_claim(): void
     {
         $owner = Employee::factory()->create(['company' => 'Enlinea Sdn. Bhd.', 'full_name' => 'Alice Approved']);
@@ -232,6 +254,37 @@ class ClaimPdfDownloadTest extends TestCase
         ])->render();
 
         $this->assertStringContainsString('not embeddable in this PDF', $html);
+    }
+
+    /**
+     * dompdf cannot embed a PDF inline, but it doesn't have to lose the evidence — the
+     * uploaded receipt's own pages are reproduced in full after the form (see
+     * App\Services\ClaimReportRenderer). Before this fix the download only printed the
+     * placeholder line above and the receipt itself never appeared anywhere in the file.
+     */
+    public function test_a_pdf_receipt_is_reproduced_as_real_pages_in_the_downloaded_document(): void
+    {
+        // A genuinely valid one-page PDF — rendered via dompdf itself, so FPDI opens it
+        // exactly the way it opens a real scanned receipt.
+        $validReceipt = \Barryvdh\DomPDF\Facade\Pdf::loadHTML('<html><body><h1>Studio Rental Receipt</h1></body></html>')->output();
+        Storage::disk('local')->put('claim_receipts/test/valid-scan.pdf', $validReceipt);
+
+        $withoutReceipt = $this->approvedClaim();
+        $withReceipt = $this->approvedClaim(['claim_receipts/test/valid-scan.pdf']);
+
+        $hr = $this->hrManager();
+        $bareBytes = $this->pdfBytes($this->actingAs($hr)->get(route('user.claims.pdf', $withoutReceipt)));
+        $fullBytes = $this->pdfBytes($this->actingAs($hr)->get(route('user.claims.pdf', $withReceipt)));
+
+        $this->assertGreaterThan(
+            $this->pageCount($bareBytes),
+            $this->pageCount($fullBytes),
+            'The PDF receipt was not appended as real pages — the download has the same page count with or without it.'
+        );
+
+        $captions = $this->inflatedText($fullBytes);
+        $this->assertStringContainsString($withReceipt->claim_number, $captions, 'The appended page carries no caption tying it back to the claim.');
+        $this->assertStringContainsString('Attachment for:', $captions);
     }
 
     /**

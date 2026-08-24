@@ -18,6 +18,11 @@
     $hrName = $hrEmp?->full_name ?? $hrAppr?->name;
     $hrDetails = collect([$hrEmp?->designation, $hrEmp?->department, $hrEmp?->company])->filter()->implode(' · ');
     $imageExt = ['jpg','jpeg','png','gif','webp'];
+    // Resolved once by ClaimReportRenderer and keyed by storage path — tells this view
+    // whether a non-image attachment (a PDF receipt) is being reproduced as real pages
+    // after this form, or why not. Defaults to empty so the view still renders standalone
+    // (e.g. rendered directly, without going through the renderer).
+    $appendix = $appendix ?? [];
     // Group items sharing one attachment (same content hash) so a split statement embeds its
     // image ONCE with a summed total, instead of repeating the whole image on every row.
     $attGroups = [];
@@ -141,16 +146,16 @@
                             @if(count($gAtts) > 0)
                             <div class="muted" style="margin-bottom:3px;">Attachment for {{ $gCount }} transactions ({{ strtoupper($item->category->name ?? '') }})</div>
                             @foreach($gAtts as $attachment)
-                            @php $aext = strtolower(pathinfo($attachment, PATHINFO_EXTENSION)); $adata = in_array($aext, $imageExt) ? $imgData('local', $attachment) : null; @endphp
-                            @if($adata)<img src="{{ $adata }}" style="max-width:100%;max-height:480px;display:block;margin:3px 0;">@else<div class="muted">Attachment: {{ strtoupper($aext) }} file (not embeddable in this PDF).</div>@endif
+                            @php $aext = strtolower(pathinfo($attachment, PATHINFO_EXTENSION)); $adata = in_array($aext, $imageExt) ? $imgData('local', $attachment) : null; $ax = $appendix[$attachment] ?? null; @endphp
+                            @if($adata)<img src="{{ $adata }}" style="max-width:100%;max-height:480px;display:block;margin:3px 0;">@else<div class="muted">Attachment: {{ strtoupper($aext) }} file (not embeddable in this PDF)@if($ax && $ax['appendable']) — reproduced in full on the pages after this form@elseif($ax && $ax['reason']) ({{ $ax['reason'] }})@endif.</div>@endif
                             @endforeach
                             @else<div class="muted">No attachment.</div>@endif
                             @php $gSupp = collect($grp)->flatMap(fn ($x) => $x->supportingPaths())->unique()->values(); @endphp
                             @if($gSupp->count() > 0)
                             <div class="muted" style="margin:6px 0 3px;">Supporting documents</div>
                             @foreach($gSupp as $sp)
-                            @php $sext = strtolower(pathinfo($sp, PATHINFO_EXTENSION)); $sdata = in_array($sext, $imageExt) ? $imgData('local', $sp) : null; @endphp
-                            @if($sdata)<img src="{{ $sdata }}" style="max-width:100%;max-height:300px;display:block;margin:3px 0;">@else<div class="muted">Supporting: {{ strtoupper($sext) }} file (not embeddable).</div>@endif
+                            @php $sext = strtolower(pathinfo($sp, PATHINFO_EXTENSION)); $sdata = in_array($sext, $imageExt) ? $imgData('local', $sp) : null; $sx = $appendix[$sp] ?? null; @endphp
+                            @if($sdata)<img src="{{ $sdata }}" style="max-width:100%;max-height:300px;display:block;margin:3px 0;">@else<div class="muted">Supporting: {{ strtoupper($sext) }} file (not embeddable)@if($sx && $sx['appendable']) — reproduced in full on the pages after this form@elseif($sx && $sx['reason']) ({{ $sx['reason'] }})@endif.</div>@endif
                             @endforeach
                             @endif
                         </td>
@@ -179,8 +184,8 @@
                             @if(count($atts) > 0)
                             <div class="muted" style="margin-bottom:3px;">Attachment for: {{ $item->description }}</div>
                             @foreach($atts as $attachment)
-                            @php $aext = strtolower(pathinfo($attachment, PATHINFO_EXTENSION)); $adata = in_array($aext, $imageExt) ? $imgData('local', $attachment) : null; @endphp
-                            @if($adata)<img src="{{ $adata }}" style="max-width:100%;max-height:420px;display:block;margin:3px 0;">@else<div class="muted">Attachment: {{ strtoupper($aext) }} file (not embeddable in this PDF).</div>@endif
+                            @php $aext = strtolower(pathinfo($attachment, PATHINFO_EXTENSION)); $adata = in_array($aext, $imageExt) ? $imgData('local', $attachment) : null; $ax = $appendix[$attachment] ?? null; @endphp
+                            @if($adata)<img src="{{ $adata }}" style="max-width:100%;max-height:420px;display:block;margin:3px 0;">@else<div class="muted">Attachment: {{ strtoupper($aext) }} file (not embeddable in this PDF)@if($ax && $ax['appendable']) — reproduced in full on the pages after this form@elseif($ax && $ax['reason']) ({{ $ax['reason'] }})@endif.</div>@endif
                             @endforeach
                             @else
                             <div class="muted">No attachment.</div>
@@ -188,8 +193,8 @@
                             @if(count($supp) > 0)
                             <div class="muted" style="margin:6px 0 3px;">Supporting documents</div>
                             @foreach($supp as $sp)
-                            @php $sext = strtolower(pathinfo($sp, PATHINFO_EXTENSION)); $sdata = in_array($sext, $imageExt) ? $imgData('local', $sp) : null; @endphp
-                            @if($sdata)<img src="{{ $sdata }}" style="max-width:100%;max-height:300px;display:block;margin:3px 0;">@else<div class="muted">Supporting: {{ strtoupper($sext) }} file (not embeddable).</div>@endif
+                            @php $sext = strtolower(pathinfo($sp, PATHINFO_EXTENSION)); $sdata = in_array($sext, $imageExt) ? $imgData('local', $sp) : null; $sx = $appendix[$sp] ?? null; @endphp
+                            @if($sdata)<img src="{{ $sdata }}" style="max-width:100%;max-height:300px;display:block;margin:3px 0;">@else<div class="muted">Supporting: {{ strtoupper($sext) }} file (not embeddable)@if($sx && $sx['appendable']) — reproduced in full on the pages after this form@elseif($sx && $sx['reason']) ({{ $sx['reason'] }})@endif.</div>@endif
                             @endforeach
                             @endif
                         </td>
@@ -242,6 +247,8 @@
         </tr>
     </table>
     <div class="note">Digitally approved — each sign-off is the recorded system action (name + timestamp), held in the claim's audit trail. No physical signature required.</div>
-    {{-- Attachments are shown inline under each item above (no separate section). --}}
+    {{-- Image attachments are shown inline under each item above. Non-image (PDF) attachments
+         are reproduced as real pages after this form by ClaimReportRenderer's post-dompdf
+         merge (see app/Services/ClaimReportRenderer.php) — nothing in this Blade file adds them. --}}
 </body>
 </html>
