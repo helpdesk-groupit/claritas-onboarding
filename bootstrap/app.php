@@ -35,12 +35,20 @@ return Application::configure(basePath: dirname(__DIR__))
         // Passed as a STRING on purpose: Laravel's TrustProxies treats the literal '*'
         // specially and splits a comma-separated list itself, so wrapping it in an array
         // here would turn '*' into an IP that matches nothing and silently trust nobody.
+        // X_FORWARDED_PROTO is DELIBERATELY NOT TRUSTED. Production already resolves
+        // $request->secure() to true on its own (verified: it emits HSTS, which
+        // SecurityHeaders only sets when secure() is true), so nginx is setting the
+        // HTTPS server var directly. Honouring the forwarded proto here would REPLACE
+        // that working value with whatever the tunnel sends — and cloudflared speaks
+        // plain HTTP to nginx on loopback. A forwarded 'http' would make secure() false,
+        // ForceHttps would 301 to https, the browser would come back over https, and the
+        // site would redirect-loop itself off the air. FOR/HOST/PORT are what this fix
+        // actually needed; proto buys nothing here and can only break it.
         $middleware->trustProxies(
             at: (string) env('TRUSTED_PROXIES', '*'),
             headers: Request::HEADER_X_FORWARDED_FOR
                 | Request::HEADER_X_FORWARDED_HOST
-                | Request::HEADER_X_FORWARDED_PORT
-                | Request::HEADER_X_FORWARDED_PROTO,
+                | Request::HEADER_X_FORWARDED_PORT,
         );
 
         // Force HTTPS in production
