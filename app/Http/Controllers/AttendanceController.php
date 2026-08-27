@@ -11,15 +11,69 @@ use Illuminate\Support\Facades\Auth;
 
 class AttendanceController extends Controller
 {
+    /**
+     * Gate for the HR-facing half of this controller.
+     *
+     * SECURITY — every /hr/attendance/* method used to run with NO authorization at
+     * all. Routes in this app carry no role middleware, the base Controller is empty
+     * and AuthServiceProvider defines no Gate::before, so "the route is under /hr" was
+     * enforcing nothing: any authenticated user — a plain employee, an intern — could
+     * read every colleague's attendance and act on overtime. Mirrors the self-gating
+     * pattern the rest of the codebase uses (DashboardController, PayrollController,
+     * the accounting controllers).
+     */
+    private function authorizeHr(): void
+    {
+        $u = Auth::user();
+        abort_unless($u && ($u->isHr() || $u->isSuperadmin() || $u->isSystemAdmin()), 403);
+    }
+
+    /**
+     * Gate for DECIDING an overtime request.
+     *
+     * Deliberately narrower than authorizeHr(): approving overtime writes
+     * AttendanceRecord.overtime_hours, which PayrollController reads straight into the
+     * payslip — so this is a money decision, not a records-desk one. Interns and
+     * executives read the queue; managers and superadmin settle it.
+     */
+    private function authorizeOvertimeDecision(): void
+    {
+        $u = Auth::user();
+        abort_unless($u && ($u->isHrManager() || $u->isSuperadmin() || $u->isSystemAdmin()), 403);
+    }
+
+    /**
+     * Nobody signs off their own overtime, whatever their role.
+     *
+     * The approval feeds payroll, so an approver acting on their own request is
+     * self-payment with their own name in `approved_by`. Separation of duties has to
+     * hold at the top of the tree too, which is why this is checked after the role
+     * gate rather than folded into it.
+     */
+    private function denySelfOvertimeDecision(OvertimeRequest $overtime): void
+    {
+        $ownEmployeeId = Auth::user()?->employee?->id;
+
+        abort_if(
+            $ownEmployeeId && (int) $overtime->employee_id === (int) $ownEmployeeId,
+            403,
+            'You cannot approve or reject your own overtime request.'
+        );
+    }
+
     // ── HR: Work Schedules ─────────────────────────────────────────────
     public function schedules()
     {
+        $this->authorizeHr();
+
         $schedules = WorkSchedule::orderBy('name')->get();
         return view('hr.attendance.schedules', compact('schedules'));
     }
 
     public function storeSchedule(Request $request)
     {
+        $this->authorizeHr();
+
         $data = $request->validate([
             'name' => 'required|string|max:100',
             'company' => 'nullable|string|max:255',
@@ -48,6 +102,8 @@ class AttendanceController extends Controller
     // ── HR: Attendance Records Overview ────────────────────────────────
     public function index(Request $request)
     {
+        $this->authorizeHr();
+
         $date = $request->input('date', now()->format('Y-m-d'));
         $month = $request->input('month', now()->format('Y-m'));
 
@@ -76,6 +132,8 @@ class AttendanceController extends Controller
     // ── HR: Overtime Requests ──────────────────────────────────────────
     public function overtimeRequests(Request $request)
     {
+        $this->authorizeHr();
+
         $query = OvertimeRequest::with(['employee', 'approver'])
             ->orderByDesc('created_at');
 
@@ -90,6 +148,9 @@ class AttendanceController extends Controller
 
     public function approveOvertime(OvertimeRequest $overtime)
     {
+        $this->authorizeOvertimeDecision();
+        $this->denySelfOvertimeDecision($overtime);
+
         if ($overtime->status !== 'pending') {
             return back()->with('error', 'Request already processed.');
         }
@@ -113,6 +174,9 @@ class AttendanceController extends Controller
 
     public function rejectOvertime(Request $request, OvertimeRequest $overtime)
     {
+        $this->authorizeOvertimeDecision();
+        $this->denySelfOvertimeDecision($overtime);
+
         if ($overtime->status !== 'pending') {
             return back()->with('error', 'Request already processed.');
         }
@@ -290,8 +354,32 @@ class AttendanceController extends Controller
     // ── HR: Attendance Summary Report ──────────────────────────────────
     public function report(Request $request)
     {
-        $month = $request->input('month', now()->format('Y-m'));
-        $start = \Carbon\Carbon::parse($month . '-01')->startOfMonth();
+        $this->authorizeHr();
+
+        // The view's filter bar posts SEPARATE month (1-12) and year selects, but this
+        // method used to read `month` as a "Y-m" string and never passed `$year` at all —
+        // so the page threw "Undefined variable $year" and returned 500 for everyone, on
+        // every request. It went unnoticed because nothing covered it; the gate added
+        // above is what made it worth having a test for. Read both, and keep accepting a
+        // legacy "Y-m" value so any bookmarked link still resolves.
+        $rawMonth = (string) $request->input('month', now()->month);
+        $year = (int) $request->input('year', now()->year);
+
+        if (str_contains($rawMonth, '-')) {
+            [$legacyYear, $legacyMonth] = array_pad(explode('-', $rawMonth, 2), 2, null);
+            $year = (int) $legacyYear ?: $year;
+            $rawMonth = (string) $legacyMonth;
+        }
+
+        $month = (int) $rawMonth;
+
+        // Clamp rather than trust: these build a date range, and an out-of-range value
+        // would otherwise roll Carbon into a neighbouring year and silently report the
+        // wrong period.
+        $month = ($month >= 1 && $month <= 12) ? $month : (int) now()->month;
+        $year = ($year >= 2000 && $year <= 2100) ? $year : (int) now()->year;
+
+        $start = \Carbon\Carbon::create($year, $month, 1)->startOfMonth();
         $end = $start->copy()->endOfMonth();
 
         $summary = AttendanceRecord::whereBetween('date', [$start, $end])
@@ -307,6 +395,29 @@ class AttendanceController extends Controller
             ->get()
             ->load('employee');
 
-        return view('hr.attendance.report', compact('summary', 'month'));
+        // Shape the aggregate into what the view reads. The two had never agreed — the
+        // view wants a $report of arrays keyed employee/present/late/absent/on_leave/
+        // total_hours/ot_hours, and the controller only ever passed the raw $summary — so
+        // this page 500'd on every request regardless of who opened it. Mapping here
+        // rather than rewriting the Blade keeps the SQL (one grouped query, no N+1) intact.
+        //
+        // Rows whose employee record has since been deleted are dropped: the view
+        // dereferences ->full_name directly, and one orphaned attendance row would take
+        // the whole report down again.
+        $report = $summary
+            ->filter(fn ($row) => $row->employee !== null)
+            ->map(fn ($row) => [
+                'employee'    => $row->employee,
+                'present'     => (int) $row->present_days,
+                'late'        => (int) $row->late_days,
+                'absent'      => (int) $row->absent_days,
+                'on_leave'    => (int) $row->leave_days,
+                'total_hours' => (float) $row->total_work_hours,
+                'ot_hours'    => (float) $row->total_overtime_hours,
+            ])
+            ->sortBy(fn ($row) => $row['employee']->full_name)
+            ->values();
+
+        return view('hr.attendance.report', compact('report', 'summary', 'month', 'year'));
     }
 }

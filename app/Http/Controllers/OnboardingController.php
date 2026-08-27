@@ -734,7 +734,12 @@ class OnboardingController extends Controller
                 $p = $o->personalDetail;
                 $w = $o->workDetail;
                 $a = $o->assetProvisioning;
-                fputcsv($file, [$o->id, $p?->full_name, $p?->preferred_name, $p?->official_document_id,
+                // csv_safe() on the WHOLE row, not per field: this export carries text the
+                // PUBLIC onboarding-invite form wrote (full_name, address, contacts), and a
+                // spreadsheet runs a cell that starts with "=" as a formula on the HR
+                // workstation opening it. Mapping the row means a column added later is
+                // covered by construction rather than by remembering.
+                fputcsv($file, array_map('csv_safe', [$o->id, $p?->full_name, $p?->preferred_name, $p?->official_document_id,
                     $p?->date_of_birth, $p?->sex, $p?->marital_status, $p?->religion, $p?->race,
                     $p?->personal_email, $p?->personal_contact_number, $w?->employee_status, $w?->staff_status,
                     $w?->employment_type, $w?->designation, $w?->department, $w?->company, $w?->office_location,
@@ -745,7 +750,7 @@ class OnboardingController extends Controller
                     $a?->sim_card ? 'Yes' : 'No', $a?->access_card_request ? 'Yes' : 'No',
                     implode('; ', $o->hr_emails ?? []), implode('; ', $o->it_emails ?? []),
                     $o->calendar_invite_sent ? 'Yes' : 'No', $o->welcome_email_sent ? 'Yes' : 'No',
-                    $o->created_at->format('Y-m-d')]);
+                    $o->created_at->format('Y-m-d')]));
             }
             fclose($file);
         };
@@ -755,6 +760,15 @@ class OnboardingController extends Controller
 
     public function getManagerEmail(Request $request)
     {
+        // Gated: this resolves an arbitrary display name to that person's work email, so
+        // ungated it is a staff-directory lookup available to every authenticated user
+        // (including one who only ever sees their own profile). It exists to auto-fill
+        // the reporting-manager field on the onboarding form, so the audience is exactly
+        // the people who may raise an onboarding.
+        if (! Auth::user()?->canAddOnboarding()) {
+            abort(403);
+        }
+
         $name = $request->input('name', '');
         $user = User::where('name', $name)->first();
 

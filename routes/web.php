@@ -59,9 +59,16 @@ Route::middleware('guest')->group(function () {
     // Throttle: 30 per minute per IP as last-resort protection — app-level lockout handles per-user lockout at 5 attempts
     Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:30,1');
     Route::get('/register', [AuthController::class, 'showRegister'])->name('register');
-    Route::post('/register/check-email', [AuthController::class, 'checkEmail'])->name('register.checkEmail');
+    // Throttle: this endpoint takes an arbitrary address and says whether it belongs to
+    // staff. Even with one unified error message it is the only unauthenticated place
+    // that reacts to a work email at all, so it must not be freely repeatable.
+    Route::post('/register/check-email', [AuthController::class, 'checkEmail'])
+        ->name('register.checkEmail')->middleware('throttle:5,1');
     Route::get('/register/set-password', [AuthController::class, 'showSetPassword'])->name('register.setPassword');
-    Route::post('/register', [AuthController::class, 'register']);
+    // Throttle: this endpoint SETS a password. It is session-gated on step 1 and refuses
+    // any account that isn't an eligible rehire (AuthController::rehireEligible), but a
+    // password-setting route reachable without a session should never be unmetered.
+    Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:5,1');
     Route::get('/forgot-password', [AuthController::class, 'showForgotPassword'])->name('password.request');
     // Throttle: max 5 reset requests per minute per IP — prevents email flooding
     Route::post('/forgot-password', [AuthController::class, 'sendResetLink'])->name('password.email')->middleware('throttle:5,1');

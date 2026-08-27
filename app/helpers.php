@@ -40,6 +40,44 @@ if (! function_exists('fmt_datetime')) {
     }
 }
 
+if (! function_exists('csv_safe')) {
+    /**
+     * Neutralise a value before it is written into a CSV export.
+     *
+     * SECURITY — a spreadsheet treats a cell beginning `=`, `+`, `-`, `@`, or a control
+     * character as a FORMULA, so free text that a user typed becomes code the moment
+     * somebody opens the export. Excel's DDE path (`=cmd|'/C ...'!A0`) runs on the
+     * reader's machine, and the readers here are HR and Finance — the workstations with
+     * access to NRIC scans, contracts and payroll.
+     *
+     * The write side is not privileged: `personal_details.full_name` is filled in by the
+     * PUBLIC, unauthenticated onboarding-invite form, and an employee edits their own
+     * address and preferred name from self-service. So the exporter has to assume every
+     * cell is hostile.
+     *
+     * Prefixing with a single quote is the standard fix: the spreadsheet renders the
+     * text as-is and does not evaluate it. Numeric values are left alone so that
+     * amounts, years and counts keep sorting and summing as numbers.
+     *
+     * This started life as ExpenseClaimController::sanitizeForCsv(), which was the only
+     * export that had it. It lives here so every export can share ONE definition rather
+     * than three modules drifting apart again — which is exactly how the onboarding,
+     * employee and asset exports came to be missing it.
+     */
+    function csv_safe($value): string
+    {
+        $value = (string) ($value ?? '');
+
+        if ($value === '' || is_numeric($value)) {
+            return $value;
+        }
+
+        // Match after any leading whitespace: a spreadsheet trims the cell before
+        // deciding it is a formula, so testing only offset 0 misses " =cmd|...".
+        return preg_match('/^[\p{Z}\s]*[=+\-@\t\r\n]/u', $value) ? "'".$value : $value;
+    }
+}
+
 if (! function_exists('asset_onboarding_option_label')) {
     /**
      * How a not-yet-started new hire reads in the asset "Assigned To" picker.

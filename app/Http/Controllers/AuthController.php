@@ -13,6 +13,53 @@ use Illuminate\Support\Facades\Password;
 
 class AuthController extends Controller
 {
+    /**
+     * The ONE answer the registration flow gives for every ineligible email.
+     *
+     * "Not an employee", "already has an account" and "deactivated for a reason that
+     * isn't a rehire" are deliberately indistinguishable: told apart, this
+     * unauthenticated endpoint enumerates the staff directory AND reports which
+     * accounts are in a state the rehire path would accept.
+     */
+    private const REGISTER_INELIGIBLE = 'This email cannot be registered. If you already have an account, please sign in or use "Forgot password". Otherwise contact the IT team.';
+
+    /**
+     * May this EXISTING user row be re-claimed by someone completing self-registration?
+     *
+     * Only for a genuine rehire: an account deactivated because the person LEFT
+     * (`exit_date`, stamped by the exit-date safety net in login() or by HR), who now
+     * has a current employment row again because they were re-onboarded.
+     *
+     * SECURITY — this predicate is the fix for an unauthenticated account-takeover.
+     * It used to be `! $user->is_active && $hasCurrentActiveEmployee`, which an
+     * attacker could satisfy against ANY currently-employed person: five wrong
+     * passwords deactivate the account with `deactivation_reason = 'login_lockout'`
+     * (see login()), and a current employee has `active_until IS NULL` by definition —
+     * so register() would then overwrite the password with one the attacker chose and
+     * reactivate the account. Pinning the reason to 'exit_date' closes that, because
+     * an attacker has no way to produce that reason: the exit-date path in login()
+     * also stamps `active_until`, which makes hasCurrentActiveEmployee() false unless
+     * HR has since re-onboarded the person — the legitimate rehire, and nothing else.
+     *
+     * Deliberately NOT reachable for 'login_lockout': clearing a lockout is a
+     * superadmin action (AccountManagementController::activate), never a self-service
+     * one, and certainly not one that rewrites the password on the way through.
+     */
+    private static function rehireEligible(User $user, string $email): bool
+    {
+        if ($user->is_active) {
+            return false;
+        }
+
+        if ($user->deactivation_reason !== 'exit_date') {
+            return false;
+        }
+
+        return Employee::where('company_email', $email)
+            ->whereNull('active_until')
+            ->exists();
+    }
+
     // ── Login ──────────────────────────────────────────────────────────────
     public function showLogin(Request $request)
     {
@@ -175,25 +222,39 @@ class AuthController extends Controller
         if (!$inWorkDetails && !$inEmployees) {
             return back()
                 ->withInput()
-                ->withErrors(['work_email' => 'This email does not exist in our system. Please enter your assigned work email or contact the IT team.']);
+                ->withErrors(['work_email' => self::REGISTER_INELIGIBLE]);
         }
 
-        // Block ONLY when an *active* account exists. A deactivated account
-        // (e.g. previously offboarded, now rehired with a fresh Onboarding)
-        // is allowed to proceed — register() will reactivate it instead of
-        // creating a duplicate. The offboarding history stays intact on the
-        // old Employee row; only the User row is reactivated.
+        // Block when an account already exists, and when a deactivated account is
+        // NOT an eligible rehire. A rehire (previously offboarded, now returning with a
+        // fresh Onboarding) is allowed to proceed — register() reactivates it instead of
+        // creating a duplicate. The offboarding history stays intact on the old Employee
+        // row; only the User row is reactivated.
+        //
+        // SECURITY: eligibility is decided by the SAME predicate register() uses
+        // (rehireEligible), so this page can never advertise a path register() will
+        // refuse — and, critically, can never advertise one for an account an attacker
+        // put into a deactivated state themselves by burning login attempts.
         $existing = User::where('work_email', $email)->first();
-        if ($existing && $existing->is_active) {
+        if ($existing && ! self::rehireEligible($existing, $email)) {
+            // One message for BOTH "no such employee" and "already registered".
+            // Distinguishing them turns this unauthenticated endpoint into an
+            // employee-directory oracle (OWASP A07), which is exactly what the login
+            // and forgot-password handlers already go out of their way to avoid.
             return back()
                 ->withInput()
-                ->withErrors(['work_email' => 'An account with this email already exists. Please sign in instead.']);
+                ->withErrors(['work_email' => self::REGISTER_INELIGIBLE]);
         }
 
         // Email is valid and either has no account yet, or has a deactivated
         // account that's eligible for rehire reactivation. Pass to step 2.
-        return redirect()->route('register.setPassword')
-            ->with('verified_email', $email);
+        //
+        // put(), not with(): flash data survives exactly one request, so it would be
+        // gone by the time the set-password form is POSTed back — and it must still be
+        // there, because register() verifies this step actually happened.
+        $request->session()->put('verified_email', $email);
+
+        return redirect()->route('register.setPassword');
     }
 
     // ── Register Step 2: show set-password form ────────────────────────────
@@ -229,6 +290,19 @@ class AuthController extends Controller
 
         // Re-check email validity (in case someone posts directly)
         $email = $request->work_email;
+
+        // Step 1 must actually have happened, for THIS address. checkEmail() persists
+        // the address it cleared; without this the set-password POST stands entirely on
+        // its own and step 1 is decorative. Compared case-insensitively because
+        // checkEmail() stores what the user typed.
+        if (! hash_equals(
+            mb_strtolower((string) $request->session()->get('verified_email')),
+            mb_strtolower((string) $email)
+        )) {
+            return redirect()->route('register')
+                ->withErrors(['work_email' => 'Please verify your work email first.']);
+        }
+
         $inWorkDetails = \App\Models\WorkDetail::where('company_email', $email)->exists();
         $inEmployees   = Employee::where('company_email', $email)->exists();
 
@@ -237,18 +311,17 @@ class AuthController extends Controller
                 ->withErrors(['work_email' => 'This email is not valid. Please start again.']);
         }
 
-        // Rehire-aware: if a deactivated user row exists AND there is a current
-        // active employee row for this email (active_until IS NULL), treat this
-        // as a returning employee re-enrolling. Reactivate the existing user and
-        // set their new password instead of creating a duplicate. A solo
-        // deactivation (e.g. login_lockout) without a current active employee
-        // does NOT match this path and continues to be rejected.
+        // Rehire-aware: a returning employee re-enrolling reactivates their existing
+        // row and sets a new password rather than creating a duplicate. What counts as
+        // a rehire is decided by rehireEligible() — read its docblock before widening
+        // it, because loosening this test is an unauthenticated account takeover of
+        // every currently-employed person, not a UX improvement. Every other
+        // deactivation reason (notably 'login_lockout') falls through to the generic
+        // refusal below; clearing those is a superadmin action.
         $existingUser = User::where('work_email', $email)->first();
         if ($existingUser) {
-            $hasCurrentActiveEmployee = Employee::where('company_email', $email)
-                ->whereNull('active_until')
-                ->exists();
-            if (!$existingUser->is_active && $hasCurrentActiveEmployee) {
+            if (self::rehireEligible($existingUser, $email)) {
+                $request->session()->forget('verified_email');
                 $existingUser->update([
                     'password'            => Hash::make($request->password),
                     'is_active'           => true,
@@ -300,7 +373,10 @@ class AuthController extends Controller
         }
         $name = $name ?? explode('@', $email)[0];
 
-        // Create the user account
+        // Create the user account. The step-1 marker is spent here so a single cleared
+        // address cannot be replayed into a second registration attempt.
+        $request->session()->forget('verified_email');
+
         $user = User::create([
             'name'       => $name,
             'work_email' => $email,

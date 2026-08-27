@@ -291,7 +291,10 @@ class EmployeeController extends Controller
                 'Start Date', 'Exit Date',
             ]);
             foreach ($employees as $e) {
-                fputcsv($handle, [
+                // csv_safe() on the WHOLE row — an employee edits their own name, address
+                // and contact fields from self-service, so a cell here can begin with "="
+                // and be executed as a formula by whoever opens the export.
+                fputcsv($handle, array_map('csv_safe', [
                     $e->full_name, $e->preferred_name, $e->official_document_id,
                     $e->date_of_birth?->format('d/m/Y'), $e->sex,
                     $e->marital_status, $e->religion, $e->race, $e->is_disabled ? 'yes' : 'no',
@@ -300,7 +303,7 @@ class EmployeeController extends Controller
                     $e->employment_type, $e->designation, $e->department, $e->company, $e->office_location,
                     $e->reporting_manager, $e->company_email, $e->google_id, $e->work_role,
                     $e->start_date?->format('d/m/Y'), $e->exit_date?->format('d/m/Y'),
-                ]);
+                ]));
             }
             fclose($handle);
         };

@@ -3860,14 +3860,10 @@ class ExpenseClaimController extends Controller
      */
     private function sanitizeForCsv(string $value): string
     {
-        if ($value === '' || is_numeric($value)) {
-            return $value;
-        }
-        $first = substr($value, 0, 1);
-        if (in_array($first, ['=', '+', '@', '-', "\t", "\r"], true)) {
-            return "'".$value;
-        }
-
-        return $value;
+        // Delegates to the shared helper so this module and the onboarding / employee /
+        // asset exports can never disagree about what a dangerous cell looks like —
+        // three separate copies of this rule is how those three ended up without one at
+        // all. Kept as a method because it has call sites throughout this controller.
+        return csv_safe($value);
     }
 }

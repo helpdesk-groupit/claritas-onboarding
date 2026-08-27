@@ -1100,7 +1100,10 @@ class AssetController extends Controller
                 'Maintenance Status', 'Last Maintenance', 'Notes', 'Remarks',
             ]);
             foreach ($assets as $a) {
-                fputcsv($file, [
+                // csv_safe() on the WHOLE row — notes, remarks, model and vendor text are
+                // free-form, and a cell that begins with "=" is executed as a formula by the
+                // spreadsheet that opens this file.
+                fputcsv($file, array_map('csv_safe', [
                     $a->asset_tag, $a->asset_category, $a->asset_type, $a->brand, $a->model, $a->serial_number,
                     $a->status, $a->asset_condition,
                     $a->processor, $a->ram_size, $a->storage, $a->operating_system, $a->screen_size, $a->spec_others,
@@ -1115,7 +1118,7 @@ class AssetController extends Controller
                     $a->rental_start_date?->format('d/m/Y'), $a->rental_end_date?->format('d/m/Y'), $a->rental_contract_reference,
                     $a->resolvedAssigneeName(), $a->asset_assigned_date?->format('d/m/Y'), $a->expected_return_date?->format('d/m/Y'),
                     $a->maintenance_status, $a->last_maintenance_date?->format('d/m/Y'), $a->notes, $a->remarks,
-                ]);
+                ]));
             }
             fclose($file);
         };

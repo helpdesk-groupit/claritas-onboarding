@@ -30,7 +30,45 @@ class TwoFactorController extends Controller
         return view('auth.two-factor-setup', [
             'secret'    => $secret,
             'qrCodeUrl' => $qrCodeUrl,
+            'qrCodeSvg' => $this->renderQrSvg($qrCodeUrl),
         ]);
+    }
+
+    /**
+     * Render the otpauth:// URI as an inline SVG QR code.
+     *
+     * SECURITY — this exists because the setup page used to build its QR with
+     * `https://api.qrserver.com/...?data={{ urlencode($qrCodeUrl) }}`, which sends the
+     * otpauth URI — and therefore the RAW TOTP SEED plus the account's work email — to
+     * a third party on every enrolment. The seed is a permanent shared secret: anyone
+     * holding it can mint valid codes forever, so 2FA stops being a second factor. It
+     * leaked into that provider's request logs, into any TLS-terminating middlebox on
+     * the path, and into the enrolling user's browser history — and it did so worst for
+     * the roles where 2FA is MANDATORY (User::TWO_FACTOR_REQUIRED_ROLES).
+     *
+     * bacon/bacon-qr-code was already a dependency and simply unused. The secret now
+     * never leaves this process. Do not reintroduce a remote image service here, and
+     * keep `img-src` in SecurityHeaders free of QR hosts.
+     *
+     * Returns null if rendering fails — the page also prints the secret for manual
+     * entry, so a missing image degrades enrolment rather than blocking it.
+     */
+    private function renderQrSvg(string $otpauthUri): ?string
+    {
+        try {
+            $writer = new \BaconQrCode\Writer(
+                new \BaconQrCode\Renderer\ImageRenderer(
+                    new \BaconQrCode\Renderer\RendererStyle\RendererStyle(200, 1),
+                    new \BaconQrCode\Renderer\Image\SvgImageBackEnd()
+                )
+            );
+
+            return $writer->writeString($otpauthUri);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return null;
+        }
     }
 
     // ── Confirm: verify code and enable 2FA ───────────────────────────────

@@ -3,6 +3,7 @@
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -14,6 +15,34 @@ return Application::configure(basePath: dirname(__DIR__))
         App\Providers\AuthServiceProvider::class,
     ])
     ->withMiddleware(function (Middleware $middleware): void {
+        // ── Trusted proxies ────────────────────────────────────────────────────────
+        // Production ingress is Cloudflare edge → cloudflared → nginx → PHP-FPM, so
+        // every request arrives from a proxy. With nothing trusted (the previous state)
+        // Laravel read the CONNECTION address instead of the forwarded one, which meant:
+        //   • $request->ip() was the loopback address for everybody, so every
+        //     SecurityAuditLog row recorded the same IP and ThreatDetector's IP-based
+        //     signals could never fire;
+        //   • every `throttle:*` limiter keyed on that one value, collapsing per-client
+        //     buckets into a single global one;
+        //   • $request->secure() was false, so SecurityHeaders never emitted HSTS even
+        //     though the site is HTTPS-only at the edge.
+        //
+        // '*' is correct HERE and only because of that topology: nginx binds loopback
+        // and cloudflared is the sole ingress, so no client can present its own
+        // X-Forwarded-For. If the app is ever exposed directly, pin TRUSTED_PROXIES to
+        // the real proxy addresses — trusting '*' on a directly reachable host lets a
+        // client spoof its IP and forge exactly the audit trail described above.
+        // Passed as a STRING on purpose: Laravel's TrustProxies treats the literal '*'
+        // specially and splits a comma-separated list itself, so wrapping it in an array
+        // here would turn '*' into an IP that matches nothing and silently trust nobody.
+        $middleware->trustProxies(
+            at: (string) env('TRUSTED_PROXIES', '*'),
+            headers: Request::HEADER_X_FORWARDED_FOR
+                | Request::HEADER_X_FORWARDED_HOST
+                | Request::HEADER_X_FORWARDED_PORT
+                | Request::HEADER_X_FORWARDED_PROTO,
+        );
+
         // Force HTTPS in production
         $middleware->prepend(\App\Http\Middleware\ForceHttps::class);
 

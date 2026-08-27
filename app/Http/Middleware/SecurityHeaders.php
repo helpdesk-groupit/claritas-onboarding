@@ -46,7 +46,11 @@ class SecurityHeaders
             "script-src 'self' 'nonce-{$nonce}' 'unsafe-hashes' https://cdn.jsdelivr.net",
             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com",
             "font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com",
-            "img-src 'self' data: blob: https://api.qrserver.com",
+            // No remote image hosts. api.qrserver.com was allow-listed here for the 2FA
+            // enrolment QR, which meant the otpauth URI — the raw TOTP seed — was sent
+            // to a third party. That QR is rendered server-side now
+            // (TwoFactorController::renderQrSvg); do not re-add a QR host.
+            "img-src 'self' data: blob:",
             "connect-src 'self'",
             'frame-ancestors '.($allowSameOriginFrame ? "'self'" : "'none'"),
             "base-uri 'self'",
