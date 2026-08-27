@@ -163,6 +163,35 @@ class User extends Authenticatable
         );
     }
 
+    /**
+     * ADM-06 — who sees the "KOL Management" link, and who may mint an SSO
+     * token for it. One helper, read by BOTH the sidebar and
+     * KolPortalRedirectController, matching how canUseSocialStrategist() is
+     * used — so the nav and the route can never disagree.
+     *
+     * Admin roles always qualify (they administer the thing). Beyond them,
+     * any active employee in the KOL department, since the KOL team are the
+     * portal's day-to-day "employee"-role users.
+     *
+     * NOTE this is a convenience gate, not the authority. The KOL Portal keeps
+     * its own staff_users table and decides what each identity may actually
+     * do; someone who passes here but is not provisioned there simply lands on
+     * its "pending provisioning" path.
+     */
+    public function canAccessKolPortal(): bool
+    {
+        if ($this->isIt() || $this->isSuperadmin() || $this->isSystemAdmin()) {
+            return true;
+        }
+
+        // employees.department is free-text — match case-insensitively, same
+        // as canUseSocialStrategist(), so a casing difference cannot lock the
+        // whole team out.
+        $dept = trim((string) ($this->employee?->department ?? ''));
+
+        return $dept !== '' && mb_strtolower($dept) === 'kol';
+    }
+
     public function canViewOnboarding(): bool
     {
         return in_array($this->role, ['hr_manager', 'hr_executive', 'hr_intern', 'superadmin', 'system_admin']);

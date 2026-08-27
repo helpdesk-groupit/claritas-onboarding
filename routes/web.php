@@ -112,6 +112,14 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
         Route::get('/claim-reports', [\App\Http\Controllers\HelpController::class, 'claimReports'])->name('claim-reports');
     });
 
+    // ADM-06 — "KOL Management" nav link. Mints a 60-second, single-use SSO
+    // token and hands the browser to the KOL Management Portal, so an already
+    // authenticated user is never asked to log in twice (ADM-07). Throttled:
+    // each hit mints a credential, so it should not be freely repeatable.
+    Route::get('/kol-portal/redirect', \App\Http\Controllers\KolPortalRedirectController::class)
+        ->middleware('throttle:20,1')
+        ->name('kol-portal.redirect');
+
     // Secure file serving — all sensitive documents (NRIC, contracts, certs) require auth
     Route::get('/secure-file/{path}', [SecureFileController::class, 'serve'])
         ->where('path', '.*')

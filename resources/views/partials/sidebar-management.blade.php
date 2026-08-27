@@ -19,7 +19,8 @@
     // it labelled "Asset Listing", matching every other role's entry point into the same route.
     $mCanDecomm     = $u->canViewDecommissionReports() && ! $u->canViewAssets();
     $mCanCompanyReg = $u->isSuperadmin() || $u->isHrManager() || $u->isHrExecutive();
-    $mShow = $mCanTask || $mCanAutomation || $mCanStrategist || $mCanTicket || $mCanTeamLeave || $mCanTeamClaims || $mCanVendors || $mCanDecomm || $mCanCompanyReg;
+    $mCanKol        = $u->canAccessKolPortal() && ! empty(config('services.kol_portal.url'));  // ADM-06 KOL Management Portal (SSO handoff)
+    $mShow = $mCanTask || $mCanAutomation || $mCanStrategist || $mCanTicket || $mCanTeamLeave || $mCanTeamClaims || $mCanVendors || $mCanDecomm || $mCanCompanyReg || $mCanKol;
     $mAutomationOpen = request()->routeIs('it.automation.*');
 @endphp
 @if($mShow)
@@ -112,6 +113,19 @@
 <div class="nav-item">
     <a href="{{ route('superadmin.companies.index') }}" class="nav-link {{ request()->routeIs('superadmin.companies.*') ? 'active' : '' }}">
         <i class="bi bi-building"></i> Company Registration
+    </a>
+</div>
+@endif
+
+{{-- ADM-06 — opens the KOL Management Portal in a NEW TAB, as the requirement
+     specifies. It is a separate application on its own hostname, so this is a
+     plain anchor to the SSO-minting route rather than a routeIs() highlight:
+     the user never "is on" this page, they pass through it. --}}
+@if($mCanKol)
+<div class="nav-item">
+    <a href="{{ route('kol-portal.redirect') }}" target="_blank" rel="noopener" class="nav-link">
+        <i class="bi bi-megaphone"></i> KOL Management
+        <i class="bi bi-box-arrow-up-right ms-auto" style="font-size:11px;"></i>
     </a>
 </div>
 @endif
