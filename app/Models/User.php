@@ -31,6 +31,20 @@ class User extends Authenticatable
         return in_array($this->role, self::TWO_FACTOR_REQUIRED_ROLES);
     }
 
+    /**
+     * The mandatory-2FA roles, for callers that need the LIST rather than a yes/no.
+     *
+     * Exists so `two-factor:reset-compromised` can scope itself to exactly the roles
+     * this constant defines instead of restating them — a second hand-written copy is
+     * how a role gets added here and silently missed by the remediation command.
+     *
+     * @return array<int, string>
+     */
+    public static function twoFactorRequiredRoles(): array
+    {
+        return self::TWO_FACTOR_REQUIRED_ROLES;
+    }
+
     public function mustSetupTwoFactor(): bool
     {
         return $this->requiresTwoFactor() && ! $this->hasTwoFactorEnabled();
