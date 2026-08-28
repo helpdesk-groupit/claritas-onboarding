@@ -187,6 +187,12 @@ class User extends Authenticatable
      * any active employee in the KOL department, since the KOL team are the
      * portal's day-to-day "employee"-role users.
      *
+     * A per-user override set on Role Management → Manage Access → By Page →
+     * "KOL Management" wins over ALL of that, in both directions: it is how a
+     * Superadmin grants the link to someone outside the KOL department, and
+     * how they withhold it from someone whose role would otherwise carry it.
+     * "Default" stores no row, which is what leaves the rules below in charge.
+     *
      * NOTE this is a convenience gate, not the authority. The KOL Portal keeps
      * its own staff_users table and decides what each identity may actually
      * do; someone who passes here but is not provisioned there simply lands on
@@ -194,6 +200,11 @@ class User extends Authenticatable
      */
     public function canAccessKolPortal(): bool
     {
+        $override = $this->customPermission('kol_management');
+        if ($override !== null) {
+            return $override !== 'none';
+        }
+
         if ($this->isIt() || $this->isSuperadmin() || $this->isSystemAdmin()) {
             return true;
         }

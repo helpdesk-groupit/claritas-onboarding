@@ -86,12 +86,18 @@ class EmployeeController extends Controller
 
         $submitted = $request->input('permissions', []);
         $validKeys = \App\Models\UserPermission::validResources();
-        $validLevels = ['full', 'view', 'edit', 'none'];
 
         foreach ($submitted as $resource => $level) {
             if (! in_array($resource, $validKeys)) {
                 continue;
             }
+
+            // Per-module whitelist, not one global list — a module that only
+            // offers grant/deny (kol_management) must not accept a hand-crafted
+            // 'view'/'edit' POST just because the enum column would store it.
+            $validLevels = array_values(array_filter(
+                \App\Models\UserPermission::levelsFor($resource)
+            ));
 
             if ($level === '' || $level === null) {
                 // Empty = remove custom override (fall back to role)

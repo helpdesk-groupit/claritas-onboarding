@@ -5,22 +5,42 @@
 @section('content')
 
 @php
-$fieldMap = \App\Models\UserPermission::fieldMap();
+$fieldMap  = \App\Models\UserPermission::fieldMap();
+$allLevels = \App\Models\UserPermission::ACCESS_LEVELS;
 
-// Flatten for By Page tab (module-level only)
+// Flatten for By Page tab (module-level only). Every module appears here,
+// including link-only ones such as KOL Management that have no sections.
+// 'levels' is the subset this module actually supports — the rest render as
+// a dash rather than an unselectable radio that would imply a real choice.
 $modules = [];
 foreach ($fieldMap as $mKey => $mod) {
-    $modules[$mKey] = ['label' => $mod['label'], 'icon' => $mod['icon']];
+    $modules[$mKey] = [
+        'label'  => $mod['label'],
+        'icon'   => $mod['icon'],
+        'levels' => $mod['levels'] ?? $allLevels,
+    ];
 }
 
-// Flatten for By Section tab (section-level)
+// Flatten for By Section tab (section-level). Modules with no sections are
+// page-level only and are skipped here and on the By Field tab, rather than
+// rendering an accordion that opens onto an empty table.
 $sections = [];
 foreach ($fieldMap as $mKey => $mod) {
-    $sections[$mKey] = ['label' => $mod['label'], 'icon' => $mod['icon'], 'sections' => []];
+    if (empty($mod['sections'])) {
+        continue;
+    }
+    $sections[$mKey] = [
+        'label'    => $mod['label'],
+        'icon'     => $mod['icon'],
+        'levels'   => $mod['levels'] ?? $allLevels,
+        'sections' => [],
+    ];
     foreach ($mod['sections'] as $sKey => $sec) {
         $sections[$mKey]['sections']["{$mKey}.{$sKey}"] = $sec['label'];
     }
 }
+
+$fieldModules = array_filter($fieldMap, fn ($mod) => ! empty($mod['sections']));
 @endphp
 
 <div class="card">
@@ -234,18 +254,29 @@ foreach ($fieldMap as $mKey => $mod) {
                                             <td class="fw-semibold">
                                                 <i class="bi {{ $mod['icon'] }} me-2 text-primary"></i>{{ $mod['label'] }}
                                             </td>
-                                            @foreach(['' , 'full', 'view', 'edit', 'none'] as $val)
+                                            @foreach($allLevels as $val)
                                             <td class="text-center">
+                                                @if(in_array($val, $mod['levels'], true))
                                                 <input type="radio" class="form-check-input perm-radio"
                                                        name="permissions[{{ $mKey }}]"
                                                        value="{{ $val }}"
                                                        data-resource="{{ $mKey }}">
+                                                @else
+                                                <span class="text-muted" title="Not applicable to this module">&mdash;</span>
+                                                @endif
                                             </td>
                                             @endforeach
                                         </tr>
                                         @endforeach
                                     </tbody>
                                 </table>
+                                <p class="text-muted small mb-0">
+                                    <i class="bi bi-info-circle me-1"></i>
+                                    <strong>KOL Management</strong> opens the KOL Management Portal, a separate
+                                    system, so it is grant-or-withhold only. Granting it shows the sidebar link and
+                                    lets that person sign in there; the KOL Portal still decides what they may do
+                                    once inside.
+                                </p>
                             </div>
 
                             {{-- Tab 2: By Section --}}
@@ -279,12 +310,16 @@ foreach ($fieldMap as $mKey => $mod) {
                                                         @foreach($mod['sections'] as $sResource => $sLabel)
                                                         <tr>
                                                             <td>{{ $sLabel }}</td>
-                                                            @foreach(['' , 'full', 'view', 'edit', 'none'] as $val)
+                                                            @foreach($allLevels as $val)
                                                             <td class="text-center">
+                                                                @if(in_array($val, $mod['levels'], true))
                                                                 <input type="radio" class="form-check-input perm-radio"
                                                                        name="permissions[{{ $sResource }}]"
                                                                        value="{{ $val }}"
                                                                        data-resource="{{ $sResource }}">
+                                                                @else
+                                                                <span class="text-muted">&mdash;</span>
+                                                                @endif
                                                             </td>
                                                             @endforeach
                                                         </tr>
@@ -302,7 +337,7 @@ foreach ($fieldMap as $mKey => $mod) {
                             <div class="tab-pane fade" id="tab-by-field">
                                 <p class="text-muted small mb-3">Control access to individual fields within each section.</p>
                                 <div class="accordion" id="fieldAccordion">
-                                    @foreach($fieldMap as $mKey => $mod)
+                                    @foreach($fieldModules as $mKey => $mod)
                                     <div class="accordion-item">
                                         <h2 class="accordion-header">
                                             <button class="accordion-button collapsed py-2" type="button"
@@ -345,12 +380,16 @@ foreach ($fieldMap as $mKey => $mod) {
                                                                         @php $fResource = "{$mKey}.{$sKey}.{$fKey}"; @endphp
                                                                         <tr>
                                                                             <td class="ps-4">{{ $fLabel }}</td>
-                                                                            @foreach(['' , 'full', 'view', 'edit', 'none'] as $val)
+                                                                            @foreach($allLevels as $val)
                                                                             <td class="text-center">
+                                                                                @if(in_array($val, $mod['levels'] ?? $allLevels, true))
                                                                                 <input type="radio" class="form-check-input perm-radio"
                                                                                        name="permissions[{{ $fResource }}]"
                                                                                        value="{{ $val }}"
                                                                                        data-resource="{{ $fResource }}">
+                                                                                @else
+                                                                                <span class="text-muted">&mdash;</span>
+                                                                                @endif
                                                                             </td>
                                                                             @endforeach
                                                                         </tr>

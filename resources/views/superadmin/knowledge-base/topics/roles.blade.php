@@ -135,9 +135,16 @@ flowchart LR
                     <tr><td class="text-start">Assets</td><td>Full</td><td>View</td><td>View</td><td>Full</td><td>—</td><td>—</td></tr>
                     <tr><td class="text-start">Accounting</td><td>Full</td><td>—</td><td>—</td><td>—</td><td>Full/View</td><td>—</td></tr>
                     <tr><td class="text-start">C-Suite Reports</td><td>Full</td><td>Full</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+                    <tr><td class="text-start">KOL Management</td><td>Link</td><td>—</td><td>—</td><td>Link</td><td>—</td><td>—</td></tr>
                 </tbody>
             </table>
         </div>
+        <p class="text-muted small mb-0">
+            <strong>KOL Management</strong> is a link into the KOL Management Portal, a separate system reached
+            by SSO — so it is granted or withheld, never "view" or "edit". Beyond the roles marked above, any
+            active employee whose department is <em>KOL</em> gets it by default. Either default can be overridden
+            per person on Role Management → Manage Access → By Page.
+        </p>
     </div>
 </div>
 @endsection
