@@ -56,8 +56,19 @@ return Application::configure(basePath: dirname(__DIR__))
         // FOR is the whole point: real client IPs in security_audit_logs, working
         // ThreatDetector signals, and per-client rather than one global throttle bucket.
         // Do not add the others back to "complete the set".
+        // Default is LOOPBACK, not '*'. Verified on the NAS: nginx binds 0.0.0.0:8001, so
+        // that port is reachable from the whole LAN/VPN — while the only ESTABLISHED
+        // connection into it comes from ::1, i.e. cloudflared talks to it over loopback.
+        // Trusting '*' would therefore let any LAN device POST to 10.62.246.10:8001 with a
+        // forged X-Forwarded-For and (a) write a false IP into security_audit_logs, and
+        // (b) rotate the header to slip past the per-IP login throttle. Pinning to
+        // loopback means a forged header is only honoured from the box itself.
+        //
+        // Fails SAFE: if this ever stops matching the real proxy, X-Forwarded-For is
+        // simply ignored and ip() falls back to the connection address — the behaviour
+        // before this was added. Nothing breaks; the IPs just get less useful.
         $middleware->trustProxies(
-            at: (string) env('TRUSTED_PROXIES', '*'),
+            at: (string) env('TRUSTED_PROXIES', '127.0.0.1,::1'),
             headers: Request::HEADER_X_FORWARDED_FOR,
         );
 
