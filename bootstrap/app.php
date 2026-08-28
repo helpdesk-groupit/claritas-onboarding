@@ -35,20 +35,30 @@ return Application::configure(basePath: dirname(__DIR__))
         // Passed as a STRING on purpose: Laravel's TrustProxies treats the literal '*'
         // specially and splits a comma-separated list itself, so wrapping it in an array
         // here would turn '*' into an IP that matches nothing and silently trust nobody.
-        // X_FORWARDED_PROTO is DELIBERATELY NOT TRUSTED. Production already resolves
-        // $request->secure() to true on its own (verified: it emits HSTS, which
-        // SecurityHeaders only sets when secure() is true), so nginx is setting the
-        // HTTPS server var directly. Honouring the forwarded proto here would REPLACE
-        // that working value with whatever the tunnel sends — and cloudflared speaks
-        // plain HTTP to nginx on loopback. A forwarded 'http' would make secure() false,
-        // ForceHttps would 301 to https, the browser would come back over https, and the
-        // site would redirect-loop itself off the air. FOR/HOST/PORT are what this fix
-        // actually needed; proto buys nothing here and can only break it.
+        // ONLY X_FORWARDED_FOR. This is not conservatism for its own sake — the other
+        // three each broke production when trusted, and the finding needed none of them:
+        //
+        //   PORT  — took the site down 2026-08-28. cloudflared reaches nginx on loopback
+        //           :8001, so a trusted X-Forwarded-Port makes getPort() return 8001 and
+        //           EVERY generated URL becomes https://ep.claritasapp.com:8001/… . The
+        //           login form then POSTs to a port the tunnel does not serve, the browser
+        //           never lands back on a page holding its session, and the user is bounced
+        //           to /login with "Your session has expired". Logins were broken for
+        //           everyone until this was reverted.
+        //   PROTO — would redirect-loop the site off the air. secure() already resolves
+        //           true by itself (production emits HSTS, which SecurityHeaders only sets
+        //           when secure() is true), so nginx sets the HTTPS var directly. Trusting
+        //           the tunnel's plain-HTTP proto would make secure() false → ForceHttps
+        //           301s to https → browser returns over https → loop.
+        //   HOST  — same class of hazard: it feeds getHost(), which feeds URL generation
+        //           and cookie scope. The host already resolves correctly without it.
+        //
+        // FOR is the whole point: real client IPs in security_audit_logs, working
+        // ThreatDetector signals, and per-client rather than one global throttle bucket.
+        // Do not add the others back to "complete the set".
         $middleware->trustProxies(
             at: (string) env('TRUSTED_PROXIES', '*'),
-            headers: Request::HEADER_X_FORWARDED_FOR
-                | Request::HEADER_X_FORWARDED_HOST
-                | Request::HEADER_X_FORWARDED_PORT,
+            headers: Request::HEADER_X_FORWARDED_FOR,
         );
 
         // Force HTTPS in production
