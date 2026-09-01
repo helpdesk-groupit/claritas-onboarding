@@ -799,6 +799,7 @@ class OnboardingController extends Controller
         }
         // Always guarantee every HR Manager is included regardless of selection
         $hrManagerEmails = User::where('role', 'hr_manager')
+            ->where('is_active', true)
             ->whereNotNull('work_email')
             ->pluck('work_email')
             ->filter(fn ($e) => filter_var($e, FILTER_VALIDATE_EMAIL))
@@ -813,6 +814,7 @@ class OnboardingController extends Controller
         );
         // Always guarantee every IT Manager is included regardless of selection
         $itManagerEmails = User::where('role', 'it_manager')
+            ->where('is_active', true)
             ->whereNotNull('work_email')
             ->pluck('work_email')
             ->filter(fn ($e) => filter_var($e, FILTER_VALIDATE_EMAIL))
@@ -878,6 +880,7 @@ class OnboardingController extends Controller
         }
 
         return User::whereIn('role', $fallbackRole)
+            ->where('is_active', true)
             ->pluck('work_email')
             ->filter(fn ($e) => filter_var($e, FILTER_VALIDATE_EMAIL))
             ->values()->toArray();
