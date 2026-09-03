@@ -257,6 +257,41 @@ class ClaimPdfDownloadTest extends TestCase
     }
 
     /**
+     * Regression test for a real Blade `@`-gluing bug (see CLAUDE.md's "Blade gotcha"):
+     * `...this form@elseif(...)` compiled `@elseif` through as LITERAL TEXT instead of a
+     * directive because it was glued directly onto the word "form" with no separator. The
+     * practical effect: the reason for an unreadable PDF was silently dropped from the
+     * placeholder (only the generic "not embeddable" text showed), and a stray
+     * "@elseif($ax && $ax['reason']) ()" string would have leaked into a SUCCESSFUL merge's
+     * placeholder line. Renders the view directly with a controlled $appendix so both
+     * branches are exercised without needing a real unparseable/parseable PDF on disk.
+     */
+    public function test_the_appendix_note_renders_without_leaking_blade_syntax(): void
+    {
+        $claim = $this->approvedClaim(['claim_receipts/test/either.pdf']);
+        $claim->loadMissing('items.category', 'employee');
+
+        $renderWith = function (array $appendixEntry) use ($claim) {
+            return view('user.claims.report-pdf', [
+                'claim' => $claim,
+                'company' => \App\Models\Company::forName($claim->resolvedCompany()),
+                'items' => $claim->items,
+                'appendix' => ['claim_receipts/test/either.pdf' => $appendixEntry],
+            ])->render();
+        };
+
+        $appendableHtml = $renderWith(['appendable' => true, 'reason' => null]);
+        $this->assertStringContainsString('reproduced in full on the pages after this form', $appendableHtml);
+        $this->assertStringNotContainsString('@elseif', $appendableHtml);
+        $this->assertStringNotContainsString('@endif', $appendableHtml);
+
+        $reasonHtml = $renderWith(['appendable' => false, 'reason' => 'the PDF could not be read (it may be encrypted or password-protected)']);
+        $this->assertStringContainsString('not embeddable in this PDF) (the PDF could not be read', $reasonHtml);
+        $this->assertStringNotContainsString('@elseif', $reasonHtml);
+        $this->assertStringNotContainsString('@endif', $reasonHtml);
+    }
+
+    /**
      * dompdf cannot embed a PDF inline, but it doesn't have to lose the evidence — the
      * uploaded receipt's own pages are reproduced in full after the form (see
      * App\Services\ClaimReportRenderer). Before this fix the download only printed the

@@ -146,16 +146,26 @@
                             @if(count($gAtts) > 0)
                             <div class="muted" style="margin-bottom:3px;">Attachment for {{ $gCount }} transactions ({{ strtoupper($item->category->name ?? '') }})</div>
                             @foreach($gAtts as $attachment)
-                            @php $aext = strtolower(pathinfo($attachment, PATHINFO_EXTENSION)); $adata = in_array($aext, $imageExt) ? $imgData('local', $attachment) : null; $ax = $appendix[$attachment] ?? null; @endphp
-                            @if($adata)<img src="{{ $adata }}" style="max-width:100%;max-height:480px;display:block;margin:3px 0;">@else<div class="muted">Attachment: {{ strtoupper($aext) }} file (not embeddable in this PDF)@if($ax && $ax['appendable']) — reproduced in full on the pages after this form@elseif($ax && $ax['reason']) ({{ $ax['reason'] }})@endif.</div>@endif
+                            @php
+                                $aext = strtolower(pathinfo($attachment, PATHINFO_EXTENSION));
+                                $adata = in_array($aext, $imageExt) ? $imgData('local', $attachment) : null;
+                                $ax = $appendix[$attachment] ?? null;
+                                $axNote = ($ax && $ax['appendable']) ? ' — reproduced in full on the pages after this form' : (($ax && $ax['reason']) ? ' ('.$ax['reason'].')' : '');
+                            @endphp
+                            @if($adata)<img src="{{ $adata }}" style="max-width:100%;max-height:480px;display:block;margin:3px 0;">@else<div class="muted">Attachment: {{ strtoupper($aext) }} file (not embeddable in this PDF){{ $axNote }}.</div>@endif
                             @endforeach
                             @else<div class="muted">No attachment.</div>@endif
                             @php $gSupp = collect($grp)->flatMap(fn ($x) => $x->supportingPaths())->unique()->values(); @endphp
                             @if($gSupp->count() > 0)
                             <div class="muted" style="margin:6px 0 3px;">Supporting documents</div>
                             @foreach($gSupp as $sp)
-                            @php $sext = strtolower(pathinfo($sp, PATHINFO_EXTENSION)); $sdata = in_array($sext, $imageExt) ? $imgData('local', $sp) : null; $sx = $appendix[$sp] ?? null; @endphp
-                            @if($sdata)<img src="{{ $sdata }}" style="max-width:100%;max-height:300px;display:block;margin:3px 0;">@else<div class="muted">Supporting: {{ strtoupper($sext) }} file (not embeddable)@if($sx && $sx['appendable']) — reproduced in full on the pages after this form@elseif($sx && $sx['reason']) ({{ $sx['reason'] }})@endif.</div>@endif
+                            @php
+                                $sext = strtolower(pathinfo($sp, PATHINFO_EXTENSION));
+                                $sdata = in_array($sext, $imageExt) ? $imgData('local', $sp) : null;
+                                $sx = $appendix[$sp] ?? null;
+                                $sxNote = ($sx && $sx['appendable']) ? ' — reproduced in full on the pages after this form' : (($sx && $sx['reason']) ? ' ('.$sx['reason'].')' : '');
+                            @endphp
+                            @if($sdata)<img src="{{ $sdata }}" style="max-width:100%;max-height:300px;display:block;margin:3px 0;">@else<div class="muted">Supporting: {{ strtoupper($sext) }} file (not embeddable){{ $sxNote }}.</div>@endif
                             @endforeach
                             @endif
                         </td>
@@ -184,8 +194,13 @@
                             @if(count($atts) > 0)
                             <div class="muted" style="margin-bottom:3px;">Attachment for: {{ $item->description }}</div>
                             @foreach($atts as $attachment)
-                            @php $aext = strtolower(pathinfo($attachment, PATHINFO_EXTENSION)); $adata = in_array($aext, $imageExt) ? $imgData('local', $attachment) : null; $ax = $appendix[$attachment] ?? null; @endphp
-                            @if($adata)<img src="{{ $adata }}" style="max-width:100%;max-height:420px;display:block;margin:3px 0;">@else<div class="muted">Attachment: {{ strtoupper($aext) }} file (not embeddable in this PDF)@if($ax && $ax['appendable']) — reproduced in full on the pages after this form@elseif($ax && $ax['reason']) ({{ $ax['reason'] }})@endif.</div>@endif
+                            @php
+                                $aext = strtolower(pathinfo($attachment, PATHINFO_EXTENSION));
+                                $adata = in_array($aext, $imageExt) ? $imgData('local', $attachment) : null;
+                                $ax = $appendix[$attachment] ?? null;
+                                $axNote = ($ax && $ax['appendable']) ? ' — reproduced in full on the pages after this form' : (($ax && $ax['reason']) ? ' ('.$ax['reason'].')' : '');
+                            @endphp
+                            @if($adata)<img src="{{ $adata }}" style="max-width:100%;max-height:420px;display:block;margin:3px 0;">@else<div class="muted">Attachment: {{ strtoupper($aext) }} file (not embeddable in this PDF){{ $axNote }}.</div>@endif
                             @endforeach
                             @else
                             <div class="muted">No attachment.</div>
@@ -193,8 +208,13 @@
                             @if(count($supp) > 0)
                             <div class="muted" style="margin:6px 0 3px;">Supporting documents</div>
                             @foreach($supp as $sp)
-                            @php $sext = strtolower(pathinfo($sp, PATHINFO_EXTENSION)); $sdata = in_array($sext, $imageExt) ? $imgData('local', $sp) : null; $sx = $appendix[$sp] ?? null; @endphp
-                            @if($sdata)<img src="{{ $sdata }}" style="max-width:100%;max-height:300px;display:block;margin:3px 0;">@else<div class="muted">Supporting: {{ strtoupper($sext) }} file (not embeddable)@if($sx && $sx['appendable']) — reproduced in full on the pages after this form@elseif($sx && $sx['reason']) ({{ $sx['reason'] }})@endif.</div>@endif
+                            @php
+                                $sext = strtolower(pathinfo($sp, PATHINFO_EXTENSION));
+                                $sdata = in_array($sext, $imageExt) ? $imgData('local', $sp) : null;
+                                $sx = $appendix[$sp] ?? null;
+                                $sxNote = ($sx && $sx['appendable']) ? ' — reproduced in full on the pages after this form' : (($sx && $sx['reason']) ? ' ('.$sx['reason'].')' : '');
+                            @endphp
+                            @if($sdata)<img src="{{ $sdata }}" style="max-width:100%;max-height:300px;display:block;margin:3px 0;">@else<div class="muted">Supporting: {{ strtoupper($sext) }} file (not embeddable){{ $sxNote }}.</div>@endif
                             @endforeach
                             @endif
                         </td>
