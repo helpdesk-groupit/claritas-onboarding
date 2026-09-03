@@ -166,37 +166,40 @@ return [
     | Approved-claim ZIP export (HR bulk download)
     |--------------------------------------------------------------------------
     | Rendering a batch of claim PDFs is one of the heaviest things this app
-    | does in a web request: each claim embeds its receipt images, and dompdf
-    | decodes every image through GD, which costs w*h*4 bytes of transient RAM
-    | (a 5-megapixel receipt photo = ~22 MB) on top of the PDF itself.
+    | does: each claim embeds its receipt images, and dompdf decodes every
+    | image through GD, which costs w*h*4 bytes of transient RAM (a
+    | 5-megapixel receipt photo = ~22 MB) on top of the PDF itself.
     |
-    | The batch is bounded by WALL CLOCK, not memory — the export streams each
-    | PDF to a temp file, so peak memory is flat however many claims are in the
-    | batch, and what is actually scarce is how long the server will hold a
-    | request open. That limit is nginx's `proxy_read_timeout 60s` on this
-    | site's own vhost, which fires long before Cloudflare's 100s edge timeout
-    | ever gets a chance — past it the operator gets a bare gateway error page
-    | with nothing to act on. (Two such 504s on 2026-08-18, 11:26 and 11:27.)
+    | This used to render INLINE in the web request, bounded by a wall-clock
+    | budget so it never outran nginx's `proxy_read_timeout 60s` on this
+    | site's own vhost (two 504s on 2026-08-18 are what forced that design).
+    | The batch was ordered newest-processed-first, so once a cycle's approved
+    | claims exceeded the old 60-claim cap, whatever got silently cut from the
+    | tail skewed toward the claims approved EARLIEST in the cycle — which
+    | read to HR as "only what I approved today shows up" (confirmed against
+    | production data 2026-09-03: the August cycle had 79 HR-approved claims
+    | against the 60-claim cap).
     |
-    | 'time_budget' is the PRIMARY bound: the loop stops once it projects that
-    | rendering another claim would take it past this many seconds, and reports
-    | what it left out. Keep it comfortably under the 60s the vhost allows —
-    | the archive still has to be closed and sent after the last render.
-    | Measured on production hardware 2026-08-18: ~0.8s for a receipt-less
-    | claim, 4.4-4.9s for one carrying several 7-megapixel receipt photos.
-    | Setting it to 0 disables the bound and re-exposes the 504.
+    | The export now renders in a background job (BuildClaimZipExport, on the
+    | same `database` queue that drains Email Workflow sweeps and Social
+    | Strategist generation) — see ExpenseClaimZipExport. Off the request
+    | lifetime, there is no 60s wall to protect against, so every matching
+    | claim renders regardless of how many there are.
     |
-    | 'max_claims' is only a BACKSTOP against a pathological filter. Sized just
-    | above what the time budget could ever admit in the best case (45s at the
-    | fastest observed ~0.8s/claim is ~56), so that it can never quietly become
-    | the operative limit and turn an adaptive bound back into a fixed count.
-    |
-    | Neither bound truncates silently: the ZIP carries an _EXPORT-NOTES.txt
-    | naming exactly what was left out and which limit left it out.
+    | 'max_claims' is now only a SANITY CEILING against a genuinely
+    | pathological filter (not normal cycle volume) — sized well above any
+    | real cycle's count. 'job_timeout' is a safety net on the job itself
+    | (well under the queue worker's own 3600s timeout) so a stuck render is
+    | killed cleanly rather than hanging the worker. Neither truncates
+    | silently: the ZIP carries an _EXPORT-NOTES.txt naming exactly what (if
+    | anything) was left out, and the export's status also reports it.
     */
     'zip_export' => [
-        'time_budget' => (float) env('CLAIMS_ZIP_TIME_BUDGET', 45),
-        'max_claims' => (int) env('CLAIMS_ZIP_MAX_CLAIMS', 60),
+        'max_claims' => (int) env('CLAIMS_ZIP_MAX_CLAIMS', 2000),
+        'job_timeout' => (int) env('CLAIMS_ZIP_JOB_TIMEOUT', 1800),
+        // How long a finished export (ready or failed) and its stored archive are kept
+        // before claims:prune-zip-exports discards them.
+        'retention_hours' => (int) env('CLAIMS_ZIP_RETENTION_HOURS', 48),
     ],
 
     /*

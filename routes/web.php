@@ -261,6 +261,12 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::post('/superadmin/account-management/{user}/activate', [AccountManagementController::class, 'activate'])->name('superadmin.accounts.activate');
     Route::post('/superadmin/account-management/{user}/reset-2fa', [AccountManagementController::class, 'resetTwoFactor'])->name('superadmin.accounts.reset-2fa');
 
+    // Portal Changelog (Superadmin only): a manually-recorded log of changes made to the portal.
+    Route::get('/superadmin/changelog', [\App\Http\Controllers\PortalChangelogController::class, 'index'])->name('superadmin.changelog.index');
+    Route::post('/superadmin/changelog', [\App\Http\Controllers\PortalChangelogController::class, 'store'])->name('superadmin.changelog.store');
+    Route::put('/superadmin/changelog/{entry}', [\App\Http\Controllers\PortalChangelogController::class, 'update'])->name('superadmin.changelog.update');
+    Route::delete('/superadmin/changelog/{entry}', [\App\Http\Controllers\PortalChangelogController::class, 'destroy'])->name('superadmin.changelog.destroy');
+
     Route::get('/superadmin/system-overview', [DashboardController::class, 'systemOverview'])->name('superadmin.system-overview');
     Route::post('/superadmin/system-overview/security-score', [DashboardController::class, 'refreshSecurityScore'])->name('superadmin.security-score.refresh');
     Route::post('/superadmin/system-overview/update-check', [DashboardController::class, 'refreshUpdateCheck'])->name('superadmin.update-check.refresh');
@@ -641,7 +647,11 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     // HR: Claims Management
     Route::get('/hr/claims', [ExpenseClaimController::class, 'index'])->name('hr.claims.index');
     Route::get('/hr/claims/export', [ExpenseClaimController::class, 'export'])->name('hr.claims.export');
-    Route::get('/hr/claims/download-zip', [ExpenseClaimController::class, 'downloadApprovedZip'])->name('hr.claims.download-zip');
+    // Export approved PDFs (ZIP): request kicks off a background render (see
+    // BuildClaimZipExport / ExpenseClaimZipExport), status/file are polled + downloaded once ready.
+    Route::post('/hr/claims/download-zip', [ExpenseClaimController::class, 'requestZipExport'])->name('hr.claims.download-zip');
+    Route::get('/hr/claims/download-zip/{export}/status', [ExpenseClaimController::class, 'zipExportStatus'])->name('hr.claims.download-zip.status');
+    Route::get('/hr/claims/download-zip/{export}/file', [ExpenseClaimController::class, 'downloadZipExport'])->name('hr.claims.download-zip.file');
     Route::get('/hr/claims/categories', [ExpenseClaimController::class, 'categories'])->name('hr.claims.categories');
     Route::post('/hr/claims/categories', [ExpenseClaimController::class, 'storeCategory'])->name('hr.claims.categories.store');
     Route::put('/hr/claims/categories/{category}', [ExpenseClaimController::class, 'updateCategory'])->name('hr.claims.categories.update');

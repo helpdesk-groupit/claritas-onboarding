@@ -56,6 +56,11 @@ Schedule::command('vendors:prune-document-scans')->dailyAt('00:40')->withoutOver
 // at it and a surviving row is always an unclaimed upload.
 Schedule::command('vendors:prune-import-batches')->dailyAt('00:45')->withoutOverlapping();
 
+// eClaim: discard finished "Export approved PDFs (ZIP)" requests and their archives. The
+// file is only ever reached through that request's own download link on the HR Claims page,
+// so a surviving row past the retention window is always an unclaimed download.
+Schedule::command('claims:prune-zip-exports')->dailyAt('00:50')->withoutOverlapping();
+
 // Backup: daily encrypted full backup at 2 AM, retain 30 days
 Schedule::command('backup:run --type=full --encrypt --keep=30')
     ->dailyAt('02:00')

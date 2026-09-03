@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\BuildClaimZipExport;
 use App\Mail\ClaimApprovedMail;
 use App\Mail\ClaimHrRejectedNoticeMail;
 use App\Mail\ClaimRejectedMail;
@@ -11,9 +12,11 @@ use App\Models\ExpenseCategory;
 use App\Models\ExpenseClaim;
 use App\Models\ExpenseClaimItem;
 use App\Models\ExpenseClaimPolicy;
+use App\Models\ExpenseClaimZipExport;
 use App\Services\ClaimReceiptOcrService;
 use App\Services\ClaimReportRenderer;
 use App\Services\ClaimRulesService;
+use App\Services\ClaimZipExportService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -1622,282 +1625,78 @@ class ExpenseClaimController extends Controller
     }
 
     /**
-     * HR: download all approved claims (optionally filtered) as a single ZIP of PDFs,
-     * each named like the original form — ready to bulk-upload elsewhere.
+     * HR: kick off a background export of all approved claims (optionally filtered) as a
+     * single ZIP of PDFs, each named like the original form — ready to bulk-upload elsewhere.
+     *
+     * Rendering happens in BuildClaimZipExport, off the request entirely, so it is never
+     * bound by a server timeout — every matching claim renders, however many there are (see
+     * ExpenseClaimZipExport's migration for why this is no longer a synchronous download).
+     * The page polls zipExportStatus() and offers downloadZipExport() once ready.
      */
-    /** Per-request cache of company name → claim submission cutoff day. */
-    private array $companyCutoffCache = [];
-
-    /** Resolve a company's claim submission cutoff day (per-company policy; default 20). */
-    private function companyCutoffDay(?string $company): int
-    {
-        $key = (string) $company;
-        if (! array_key_exists($key, $this->companyCutoffCache)) {
-            $this->companyCutoffCache[$key] = (int) (ExpenseClaimPolicy::forCompany($company)->submission_deadline_day ?? 20);
-        }
-
-        return $this->companyCutoffCache[$key];
-    }
-
-    /** The submission cutoff cycle [year, month] a claim falls in, using its company's cutoff. */
-    private function claimCycle(ExpenseClaim $claim): array
-    {
-        $when = $claim->submitted_at ?? $claim->created_at;
-
-        return ClaimRulesService::submissionCycle($when, $this->companyCutoffDay($claim->resolvedCompany()));
-    }
-
-    /**
-     * Coarse [start, endExclusive) calendar range that safely contains a cutoff cycle, so the
-     * export fetch stays bounded before the precise per-company cycle filter. A (year, month)
-     * cycle only touches calendar months month-1 and month; a year-only request spans
-     * Dec(year-1)–Dec(year).
-     */
-    private function cycleFetchRange(?int $year, ?int $month): array
-    {
-        if (! $year) {
-            return [null, null];
-        }
-        if ($month) {
-            $anchor = Carbon::create($year, $month, 1)->startOfDay();
-
-            return [$anchor->copy()->subMonthNoOverflow(), $anchor->copy()->addMonthNoOverflow()];
-        }
-
-        return [Carbon::create($year - 1, 12, 1)->startOfDay(), Carbon::create($year + 1, 1, 1)->startOfDay()];
-    }
-
-    public function downloadApprovedZip(Request $request)
+    public function requestZipExport(Request $request, ClaimZipExportService $zipExportService)
     {
         $this->authorizeViewClaims();
 
+        if (! class_exists(\ZipArchive::class)) {
+            return response()->json(['ok' => false, 'error' => 'ZIP export isn’t available on this server (the PHP “zip” extension is disabled). Please download the claims individually, or ask IT to enable it.'], 422);
+        }
+
         $year = ((int) $request->input('year')) ?: null;
         $month = ((int) $request->input('month')) ?: null;
-
-        // Only PROCESSED claims (processed_at stamped at HR approval) are exportable.
-        $q = ExpenseClaim::whereNotNull('processed_at')->with(['employee', 'items.category']);
-
-        // Employee / company accept one OR many values (employee_id[]=.. / company[]=..).
-        // The (array) cast keeps old single-value links working too.
-        $employeeIds = array_values(array_filter((array) $request->input('employee_id', [])));
-        if (! empty($employeeIds)) {
-            $q->whereIn('employee_id', $employeeIds);
-        }
         $companies = array_values(array_filter((array) $request->input('company', []), fn ($v) => $v !== '' && $v !== null));
-        if (! empty($companies)) {
-            // Filter by the claim's snapshot company (set at submission), so a claim stays in the
-            // company it was submitted under even after the employee moves. Processed claims are
-            // always submitted, so the snapshot is populated (backfilled for pre-existing rows).
-            $q->whereIn('company', $companies);
-        }
+        $employeeIds = array_values(array_filter((array) $request->input('employee_id', [])));
 
-        // The month filter is the SUBMISSION CUTOFF CYCLE (e.g. 21 Jun–20 Jul = "July"), and the
-        // cutoff day is per-company — so it can't be one SQL month(). Pre-filter to the calendar
-        // months a cycle can touch, then keep only claims whose company-specific cycle matches.
-        [$rangeStart, $rangeEnd] = $this->cycleFetchRange($year, $month);
-        if ($rangeStart) {
-            $q->whereRaw('COALESCE(submitted_at, created_at) >= ?', [$rangeStart->toDateTimeString()]);
-        }
-        if ($rangeEnd) {
-            $q->whereRaw('COALESCE(submitted_at, created_at) < ?', [$rangeEnd->toDateTimeString()]);
-        }
-
-        $matched = $q->orderByDesc('processed_at')->get()
-            ->filter(function (ExpenseClaim $claim) use ($year, $month) {
-                $cycle = $this->claimCycle($claim);
-
-                return (! $year || $cycle['year'] === $year) && (! $month || $cycle['month'] === $month);
-            })
-            ->values();
-
+        // A quick synchronous check so an empty filter fails instantly instead of showing a
+        // progress bar for a job that would immediately report nothing to do.
+        $matched = $zipExportService->matchingClaims($year, $month, $companies, $employeeIds);
         if ($matched->isEmpty()) {
-            return back()->with('error', 'No processed claims match the current filter.');
+            return response()->json(['ok' => false, 'error' => 'No processed claims match the current filter.'], 422);
         }
 
-        // The ZIP export needs PHP's zip extension (ZipArchive). Degrade gracefully with a
-        // clear message instead of a 500 if the server doesn't have it enabled.
-        if (! class_exists(\ZipArchive::class)) {
-            return back()->with('error', 'ZIP download isn’t available on this server (the PHP “zip” extension is disabled). Please download the claims individually, or ask IT to enable it.');
-        }
+        $export = ExpenseClaimZipExport::create([
+            'requested_by_id' => Auth::id(),
+            'year' => $year,
+            'month' => $month,
+            'companies' => $companies ?: null,
+            'employee_ids' => $employeeIds ?: null,
+            'status' => ExpenseClaimZipExport::STATUS_QUEUED,
+            'total_matched' => $matched->count(),
+        ]);
 
-        // Bound the batch by WALL CLOCK, and record what that left out — a finance export
-        // that quietly stops at N is worse than one that says so.
-        //
-        // The limit that actually binds is nginx's `proxy_read_timeout 60s` on this site's
-        // vhost, NOT Cloudflare's 100s edge timeout: the NAS gives up first and the operator
-        // gets a bare gateway error page. Measured on production hardware 2026-08-18, a claim
-        // carrying several 7-megapixel receipts costs ~5s to render, so a count alone cannot
-        // express this — 15 receipt-light claims finish inside the window while 15 photo-heavy
-        // ones do not. $budget is therefore what normally stops the loop and $cap is a
-        // backstop. See config('claims.zip_export').
-        $cap = max(1, (int) config('claims.zip_export.max_claims', 60));
-        $budget = (float) config('claims.zip_export.time_budget', 45);
-        $claims = $matched->take($cap)->values();
-        $omitted = $matched->slice($cap)->values();
+        BuildClaimZipExport::dispatch($export->id);
 
-        // Streaming (below) keeps the batch's memory flat; buildClaimPdf() raises the per-image
-        // floor. What is left is wall clock, and the batch is deliberately allowed to take it.
-        @set_time_limit(0);
-
-        // Two temp locations, deliberately: the per-claim PDFs go in a private working dir we
-        // delete ourselves once they are inside the archive, and the ZIP sits OUTSIDE it so
-        // deleteFileAfterSend can reap it without stranding the directory.
-        $tmpDir = rtrim(sys_get_temp_dir(), '/\\').DIRECTORY_SEPARATOR.'claim-zip-'.bin2hex(random_bytes(8));
-        if (! @mkdir($tmpDir, 0700, true) && ! is_dir($tmpDir)) {
-            Log::error('Claim ZIP export: could not create temp dir', ['dir' => $tmpDir]);
-
-            return back()->with('error', 'Could not create a temporary working folder for the export. Please try again, or contact IT if it keeps happening.');
-        }
-        $zipPath = rtrim(sys_get_temp_dir(), '/\\').DIRECTORY_SEPARATOR.'claims-'.bin2hex(random_bytes(8)).'.zip';
-
-        $zip = new \ZipArchive;
-        if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
-            $this->deleteTempDir($tmpDir);
-            Log::error('Claim ZIP export: could not open archive', ['zip' => $zipPath]);
-
-            return back()->with('error', 'Could not start the ZIP file on the server. Please try again, or contact IT if it keeps happening.');
-        }
-
-        $used = [];
-        $failed = [];
-        $stoppedOnTime = false;
-        $startedAt = microtime(true);
-        try {
-            foreach ($claims as $index => $claim) {
-                // Stop before starting a render we cannot finish in time. Projected from the
-                // batch's OWN running average rather than a fixed per-claim figure, because
-                // the cost is dominated by how many megapixels of receipt each claim carries
-                // and that varies by an order of magnitude between claims — a receipt-less
-                // batch races through where a photo-heavy one must stop after a handful.
-                //
-                // Checked at the TOP so a completed render is never thrown away (and so the
-                // failure path's `continue` below cannot skip the check), and never on the
-                // first claim: an export that returns nothing at all is not an improvement on
-                // one that returns a partial archive plus a note saying what is missing.
-                if ($budget > 0 && $index > 0) {
-                    $elapsed = microtime(true) - $startedAt;
-                    if ($elapsed + ($elapsed / $index) >= $budget) {
-                        $stoppedOnTime = true;
-                        $omitted = $claims->slice($index)->concat($omitted)->values();
-
-                        break;
-                    }
-                }
-
-                $name = $claim->pdfFilename();
-                $unique = $name;
-                $i = 2;
-                while (isset($used[$unique])) {
-                    $unique = preg_replace('/\.pdf$/', '', $name)." ({$i}).pdf";
-                    $i++;
-                }
-
-                // Render straight to disk and drop every reference before moving on. Holding
-                // each rendered PDF in memory (addFromString) is what exhausted the 128 MB
-                // pool in production: 13 claims accumulated ~16 MB of PDF strings, and the
-                // 4th claim's receipt then needed a 21 MB GD buffer that no longer fitted.
-                $pdfPath = $tmpDir.DIRECTORY_SEPARATOR.$index.'.pdf';
-                try {
-                    $pdf = $this->buildClaimPdf($claim);
-                    file_put_contents($pdfPath, $pdf);
-                    unset($pdf);
-                    gc_collect_cycles();
-                } catch (\Throwable $e) {
-                    // One unrenderable claim must not cost the operator the whole export —
-                    // but it is named in _EXPORT-NOTES.txt so it can never pass unnoticed.
-                    report($e);
-                    @unlink($pdfPath);
-                    $failed[] = ($claim->claim_number ?: 'Claim #'.$claim->id).' — '.($claim->employee?->full_name ?? 'unknown employee');
-
-                    continue;
-                }
-
-                $used[$unique] = true;
-                $zip->addFile($pdfPath, $unique);
-            }
-
-            // count($used), not $claims->count(): a claim that failed to render — or that the
-            // time budget stopped short of — is not in the archive, and a manifest that counts
-            // it as included is the silent-partial-export failure this file exists to prevent.
-            if ($notes = $this->zipExportNotes($matched->count(), count($used), $omitted, $failed, $cap, $stoppedOnTime, $budget)) {
-                $zip->addFromString('_EXPORT-NOTES.txt', $notes);
-            }
-            $zip->close();
-        } catch (\Throwable $e) {
-            try {
-                $zip->close();
-            } catch (\Throwable) {
-                // Already broken — the archive is being discarded either way.
-            }
-            $this->deleteTempDir($tmpDir);
-            @unlink($zipPath);
-            report($e);
-
-            return back()->with('error', 'The ZIP export failed while building the file. Please narrow the filter (one cycle or one company at a time) and try again.');
-        }
-
-        // The PDFs are inside the archive now; the directory has served its purpose.
-        $this->deleteTempDir($tmpDir);
-
-        if (empty($used)) {
-            @unlink($zipPath);
-
-            return back()->with('error', 'None of the matching claims could be rendered to PDF. Please contact IT — the error has been logged.');
-        }
-
-        return response()->download($zipPath, 'approved-claims-'.now()->format('Y-m-d').'.zip')->deleteFileAfterSend(true);
+        return response()->json(['ok' => true, 'export_id' => $export->id, 'total_matched' => $matched->count()]);
     }
 
-    /**
-     * Plain-language manifest for a ZIP export, written only when the archive is NOT the
-     * complete answer to the filter — i.e. the batch cap truncated it, or a claim failed to
-     * render. Silence over a partial finance export is the failure mode worth engineering
-     * against; an operator who sees every file they asked for gets no notes file at all.
-     */
-    private function zipExportNotes(int $matchedCount, int $includedCount, \Illuminate\Support\Collection $omitted, array $failed, int $cap, bool $stoppedOnTime = false, float $budget = 0): ?string
+    /** Poll target for the export modal. Any authorized viewer may check any export's status. */
+    public function zipExportStatus(ExpenseClaimZipExport $export)
     {
-        if ($omitted->isEmpty() && empty($failed)) {
-            return null;
+        $this->authorizeViewClaims();
+
+        return response()->json([
+            'status' => $export->status,
+            'total_matched' => $export->total_matched,
+            'rendered_count' => $export->rendered_count,
+            'ready' => $export->isReady(),
+            'failed' => $export->status === ExpenseClaimZipExport::STATUS_FAILED,
+            'error' => $export->error,
+            'failed_claims' => $export->failed_claims,
+            'omitted_claims' => $export->omitted_claims,
+            'file_size' => $export->file_size,
+            'download_url' => $export->isReady() ? route('hr.claims.download-zip.file', $export) : null,
+        ]);
+    }
+
+    /** Streams the finished archive once BuildClaimZipExport has marked it ready. */
+    public function downloadZipExport(ExpenseClaimZipExport $export)
+    {
+        $this->authorizeViewClaims();
+
+        if (! $export->isReady() || ! $export->file_path || ! Storage::disk('local')->exists($export->file_path)) {
+            abort(404, 'This export is not ready, failed, or has already expired.');
         }
 
-        $lines = [
-            'Claim PDF export — '.now()->format('d-m-Y H:i'),
-            'Matched by your filter: '.$matchedCount,
-            'Included in this ZIP:   '.$includedCount,
-            '',
-        ];
-
-        if ($omitted->isNotEmpty()) {
-            // Name the limit that actually stopped it. Both remedies are "narrow the filter",
-            // but an operator told "batch limit of 60" while holding 9 PDFs would reasonably
-            // conclude the export is broken.
-            if ($stoppedOnTime) {
-                $lines[] = 'NOT INCLUDED — the export reached its '.rtrim(rtrim(number_format($budget, 1, '.', ''), '0'), '.').'-second time limit ('.$omitted->count().' left out).';
-                $lines[] = 'This server closes a request that runs too long, so a large batch stops early and';
-                $lines[] = 'tells you what is missing rather than failing with no file at all. Claims carrying';
-                $lines[] = 'several photographed receipts are much slower, so the number that fits will vary.';
-            } else {
-                $lines[] = 'NOT INCLUDED — batch limit of '.$cap.' claims per download ('.$omitted->count().' left out).';
-            }
-            $lines[] = 'Re-run the export filtered to one submission cycle, or one company, to collect these:';
-            foreach ($omitted as $claim) {
-                $lines[] = '  - '.($claim->claim_number ?: 'Claim #'.$claim->id)
-                    .' — '.($claim->employee?->full_name ?? 'unknown employee')
-                    .' — '.($claim->resolvedCompany() ?: 'no company');
-            }
-            $lines[] = '';
-        }
-
-        if (! empty($failed)) {
-            $lines[] = 'FAILED TO RENDER — these claims are missing from this ZIP ('.count($failed).').';
-            $lines[] = 'Download them individually from the claim page, and report this to IT:';
-            foreach ($failed as $f) {
-                $lines[] = '  - '.$f;
-            }
-            $lines[] = '';
-        }
-
-        return implode(PHP_EOL, $lines);
+        return Storage::disk('local')->download($export->file_path, 'approved-claims-'.$export->created_at->format('Y-m-d').'.zip');
     }
 
     /**
@@ -1970,20 +1769,6 @@ class ExpenseClaimController extends Controller
         if ($toBytes((string) $current) < $toBytes($floor)) {
             @ini_set('memory_limit', $floor);
         }
-    }
-
-    /** Remove a temp working directory and everything in it (one level deep — we only put files there). */
-    private function deleteTempDir(string $dir): void
-    {
-        if (! is_dir($dir)) {
-            return;
-        }
-        foreach ((array) glob($dir.DIRECTORY_SEPARATOR.'*') as $file) {
-            if (is_file($file)) {
-                @unlink($file);
-            }
-        }
-        @rmdir($dir);
     }
 
     /** Save the Event/purpose on a specific claim. */
@@ -2442,16 +2227,14 @@ class ExpenseClaimController extends Controller
 
         // Approved-PDF ZIP export groups by the SUBMISSION CUTOFF CYCLE (e.g. 21 Jun–20 Jul = the
         // "July" cycle) using each company's own cutoff day, and only includes PROCESSED claims
-        // (processed_at stamped at HR approval). Drive the modal's month/company options from the
-        // cycles so the dropdown matches exactly what the download returns. The page's $selectedYear
-        // (reporting-year, for the accordion) is reused as the cycle-year for the export.
-        [$cycleRangeStart, $cycleRangeEnd] = $this->cycleFetchRange($selectedYear, null);
-        $processed = ExpenseClaim::with('employee')->whereNotNull('processed_at')
-            ->whereRaw('COALESCE(submitted_at, created_at) >= ?', [$cycleRangeStart->toDateTimeString()])
-            ->whereRaw('COALESCE(submitted_at, created_at) < ?', [$cycleRangeEnd->toDateTimeString()])
-            ->get()
-            ->map(fn ($c) => ['claim' => $c, 'cycle' => $this->claimCycle($c), 'company' => $c->resolvedCompany()]);
-        $inYear = $processed->filter(fn ($r) => $r['cycle']['year'] === $selectedYear);
+        // (processed_at stamped at HR approval), regardless of which day within the cycle they
+        // were approved on. Drive the modal's month/company options from the same
+        // ClaimZipExportService the background export job uses, so the dropdown can never disagree
+        // with what the download actually returns. The page's $selectedYear (reporting-year, for
+        // the accordion) is reused as the cycle-year for the export.
+        $zipExportService = app(ClaimZipExportService::class);
+        $matchedThisYear = $zipExportService->matchingClaims($selectedYear, null, []);
+        $inYear = $matchedThisYear->map(fn ($c) => ['claim' => $c, 'cycle' => $zipExportService->claimCycle($c), 'company' => $c->resolvedCompany()]);
         $approvedForExport = $inYear->pluck('claim')->values();
         $exportMonths = $inYear->pluck('cycle.month')->unique()->sort()->values();
         $exportCompanies = $inYear->pluck('company')->filter()->unique()->sort()->values();

@@ -263,7 +263,9 @@
 </div>
 
 {{-- Export approved-claim PDFs as a ZIP, filtered by month / company.
-     The download-zip endpoint already honours these query params; this just drives them. --}}
+     Rendering happens in a background job (BuildClaimZipExport) so it can never truncate a
+     large cycle the way a request-bound render used to — see CLAUDE.md's eClaim PDF/export
+     notes. This form kicks the job off, then #exportZipProgress polls until it's ready. --}}
 @php
     // $approvedForExport / $exportMonths / $exportCompanies come from the controller and are
     // scoped by SUBMISSION date (when the claim was submitted), not the reporting month stamp.
@@ -271,18 +273,18 @@
 @endphp
 <div class="modal fade" id="exportZipModal" tabindex="-1" aria-labelledby="exportZipTitle" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
-        <form method="GET" action="{{ route('hr.claims.download-zip') }}">
-            <input type="hidden" name="year" value="{{ $selectedYear }}">
-            <div class="modal-content border-0 shadow">
-                <div class="modal-header border-0 pb-1">
-                    <h5 class="modal-title fw-semibold" id="exportZipTitle"><i class="bi bi-file-earmark-zip me-2 text-danger"></i>Export approved PDFs (ZIP)</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    @if($approvedForExport->isEmpty())
-                        <div class="alert alert-warning mb-0 py-2 px-3"><i class="bi bi-info-circle me-1"></i>No processed (HR-approved) claims in the {{ $selectedYear }} submission cycles yet.</div>
-                    @else
-                    <p class="text-muted small mb-3">Bundles <strong>processed (HR-approved)</strong> claims for the <strong>{{ $selectedYear }}</strong> submission cycles into one ZIP of PDFs. Leave a filter on &ldquo;All&rdquo; to include everything.</p>
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header border-0 pb-1">
+                <h5 class="modal-title fw-semibold" id="exportZipTitle"><i class="bi bi-file-earmark-zip me-2 text-danger"></i>Export approved PDFs (ZIP)</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                @if($approvedForExport->isEmpty())
+                    <div class="alert alert-warning mb-0 py-2 px-3"><i class="bi bi-info-circle me-1"></i>No processed (HR-approved) claims in the {{ $selectedYear }} submission cycles yet.</div>
+                @else
+                <form id="exportZipForm">
+                    <input type="hidden" name="year" value="{{ $selectedYear }}">
+                    <p class="text-muted small mb-3">Bundles <strong>every processed (HR-approved)</strong> claim for the <strong>{{ $selectedYear }}</strong> submission cycle into one ZIP of PDFs — however many have been approved, whenever they were approved. Leave a filter on &ldquo;All&rdquo; to include everything.</p>
                     <div class="mb-3">
                         <label class="form-label small fw-semibold mb-1">Submission cycle</label>
                         <select name="month" class="form-select form-select-sm">
@@ -305,18 +307,176 @@
                         </div>
                         <div class="form-text small">Leave all unticked to include every company.</div>
                     </div>
-                    @endif
+                </form>
+                <div id="exportZipProgress" class="d-none mt-3">
+                    <div class="d-flex align-items-center gap-2 small text-muted mb-1">
+                        <span class="spinner-border spinner-border-sm text-danger" role="status" aria-hidden="true"></span>
+                        <span id="exportZipProgressText">Preparing your export…</span>
+                    </div>
+                    <div class="progress" style="height:6px;">
+                        <div id="exportZipProgressBar" class="progress-bar bg-danger" role="progressbar" style="width:0%"></div>
+                    </div>
                 </div>
-                <div class="modal-footer border-0 pt-1">
-                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-danger" {{ $approvedForExport->isEmpty() ? 'disabled' : '' }}><i class="bi bi-download me-1"></i>Download ZIP</button>
-                </div>
+                <div id="exportZipError" class="alert alert-danger d-none mt-3 mb-0 py-2 px-3 small"></div>
+                <div id="exportZipNotice" class="alert alert-warning d-none mt-3 mb-0 py-2 px-3 small"></div>
+                @endif
             </div>
-        </form>
+            <div class="modal-footer border-0 pt-1">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" id="exportZipSubmit" class="btn btn-danger" {{ $approvedForExport->isEmpty() ? 'disabled' : '' }}><i class="bi bi-download me-1"></i>Download ZIP</button>
+            </div>
+        </div>
     </div>
 </div>
 
 @include('partials._user-manual-hrclaims')
+
+@push('scripts')
+<script nonce="{{ $cspNonce ?? '' }}">
+// ── Export approved PDFs (ZIP): request the background render, then poll until ready ──
+(function () {
+    var form = document.getElementById('exportZipForm');
+    var submitBtn = document.getElementById('exportZipSubmit');
+    if (!form || !submitBtn) return; // nothing to export this year — button is server-disabled
+
+    var progress = document.getElementById('exportZipProgress');
+    var progressText = document.getElementById('exportZipProgressText');
+    var progressBar = document.getElementById('exportZipProgressBar');
+    var errorBox = document.getElementById('exportZipError');
+    var noticeBox = document.getElementById('exportZipNotice');
+    var csrf = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    var zipBase = '{{ url('/hr/claims/download-zip') }}';
+    var pollTimer = null;
+    var autoDownloaded = false;
+
+    function showError(msg) {
+        errorBox.textContent = msg;
+        errorBox.classList.remove('d-none');
+    }
+    function hideError() {
+        errorBox.classList.add('d-none');
+        errorBox.textContent = '';
+    }
+    function hideNotice() {
+        noticeBox.classList.add('d-none');
+        noticeBox.textContent = '';
+    }
+    function setFieldsDisabled(disabled) {
+        form.querySelectorAll('select, input').forEach(function (el) { el.disabled = disabled; });
+    }
+    function reset() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        autoDownloaded = false;
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<i class="bi bi-download me-1"></i>Download ZIP';
+        delete submitBtn.dataset.state;
+        delete submitBtn.dataset.downloadUrl;
+        progress.classList.add('d-none');
+        progressBar.style.width = '0%';
+        setFieldsDisabled(false);
+    }
+
+    var modalEl = document.getElementById('exportZipModal');
+    if (modalEl) {
+        // A finished/failed run from last time must not linger when the modal is reopened.
+        modalEl.addEventListener('show.bs.modal', function () { hideError(); hideNotice(); reset(); });
+        // Stop polling once the modal is closed — the job keeps rendering server-side either
+        // way, but nothing should navigate the page to a download after the user walked away.
+        modalEl.addEventListener('hide.bs.modal', function () {
+            if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        });
+    }
+
+    function applyStatus(data) {
+        var total = data.total_matched || 0;
+        var rendered = data.rendered_count || 0;
+        var pct = total > 0 ? Math.min(100, Math.round((rendered / total) * 100)) : 0;
+        progressBar.style.width = pct + '%';
+        progressText.textContent = 'Preparing your export… (' + rendered + ' / ' + total + ' claim' + (total === 1 ? '' : 's') + ' rendered)';
+
+        if (data.ready) {
+            if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+            progress.classList.add('d-none');
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = '<i class="bi bi-download me-1"></i>Download ZIP (' + total + ' claim' + (total === 1 ? '' : 's') + ')';
+            submitBtn.dataset.state = 'ready';
+            submitBtn.dataset.downloadUrl = data.download_url;
+            setFieldsDisabled(false);
+
+            var notes = [];
+            if (data.failed_claims && data.failed_claims.length) {
+                notes.push(data.failed_claims.length + ' claim(s) could not be rendered — see _EXPORT-NOTES.txt inside the ZIP.');
+            }
+            if (data.omitted_claims && data.omitted_claims.length) {
+                notes.push(data.omitted_claims.length + ' claim(s) exceeded the export safety ceiling — see _EXPORT-NOTES.txt.');
+            }
+            if (notes.length) {
+                noticeBox.textContent = notes.join(' ');
+                noticeBox.classList.remove('d-none');
+            }
+
+            if (!autoDownloaded) {
+                autoDownloaded = true;
+                window.location.href = data.download_url;
+            }
+            return;
+        }
+
+        if (data.failed) {
+            if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+            progress.classList.add('d-none');
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = '<i class="bi bi-download me-1"></i>Download ZIP';
+            setFieldsDisabled(false);
+            showError(data.error || 'The export failed. Please try again.');
+        }
+    }
+
+    function poll(id) {
+        fetch(zipBase + '/' + id + '/status', { headers: { 'Accept': 'application/json' } })
+            .then(function (r) { return r.json(); })
+            .then(applyStatus)
+            .catch(function () { /* transient network hiccup — the interval will retry */ });
+    }
+
+    submitBtn.addEventListener('click', function () {
+        if (submitBtn.dataset.state === 'ready' && submitBtn.dataset.downloadUrl) {
+            window.location.href = submitBtn.dataset.downloadUrl;
+            return;
+        }
+
+        hideError();
+        hideNotice();
+        submitBtn.disabled = true;
+        setFieldsDisabled(true);
+        progress.classList.remove('d-none');
+        progressBar.style.width = '0%';
+        progressText.textContent = 'Requesting export…';
+
+        fetch(zipBase, {
+            method: 'POST',
+            headers: { 'X-CSRF-TOKEN': csrf, 'Accept': 'application/json' },
+            body: new URLSearchParams(new FormData(form))
+        })
+        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (res) {
+            if (!res.ok || !res.d.ok) {
+                reset();
+                showError((res.d && res.d.error) || 'Could not start the export. Please try again.');
+                return;
+            }
+            var exportId = res.d.export_id;
+            poll(exportId);
+            pollTimer = setInterval(function () { poll(exportId); }, 2000);
+        })
+        .catch(function () {
+            reset();
+            showError('Could not start the export — check your connection and try again.');
+        });
+    });
+})();
+</script>
+@endpush
 
 @push('styles')
 <style nonce="{{ $cspNonce ?? '' }}">
