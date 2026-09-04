@@ -153,8 +153,10 @@ class BuildClaimZipExport implements ShouldBeUnique, ShouldQueue
 
         $destination = ExpenseClaimZipExport::DIRECTORY.'/'.$export->id.'.zip';
         Storage::disk('local')->makeDirectory(ExpenseClaimZipExport::DIRECTORY);
+        $this->allowWebServerToReadDownload(Storage::disk('local')->path(ExpenseClaimZipExport::DIRECTORY), 0750);
         $bytes = file_get_contents($zipPath);
         Storage::disk('local')->put($destination, $bytes);
+        $this->allowWebServerToReadDownload(Storage::disk('local')->path($destination), 0640);
         @unlink($zipPath);
         unset($bytes);
 
@@ -168,6 +170,24 @@ class BuildClaimZipExport implements ShouldBeUnique, ShouldQueue
             'failed_claims' => ! empty($result['failed']) ? $result['failed'] : null,
             'completed_at' => now(),
         ]);
+    }
+
+    /**
+     * Lets the web server (a different OS user than this job on the live NAS — see
+     * config('claims.zip_export.storage_group')) read what this job just wrote, without
+     * making it world-readable. Group-only, scoped to this one path, root-owned files/dirs
+     * only (chgrp/chmod are no-ops for anything this process doesn't own). Silently does
+     * nothing when unconfigured (e.g. local dev) or on Windows, where neither call applies.
+     */
+    private function allowWebServerToReadDownload(string $absolutePath, int $mode): void
+    {
+        $group = config('claims.zip_export.storage_group');
+        if (! $group || PHP_OS_FAMILY === 'Windows') {
+            return;
+        }
+
+        @chgrp($absolutePath, $group);
+        @chmod($absolutePath, $mode);
     }
 
     public function failed(\Throwable $e): void

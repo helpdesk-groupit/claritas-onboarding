@@ -200,6 +200,16 @@ return [
         // How long a finished export (ready or failed) and its stored archive are kept
         // before claims:prune-zip-exports discards them.
         'retention_hours' => (int) env('CLAIMS_ZIP_RETENTION_HOURS', 48),
+        // BuildClaimZipExport runs inside the queue worker, which on the live NAS is launched
+        // by the Synology Task Scheduler as `root` — a different OS user than the PHP-FPM
+        // pool (`http`) that serves the download back to the browser. A directory the job
+        // creates for the first time is therefore owned by root, mode 0700, and invisible to
+        // the web server. Set this to the web server's OS group (e.g. `http`) so the job can
+        // chgrp+chmod its own output to be group-readable — deliberately NOT world-readable,
+        // and deliberately scoped to only this one export directory, never the disk's other
+        // (sensitive) private directories. Left null/unset on every other environment (e.g.
+        // local dev) so this is a no-op there.
+        'storage_group' => env('CLAIMS_ZIP_STORAGE_GROUP'),
     ],
 
     /*
