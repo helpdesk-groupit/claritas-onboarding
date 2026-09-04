@@ -1687,7 +1687,36 @@ class ExpenseClaimController extends Controller
         ]);
     }
 
-    /** Streams the finished archive once BuildClaimZipExport has marked it ready. */
+    /**
+     * Streams the finished archive once BuildClaimZipExport has marked it ready.
+     *
+     * NOT Storage::disk('local')->download() — its fpassthru() was observed live fatally
+     * exhausting the 128M PHP-FPM pool's memory_limit on a real ~217 MiB export ("Allowed
+     * memory size exhausted, tried to allocate <the file's exact size> bytes"). Cause: this
+     * pool's php.ini sets output_buffering=4096, which starts PHP script execution already
+     * wrapped in an implicit output buffer — under this FastCGI pool that buffer was not
+     * auto-flushing at its configured chunk size, so it silently accumulated the ENTIRE
+     * response before ever reaching Apache. Draining any such buffer here, before the
+     * response is even constructed, removes it from the pipeline entirely; the stream
+     * callback below then reads and flushes the file by hand in fixed 1 MB chunks, so peak
+     * memory stays bounded by the chunk size regardless of how large a future export grows —
+     * the same "never hold the whole thing in memory" rule ClaimZipExportService::renderZip()
+     * already follows when building the archive in the first place.
+     *
+     * Deliberately done HERE and not inside the stream callback: the callback runs whenever
+     * sendContent() is invoked, which in tests is inside ClaimZipExportTest::readZip()'s own
+     * ob_start() wrapper — draining buffers from inside the callback would tear down that
+     * capture buffer too and the test would read back empty content. Draining up front, before
+     * any response object exists, only ever touches a buffer that predates this method (i.e.
+     * php.ini's implicit one), never one a caller opens afterwards to capture the output.
+     *
+     * Skipped under the test runner: PHPUnit wraps each test in its own output buffer for
+     * output capture, which is likewise "there before this method runs" and gets caught by
+     * the same drain, closing a buffer this code doesn't own — harmless (assertions still
+     * pass, real bytes still land in readZip()'s buffer) but PHPUnit correctly flags it
+     * "risky". Nothing this fix exists for (the live 128M pool's non-flushing implicit
+     * buffer) is present in the CLI test SAPI anyway, so there is nothing to drain there.
+     */
     public function downloadZipExport(ExpenseClaimZipExport $export)
     {
         $this->authorizeViewClaims();
@@ -1696,7 +1725,29 @@ class ExpenseClaimController extends Controller
             abort(404, 'This export is not ready, failed, or has already expired.');
         }
 
-        return Storage::disk('local')->download($export->file_path, 'approved-claims-'.$export->created_at->format('Y-m-d').'.zip');
+        if (! app()->runningUnitTests()) {
+            while (ob_get_level() > 0) {
+                ob_end_flush();
+            }
+        }
+
+        $absolutePath = Storage::disk('local')->path($export->file_path);
+        $filename = 'approved-claims-'.$export->created_at->format('Y-m-d').'.zip';
+
+        return response()->stream(function () use ($absolutePath) {
+            $stream = fopen($absolutePath, 'rb');
+            while (! feof($stream)) {
+                echo fread($stream, 1024 * 1024);
+                flush();
+            }
+            fclose($stream);
+        }, 200, [
+            'Content-Type' => 'application/zip',
+            'Content-Length' => (string) Storage::disk('local')->size($export->file_path),
+            'Content-Disposition' => HeaderUtils::makeDisposition(
+                'attachment', $filename, str_replace('%', '', Str::ascii($filename))
+            ),
+        ]);
     }
 
     /**
