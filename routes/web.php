@@ -643,7 +643,17 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::get('/hr/claims/export', [ExpenseClaimController::class, 'export'])->name('hr.claims.export');
     // Export approved PDFs (ZIP): request kicks off a background render (see
     // BuildClaimZipExport / ExpenseClaimZipExport), status/file are polled + downloaded once ready.
-    Route::post('/hr/claims/download-zip', [ExpenseClaimController::class, 'requestZipExport'])->name('hr.claims.download-zip');
+    //
+    // Throttled like every other route here that dispatches expensive background work
+    // (email-workflow `run`, strategist `generate`/`retry` — all `throttle:6,1`), and for the
+    // same reason: this queues a render with a 30-minute timeout onto the SINGLE `database`
+    // queue that a once-a-minute `queue:work --stop-when-empty` drains, shared with Email
+    // Workflow sweeps and Social Strategist generation. ShouldBeUnique does not help here —
+    // it keys on the export row's own id, so every fresh click is a legitimately distinct
+    // job. Unbounded, an impatient operator re-clicking a slow export can back the shared
+    // queue up behind hours of duplicate rendering.
+    Route::post('/hr/claims/download-zip', [ExpenseClaimController::class, 'requestZipExport'])
+        ->middleware('throttle:6,1')->name('hr.claims.download-zip');
     Route::get('/hr/claims/download-zip/{export}/status', [ExpenseClaimController::class, 'zipExportStatus'])->name('hr.claims.download-zip.status');
     Route::get('/hr/claims/download-zip/{export}/file', [ExpenseClaimController::class, 'downloadZipExport'])->name('hr.claims.download-zip.file');
     Route::get('/hr/claims/categories', [ExpenseClaimController::class, 'categories'])->name('hr.claims.categories');
@@ -674,6 +684,14 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::get('/my/claims/{claim}/submit', [ExpenseClaimController::class, 'submitForm'])->name('user.claims.submit-form');
     Route::post('/my/claims/{claim}/submit', [ExpenseClaimController::class, 'submit'])->name('user.claims.submit')->middleware('throttle:30,1');
     Route::post('/my/claims/{claim}/correct', [ExpenseClaimController::class, 'makeCorrection'])->name('user.claims.correct')->middleware('throttle:30,1');
+    // One rasterised page of a PDF receipt, rendered by pdf.js in the browser because the
+    // server has no Imagick/Ghostscript/Poppler. Posted once per page and then skipped, so
+    // the rate here is per PAGE, not per claim: a claim with several multi-page PDFs backfills
+    // in one visit. `throttle:uploads` is deliberately NOT reused — it is 10/min and shared
+    // with real receipt uploads, so a backfilling page view would consume the allowance the
+    // employee needs to attach their actual receipt.
+    Route::post('/my/claims/receipt-preview', [ExpenseClaimController::class, 'storeReceiptPreview'])
+        ->name('user.claims.receipt-preview')->middleware('throttle:60,1');
     Route::post('/my/claims/detect-category', [ExpenseClaimController::class, 'detectCategory'])->name('user.claims.detect-category');
     Route::post('/my/claims/mileage-distance', [ExpenseClaimController::class, 'mileageDistance'])->name('user.claims.mileage-distance');
     Route::post('/my/claims/mileage-distance-route', [ExpenseClaimController::class, 'mileageDistanceRoute'])->name('user.claims.mileage-distance-route')->middleware('throttle:60,1');

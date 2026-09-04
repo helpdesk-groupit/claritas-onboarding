@@ -17,6 +17,7 @@ use App\Services\ClaimReceiptOcrService;
 use App\Services\ClaimReportRenderer;
 use App\Services\ClaimRulesService;
 use App\Services\ClaimZipExportService;
+use App\Support\ClaimPdfPreview;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -1778,6 +1779,11 @@ class ExpenseClaimController extends Controller
 
             if (! $stillReferenced) {
                 Storage::disk('local')->delete($path);
+                // The rasterised pages go with the document they depict. Left behind they are
+                // a picture of a receipt nothing can trace to a claim — worse than no preview,
+                // because it still renders. Safe under the shared-file rule above for the same
+                // reason the delete itself is: we only reach here when NO row cites the file.
+                ClaimPdfPreview::forget($path);
             }
         }
     }
@@ -3459,6 +3465,102 @@ class ExpenseClaimController extends Controller
             'Content-Disposition' => 'inline; filename="'.$name.'"',
             'Cache-Control' => 'no-store, no-cache, must-revalidate, private',
         ]);
+    }
+
+    /**
+     * Store one browser-rasterised page of a PDF attachment, so the claim row can show a
+     * picture where it currently shows "not embeddable in this PDF".
+     *
+     * The rasterising happens in pdf.js because the server cannot do it — no Imagick, no
+     * Ghostscript, no Poppler on the NAS. That means the IMAGE ARRIVES FROM THE CLIENT and is
+     * therefore untrusted in a way an ordinary receipt upload is not: the browser is asserting
+     * "this is what page N of that PDF looks like", and nothing here can check that claim. It
+     * is accepted because of what it is allowed to affect — a preview beside a document that
+     * is still reproduced, unaltered and in full, in the appended pages. The appendix, not
+     * this, remains the record. Anyone who could post a misleading preview here can already
+     * upload a misleading receipt through the front door.
+     *
+     * What IS enforced: the caller must be able to reach the claim the file belongs to, the
+     * target must be a PDF genuinely cited by a claim item (never an arbitrary path), and the
+     * body must decode as a real image — the same `valid_file_content` reasoning the upload
+     * rules use, since an extension proves nothing.
+     */
+    public function storeReceiptPreview(Request $request)
+    {
+        if (! (bool) config('claims.pdf_preview.enabled', true)) {
+            return response()->json(['ok' => false, 'error' => 'previews are disabled'], 422);
+        }
+
+        $data = $request->validate([
+            'path' => ['required', 'string', 'max:1000'],
+            'page' => ['required', 'integer', 'min:1', 'max:'.ClaimPdfPreview::maxPages()],
+            'image' => ['required', 'file', 'mimes:jpg,jpeg', 'max:'.max(64, (int) config('claims.pdf_preview.max_upload_kb', 4096))],
+        ]);
+
+        $path = $data['path'];
+
+        // The path is caller-supplied, so it decides which file gets written. Resolve it to a
+        // claim item that actually cites it rather than trusting it: without this the endpoint
+        // would write a chosen JPEG to any path on the private disk that ends ".pdf".
+        $item = $this->claimItemCiting($path);
+        if (! $item || ! ClaimPdfPreview::isPdf($path)) {
+            abort(404);
+        }
+
+        $claim = $item->claim;
+        if (! $claim) {
+            abort(404);
+        }
+
+        $user = Auth::user();
+        $isOwner = $user->employee && $claim->employee_id === $user->employee->id;
+        if (! $isOwner) {
+            $this->authorizeReview($claim); // HR/admin or the claim's manager (aborts 403 otherwise)
+        }
+
+        // No source file means nothing to be a preview OF — refuse rather than leave a picture
+        // that outlives the document it claims to depict.
+        if (! Storage::disk('local')->exists($path)) {
+            abort(404);
+        }
+
+        $target = ClaimPdfPreview::pathFor($path, (int) $data['page']);
+
+        // Already generated: answer success without rewriting. The client regenerates on every
+        // view of a claim whose previews are incomplete, so this is the common case, not an
+        // error — and re-encoding the same page would churn the disk for nothing.
+        if (Storage::disk('local')->exists($target)) {
+            return response()->json(['ok' => true, 'stored' => false]);
+        }
+
+        // Decoded with the renderer, not the header: getimagesize() reads only the first bytes
+        // and accepts a corrupt file that GD then chokes on downstream — the same trap
+        // DecommissionReportRenderer documents for FPDF::Image().
+        $raw = (string) file_get_contents($request->file('image')->getRealPath());
+        if ($raw === '' || @imagecreatefromstring($raw) === false) {
+            return response()->json(['ok' => false, 'error' => 'not a readable image'], 422);
+        }
+
+        Storage::disk('local')->put($target, $raw);
+
+        return response()->json(['ok' => true, 'stored' => true]);
+    }
+
+    /**
+     * The claim item that cites this exact attachment path, if any.
+     *
+     * Mirrors releaseReceiptFiles()'s ownership test — a path counts as cited whether it sits
+     * in receipt_path, receipt_paths or supporting_paths — so "may this file be previewed?"
+     * and "is this file still referenced?" can never answer differently about the same file.
+     */
+    private function claimItemCiting(string $path): ?ExpenseClaimItem
+    {
+        return ExpenseClaimItem::query()
+            ->where(fn ($q) => $q->where('receipt_path', $path)
+                ->orWhereJsonContains('receipt_paths', $path)
+                ->orWhereJsonContains('supporting_paths', $path))
+            ->with('claim')
+            ->first();
     }
 
     /** Append an audit-log entry for the claim lifecycle (shown on Claim Reports). */

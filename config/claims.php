@@ -229,6 +229,33 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | PDF receipt previews (inline pictures for PDF attachments)
+    |--------------------------------------------------------------------------
+    | A PDF receipt can never be embedded inline by dompdf, so in the claim form
+    | it printed a sentence where every other line showed a picture — which read
+    | to approvers as the receipt having been dropped, even though the pages are
+    | appended in full after the form (verified on a real export: EC-2026-08-0061
+    | downloads as 20 pages, 18 of them receipt).
+    |
+    | The pages are rasterised in the BROWSER by pdf.js and posted back, because
+    | this host has no Imagick, Ghostscript or Poppler — the same limitation that
+    | makes ClaimReceiptOcrService send Anthropic a native `document` block.
+    |
+    | 'max_pages' bounds what goes INTO A CLAIM ROW, not what is kept: a long
+    | statement would otherwise push the form off its own page. Anything beyond
+    | it is still reproduced in full in the appended pages.
+    | 'max_upload_kb' caps one posted page image. These are downscaled JPEGs of a
+    | single page, so this is generous; it exists to stop the endpoint being used
+    | as general file storage.
+    */
+    'pdf_preview' => [
+        'enabled' => (bool) env('CLAIMS_PDF_PREVIEW_ENABLED', true),
+        'max_pages' => (int) env('CLAIMS_PDF_PREVIEW_MAX_PAGES', 3),
+        'max_upload_kb' => (int) env('CLAIMS_PDF_PREVIEW_MAX_UPLOAD_KB', 4096),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Public holidays (deadline roll-back)
     |--------------------------------------------------------------------------
     | The 20th submission deadline rolls back to the preceding working day when
