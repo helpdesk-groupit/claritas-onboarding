@@ -154,11 +154,42 @@ class BuildClaimZipExport implements ShouldBeUnique, ShouldQueue
         $destination = ExpenseClaimZipExport::DIRECTORY.'/'.$export->id.'.zip';
         Storage::disk('local')->makeDirectory(ExpenseClaimZipExport::DIRECTORY);
         $this->allowWebServerToReadDownload(Storage::disk('local')->path(ExpenseClaimZipExport::DIRECTORY), 0750);
-        $bytes = file_get_contents($zipPath);
-        Storage::disk('local')->put($destination, $bytes);
+
+        // STREAMED into place, never read whole. `file_get_contents()` here held the entire
+        // finished archive in one string — and this is precisely the archive that was observed
+        // live at ~217 MiB, which is what forced downloadZipExport() to stop using fpassthru()
+        // and read the file back in fixed 1 MB chunks instead. The same file, on the same box,
+        // was still being slurped in full one step earlier. That is not free even in the
+        // worker: raisePdfMemoryFloor() lifts this process to config('claims.pdf_memory_limit')
+        // (512M by default), so a couple more cycles' growth turns a successful export into a
+        // fatal allocation at the very last step, after every PDF has already been rendered.
+        // Peak memory is now bounded by the copy buffer regardless of archive size — the same
+        // rule renderZip() already follows when building it.
+        $handle = fopen($zipPath, 'rb');
+        if ($handle === false) {
+            $service->deleteTempDir($tmpDir);
+            @unlink($zipPath);
+            Log::error('Claim ZIP export: could not reopen the built archive', ['zip' => $zipPath, 'export_id' => $export->id]);
+            $export->update([
+                'status' => ExpenseClaimZipExport::STATUS_FAILED,
+                'error' => 'Could not read the finished ZIP file on the server.',
+                'completed_at' => now(),
+            ]);
+
+            return;
+        }
+
+        Storage::disk('local')->writeStream($destination, $handle);
+
+        // Flysystem's local adapter copies the stream but does not close the source, so this
+        // is ours to close — guarded because a future adapter that DOES close it would make
+        // an unconditional fclose() a TypeError on an already-closed resource.
+        if (is_resource($handle)) {
+            fclose($handle);
+        }
+
         $this->allowWebServerToReadDownload(Storage::disk('local')->path($destination), 0640);
         @unlink($zipPath);
-        unset($bytes);
 
         $export->update([
             'status' => ExpenseClaimZipExport::STATUS_READY,

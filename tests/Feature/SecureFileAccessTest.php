@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Http\Controllers\SecureFileController;
 use App\Models\Employee;
 use App\Models\EwasteCompanyApprover;
 use App\Models\ExpenseCategory;
@@ -83,8 +84,50 @@ class SecureFileAccessTest extends TestCase
         Storage::disk('local')->put('nric_documents/test.pdf', 'fake-pdf-content');
 
         $response = $this->actingAs($user)->get('/secure-file/nric_documents/../.env');
-        // Path traversal chars are stripped, resulting path doesn't match a valid directory
+        // A path carrying a `..` segment is REFUSED outright (it used to be silently stripped,
+        // which rewrote a hostile path into a different valid one and served that instead).
+        // 404 rather than 403 so a probe can't tell "blocked" from "nothing here".
         $response->assertStatus(404);
+    }
+
+    /**
+     * Pins the refusal RULE directly, not through serve().
+     *
+     * Deliberately not an HTTP test: through serve(), a refused path and a merely non-existent
+     * one both answer 404, so a request-level assertion still passes with the rule deleted —
+     * it would be a test that cannot fail. Asserted against the predicate instead, which does
+     * fail the moment someone restores the old `str_replace(['..', "\0"], '', $path)`: that
+     * applies its two needles IN ORDER, so `.\0.` carried no `..` through the first pass and
+     * had its null byte removed by the second, yielding a live `..` the sanitiser had itself
+     * assembled. The legitimate cases are pinned in the same breath because the risk of
+     * over-matching here is a spurious 404 on somebody's NRIC document or contract.
+     */
+    public function test_the_traversal_rule_refuses_reassembly_without_rejecting_ordinary_names(): void
+    {
+        foreach ([
+            'nric_documents/../../etc/passwd',
+            'nric_documents/..\\..\\windows\\win.ini',
+            '../secret.pdf',
+            "nric_documents/.\0./.\0./secret.txt",
+            "employee_contracts/\0/x.pdf",
+        ] as $hostile) {
+            $this->assertTrue(
+                SecureFileController::isUnsafePath($hostile),
+                'Should refuse: '.str_replace("\0", '\0', $hostile)
+            );
+        }
+
+        foreach ([
+            'nric_documents/abc123.pdf',
+            'claim_receipts/7/2026-08/report..pdf',   // two dots INSIDE a name is not traversal
+            'employee_contracts/a.b.c.pdf',
+            'vendor_billing/12/INV-2026-01..pdf',
+        ] as $legitimate) {
+            $this->assertFalse(
+                SecureFileController::isUnsafePath($legitimate),
+                'Should serve: '.$legitimate
+            );
+        }
     }
 
     public function test_unknown_directory_is_denied(): void

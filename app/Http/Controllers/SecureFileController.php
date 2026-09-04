@@ -51,6 +51,32 @@ class SecureFileController extends Controller
     ];
 
     /**
+     * Is this request path one we refuse to resolve at all?
+     *
+     * REFUSAL, not sanitising. This was `str_replace(['..', "\0"], '', $path)`, which applies
+     * its two needles IN ORDER — so a path carrying `.\0.` still held no `..` during the first
+     * pass and had its null byte removed by the second, handing the caller a live `..` that
+     * the sanitiser itself had just assembled. And even where stripping worked it silently
+     * rewrote a hostile path into a DIFFERENT valid one and served whatever that addressed,
+     * rather than declining to answer. A legitimate path here never contains either sequence.
+     *
+     * Matched per SEGMENT, not as a substring: every path here is built by Laravel's ->store()
+     * (a random hashed basename — there is no storeAs/getClientOriginalName anywhere in app/),
+     * but a substring test would also reject an ordinary "report..pdf", and a spurious 404 on
+     * an NRIC document or a contract is a support incident rather than a hardening win.
+     * Backslash counts as a separator too, since the disk is checked on Windows in development.
+     *
+     * Public and static purely so it is directly testable: reached through serve(), a rejected
+     * path and a merely non-existent one both answer 404, so an HTTP-level test cannot tell
+     * this rule firing from the storage lookup missing — it would pass with the rule deleted.
+     */
+    public static function isUnsafePath(string $path): bool
+    {
+        return in_array('..', preg_split('#[/\\\\]#', $path), true)
+            || str_contains($path, "\0");
+    }
+
+    /**
      * Download/stream a file from secure (private) storage.
      *
      * @param  string  $path  The relative path within private storage (e.g., "nric_documents/abc123.pdf")
@@ -63,8 +89,11 @@ class SecureFileController extends Controller
             abort(403, 'Authentication required.');
         }
 
-        // Prevent path traversal attacks
-        $path = str_replace(['..', "\0"], '', $path);
+        // 404 rather than 403, matching the missing-file branch below: a probe must not be
+        // able to tell "this path is blocked" from "there is nothing here".
+        if (self::isUnsafePath($path)) {
+            abort(404);
+        }
 
         // Check private storage first, fall back to public for backward compatibility
         $disk = 'local';
