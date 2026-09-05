@@ -26,7 +26,9 @@
 
     $previews = [];
     if (! $data && \App\Support\ClaimPdfPreview::isPdf($path)) {
-        foreach (\App\Support\ClaimPdfPreview::existing($path) as $previewPath) {
+        // forRow(), not existing(): storage keeps every page so the appendix can reproduce the
+        // whole document, while the row still shows at most `max_pages` of them.
+        foreach (\App\Support\ClaimPdfPreview::forRow($path) as $previewPath) {
             if ($encoded = $imgData('local', $previewPath)) {
                 $previews[] = $encoded;
             }
@@ -34,9 +36,22 @@
     }
 
     $entry = $appendix[$path] ?? null;
-    $note = ($entry && $entry['appendable'])
-        ? ' — reproduced in full on the pages after this form'
-        : (($entry && $entry['reason']) ? ' ('.$entry['reason'].')' : '');
+
+    if ($entry && ($entry['kind'] ?? null) === 'pdf-raster') {
+        // Appended as page images rather than the original document, so the row must not say
+        // "in full" — that wording belongs to a true vector reproduction.
+        $held = count($entry['images']);
+        $source = $entry['sourcePages'] ?: $held;
+        $note = ($source > $held)
+            ? ' — '.$held.' of '.$source.' pages reproduced as page images after this form'
+            : ' — reproduced as page images on the pages after this form';
+    } elseif ($entry && $entry['appendable']) {
+        $note = ' — reproduced in full on the pages after this form';
+    } elseif ($entry && $entry['reason']) {
+        $note = ' ('.$entry['reason'].')';
+    } else {
+        $note = '';
+    }
 
     $shown = count($previews);
     $pageWord = $shown === 1 ? 'page' : 'pages';

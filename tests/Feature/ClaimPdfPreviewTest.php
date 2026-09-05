@@ -200,7 +200,12 @@ class ClaimPdfPreviewTest extends TestCase
         Storage::disk('local')->assertMissing(ClaimPdfPreview::pathFor($pdf, 1));
     }
 
-    public function test_a_page_beyond_the_cap_is_refused(): void
+    /**
+     * The endpoint is bounded by the STORAGE cap, which is deliberately larger than the row
+     * cap: a PDF the parser cannot open is captured in full because those images are then the
+     * only copy that reaches the download. Beyond storage there is nothing left to keep.
+     */
+    public function test_a_page_beyond_the_storage_cap_is_refused(): void
     {
         $owner = $this->owner();
         $pdf = $this->storedPdf();
@@ -208,9 +213,32 @@ class ClaimPdfPreviewTest extends TestCase
 
         $this->actingAs($this->userFor($owner))
             ->post(route('user.claims.receipt-preview'), [
-                'path' => $pdf, 'page' => ClaimPdfPreview::maxPages() + 1, 'image' => $this->pageJpeg(),
+                'path' => $pdf, 'page' => ClaimPdfPreview::storeLimit() + 1, 'image' => $this->pageJpeg(),
             ])
             ->assertStatus(302); // validation bounce
+    }
+
+    /**
+     * The page that used to be refused. Pinned from the other side because this is exactly
+     * where the receipt was being lost: stopping at the row cap truncated the evidence of an
+     * approved claim to its first few pages.
+     */
+    public function test_a_page_past_the_row_cap_is_still_stored(): void
+    {
+        $owner = $this->owner();
+        $pdf = $this->storedPdf();
+        $this->claimWithPdf($owner, $pdf);
+
+        $page = ClaimPdfPreview::maxPages() + 1;
+        $this->assertLessThanOrEqual(ClaimPdfPreview::storeLimit(), $page, 'The caps must differ for this to mean anything.');
+
+        $this->actingAs($this->userFor($owner))
+            ->post(route('user.claims.receipt-preview'), [
+                'path' => $pdf, 'page' => $page, 'image' => $this->pageJpeg(),
+            ])
+            ->assertOk();
+
+        Storage::disk('local')->assertExists(ClaimPdfPreview::pathFor($pdf, $page));
     }
 
     public function test_regenerating_an_existing_page_does_not_rewrite_it(): void

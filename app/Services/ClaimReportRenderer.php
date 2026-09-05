@@ -3,10 +3,12 @@
 namespace App\Services;
 
 use App\Models\ExpenseClaim;
+use App\Support\ClaimPdfPreview;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use setasign\Fpdi\Fpdi;
+use setasign\Fpdi\PdfParser\CrossReference\CrossReferenceException;
 use setasign\Fpdi\PdfParser\StreamReader;
 
 /**
@@ -97,6 +99,34 @@ class ClaimReportRenderer
     }
 
     /**
+     * How many pages of this PDF are worth rasterising in the browser.
+     *
+     * A PDF the parser can open needs images only as row decoration, so the row cap is enough.
+     * One it CANNOT open needs every page, because those images are the only copy that will
+     * reach the downloaded report. Deciding here keeps the expensive case rare: without it we
+     * would either store 20 images for every receipt or truncate the ones that matter.
+     *
+     * Memoised per request — a claim page renders the same attachment in more than one place,
+     * and probing the file once per appearance would parse it repeatedly for one answer.
+     */
+    public static function rasterBudgetFor(string $path): int
+    {
+        static $memo = [];
+
+        if (! ClaimPdfPreview::isPdf($path)) {
+            return 0;
+        }
+
+        if (! array_key_exists($path, $memo)) {
+            $memo[$path] = (self::inspect($path)['kind'] ?? null) === 'pdf'
+                ? ClaimPdfPreview::maxPages()
+                : ClaimPdfPreview::storeLimit();
+        }
+
+        return $memo[$path];
+    }
+
+    /**
      * Resolve one uploaded file: what is it, and can we reproduce it?
      *
      * Uploads here are validated as jpg,jpeg,png,pdf — image extensions never reach this
@@ -140,9 +170,80 @@ class ClaimReportRenderer
 
             return array_merge($entry, ['kind' => 'pdf', 'pages' => $pages, 'appendable' => $pages > 0]);
         } catch (\Throwable $e) {
-            // Encrypted, or a compressed cross-reference the free FPDI parser can't read.
-            return array_merge($entry, ['reason' => 'the PDF could not be read (it may be encrypted or password-protected)']);
+            // This branch used to swallow the exception and print one guess — "it may be
+            // encrypted or password-protected" — for every possible cause. Measured against
+            // all 119 PDF receipts on production, the 4 that fail are ALL
+            // CrossReferenceException::COMPRESSED_XREF and NONE is encrypted, so the guess was
+            // wrong every time it was shown and there was nothing in the log to correct it.
+            Log::warning('Claim report: a PDF attachment could not be parsed by FPDI', [
+                'path' => $path,
+                'exception' => $e::class,
+                'code' => $e->getCode(),
+                'message' => $e->getMessage(),
+            ]);
+
+            return self::rasterFallback($path, $entry, self::unreadableReason($e));
         }
+    }
+
+    /**
+     * Name the actual cause rather than guessing at it.
+     *
+     * The distinction is not cosmetic: "compressed" is a server limitation the employee can do
+     * nothing about and IT can fix, while "encrypted" asks them to re-save the file. Telling
+     * someone to remove a password from a document that has none wastes their time and hides
+     * the real defect.
+     */
+    private static function unreadableReason(\Throwable $e): string
+    {
+        if ($e instanceof CrossReferenceException) {
+            if ($e->getCode() === CrossReferenceException::COMPRESSED_XREF) {
+                return 'this PDF uses a compression format the server cannot open directly';
+            }
+
+            if ($e->getCode() === CrossReferenceException::ENCRYPTED) {
+                return 'the PDF is encrypted or password-protected';
+            }
+        }
+
+        return 'the PDF could not be read';
+    }
+
+    /**
+     * When FPDI cannot open the PDF, fall back to the pages pdf.js rasterised in the browser.
+     *
+     * This host has no Ghostscript, Imagick or Poppler, and the free FPDI parser cannot read a
+     * compressed cross-reference stream — so without this the receipt reaches the downloaded
+     * report as a sentence and nothing else, which is what an approver reads as the evidence
+     * having been dropped. The images are a FAITHFUL RASTER, not the original vector document,
+     * and the caption on every appended sheet says so; anyone needing the original still has
+     * it on the claim record.
+     *
+     * Falls through to the plain reason when no previews exist yet, so a report downloaded
+     * before anyone has opened the claim reads exactly as it did before rather than claiming a
+     * picture is missing.
+     */
+    private static function rasterFallback(string $path, array $entry, string $reason): array
+    {
+        $images = ClaimPdfPreview::existing($path);
+
+        if ($images === []) {
+            return array_merge($entry, ['reason' => $reason]);
+        }
+
+        $total = ClaimPdfPreview::total($path);
+
+        return array_merge($entry, [
+            'kind' => 'pdf-raster',
+            'images' => $images,
+            'pages' => count($images),
+            // Only the pages we actually hold are claimed as reproduced. A source longer than
+            // what was captured must not be described as complete.
+            'sourcePages' => $total,
+            'appendable' => true,
+            'reason' => null,
+            'rasterReason' => $reason,
+        ]);
     }
 
     /** Stitch the dompdf body and each source document into one file. */
@@ -156,12 +257,147 @@ class ClaimReportRenderer
 
         foreach ($documents as $doc) {
             $heading = ($claim->claim_number ?: 'Claim').' — Attachment for: '.implode(', ', array_unique($doc['items']));
-            $provenance = 'Reproduced in full from the uploaded file '.$doc['filename'];
 
-            self::appendPdf($pdf, $doc, $heading, $provenance);
+            if (($doc['kind'] ?? null) === 'pdf-raster') {
+                self::appendRaster($pdf, $doc, $heading);
+
+                continue;
+            }
+
+            self::appendPdf($pdf, $doc, $heading, 'Reproduced in full from the uploaded file '.$doc['filename']);
         }
 
         return $pdf->Output('S');
+    }
+
+    /**
+     * A PDF the parser could not open, reproduced from its rasterised page images.
+     *
+     * The provenance line states BOTH that this is a page image and why the original could not
+     * be embedded. That matters more here than anywhere else in the report: this sheet carries
+     * the evidence for an approved expense, and a reader has to be able to tell a faithful
+     * raster from the source document — otherwise the caption would imply a fidelity the page
+     * does not have.
+     */
+    private static function appendRaster(Fpdi $pdf, array $doc, string $heading): void
+    {
+        $held = count($doc['images']);
+        $total = $doc['sourcePages'] ?: $held;
+
+        // Never claim more coverage than we hold. If the browser captured 20 pages of a 30-page
+        // statement, the caption says 20 of 30 and the shortfall is stated on the last sheet.
+        $provenance = 'Page image of the uploaded file '.$doc['filename']
+            .' — reproduced this way because '.($doc['rasterReason'] ?? 'the PDF could not be read');
+
+        foreach ($doc['images'] as $i => $imagePath) {
+            self::appendImage($pdf, $imagePath, $doc['filename'], $heading, $provenance, $i + 1, $total);
+        }
+
+        if ($total > $held) {
+            // Its own sheet, because FPDF's Image() does not advance the cursor — writing this
+            // after the last page would land the notice on top of the receipt it is about.
+            [$pageW] = self::startPage($pdf, false);
+            $top = self::caption($pdf, $pageW, $heading, $provenance, $doc['filename'], $held, $total);
+            $pdf->SetXY(self::MARGIN, $top + 4);
+            $pdf->SetFont('Helvetica', '', 9);
+            $pdf->SetTextColor(153, 27, 27);
+            $pdf->MultiCell($pageW - (2 * self::MARGIN), 4.5, self::latin(
+                'Only '.$held.' of '.$total.' pages of this document could be reproduced here. '
+                .'The complete file remains attached to the claim record and can be downloaded '
+                .'from the system.'
+            ), 0, 'L');
+            $pdf->SetTextColor(0, 0, 0);
+        }
+    }
+
+    /**
+     * One rasterised page on its own captioned sheet.
+     *
+     * The bytes go through GD before FPDF sees them. That is NOT cosmetic: FPDF hand-parses
+     * image data and, on a malformed file, can attempt an allocation large enough to kill the
+     * process with a memory-exhaustion FATAL that no try/catch can trap — which would take out
+     * the whole download. These images arrive from a browser, so they are exactly the input
+     * that rule exists for. Same reasoning as DecommissionReportRenderer::appendImage().
+     */
+    private static function appendImage(Fpdi $pdf, string $imagePath, string $filename, string $heading, string $provenance, int $page, int $total): void
+    {
+        $jpeg = self::toBaselineJpeg((string) Storage::disk('local')->get($imagePath));
+
+        if (! $jpeg) {
+            [$pageW] = self::startPage($pdf, false);
+            $top = self::caption($pdf, $pageW, $heading, $provenance, $filename, $page, $total);
+            $pdf->SetXY(self::MARGIN, $top + 4);
+            $pdf->SetFont('Helvetica', '', 9);
+            $pdf->SetTextColor(153, 27, 27);
+            $pdf->MultiCell($pageW - (2 * self::MARGIN), 4.5, self::latin(
+                'This page could not be rendered into the report. The uploaded file remains '
+                .'attached to the claim record and can be downloaded from the system.'
+            ), 0, 'L');
+            $pdf->SetTextColor(0, 0, 0);
+
+            return;
+        }
+
+        [$bytes, $pxW, $pxH] = $jpeg;
+
+        // FPDF reads images off the filesystem and the private disk is not guaranteed to be
+        // local, so the bytes go through a temp file that is always cleaned up.
+        $tmp = tempnam(sys_get_temp_dir(), 'claim_');
+        file_put_contents($tmp, $bytes);
+
+        try {
+            [$pageW, $pageH] = self::startPage($pdf, $pxW > $pxH);
+            $top = self::caption($pdf, $pageW, $heading, $provenance, $filename, $page, $total);
+            // Pixels → millimetres at 96 dpi, the basis dompdf uses; fit() then scales it into
+            // whatever space is left below the caption.
+            [$x, $y, $w, $h] = self::fit($pxW / 96 * 25.4, $pxH / 96 * 25.4, $pageW, $pageH, $top);
+
+            $pdf->Image($tmp, $x, $y, $w, $h, 'JPG');
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    /**
+     * Re-encode any GD-readable image to a baseline RGB JPEG, flattening transparency onto
+     * white and capping the long edge.
+     *
+     * @return array{0:string, 1:int, 2:int}|null [jpeg bytes, width, height]
+     */
+    private static function toBaselineJpeg(string $bytes): ?array
+    {
+        $src = @imagecreatefromstring($bytes);
+
+        if (! $src) {
+            return null;
+        }
+
+        try {
+            $w = imagesx($src);
+            $h = imagesy($src);
+            $max = 2000;
+
+            if ($w > $max || $h > $max) {
+                $scale = $max / max($w, $h);
+                $w = max(1, (int) round($w * $scale));
+                $h = max(1, (int) round($h * $scale));
+            }
+
+            $canvas = imagecreatetruecolor($w, $h);
+            imagefill($canvas, 0, 0, imagecolorallocate($canvas, 255, 255, 255));
+            imagecopyresampled($canvas, $src, 0, 0, 0, 0, $w, $h, imagesx($src), imagesy($src));
+
+            ob_start();
+            $ok = imagejpeg($canvas, null, 88);
+            $out = (string) ob_get_clean();
+            imagedestroy($canvas);
+
+            return $ok && $out !== '' ? [$out, $w, $h] : null;
+        } catch (\Throwable $e) {
+            return null;
+        } finally {
+            imagedestroy($src);
+        }
     }
 
     /** The dompdf body, copied through at its original page size. */

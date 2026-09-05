@@ -140,10 +140,14 @@
                                 embed a PDF, so report-pdf.blade.php prints a sentence where
                                 every other line shows a picture. The nonce'd block at the foot
                                 of this file rasterises the pages and posts them back, and only
-                                for a PDF that has none yet — see App\Support\ClaimPdfPreview.
+                                while that PDF's pages are still incomplete. A PDF the parser
+                                cannot open is captured in FULL, because those images are then
+                                the only copy that reaches the download — see
+                                App\Support\ClaimPdfPreview and ClaimReportRenderer.
                             --}}
+                            @php($pdfBudget = config('claims.pdf_preview.enabled', true) ? \App\Services\ClaimReportRenderer::rasterBudgetFor($att) : 0)
                             <iframe src="{{ route('secure.file', $att) }}" title="Attachment PDF" style="width:100%;height:600px;border:1px solid #e2e8f0;display:block;margin:0 0 6px;" class="d-print-none" loading="lazy"
-                                @if(config('claims.pdf_preview.enabled', true) && count(\App\Support\ClaimPdfPreview::existing($att)) === 0) data-claim-pdf-path="{{ $att }}" data-claim-pdf-src="{{ route('secure.file', $att) }}" @endif></iframe>
+                                @if($pdfBudget > 0 && ! \App\Support\ClaimPdfPreview::isComplete($att, $pdfBudget)) data-claim-pdf-path="{{ $att }}" data-claim-pdf-src="{{ route('secure.file', $att) }}" data-claim-pdf-pages="{{ $pdfBudget }}" @endif></iframe>
                             @else
                             <div class="mb-1"><i class="bi bi-file-earmark text-secondary me-1"></i><a href="{{ route('secure.file', $att) }}" target="_blank">Open attachment ({{ strtoupper($ext) }})</a></div>
                             @endif
@@ -205,10 +209,14 @@
                                 embed a PDF, so report-pdf.blade.php prints a sentence where
                                 every other line shows a picture. The nonce'd block at the foot
                                 of this file rasterises the pages and posts them back, and only
-                                for a PDF that has none yet — see App\Support\ClaimPdfPreview.
+                                while that PDF's pages are still incomplete. A PDF the parser
+                                cannot open is captured in FULL, because those images are then
+                                the only copy that reaches the download — see
+                                App\Support\ClaimPdfPreview and ClaimReportRenderer.
                             --}}
+                            @php($pdfBudget = config('claims.pdf_preview.enabled', true) ? \App\Services\ClaimReportRenderer::rasterBudgetFor($att) : 0)
                             <iframe src="{{ route('secure.file', $att) }}" title="Attachment PDF" style="width:100%;height:600px;border:1px solid #e2e8f0;display:block;margin:0 0 6px;" class="d-print-none" loading="lazy"
-                                @if(config('claims.pdf_preview.enabled', true) && count(\App\Support\ClaimPdfPreview::existing($att)) === 0) data-claim-pdf-path="{{ $att }}" data-claim-pdf-src="{{ route('secure.file', $att) }}" @endif></iframe>
+                                @if($pdfBudget > 0 && ! \App\Support\ClaimPdfPreview::isComplete($att, $pdfBudget)) data-claim-pdf-path="{{ $att }}" data-claim-pdf-src="{{ route('secure.file', $att) }}" data-claim-pdf-pages="{{ $pdfBudget }}" @endif></iframe>
                             @else
                             <div class="mb-1"><i class="bi bi-file-earmark text-secondary me-1"></i><a href="{{ route('secure.file', $att) }}" target="_blank">Open attachment ({{ strtoupper($ext) }})</a></div>
                             @endif
@@ -371,11 +379,12 @@
         });
     }
 
-    function postPage(path, n, blob) {
+    function postPage(path, n, blob, total) {
         var body = new FormData();
         body.append('path', path);
         body.append('page', String(n));
         body.append('image', blob, 'page.jpg');
+        if (total) { body.append('total', String(total)); }
         body.append('_token', token);
         return fetch(ENDPOINT, {
             method: 'POST', body: body, credentials: 'same-origin',
@@ -386,6 +395,9 @@
     function handle(el) {
         var path = el.getAttribute('data-claim-pdf-path');
         var src  = el.getAttribute('data-claim-pdf-src');
+        // Per file, not global: a PDF the server can open needs only the row's few pages,
+        // while one it cannot needs every page to reach the download at all.
+        var budget = parseInt(el.getAttribute('data-claim-pdf-pages'), 10) || MAX_PAGES;
         el.removeAttribute('data-claim-pdf-path'); // claim it once
         if (!path || !src) { return Promise.resolve(); }
 
@@ -397,7 +409,7 @@
             task.onPassword = function () { try { task.destroy(); } catch (e) {} };
             return task.promise;
         }).then(function (pdf) {
-            var pages = Math.min(pdf.numPages, MAX_PAGES);
+            var pages = Math.min(pdf.numPages, budget);
             var chain = Promise.resolve();
             for (var n = 1; n <= pages; n++) {
                 (function (page) {
@@ -407,7 +419,10 @@
                             if (!blob) { return true; }
                             // Stop at the first refusal: the server reads previews up to the
                             // first gap, so a hole would misrepresent which pages these are.
-                            return postPage(path, page, blob).then(function (ok) { return !ok; });
+                            // numPages rides along because only the browser can read it — the
+                            // server cannot open these files, so without it "are we finished?"
+                            // is unanswerable and every visit re-renders a complete receipt.
+                            return postPage(path, page, blob, pdf.numPages).then(function (ok) { return !ok; });
                         });
                     });
                 })(n);

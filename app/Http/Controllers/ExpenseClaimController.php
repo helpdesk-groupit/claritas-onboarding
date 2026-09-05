@@ -3622,7 +3622,12 @@ class ExpenseClaimController extends Controller
 
         $data = $request->validate([
             'path' => ['required', 'string', 'max:1000'],
-            'page' => ['required', 'integer', 'min:1', 'max:'.ClaimPdfPreview::maxPages()],
+            // Bounded by the STORAGE cap, not the row cap: a PDF the server cannot open is
+            // captured in full because these images are then its only route into the download.
+            'page' => ['required', 'integer', 'min:1', 'max:'.ClaimPdfPreview::storeLimit()],
+            // The source's own page count, which only the browser can read. Optional, so a
+            // cached copy of the old script keeps working — it just cannot mark completion.
+            'total' => ['nullable', 'integer', 'min:1', 'max:10000'],
             'image' => ['required', 'file', 'mimes:jpg,jpeg', 'max:'.max(64, (int) config('claims.pdf_preview.max_upload_kb', 4096))],
         ]);
 
@@ -3658,6 +3663,14 @@ class ExpenseClaimController extends Controller
         // Already generated: answer success without rewriting. The client regenerates on every
         // view of a claim whose previews are incomplete, so this is the common case, not an
         // error — and re-encoding the same page would churn the disk for nothing.
+        // Recorded BEFORE the already-stored short-circuit, so a PDF rasterised before this
+        // marker existed still learns its page count on the next visit. Behind that
+        // short-circuit it would never be written for exactly those files, and they would
+        // re-rasterise on every view forever.
+        if (! empty($data['total'])) {
+            ClaimPdfPreview::recordTotal($path, (int) $data['total']);
+        }
+
         if (Storage::disk('local')->exists($target)) {
             return response()->json(['ok' => true, 'stored' => false]);
         }

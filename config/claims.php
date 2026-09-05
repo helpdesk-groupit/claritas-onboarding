@@ -251,6 +251,16 @@ return [
     'pdf_preview' => [
         'enabled' => (bool) env('CLAIMS_PDF_PREVIEW_ENABLED', true),
         'max_pages' => (int) env('CLAIMS_PDF_PREVIEW_MAX_PAGES', 3),
+
+        /*
+         * The cap on pages STORED, which is a different question from how many a row shows.
+         * When FPDI cannot open a receipt (a compressed cross-reference stream — 4 of the 119
+         * PDF receipts on production, all %PDF-1.6), these rasterised pages are the only way
+         * that receipt reaches the downloaded report, and a truncated one would be a partial
+         * copy of an approved claim's evidence. So storage runs to the whole document while
+         * `max_pages` keeps bounding the picture inside the item row.
+         */
+        'store_max_pages' => (int) env('CLAIMS_PDF_PREVIEW_STORE_MAX_PAGES', 20),
         'max_upload_kb' => (int) env('CLAIMS_PDF_PREVIEW_MAX_UPLOAD_KB', 4096),
     ],
 
