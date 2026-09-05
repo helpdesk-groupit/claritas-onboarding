@@ -2557,9 +2557,16 @@ class ExpenseClaimController extends Controller
      */
     public const REPORT_BASIS_EXPENSE_MONTH = 'expense_month';
 
-    private function financeReportBasis(Request $request): string
+    /**
+     * The period axis for every claim export — the finance report, its CSV, and the HR CSV.
+     * One resolver, so the three cannot come to disagree about what `?basis=` means, and an
+     * unrecognised value falls back to the cycle everywhere rather than in two places out of
+     * three. Reads `input()` rather than `query()` so it behaves the same whichever verb a
+     * future caller uses.
+     */
+    private function claimReportBasis(Request $request): string
     {
-        return $request->query('basis') === self::REPORT_BASIS_EXPENSE_MONTH
+        return $request->input('basis') === self::REPORT_BASIS_EXPENSE_MONTH
             ? self::REPORT_BASIS_EXPENSE_MONTH
             : self::REPORT_BASIS_CYCLE;
     }
@@ -2603,10 +2610,11 @@ class ExpenseClaimController extends Controller
     }
 
     /**
-     * The period a claim is reported under, for the chosen basis. One helper so the accordion
-     * grouping, the CSV rows and the year/month filters can never label a claim differently.
+     * The period a claim is reported under, for the chosen basis. One helper across all three
+     * exports — the finance accordion, the finance CSV and the HR CSV — so the same claim can
+     * never be labelled with one period in one of them and a different period in another.
      */
-    private function financeReportPeriod(ExpenseClaim $claim, string $basis, ClaimZipExportService $zipExportService): array
+    private function claimReportPeriod(ExpenseClaim $claim, string $basis, ClaimZipExportService $zipExportService): array
     {
         return $basis === self::REPORT_BASIS_CYCLE
             ? $zipExportService->claimCycle($claim)
@@ -2620,7 +2628,7 @@ class ExpenseClaimController extends Controller
             abort(403);
         }
 
-        $basis = $this->financeReportBasis($request);
+        $basis = $this->claimReportBasis($request);
         $zipExportService = app(ClaimZipExportService::class);
 
         $availableYears = $basis === self::REPORT_BASIS_CYCLE
@@ -2638,7 +2646,7 @@ class ExpenseClaimController extends Controller
         // Flatten to one row per item, then nest Year > Month > Company > Employee.
         $rows = collect();
         foreach ($claims as $claim) {
-            $period = $this->financeReportPeriod($claim, $basis, $zipExportService);
+            $period = $this->claimReportPeriod($claim, $basis, $zipExportService);
             foreach ($claim->items as $item) {
                 $rows->push([
                     'year' => $period['year'],
@@ -2719,7 +2727,7 @@ class ExpenseClaimController extends Controller
             abort(403);
         }
 
-        $basis = $this->financeReportBasis($request);
+        $basis = $this->claimReportBasis($request);
         $zipExportService = app(ClaimZipExportService::class);
 
         $selectedYear = (int) $request->query('year', (int) now()->year);
@@ -2746,7 +2754,7 @@ class ExpenseClaimController extends Controller
                 'Claim Number',
             ]);
             foreach ($claims as $claim) {
-                $period = $this->financeReportPeriod($claim, $basis, $zipExportService);
+                $period = $this->claimReportPeriod($claim, $basis, $zipExportService);
                 foreach ($claim->items as $item) {
                     fputcsv($file, [
                         $period['year'],
@@ -2769,10 +2777,29 @@ class ExpenseClaimController extends Controller
 
     /**
      * HR: Export claims to CSV.
+     *
+     * Periods by submission cutoff cycle (21st–20th) by default, like the finance report and
+     * HR's approved-PDF ZIP, so an HR-approved claim appears in the same period in all three.
+     * `?basis=expense_month` keeps the old reporting-stamp answer.
+     *
+     * **This deliberately does NOT go through ClaimZipExportService::matchingClaims(), and must
+     * not be "simplified" to.** That method gates on `processed_at`, i.e. HR-approved only —
+     * correct for an archive of approved PDFs, and fatal here: this export's whole purpose
+     * includes claims that are NOT approved (submitted, manager_rejected, hr_rejected, reversed,
+     * cancelled, and drafts via ?status=draft), so routing it through that gate would silently
+     * empty most of the file. It instead uses the same two primitives — cycleFetchRange() to
+     * bound the fetch and claimCycle() to decide membership — which are pure date logic and
+     * answer for a claim of any status. For approved claims that is the same answer the ZIP
+     * gives, which is what makes the three tally.
      */
     public function export(Request $request)
     {
         $this->authorizeViewClaims();
+
+        $basis = $this->claimReportBasis($request);
+        $zipExportService = app(ClaimZipExportService::class);
+        $year = $request->input('year') ? (int) $request->input('year') : null;
+        $month = $request->input('month') ? (int) $request->input('month') : null;
 
         $query = ExpenseClaim::with(['employee', 'items.category']);
 
@@ -2782,38 +2809,70 @@ class ExpenseClaimController extends Controller
         } else {
             $query->where('status', '!=', 'draft');
         }
-        if ($year = $request->input('year')) {
-            $query->where('year', $year);
-        }
-        if ($month = $request->input('month')) {
-            $query->where('month', $month);
+
+        if ($basis === self::REPORT_BASIS_CYCLE) {
+            // The cutoff day is per company, so a cycle cannot be expressed as one SQL range.
+            // Bound the fetch to the calendar months a cycle can touch, then decide membership
+            // per claim below — exactly what matchingClaims() does.
+            [$rangeStart, $rangeEnd] = $zipExportService->cycleFetchRange($year, $month);
+            if ($rangeStart) {
+                $query->whereRaw('COALESCE(submitted_at, created_at) >= ?', [$rangeStart->toDateTimeString()]);
+            }
+            if ($rangeEnd) {
+                $query->whereRaw('COALESCE(submitted_at, created_at) < ?', [$rangeEnd->toDateTimeString()]);
+            }
+        } else {
+            if ($year) {
+                $query->where('year', $year);
+            }
+            if ($month) {
+                $query->where('month', $month);
+            }
         }
 
         $claims = $query->orderBy('employee_id')->orderBy('year')->orderBy('month')->get();
 
-        $filename = 'expense_claims_'.now()->format('Y-m-d_His').'.csv';
+        if ($basis === self::REPORT_BASIS_CYCLE) {
+            $claims = $claims->filter(function (ExpenseClaim $claim) use ($year, $month, $zipExportService) {
+                $cycle = $zipExportService->claimCycle($claim);
+
+                return (! $year || $cycle['year'] === $year) && (! $month || $cycle['month'] === $month);
+            })->values();
+        }
+
+        $isCycle = $basis === self::REPORT_BASIS_CYCLE;
+        $filename = 'expense_claims_'.($isCycle ? 'cycle_' : 'expense_month_').now()->format('Y-m-d_His').'.csv';
 
         $headers = [
             'Content-Type' => 'text/csv',
             'Content-Disposition' => "attachment; filename=\"{$filename}\"",
         ];
 
-        $callback = function () use ($claims) {
+        $callback = function () use ($claims, $basis, $isCycle, $zipExportService) {
             $file = fopen('php://output', 'w');
+            // The Period column keeps its position but is NAMED for the basis. This route has
+            // no UI anywhere — it is reached by URL or bookmark — so the header is the only
+            // thing that can tell a reader which axis they are holding. Nothing is lost by the
+            // column changing meaning: `Item Date` is on every row, and an item's expense date
+            // is always inside the claim's own reporting month (ClaimRulesService::
+            // itemDateInPeriod), so the stamp remains derivable from the file either way.
             fputcsv($file, [
-                'Claim Number', 'Employee', 'Department', 'Period', 'Status',
+                'Claim Number', 'Employee', 'Department',
+                $isCycle ? 'Cycle (21st-20th)' : 'Expense Period',
+                'Status',
                 'Item Date', 'Description', 'Project/Client', 'Category',
                 'Amount (w/o GST)', 'GST', 'Total (w/ GST)',
                 'Submitted', 'Manager Approved', 'HR Approved',
             ]);
 
             foreach ($claims as $claim) {
+                $period = $this->claimReportPeriod($claim, $basis, $zipExportService);
                 foreach ($claim->items as $item) {
                     fputcsv($file, [
                         $claim->claim_number,
                         $this->sanitizeForCsv($claim->employee->full_name ?? '-'),
                         $this->sanitizeForCsv($claim->employee->department ?? '-'),
-                        $claim->year.'-'.str_pad($claim->month, 2, '0', STR_PAD_LEFT),
+                        $period['year'].'-'.str_pad((string) $period['month'], 2, '0', STR_PAD_LEFT),
                         $claim->status,
                         $item->expense_date->format('Y-m-d'),
                         $this->sanitizeForCsv($item->description),

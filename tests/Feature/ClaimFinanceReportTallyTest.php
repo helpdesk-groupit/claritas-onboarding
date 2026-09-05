@@ -384,6 +384,98 @@ class ClaimFinanceReportTallyTest extends TestCase
             ->assertOk()->assertDontSee('cannot be reported by cycle');
     }
 
+    // ── The HR CSV (hr.claims.export) ─────────────────────────────────────
+
+    private function hrCsv(array $query): string
+    {
+        $hr = User::factory()->hrManager()->withTwoFactor()->create();
+        Employee::factory()->withUser($hr)->create();
+
+        $response = $this->actingAs($hr)->get(route('hr.claims.export', $query));
+        $response->assertOk();
+
+        return $response->streamedContent();
+    }
+
+    public function test_the_hr_csv_reports_an_approved_claim_in_the_same_cycle_as_the_zip(): void
+    {
+        $cat = $this->category();
+        $late = $this->approvedClaim($cat, 'Late Filer', 7, '2026-08-05 09:00:00');
+        $onTime = $this->approvedClaim($cat, 'Prompt Filer', 7, '2026-07-15 09:00:00');
+
+        $july = $this->hrCsv(['year' => 2026, 'month' => 7]);
+        $this->assertStringContainsString($onTime->claim_number, $july);
+        $this->assertStringNotContainsString($late->claim_number, $july);
+
+        $august = $this->hrCsv(['year' => 2026, 'month' => 8]);
+        $this->assertStringContainsString($late->claim_number, $august);
+        $this->assertStringNotContainsString($onTime->claim_number, $august);
+    }
+
+    /**
+     * The trap this export sets. Its purpose includes claims that are NOT approved, so it must
+     * never be routed through ClaimZipExportService::matchingClaims() — that gates on
+     * processed_at and would silently empty most of the file while still returning a valid CSV.
+     */
+    public function test_the_hr_csv_still_carries_claims_that_are_not_approved(): void
+    {
+        $cat = $this->category();
+
+        $approved = $this->approvedClaim($cat, 'Approved', 8, '2026-08-11 09:00:00');
+
+        $pending = $this->approvedClaim($cat, 'Awaiting HR', 8, '2026-08-12 09:00:00');
+        $pending->forceFill(['status' => 'manager_approved', 'processed_at' => null])->save();
+
+        $rejected = $this->approvedClaim($cat, 'Rejected', 8, '2026-08-13 09:00:00');
+        $rejected->forceFill(['status' => 'hr_rejected', 'processed_at' => null])->save();
+
+        $csv = $this->hrCsv(['year' => 2026, 'month' => 8]);
+
+        $this->assertStringContainsString($approved->claim_number, $csv);
+        $this->assertStringContainsString($pending->claim_number, $csv, 'a manager-approved claim must survive the cycle filter');
+        $this->assertStringContainsString($rejected->claim_number, $csv, 'a rejected claim must survive the cycle filter');
+    }
+
+    public function test_the_hr_csv_still_excludes_drafts_unless_asked_for_them(): void
+    {
+        $cat = $this->category();
+        $draft = $this->approvedClaim($cat, 'Drafter', 8, '2026-08-11 09:00:00');
+        $draft->forceFill(['status' => 'draft', 'processed_at' => null])->save();
+
+        $this->assertStringNotContainsString($draft->claim_number, $this->hrCsv(['year' => 2026, 'month' => 8]));
+        $this->assertStringContainsString($draft->claim_number, $this->hrCsv(['year' => 2026, 'month' => 8, 'status' => 'draft']));
+    }
+
+    public function test_the_hr_csv_names_its_basis_and_can_still_report_by_expense_month(): void
+    {
+        $cat = $this->category();
+        $late = $this->approvedClaim($cat, 'Late Filer', 7, '2026-08-05 09:00:00');
+
+        $cycle = $this->hrCsv(['year' => 2026, 'month' => 8]);
+        $this->assertStringContainsString('Cycle (21st-20th)', $cycle);
+        $this->assertStringContainsString('2026-08', $cycle, 'the period column must carry the cycle, not the stamp');
+
+        $stamp = $this->hrCsv([
+            'year' => 2026, 'month' => 7,
+            'basis' => ExpenseClaimController::REPORT_BASIS_EXPENSE_MONTH,
+        ]);
+        $this->assertStringContainsString('Expense Period', $stamp);
+        $this->assertStringContainsString($late->claim_number, $stamp, 'the expense-month view must keep its old answer');
+    }
+
+    /** An unfiltered export must still return everything, not silently drop the whole file. */
+    public function test_the_hr_csv_without_a_period_filter_returns_every_claim(): void
+    {
+        $cat = $this->category();
+        $a = $this->approvedClaim($cat, 'A', 7, '2026-07-15 09:00:00');
+        $b = $this->approvedClaim($cat, 'B', 8, '2026-08-25 09:00:00');
+
+        $csv = $this->hrCsv([]);
+
+        $this->assertStringContainsString($a->claim_number, $csv);
+        $this->assertStringContainsString($b->claim_number, $csv);
+    }
+
     public function test_the_page_states_which_basis_it_is_showing(): void
     {
         $user = $this->financeUser();
