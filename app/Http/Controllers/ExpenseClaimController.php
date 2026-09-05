@@ -7,18 +7,23 @@ use App\Mail\ClaimApprovedMail;
 use App\Mail\ClaimHrRejectedNoticeMail;
 use App\Mail\ClaimRejectedMail;
 use App\Mail\ClaimSubmittedMail;
+use App\Models\Company;
 use App\Models\Employee;
 use App\Models\ExpenseCategory;
 use App\Models\ExpenseClaim;
 use App\Models\ExpenseClaimItem;
+use App\Models\ExpenseClaimLog;
 use App\Models\ExpenseClaimPolicy;
 use App\Models\ExpenseClaimZipExport;
+use App\Models\User;
 use App\Services\ClaimReceiptOcrService;
 use App\Services\ClaimReportRenderer;
 use App\Services\ClaimRulesService;
 use App\Services\ClaimZipExportService;
+use App\Services\CompanyAttributionService;
 use App\Support\ClaimPdfPreview;
 use Carbon\Carbon;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -52,7 +57,7 @@ class ExpenseClaimController extends Controller
 
         $claims = $employee->expenseClaims()->with(['items.category', 'correctionOf:id,claim_number,status'])->orderByDesc('created_at')->get();
         $policy = ExpenseClaimPolicy::forCompany($employee->company);
-        $company = \App\Models\Company::forName($employee->company);
+        $company = Company::forName($employee->company);
 
         $drafts = $claims->whereIn('status', ['draft', 'manager_rejected', 'hr_rejected', 'reversed'])->values();
 
@@ -185,7 +190,7 @@ class ExpenseClaimController extends Controller
                             ]);
                         });
                         break;
-                    } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+                    } catch (UniqueConstraintViolationException $e) {
                         usleep(random_int(5_000, 25_000));
                     }
                 }
@@ -989,7 +994,7 @@ class ExpenseClaimController extends Controller
         // Stamp the company for this claim's submission cycle from the timeline, so
         // it stays put if the employee later moves (and is correct even for a
         // back-dated claim submitted after a move). See CompanyAttributionService.
-        $submitCompany = app(\App\Services\CompanyAttributionService::class)->companyForClaim($claim);
+        $submitCompany = app(CompanyAttributionService::class)->companyForClaim($claim);
         DB::transaction(function () use ($claim, $approverId, $submitCompany) {
             $claim->items()->update([
                 'approver_id' => $approverId,
@@ -1555,7 +1560,7 @@ class ExpenseClaimController extends Controller
             ->orderByDesc('year')->orderByDesc('month')
             ->get();
 
-        $company = \App\Models\Company::forName($employee->company);
+        $company = Company::forName($employee->company);
 
         return view('user.claims.reports', compact('employee', 'claims', 'company'));
     }
@@ -1573,7 +1578,7 @@ class ExpenseClaimController extends Controller
         }
 
         $claim->load(['items.category', 'items.approver', 'employee']);
-        $company = \App\Models\Company::forName($claim->resolvedCompany());
+        $company = Company::forName($claim->resolvedCompany());
 
         $approverId = $request->query('approver');
         $items = $approverId ? $claim->items->where('approver_id', (int) $approverId)->values() : $claim->items;
@@ -1595,7 +1600,7 @@ class ExpenseClaimController extends Controller
         $this->raisePdfMemoryFloor();
 
         $claim->loadMissing('items.category', 'employee', 'managerApprover', 'manager', 'hrApprover');
-        $company = \App\Models\Company::forName($claim->resolvedCompany());
+        $company = Company::forName($claim->resolvedCompany());
         $items = $claim->items;
 
         return ClaimReportRenderer::render($claim, $company, $items);
@@ -1931,7 +1936,7 @@ class ExpenseClaimController extends Controller
 
         // Stamp the company for this claim's submission cycle from the timeline (see
         // the first submit path above and CompanyAttributionService::companyForClaim).
-        $submitCompany = app(\App\Services\CompanyAttributionService::class)->companyForClaim($claim);
+        $submitCompany = app(CompanyAttributionService::class)->companyForClaim($claim);
         DB::transaction(function () use ($claim, $approverId, $submitCompany) {
             $claim->items()->update([
                 'approver_id' => $approverId,
@@ -2049,7 +2054,7 @@ class ExpenseClaimController extends Controller
             $stage = 'view';
         }
 
-        $company = \App\Models\Company::forName($claim->resolvedCompany());
+        $company = Company::forName($claim->resolvedCompany());
         $items = $claim->items;
         $approver = $claim->manager ?? $claim->managerApprover;
 
@@ -2319,7 +2324,7 @@ class ExpenseClaimController extends Controller
         $this->authorizeViewClaims();
 
         $claim->load(['employee', 'items.category', 'items.approver', 'manager', 'managerApprover', 'hrApprover']);
-        $company = \App\Models\Company::forName($claim->resolvedCompany());
+        $company = Company::forName($claim->resolvedCompany());
 
         // Employee spend context (#7) — this employee's claim history for the claim's year.
         $yearClaims = ExpenseClaim::where('employee_id', $claim->employee_id)
@@ -2504,6 +2509,11 @@ class ExpenseClaimController extends Controller
                     'status' => 'hr_approved',
                     'hr_approved_by' => Auth::id(),
                     'hr_approved_at' => now(),
+                    // Must mirror hrApprove() exactly. Without this stamp a bulk-approved claim
+                    // is fully approved yet permanently absent from the approved-PDF ZIP and
+                    // from the finance report's cutoff-cycle basis — visible everywhere else,
+                    // so nothing would ever report it missing.
+                    'processed_at' => now(),
                 ]);
                 $count++;
 
@@ -2532,25 +2542,75 @@ class ExpenseClaimController extends Controller
     /** Fully-approved claims (manager + HR) only. Statuses that satisfy "approved by both". */
     private const FINANCE_REPORT_STATUSES = ['hr_approved', 'paid'];
 
+    /**
+     * The submission cutoff cycle — 21st of the previous month to the 20th of this one, using
+     * each company's own cutoff day. The DEFAULT, because it is the period the approved-PDF ZIP
+     * export archives by, and finance reconciles the CSV against that ZIP.
+     */
+    public const REPORT_BASIS_CYCLE = 'cycle';
+
+    /**
+     * The reporting-month stamp (expense_claims.year/month) the employee picks in the New Claim
+     * modal — i.e. the month the EXPENSE belongs to, regardless of when it was submitted. Kept
+     * as an option for anyone posting by expense period, but it does NOT tally with the ZIP:
+     * a claim for July expenses is normally submitted in August and so sits in the August cycle.
+     */
+    public const REPORT_BASIS_EXPENSE_MONTH = 'expense_month';
+
+    private function financeReportBasis(Request $request): string
+    {
+        return $request->query('basis') === self::REPORT_BASIS_EXPENSE_MONTH
+            ? self::REPORT_BASIS_EXPENSE_MONTH
+            : self::REPORT_BASIS_CYCLE;
+    }
+
     /** Shared, filtered query for the finance report (used by the page and the export). */
-    private function financeReportClaims(Request $request, int $year)
+    private function financeReportClaims(Request $request, int $year, string $basis)
     {
         $category = $request->query('category');
+        $month = $request->query('month') ? (int) $request->query('month') : null;
+        $company = $request->query('company');
 
-        return ExpenseClaim::query()
+        $q = ExpenseClaim::query()
             ->with(['employee', 'items' => function ($q) use ($category) {
                 $q->with('category');
                 if ($category) {
                     $q->where('expense_category_id', (int) $category);
                 }
             }])
-            ->whereIn('status', self::FINANCE_REPORT_STATUSES)
+            ->when($category, fn ($q, $cat) => $q->whereHas('items', fn ($i) => $i->where('expense_category_id', (int) $cat)));
+
+        if ($basis === self::REPORT_BASIS_CYCLE) {
+            // Take the claim set straight from the engine the ZIP export runs on, rather than
+            // re-deriving the cycle here. Any second implementation of "which cycle is this
+            // claim in" drifts from submissionCycle() the moment a company's cutoff day
+            // changes — and a finance CSV that disagrees with the archive it is reconciled
+            // against is the exact failure this basis exists to remove.
+            $ids = app(ClaimZipExportService::class)
+                ->matchingClaims($year, $month, array_filter([$company]))
+                ->pluck('id')->all();
+
+            // An empty whereIn compiles to `0 = 1`, so no filter matching nothing is needed.
+            return $q->whereIn('id', $ids)->orderByDesc('processed_at')->get();
+        }
+
+        return $q->whereIn('status', self::FINANCE_REPORT_STATUSES)
             ->where('year', $year)
-            ->when($request->query('month'), fn ($q, $m) => $q->where('month', (int) $m))
-            ->when($request->query('company'), fn ($q, $c) => $q->where('company', $c))
-            ->when($category, fn ($q, $cat) => $q->whereHas('items', fn ($i) => $i->where('expense_category_id', (int) $cat)))
+            ->when($month, fn ($q, $m) => $q->where('month', $m))
+            ->when($company, fn ($q, $c) => $q->where('company', $c))
             ->orderByDesc('year')->orderByDesc('month')
             ->get();
+    }
+
+    /**
+     * The period a claim is reported under, for the chosen basis. One helper so the accordion
+     * grouping, the CSV rows and the year/month filters can never label a claim differently.
+     */
+    private function financeReportPeriod(ExpenseClaim $claim, string $basis, ClaimZipExportService $zipExportService): array
+    {
+        return $basis === self::REPORT_BASIS_CYCLE
+            ? $zipExportService->claimCycle($claim)
+            : ['year' => (int) $claim->year, 'month' => (int) $claim->month];
     }
 
     /** Finance-facing report of approved claims, grouped Year > Month > Company > Employee. */
@@ -2560,22 +2620,29 @@ class ExpenseClaimController extends Controller
             abort(403);
         }
 
-        $availableYears = ExpenseClaim::whereIn('status', self::FINANCE_REPORT_STATUSES)
-            ->distinct()->orderByDesc('year')->pluck('year')->map(fn ($y) => (int) $y)->all();
+        $basis = $this->financeReportBasis($request);
+        $zipExportService = app(ClaimZipExportService::class);
+
+        $availableYears = $basis === self::REPORT_BASIS_CYCLE
+            ? $zipExportService->availableCycleYears()
+            : ExpenseClaim::whereIn('status', self::FINANCE_REPORT_STATUSES)
+                ->distinct()->orderByDesc('year')->pluck('year')->map(fn ($y) => (int) $y)->all();
+
         $selectedYear = (int) $request->query('year', (int) now()->year);
         if (! empty($availableYears) && ! in_array($selectedYear, $availableYears, true)) {
             $selectedYear = $availableYears[0];
         }
 
-        $claims = $this->financeReportClaims($request, $selectedYear);
+        $claims = $this->financeReportClaims($request, $selectedYear, $basis);
 
         // Flatten to one row per item, then nest Year > Month > Company > Employee.
         $rows = collect();
         foreach ($claims as $claim) {
+            $period = $this->financeReportPeriod($claim, $basis, $zipExportService);
             foreach ($claim->items as $item) {
                 $rows->push([
-                    'year' => (int) $claim->year,
-                    'month' => (int) $claim->month,
+                    'year' => $period['year'],
+                    'month' => $period['month'],
                     'company' => $claim->resolvedCompany() ?: '—',
                     'employee' => $claim->employee->full_name ?: '—',
                     'gl_code' => $item->category->gl_code ?: '—',
@@ -2591,12 +2658,58 @@ class ExpenseClaimController extends Controller
             'grandTotal' => $rows->sum('amount'),
             'availableYears' => $availableYears,
             'selectedYear' => $selectedYear,
-            'companies' => \App\Models\Company::orderBy('name')->pluck('name'),
+            'companies' => Company::orderBy('name')->pluck('name'),
             'categories' => ExpenseCategory::active()->orderBy('name')->get(['id', 'name', 'gl_code']),
             'filterMonth' => $request->query('month'),
             'filterCompany' => $request->query('company'),
             'filterCategory' => $request->query('category'),
+            'basis' => $basis,
+            'basisIsCycle' => $basis === self::REPORT_BASIS_CYCLE,
+            'cycleMonthLabels' => $this->cycleMonthLabels($selectedYear),
+            'unstampedClaims' => $this->unstampedApprovedClaims($basis),
         ]);
+    }
+
+    /**
+     * Claims that are approved by status but carry no processed_at.
+     *
+     * The ZIP export cannot archive such a claim, so the cycle basis cannot report it either —
+     * and a finance total that is quietly short is the failure this whole reconciliation exists
+     * to remove. Nothing in production is in this state (checked 2026-09-05: 0 of 91 approved
+     * claims), and nothing should ever be: what puts a claim here is an approval path that
+     * forgets the stamp, which is precisely the defect bulkApprove() carried until then. So it
+     * is reported on the page by name rather than tolerated, and the count is deliberately not
+     * scoped to the selected year — it is a data-integrity anomaly, not a period.
+     */
+    private function unstampedApprovedClaims(string $basis)
+    {
+        if ($basis !== self::REPORT_BASIS_CYCLE) {
+            return collect();
+        }
+
+        return ExpenseClaim::whereIn('status', self::FINANCE_REPORT_STATUSES)
+            ->whereNull('processed_at')
+            ->with('employee:id,full_name')
+            ->orderByDesc('hr_approved_at')
+            ->limit(25)
+            ->get(['id', 'claim_number', 'employee_id', 'status']);
+    }
+
+    /**
+     * "21 Jul – 20 Aug" per month of a cycle year, for the month dropdown. Uses the default
+     * (null-company) cutoff as a representative window — exactly as the HR claims page does —
+     * since a per-company cutoff may differ by a day or two and one label has to serve all.
+     */
+    private function cycleMonthLabels(int $year): array
+    {
+        $cutoff = (int) (ExpenseClaimPolicy::forCompany()->submission_deadline_day ?? 20);
+        $labels = [];
+        foreach (range(1, 12) as $month) {
+            $window = ClaimRulesService::cycleWindow($year, $month, $cutoff);
+            $labels[$month] = $window['start']->format('j M').' – '.$window['endExclusive']->copy()->subDay()->format('j M');
+        }
+
+        return $labels;
     }
 
     /** CSV export of the finance report, honouring the same filters. */
@@ -2606,29 +2719,45 @@ class ExpenseClaimController extends Controller
             abort(403);
         }
 
-        $selectedYear = (int) $request->query('year', (int) now()->year);
-        $claims = $this->financeReportClaims($request, $selectedYear);
+        $basis = $this->financeReportBasis($request);
+        $zipExportService = app(ClaimZipExportService::class);
 
-        $filename = 'claim_reports_'.$selectedYear.'_'.now()->format('Ymd_His').'.csv';
+        $selectedYear = (int) $request->query('year', (int) now()->year);
+        $claims = $this->financeReportClaims($request, $selectedYear, $basis);
+
+        $isCycle = $basis === self::REPORT_BASIS_CYCLE;
+        $filename = 'claim_reports_'.($isCycle ? 'cycle_' : 'expense_month_').$selectedYear.'_'.now()->format('Ymd_His').'.csv';
         $headers = [
             'Content-Type' => 'text/csv',
             'Content-Disposition' => "attachment; filename=\"{$filename}\"",
         ];
 
-        $callback = function () use ($claims) {
+        $callback = function () use ($claims, $basis, $isCycle, $zipExportService) {
             $file = fopen('php://output', 'w');
-            fputcsv($file, ['Year', 'Month', 'Company', 'Employee', 'GL Code', 'Category', 'Description', 'Amount (RM)']);
+            // The period columns are NAMED for the basis, because "Month" alone cannot tell a
+            // reader whether a row is filed by cutoff cycle or by expense month — and the two
+            // put roughly a third of all claims in different buckets. Claim Number is appended
+            // LAST so existing column positions are untouched; it is what lets a row be matched
+            // against the PDF of the same name in the approved-PDF ZIP.
+            fputcsv($file, [
+                $isCycle ? 'Cycle Year' : 'Expense Year',
+                $isCycle ? 'Cycle Month' : 'Expense Month',
+                'Company', 'Employee', 'GL Code', 'Category', 'Description', 'Amount (RM)',
+                'Claim Number',
+            ]);
             foreach ($claims as $claim) {
+                $period = $this->financeReportPeriod($claim, $basis, $zipExportService);
                 foreach ($claim->items as $item) {
                     fputcsv($file, [
-                        $claim->year,
-                        str_pad((string) $claim->month, 2, '0', STR_PAD_LEFT),
+                        $period['year'],
+                        str_pad((string) $period['month'], 2, '0', STR_PAD_LEFT),
                         $this->sanitizeForCsv($claim->resolvedCompany() ?? '-'),
                         $this->sanitizeForCsv($claim->employee->full_name ?? '-'),
                         $this->sanitizeForCsv($item->category->gl_code ?? '-'),
                         $this->sanitizeForCsv($item->category->name ?? '-'),
                         $this->sanitizeForCsv($item->description),
                         number_format($item->total_with_gst, 2),
+                        $this->sanitizeForCsv($claim->claim_number ?? '-'),
                     ]);
                 }
             }
@@ -2853,7 +2982,7 @@ class ExpenseClaimController extends Controller
         }
 
         try {
-            $resp = \Illuminate\Support\Facades\Http::timeout(10)->get(
+            $resp = Http::timeout(10)->get(
                 'https://maps.googleapis.com/maps/api/distancematrix/json',
                 [
                     'origins' => $origin,
@@ -3457,7 +3586,7 @@ class ExpenseClaimController extends Controller
         }
 
         $ext = pathinfo($item->receipt_path, PATHINFO_EXTENSION) ?: 'jpg';
-        $slug = \Illuminate\Support\Str::slug(\Illuminate\Support\Str::limit($item->description, 30, '')) ?: 'receipt';
+        $slug = Str::slug(Str::limit($item->description, 30, '')) ?: 'receipt';
         $name = $claim->claim_number.'-'.$slug.'.'.$ext;
 
         return Storage::disk('local')->download($item->receipt_path, $name, [
@@ -3566,7 +3695,7 @@ class ExpenseClaimController extends Controller
     /** Append an audit-log entry for the claim lifecycle (shown on Claim Reports). */
     private function logClaim(ExpenseClaim $claim, string $action, ?string $detail = null): void
     {
-        \App\Models\ExpenseClaimLog::create([
+        ExpenseClaimLog::create([
             'expense_claim_id' => $claim->id,
             'action' => $action,
             'actor_id' => Auth::id(),
@@ -3745,7 +3874,7 @@ class ExpenseClaimController extends Controller
     private function notifyHr(ExpenseClaim $claim, string $type): void
     {
         // HR approvers (incl. HR Executives) + superadmin — see User::scopeClaimHrRole.
-        $hrUsers = \App\Models\User::claimHrRole()
+        $hrUsers = User::claimHrRole()
             ->where('is_active', true)
             ->get();
 

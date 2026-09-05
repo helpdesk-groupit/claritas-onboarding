@@ -81,15 +81,46 @@
             </button>
         </div>
     </div>
-    <p class="text-muted small mb-3">
+    <p class="text-muted small mb-2">
         <i class="bi bi-shield-check me-1"></i>Only claims <strong>approved by both the Manager/PIC and HR</strong> are shown here — ready for posting into the accounting system.
         <span class="d-none d-sm-inline">Click a row to expand it.</span>
     </p>
+    <div class="alert {{ $basisIsCycle ? 'alert-success' : 'alert-warning' }} py-2 px-3 small mb-3">
+        @if($basisIsCycle)
+            <i class="bi bi-check2-circle me-1"></i><strong>Grouped by submission cycle</strong> — the 21st of the previous month to the 20th of this one, using each company's own cut-off day.
+            These are the same claims, in the same periods, as HR's <strong>Export approved PDFs (ZIP)</strong>, so the two downloads tally line for line. Match a CSV row to its PDF using the <strong>Claim Number</strong> column.
+        @else
+            <i class="bi bi-exclamation-triangle me-1"></i><strong>Grouped by expense month</strong> — the month the spending belongs to, whenever it was submitted.
+            This view <strong>does not tally with HR's approved-PDF ZIP</strong>: a claim for July expenses submitted in August is reported here under July but archived in the August cycle. Switch the basis back to <em>Submission cycle</em> to reconcile against the ZIP.
+        @endif
+    </div>
+
+    @if($unstampedClaims->isNotEmpty())
+        <div class="alert alert-danger py-2 px-3 small mb-3">
+            <i class="bi bi-exclamation-octagon me-1"></i>
+            <strong>{{ $unstampedClaims->count() }} approved claim{{ $unstampedClaims->count() === 1 ? '' : 's' }} cannot be reported by cycle</strong>
+            — {{ $unstampedClaims->count() === 1 ? 'it was' : 'they were' }} approved without being marked processed, so
+            HR's approved-PDF ZIP cannot archive {{ $unstampedClaims->count() === 1 ? 'it' : 'them' }} either.
+            {{ $unstampedClaims->count() === 1 ? 'It is' : 'They are' }} excluded from the totals below. Please report this to IT:
+            <span class="d-block mt-1">
+                @foreach($unstampedClaims as $stray)
+                    <span class="badge text-bg-light border me-1">{{ $stray->claim_number ?: 'Claim #'.$stray->id }} — {{ $stray->employee->full_name ?? 'unknown' }}</span>
+                @endforeach
+            </span>
+        </div>
+    @endif
 
     {{-- ── Filters ── --}}
     <div class="card mb-3">
         <div class="card-body py-3">
             <form method="GET" action="{{ route('finance.claim-reports') }}" class="row g-2 align-items-end">
+                <div class="col-12 col-md-3">
+                    <label class="form-label small fw-semibold mb-1">Report by</label>
+                    <select name="basis" class="form-select form-select-sm">
+                        <option value="cycle" {{ $basisIsCycle ? 'selected' : '' }}>Submission cycle (21st – 20th) — matches ZIP</option>
+                        <option value="expense_month" {{ $basisIsCycle ? '' : 'selected' }}>Expense month</option>
+                    </select>
+                </div>
                 <div class="col-6 col-md-2">
                     <label class="form-label small fw-semibold mb-1">Year</label>
                     <select name="year" class="form-select form-select-sm">
@@ -100,16 +131,23 @@
                         @endforelse
                     </select>
                 </div>
-                <div class="col-6 col-md-2">
-                    <label class="form-label small fw-semibold mb-1">Month</label>
+                <div class="col-6 col-md-3">
+                    <label class="form-label small fw-semibold mb-1">{{ $basisIsCycle ? 'Cycle' : 'Month' }}</label>
                     <select name="month" class="form-select form-select-sm">
-                        <option value="">All months</option>
+                        <option value="">{{ $basisIsCycle ? 'All cycles' : 'All months' }}</option>
                         @foreach($monthNames as $num => $name)
-                            <option value="{{ $num }}" {{ (string) $filterMonth === (string) $num ? 'selected' : '' }}>{{ $name }}</option>
+                            @php
+                                // Built here rather than glued onto the label inline: a directive
+                                // pushed up against a word compiles through as literal text.
+                                $monthLabel = $basisIsCycle && isset($cycleMonthLabels[$num])
+                                    ? $name.' ('.$cycleMonthLabels[$num].')'
+                                    : $name;
+                            @endphp
+                            <option value="{{ $num }}" {{ (string) $filterMonth === (string) $num ? 'selected' : '' }}>{{ $monthLabel }}</option>
                         @endforeach
                     </select>
                 </div>
-                <div class="col-6 col-md-3">
+                <div class="col-6 col-md-2">
                     <label class="form-label small fw-semibold mb-1">Company</label>
                     <select name="company" class="form-select form-select-sm">
                         <option value="">All companies</option>
@@ -165,7 +203,12 @@
                                 <button type="button" class="acc-head month-head" data-bs-toggle="collapse" data-bs-target="#cr-y{{ $yi }}-m{{ $mi }}" aria-expanded="{{ $monthOpen ? 'true' : 'false' }}">
                                     <span class="acc-head-left">
                                         <span class="acc-chip"><i class="bi bi-calendar3"></i></span>
-                                        <span><span class="acc-title">{{ $monthNames[$month] ?? $month }} {{ $year }}</span><span class="acc-sub d-block">{{ $plural($monthRows->pluck('company')->unique()->count(), 'company') }} · {{ $plural($monthRows->count(), 'line') }}</span><span class="acc-hint"></span></span>
+                                        @php
+                                            $cycleNote = $basisIsCycle && isset($cycleMonthLabels[$month])
+                                                ? $cycleMonthLabels[$month].' cycle · '
+                                                : '';
+                                        @endphp
+                                        <span><span class="acc-title">{{ $monthNames[$month] ?? $month }} {{ $year }}</span><span class="acc-sub d-block">{{ $cycleNote }}{{ $plural($monthRows->pluck('company')->unique()->count(), 'company') }} · {{ $plural($monthRows->count(), 'line') }}</span><span class="acc-hint"></span></span>
                                     </span>
                                     <span class="acc-head-right"><span class="acc-total">{{ $rm($monthRows->sum('amount')) }}</span><i class="bi bi-chevron-down acc-chev"></i></span>
                                 </button>

@@ -26,13 +26,24 @@ class ClaimReportsTest extends TestCase
         ]);
     }
 
+    /**
+     * `submitted_at` and `processed_at` are set for the approved statuses because a real claim
+     * always carries both — submission is what decides the cutoff cycle the report groups by,
+     * and processed_at is stamped at HR approval (hrApprove/bulkApprove) and is the ZIP export's
+     * gate. Leaving them null produced an `hr_approved` claim that no approval path can create,
+     * and once the finance report moved onto the cutoff cycle in 2026-09 such a claim was
+     * correctly excluded — the page now names it in a red banner instead of counting it.
+     */
     private function claimWithItem(string $status, string $company, string $name, ExpenseCategory $cat, string $desc, float $amount, int $month = 6): ExpenseClaim
     {
         $owner = Employee::factory()->create(['company' => $company, 'full_name' => $name]);
+        $approved = in_array($status, ['hr_approved', 'paid'], true);
         $claim = ExpenseClaim::create([
             'employee_id' => $owner->id, 'year' => 2026, 'month' => $month,
             'claim_number' => 'EC-2026-'.str_pad((string) $month, 2, '0', STR_PAD_LEFT).'-'.random_int(1000, 9999),
             'title' => 'x', 'status' => $status,
+            'submitted_at' => sprintf('2026-%02d-15 09:00:00', $month),
+            'processed_at' => $approved ? sprintf('2026-%02d-18 09:00:00', $month) : null,
         ]);
         $claim->items()->create([
             'expense_category_id' => $cat->id, 'expense_date' => '2026-06-10',

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Company;
 use App\Models\ExpenseClaim;
 use App\Models\ExpenseClaimPolicy;
 use Carbon\Carbon;
@@ -103,6 +104,26 @@ class ClaimZipExportService
             ->values();
     }
 
+    /**
+     * Distinct cutoff-cycle years across every processed claim, newest first — the year list
+     * the finance report offers when it reads by cycle.
+     *
+     * Deliberately NOT a `DISTINCT expense_claims.year`: that column is the reporting-month
+     * stamp, a different axis entirely, and even a DISTINCT on the submission year would be
+     * wrong at the boundary — a claim submitted 28 Dec belongs to the NEXT year's January
+     * cycle and would otherwise be missing from the year it is actually exported under.
+     */
+    public function availableCycleYears(): array
+    {
+        return ExpenseClaim::whereNotNull('processed_at')
+            ->with('employee:id,company')
+            ->get(['id', 'company', 'employee_id', 'submitted_at', 'created_at'])
+            ->map(fn (ExpenseClaim $claim) => $this->claimCycle($claim)['year'])
+            ->unique()->sortDesc()->values()
+            ->map(fn ($year) => (int) $year)
+            ->all();
+    }
+
     public function buildClaimPdf(ExpenseClaim $claim): string
     {
         // Per-IMAGE cost, so this matters for a single claim too, not just the batch export:
@@ -111,7 +132,7 @@ class ClaimZipExportService
         $this->raisePdfMemoryFloor();
 
         $claim->loadMissing('items.category', 'employee', 'managerApprover', 'manager', 'hrApprover');
-        $company = \App\Models\Company::forName($claim->resolvedCompany());
+        $company = Company::forName($claim->resolvedCompany());
         $items = $claim->items;
 
         return ClaimReportRenderer::render($claim, $company, $items);
