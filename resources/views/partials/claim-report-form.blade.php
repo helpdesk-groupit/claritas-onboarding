@@ -145,7 +145,13 @@
                                 the only copy that reaches the download — see
                                 App\Support\ClaimPdfPreview and ClaimReportRenderer.
                             --}}
-                            @php($pdfBudget = config('claims.pdf_preview.enabled', true) ? \App\Services\ClaimReportRenderer::rasterBudgetFor($att) : 0)
+                            {{-- Block form, NOT the inline @php(...): Blade stores raw php blocks with a
+                                 dotall, non-greedy /(?<!@)@php(.*?)@endphp/, so an inline @php() in a file
+                                 that has a later @endphp pairs with THAT and swallows every line between
+                                 them into one PHP block. Here it ate the <iframe> below and 500'd the claim
+                                 page in production. view:cache does not catch it — it writes the broken PHP
+                                 without checking it parses. --}}
+                            @php $pdfBudget = config('claims.pdf_preview.enabled', true) ? \App\Services\ClaimReportRenderer::rasterBudgetFor($att) : 0; @endphp
                             <iframe src="{{ route('secure.file', $att) }}" title="Attachment PDF" style="width:100%;height:600px;border:1px solid #e2e8f0;display:block;margin:0 0 6px;" class="d-print-none" loading="lazy"
                                 @if($pdfBudget > 0 && ! \App\Support\ClaimPdfPreview::isComplete($att, $pdfBudget)) data-claim-pdf-path="{{ $att }}" data-claim-pdf-src="{{ route('secure.file', $att) }}" data-claim-pdf-pages="{{ $pdfBudget }}" @endif></iframe>
                             @else
@@ -214,7 +220,13 @@
                                 the only copy that reaches the download — see
                                 App\Support\ClaimPdfPreview and ClaimReportRenderer.
                             --}}
-                            @php($pdfBudget = config('claims.pdf_preview.enabled', true) ? \App\Services\ClaimReportRenderer::rasterBudgetFor($att) : 0)
+                            {{-- Block form, NOT the inline @php(...): Blade stores raw php blocks with a
+                                 dotall, non-greedy /(?<!@)@php(.*?)@endphp/, so an inline @php() in a file
+                                 that has a later @endphp pairs with THAT and swallows every line between
+                                 them into one PHP block. Here it ate the <iframe> below and 500'd the claim
+                                 page in production. view:cache does not catch it — it writes the broken PHP
+                                 without checking it parses. --}}
+                            @php $pdfBudget = config('claims.pdf_preview.enabled', true) ? \App\Services\ClaimReportRenderer::rasterBudgetFor($att) : 0; @endphp
                             <iframe src="{{ route('secure.file', $att) }}" title="Attachment PDF" style="width:100%;height:600px;border:1px solid #e2e8f0;display:block;margin:0 0 6px;" class="d-print-none" loading="lazy"
                                 @if($pdfBudget > 0 && ! \App\Support\ClaimPdfPreview::isComplete($att, $pdfBudget)) data-claim-pdf-path="{{ $att }}" data-claim-pdf-src="{{ route('secure.file', $att) }}" data-claim-pdf-pages="{{ $pdfBudget }}" @endif></iframe>
                             @else
