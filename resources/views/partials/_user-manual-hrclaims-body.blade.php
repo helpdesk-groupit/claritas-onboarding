@@ -305,9 +305,9 @@
         <div class="um-modal">
             <div class="um-modal-head"><span><i class="bi bi-file-earmark-zip me-1" style="color:#dc2626;"></i> Export approved PDFs (ZIP)</span><span class="um-x"><i class="bi bi-x-lg"></i></span></div>
             <div class="um-modal-body">
-                <div style="color:#64748b;margin-bottom:8px;">Bundles <strong>processed (HR-approved)</strong> claims for the <strong>2026</strong> submission cycles into one ZIP of PDFs. Leave a filter on “All” to include everything.</div>
+                <div style="color:#64748b;margin-bottom:8px;">Bundles <strong>processed (HR-approved)</strong> claims for the <strong>2026</strong> approval cycles into one ZIP of PDFs. Leave a filter on “All” to include everything.</div>
                 <div style="margin-bottom:8px;">
-                    <div style="font-size:10.5px;font-weight:600;color:#1e293b;margin-bottom:3px;">Submission cycle</div>
+                    <div style="font-size:10.5px;font-weight:600;color:#1e293b;margin-bottom:3px;">Approval cycle</div>
                     <div class="um-fmock">July (21 Jun – 20 Jul) <i class="bi bi-chevron-down um-caret"></i></div>
                 </div>
                 <div>
@@ -325,13 +325,13 @@
                 <span class="um-btn um-btn-red"><i class="bi bi-download"></i> Download ZIP</span>
             </div>
         </div>
-        <div class="um-mockup-caption">The export dialog. Pick a <strong>submission cycle</strong> and any <strong>companies</strong>, or leave both open to include everything, then <strong>Download ZIP</strong>.</div>
+        <div class="um-mockup-caption">The export dialog. Pick an <strong>approval cycle</strong> and any <strong>companies</strong>, or leave both open to include everything, then <strong>Download ZIP</strong>.</div>
     </div>
 
     <ol class="um-step-list">
         <li>Click <strong>Approved PDFs (ZIP)</strong>.</li>
-        <li>Pick a <strong>Submission cycle</strong> — e.g. <em>July (21 Jun – 20 Jul)</em> — or leave it on
-            <strong>All cycles</strong>. Cycles run to each company's cutoff (the 20th by default).</li>
+        <li>Pick an <strong>Approval cycle</strong> — e.g. <em>July (21 Jun – 20 Jul)</em> — or leave it on
+            <strong>All cycles</strong>. Cycles run to each company's cutoff (the 20th by default) and are based on when a claim was fully approved, not when it was submitted.</li>
         <li>Tick one or more <strong>companies</strong>, or leave them all unticked to include every company.</li>
         <li>Click <strong>Download ZIP</strong>. You get <code>approved-claims-YYYY-MM-DD.zip</code>.</li>
     </ol>

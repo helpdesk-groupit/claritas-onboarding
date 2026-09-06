@@ -87,11 +87,11 @@
     </p>
     <div class="alert {{ $basisIsCycle ? 'alert-success' : 'alert-warning' }} py-2 px-3 small mb-3">
         @if($basisIsCycle)
-            <i class="bi bi-check2-circle me-1"></i><strong>Grouped by submission cycle</strong> — the 21st of the previous month to the 20th of this one, using each company's own cut-off day.
+            <i class="bi bi-check2-circle me-1"></i><strong>Grouped by approval cycle</strong> — the 21st of the previous month to the 20th of this one, using each company's own cut-off day and the date each claim was fully approved by both Manager and HR.
             These are the same claims, in the same periods, as HR's <strong>Export approved PDFs (ZIP)</strong>, so the two downloads tally line for line. Match a CSV row to its PDF using the <strong>Claim Number</strong> column.
         @else
-            <i class="bi bi-exclamation-triangle me-1"></i><strong>Grouped by expense month</strong> — the month the spending belongs to, whenever it was submitted.
-            This view <strong>does not tally with HR's approved-PDF ZIP</strong>: a claim for July expenses submitted in August is reported here under July but archived in the August cycle. Switch the basis back to <em>Submission cycle</em> to reconcile against the ZIP.
+            <i class="bi bi-exclamation-triangle me-1"></i><strong>Grouped by expense month</strong> — the month the spending belongs to, whenever it was submitted or approved.
+            This view <strong>does not tally with HR's approved-PDF ZIP</strong>: a claim for July expenses approved in August is reported here under July but archived in the August cycle. Switch the basis back to <em>Approval cycle</em> to reconcile against the ZIP.
         @endif
     </div>
 
@@ -117,7 +117,7 @@
                 <div class="col-12 col-md-3">
                     <label class="form-label small fw-semibold mb-1">Report by</label>
                     <select name="basis" class="form-select form-select-sm">
-                        <option value="cycle" {{ $basisIsCycle ? 'selected' : '' }}>Submission cycle (21st – 20th) — matches ZIP</option>
+                        <option value="cycle" {{ $basisIsCycle ? 'selected' : '' }}>Approval cycle (21st – 20th) — matches ZIP</option>
                         <option value="expense_month" {{ $basisIsCycle ? '' : 'selected' }}>Expense month</option>
                     </select>
                 </div>

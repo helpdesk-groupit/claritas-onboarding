@@ -8,6 +8,7 @@ use App\Models\ExpenseCategory;
 use App\Models\ExpenseClaim;
 use App\Models\User;
 use App\Services\ClaimZipExportService;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -15,22 +16,30 @@ use Tests\TestCase;
  * Finance's claim-report CSV must describe the SAME claims, in the SAME periods, as HR's
  * "Export approved PDFs (ZIP)" — otherwise the two downloads cannot be reconciled.
  *
- * They could not be, until 2026-09-05. The ZIP buckets a claim by its submission CUTOFF CYCLE
- * (21st of the previous month to the 20th of this one, per ClaimRulesService::submissionCycle),
- * while the finance report filtered on expense_claims.year/month — the reporting-month stamp the
- * employee picks in the New Claim modal, which is the month the SPENDING belongs to and has no
- * relationship to when the claim was submitted. The two are different axes, so they disagreed
- * structurally rather than at the edges: measured against production data that day, 34 of 91
- * approved claims (37%) fell into a different bucket depending on which button was pressed, and
- * the July 2026 pull returned RM 3,092.94 of claims as a ZIP against RM 11,035.18 as a CSV.
- *
- * The driver is ordinary, not exceptional: a claim for July expenses is normally submitted in
- * August, so it is stamped July and archived in the August cycle.
+ * They could not be, until 2026-09-05. The ZIP buckets a claim by its cutoff cycle (21st of the
+ * previous month to the 20th of this one, per ClaimRulesService::submissionCycle), while the
+ * finance report filtered on expense_claims.year/month — the reporting-month stamp the employee
+ * picks in the New Claim modal, which is the month the SPENDING belongs to. The two are different
+ * axes, so they disagreed structurally rather than at the edges: measured against production data
+ * that day, 34 of 91 approved claims (37%) fell into a different bucket depending on which button
+ * was pressed, and the July 2026 pull returned RM 3,092.94 of claims as a ZIP against RM
+ * 11,035.18 as a CSV.
  *
  * The finance report now defaults to the cutoff cycle and takes its claim set straight from
  * ClaimZipExportService — the same engine the ZIP job runs on — so the two cannot drift again.
  * The old expense-month view survives behind ?basis=expense_month for anyone posting by expense
  * period, and says on screen that it does not tally.
+ *
+ * Which DATE decides the cutoff cycle changed again the very next day (2026-09-06): it is now the
+ * date a claim was FULLY APPROVED (processed_at, stamped when HR approves), not the date it was
+ * submitted. A claim submitted in one cycle is routinely approved in a later one — a correction,
+ * a rejection/resubmission loop, a manager on leave — and both HR's and Finance's monthly pack are
+ * meant to reflect what actually landed as approved spend in a given 21st–20th window, not when
+ * the employee first typed the claim in. The reconciliation this suite pins (CSV agrees with ZIP)
+ * is untouched by that change — both still read the one shared ClaimZipExportService::claimCycle()
+ * — only the axis they both agree on moved. Fixtures below therefore place their scenario's month
+ * on the APPROVAL date; submission date defaults to the same moment (most scenarios here are not
+ * testing the gap between the two) except where a test explicitly proves the cycle ignores it.
  */
 class ClaimFinanceReportTallyTest extends TestCase
 {
@@ -55,16 +64,21 @@ class ClaimFinanceReportTallyTest extends TestCase
     }
 
     /**
-     * A fully-approved claim, stamped with a reporting month and submitted on a given date.
-     * The gap between the two is the whole subject of this suite, so both are explicit.
+     * A fully-approved claim, stamped with a reporting month and approved (processed_at) on a
+     * given date — the field that now decides which cutoff cycle it lands in. `submitted_at`
+     * defaults to the SAME moment as approval, since most fixtures below aren't testing the gap
+     * between the two; the one test that is (test_the_csv_and_the_zip_agree_on_which_cycle_a_
+     * claim_belongs_to, and its HR-CSV mirror) passes a different $submittedAt explicitly to
+     * prove the cycle ignores it.
      */
     private function approvedClaim(
         ExpenseCategory $cat,
         string $name,
         int $stampMonth,
-        string $submittedAt,
+        string $approvedAt,
         float $amount = 100.0,
-        string $company = 'Enlinea Sdn. Bhd.'
+        string $company = 'Enlinea Sdn. Bhd.',
+        ?string $submittedAt = null
     ): ExpenseClaim {
         $owner = Employee::factory()->create(['company' => $company, 'full_name' => $name]);
 
@@ -77,10 +91,10 @@ class ClaimFinanceReportTallyTest extends TestCase
             'title' => 'x',
             'event' => 'Test event',
             'status' => 'hr_approved',
-            'submitted_at' => $submittedAt,
-            // Stamped at HR approval; the ZIP export's gate. Deliberately a different day from
-            // submission, because the cycle must be decided by submission and not by approval.
-            'processed_at' => '2026-09-01 09:00:00',
+            'submitted_at' => $submittedAt ?? $approvedAt,
+            // Stamped at HR approval; the ZIP export's gate AND (since 2026-09-06) the cycle's
+            // reference date — not submission.
+            'processed_at' => $approvedAt,
         ]);
 
         $claim->items()->create([
@@ -109,18 +123,20 @@ class ClaimFinanceReportTallyTest extends TestCase
     // ── The tally itself ──────────────────────────────────────────────────
 
     /**
-     * The regression this suite exists for. A claim for July expenses submitted in August is
-     * archived in the August ZIP, so it must be reported in the August CSV — not July's.
+     * The regression this suite exists for, updated for the approval-dated cycle: a claim
+     * submitted in July but only approved in August is archived in the August ZIP, so it must be
+     * reported in the August CSV — not July's, whatever its submission date says.
      */
     public function test_the_csv_and_the_zip_agree_on_which_cycle_a_claim_belongs_to(): void
     {
         $user = $this->financeUser();
         $cat = $this->category();
 
-        // Spending in July, filed in August — the ordinary case, and the one that used to split.
-        $late = $this->approvedClaim($cat, 'Late Filer', 7, '2026-08-05 09:00:00', 250.0);
-        // Spending in July, filed inside July's own cycle.
-        $onTime = $this->approvedClaim($cat, 'Prompt Filer', 7, '2026-07-15 09:00:00', 90.0);
+        // Submitted in July, approved in August (e.g. after a correction loop) — the ordinary
+        // case, and the one that used to split before the cycle followed approval.
+        $late = $this->approvedClaim($cat, 'Late Approval', 7, '2026-08-05 09:00:00', 250.0, submittedAt: '2026-07-18 09:00:00');
+        // Submitted AND approved inside July's own cycle.
+        $onTime = $this->approvedClaim($cat, 'Prompt Approval', 7, '2026-07-15 09:00:00', 90.0);
 
         $zip = app(ClaimZipExportService::class);
         $this->assertSame(8, $zip->claimCycle($late)['month'], 'guard: the fixture must actually straddle two cycles');
@@ -145,11 +161,11 @@ class ClaimFinanceReportTallyTest extends TestCase
         $user = $this->financeUser();
         $cat = $this->category();
 
-        $this->approvedClaim($cat, 'A', 6, '2026-06-19 09:00:00');   // June cycle
-        $this->approvedClaim($cat, 'B', 6, '2026-06-25 09:00:00');   // rolls to July
-        $this->approvedClaim($cat, 'C', 7, '2026-08-05 09:00:00');   // August
-        $this->approvedClaim($cat, 'D', 8, '2026-08-20 09:00:00');   // August (cutoff day itself)
-        $this->approvedClaim($cat, 'E', 8, '2026-08-21 09:00:00');   // rolls to September
+        $this->approvedClaim($cat, 'A', 6, '2026-06-19 09:00:00');   // approved within June cycle
+        $this->approvedClaim($cat, 'B', 6, '2026-06-25 09:00:00');   // approved after the cutoff, rolls to July
+        $this->approvedClaim($cat, 'C', 7, '2026-08-05 09:00:00');   // approved in August
+        $this->approvedClaim($cat, 'D', 8, '2026-08-20 09:00:00');   // approved on the cutoff day itself — still August
+        $this->approvedClaim($cat, 'E', 8, '2026-08-21 09:00:00');   // approved the day after cutoff, rolls to September
 
         $zip = app(ClaimZipExportService::class);
 
@@ -171,7 +187,7 @@ class ClaimFinanceReportTallyTest extends TestCase
 
         $this->approvedClaim($cat, 'A', 7, '2026-08-05 09:00:00', 250.0);
         $this->approvedClaim($cat, 'B', 8, '2026-08-11 09:00:00', 40.5);
-        $this->approvedClaim($cat, 'C', 8, '2026-08-25 09:00:00', 999.0); // September — must not count
+        $this->approvedClaim($cat, 'C', 8, '2026-08-25 09:00:00', 999.0); // approved in September — must not count
 
         $zipTotal = app(ClaimZipExportService::class)->matchingClaims(2026, 8)->sum('total_with_gst');
         $this->assertEqualsWithDelta(290.5, $zipTotal, 0.001, 'guard: the fixture must exclude the September claim');
@@ -192,7 +208,7 @@ class ClaimFinanceReportTallyTest extends TestCase
     {
         $user = $this->financeUser();
         $cat = $this->category();
-        $late = $this->approvedClaim($cat, 'Late Filer', 7, '2026-08-05 09:00:00');
+        $late = $this->approvedClaim($cat, 'Late Approval', 7, '2026-08-05 09:00:00');
 
         // No ?basis= at all: an operator who changes nothing must get the reconcilable view.
         $this->assertStringNotContainsString($late->claim_number, $this->csvBody($user, ['year' => 2026, 'month' => 7]));
@@ -203,7 +219,7 @@ class ClaimFinanceReportTallyTest extends TestCase
     {
         $user = $this->financeUser();
         $cat = $this->category();
-        $late = $this->approvedClaim($cat, 'Late Filer', 7, '2026-08-05 09:00:00');
+        $late = $this->approvedClaim($cat, 'Late Approval', 7, '2026-08-05 09:00:00');
 
         $csv = $this->csvBody($user, [
             'year' => 2026, 'month' => 7,
@@ -252,7 +268,7 @@ class ClaimFinanceReportTallyTest extends TestCase
     {
         $user = $this->financeUser();
         $cat = $this->category();
-        $late = $this->approvedClaim($cat, 'Late Filer', 7, '2026-08-05 09:00:00');
+        $late = $this->approvedClaim($cat, 'Late Approval', 7, '2026-08-05 09:00:00');
 
         $csv = $this->csvBody($user, ['year' => 2026, 'month' => 7, 'basis' => 'whatever']);
         $this->assertStringNotContainsString($late->claim_number, $csv);
@@ -277,9 +293,15 @@ class ClaimFinanceReportTallyTest extends TestCase
         // Wind it back to the state bulk approval acts on.
         $claim->forceFill(['status' => 'manager_approved', 'processed_at' => null])->save();
 
-        $this->actingAs($hr)
-            ->post(route('hr.claims.bulk-approve'), ['claim_ids' => [$claim->id]])
-            ->assertRedirect();
+        // bulkApprove() stamps processed_at = now(), and the cycle is decided by that stamp
+        // since 2026-09-06 — so the approval has to actually land inside the August cutoff
+        // cycle for this to prove anything, hence pinning the clock rather than letting the
+        // real "now" (whatever day the suite happens to run on) decide the outcome.
+        $this->travelTo(Carbon::parse('2026-08-11 10:00:00'), function () use ($hr, $claim) {
+            $this->actingAs($hr)
+                ->post(route('hr.claims.bulk-approve'), ['claim_ids' => [$claim->id]])
+                ->assertRedirect();
+        });
 
         $claim->refresh();
         $this->assertSame('hr_approved', $claim->status);
@@ -330,9 +352,9 @@ class ClaimFinanceReportTallyTest extends TestCase
     }
 
     /**
-     * A December claim submitted after the cutoff belongs to the NEXT year's January cycle, so
+     * A December claim approved after the cutoff belongs to the NEXT year's January cycle, so
      * the year list has to be derived from the cycle and not from a DISTINCT on either the
-     * reporting stamp or the submission year — otherwise the year it is exported under is not
+     * reporting stamp or the approval year — otherwise the year it is exported under is not
      * offered on the page that exports it.
      */
     public function test_the_year_list_offers_a_cycle_year_no_column_records(): void
@@ -400,8 +422,8 @@ class ClaimFinanceReportTallyTest extends TestCase
     public function test_the_hr_csv_reports_an_approved_claim_in_the_same_cycle_as_the_zip(): void
     {
         $cat = $this->category();
-        $late = $this->approvedClaim($cat, 'Late Filer', 7, '2026-08-05 09:00:00');
-        $onTime = $this->approvedClaim($cat, 'Prompt Filer', 7, '2026-07-15 09:00:00');
+        $late = $this->approvedClaim($cat, 'Late Approval', 7, '2026-08-05 09:00:00', submittedAt: '2026-07-18 09:00:00');
+        $onTime = $this->approvedClaim($cat, 'Prompt Approval', 7, '2026-07-15 09:00:00');
 
         $july = $this->hrCsv(['year' => 2026, 'month' => 7]);
         $this->assertStringContainsString($onTime->claim_number, $july);
@@ -416,6 +438,9 @@ class ClaimFinanceReportTallyTest extends TestCase
      * The trap this export sets. Its purpose includes claims that are NOT approved, so it must
      * never be routed through ClaimZipExportService::matchingClaims() — that gates on
      * processed_at and would silently empty most of the file while still returning a valid CSV.
+     * These fixtures are un-approved AFTER creation (processed_at nulled), so their cycle falls
+     * back to submitted_at — which defaults to the same month as the approval date they were
+     * created with, and is left untouched by the forceFill below.
      */
     public function test_the_hr_csv_still_carries_claims_that_are_not_approved(): void
     {
@@ -432,8 +457,8 @@ class ClaimFinanceReportTallyTest extends TestCase
         $csv = $this->hrCsv(['year' => 2026, 'month' => 8]);
 
         $this->assertStringContainsString($approved->claim_number, $csv);
-        $this->assertStringContainsString($pending->claim_number, $csv, 'a manager-approved claim must survive the cycle filter');
-        $this->assertStringContainsString($rejected->claim_number, $csv, 'a rejected claim must survive the cycle filter');
+        $this->assertStringContainsString($pending->claim_number, $csv, 'a manager-approved claim must survive the cycle filter via its submission-date fallback');
+        $this->assertStringContainsString($rejected->claim_number, $csv, 'a rejected claim must survive the cycle filter via its submission-date fallback');
     }
 
     public function test_the_hr_csv_still_excludes_drafts_unless_asked_for_them(): void
@@ -449,7 +474,7 @@ class ClaimFinanceReportTallyTest extends TestCase
     public function test_the_hr_csv_names_its_basis_and_can_still_report_by_expense_month(): void
     {
         $cat = $this->category();
-        $late = $this->approvedClaim($cat, 'Late Filer', 7, '2026-08-05 09:00:00');
+        $late = $this->approvedClaim($cat, 'Late Approval', 7, '2026-08-05 09:00:00');
 
         $cycle = $this->hrCsv(['year' => 2026, 'month' => 8]);
         $this->assertStringContainsString('Cycle (21st-20th)', $cycle);
@@ -483,7 +508,7 @@ class ClaimFinanceReportTallyTest extends TestCase
         $this->approvedClaim($cat, 'A', 8, '2026-08-11 09:00:00');
 
         $this->actingAs($user)->get(route('finance.claim-reports', ['year' => 2026]))
-            ->assertOk()->assertSee('Grouped by submission cycle');
+            ->assertOk()->assertSee('Grouped by approval cycle');
 
         $this->actingAs($user)->get(route('finance.claim-reports', [
             'year' => 2026, 'basis' => ExpenseClaimController::REPORT_BASIS_EXPENSE_MONTH,

@@ -2287,13 +2287,13 @@ class ExpenseClaimController extends Controller
 
         $stats = $this->getClaimStats();
 
-        // Approved-PDF ZIP export groups by the SUBMISSION CUTOFF CYCLE (e.g. 21 Jun–20 Jul = the
-        // "July" cycle) using each company's own cutoff day, and only includes PROCESSED claims
-        // (processed_at stamped at HR approval), regardless of which day within the cycle they
-        // were approved on. Drive the modal's month/company options from the same
-        // ClaimZipExportService the background export job uses, so the dropdown can never disagree
-        // with what the download actually returns. The page's $selectedYear (reporting-year, for
-        // the accordion) is reused as the cycle-year for the export.
+        // Approved-PDF ZIP export groups by the APPROVAL CUTOFF CYCLE (e.g. 21 Jun–20 Jul = the
+        // "July" cycle) using each company's own cutoff day and the date each claim was fully
+        // approved (processed_at, stamped at HR approval) — only PROCESSED claims are included
+        // at all. Drive the modal's month/company options from the same ClaimZipExportService
+        // the background export job uses, so the dropdown can never disagree with what the
+        // download actually returns. The page's $selectedYear (reporting-year, for the
+        // accordion) is reused as the cycle-year for the export.
         $zipExportService = app(ClaimZipExportService::class);
         $matchedThisYear = $zipExportService->matchingClaims($selectedYear, null, []);
         $inYear = $matchedThisYear->map(fn ($c) => ['claim' => $c, 'cycle' => $zipExportService->claimCycle($c), 'company' => $c->resolvedCompany()]);
@@ -2543,17 +2543,23 @@ class ExpenseClaimController extends Controller
     private const FINANCE_REPORT_STATUSES = ['hr_approved', 'paid'];
 
     /**
-     * The submission cutoff cycle — 21st of the previous month to the 20th of this one, using
-     * each company's own cutoff day. The DEFAULT, because it is the period the approved-PDF ZIP
-     * export archives by, and finance reconciles the CSV against that ZIP.
+     * The approval cutoff cycle — 21st of the previous month to the 20th of this one, using
+     * each company's own cutoff day and the date each claim was FULLY APPROVED (processed_at,
+     * stamped when HR approves — not when it was submitted). The DEFAULT, because it is the
+     * period the approved-PDF ZIP export archives by, and finance reconciles the CSV against
+     * that ZIP. Changed 2026-09-06 from a submission-dated cycle to an approval-dated one: a
+     * claim submitted in one cycle is routinely approved in a later one (corrections, rejection/
+     * resubmission, a manager on leave), and both packs are meant to reflect what actually
+     * landed as approved spend in that 21st–20th window.
      */
     public const REPORT_BASIS_CYCLE = 'cycle';
 
     /**
      * The reporting-month stamp (expense_claims.year/month) the employee picks in the New Claim
-     * modal — i.e. the month the EXPENSE belongs to, regardless of when it was submitted. Kept
-     * as an option for anyone posting by expense period, but it does NOT tally with the ZIP:
-     * a claim for July expenses is normally submitted in August and so sits in the August cycle.
+     * modal — i.e. the month the EXPENSE belongs to, regardless of when it was submitted or
+     * approved. Kept as an option for anyone posting by expense period, but it does NOT tally
+     * with the ZIP: a claim for July expenses is normally submitted (and approved) in August
+     * and so sits in the August cycle.
      */
     public const REPORT_BASIS_EXPENSE_MONTH = 'expense_month';
 
@@ -2778,7 +2784,7 @@ class ExpenseClaimController extends Controller
     /**
      * HR: Export claims to CSV.
      *
-     * Periods by submission cutoff cycle (21st–20th) by default, like the finance report and
+     * Periods by approval cutoff cycle (21st–20th) by default, like the finance report and
      * HR's approved-PDF ZIP, so an HR-approved claim appears in the same period in all three.
      * `?basis=expense_month` keeps the old reporting-stamp answer.
      *
@@ -2789,8 +2795,10 @@ class ExpenseClaimController extends Controller
      * cancelled, and drafts via ?status=draft), so routing it through that gate would silently
      * empty most of the file. It instead uses the same two primitives — cycleFetchRange() to
      * bound the fetch and claimCycle() to decide membership — which are pure date logic and
-     * answer for a claim of any status. For approved claims that is the same answer the ZIP
-     * gives, which is what makes the three tally.
+     * answer for a claim of any status: an approved claim keys off processed_at exactly like the
+     * ZIP does, and an unapproved one (which has none) falls back to submitted_at/created_at as a
+     * placeholder period. For approved claims that is the same answer the ZIP gives, which is
+     * what makes the three tally.
      */
     public function export(Request $request)
     {
@@ -2813,13 +2821,16 @@ class ExpenseClaimController extends Controller
         if ($basis === self::REPORT_BASIS_CYCLE) {
             // The cutoff day is per company, so a cycle cannot be expressed as one SQL range.
             // Bound the fetch to the calendar months a cycle can touch, then decide membership
-            // per claim below — exactly what matchingClaims() does.
+            // per claim below — exactly what matchingClaims() does. COALESCE mirrors
+            // claimCycle()'s own fallback chain exactly (processed_at, else submitted_at, else
+            // created_at) — this export (unlike matchingClaims()) also carries claims with no
+            // processed_at yet, so the bound has to cover their placeholder period too.
             [$rangeStart, $rangeEnd] = $zipExportService->cycleFetchRange($year, $month);
             if ($rangeStart) {
-                $query->whereRaw('COALESCE(submitted_at, created_at) >= ?', [$rangeStart->toDateTimeString()]);
+                $query->whereRaw('COALESCE(processed_at, submitted_at, created_at) >= ?', [$rangeStart->toDateTimeString()]);
             }
             if ($rangeEnd) {
-                $query->whereRaw('COALESCE(submitted_at, created_at) < ?', [$rangeEnd->toDateTimeString()]);
+                $query->whereRaw('COALESCE(processed_at, submitted_at, created_at) < ?', [$rangeEnd->toDateTimeString()]);
             }
         } else {
             if ($year) {

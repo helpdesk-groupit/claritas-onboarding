@@ -268,7 +268,8 @@
      notes. This form kicks the job off, then #exportZipProgress polls until it's ready. --}}
 @php
     // $approvedForExport / $exportMonths / $exportCompanies come from the controller and are
-    // scoped by SUBMISSION date (when the claim was submitted), not the reporting month stamp.
+    // scoped by APPROVAL date (when HR approved the claim, processed_at), not the reporting
+    // month stamp and not the submission date.
     $exportMonthNames = [1=>'January',2=>'February',3=>'March',4=>'April',5=>'May',6=>'June',7=>'July',8=>'August',9=>'September',10=>'October',11=>'November',12=>'December'];
 @endphp
 <div class="modal fade" id="exportZipModal" tabindex="-1" aria-labelledby="exportZipTitle" aria-hidden="true">
@@ -280,20 +281,20 @@
             </div>
             <div class="modal-body">
                 @if($approvedForExport->isEmpty())
-                    <div class="alert alert-warning mb-0 py-2 px-3"><i class="bi bi-info-circle me-1"></i>No processed (HR-approved) claims in the {{ $selectedYear }} submission cycles yet.</div>
+                    <div class="alert alert-warning mb-0 py-2 px-3"><i class="bi bi-info-circle me-1"></i>No processed (HR-approved) claims in the {{ $selectedYear }} approval cycles yet.</div>
                 @else
                 <form id="exportZipForm">
                     <input type="hidden" name="year" value="{{ $selectedYear }}">
-                    <p class="text-muted small mb-3">Bundles <strong>every processed (HR-approved)</strong> claim for the <strong>{{ $selectedYear }}</strong> submission cycle into one ZIP of PDFs — however many have been approved, whenever they were approved. Leave a filter on &ldquo;All&rdquo; to include everything.</p>
+                    <p class="text-muted small mb-3">Bundles <strong>every processed (HR-approved)</strong> claim for the <strong>{{ $selectedYear }}</strong> approval cycle into one ZIP of PDFs — however many have been approved, whenever they were approved. Leave a filter on &ldquo;All&rdquo; to include everything.</p>
                     <div class="mb-3">
-                        <label class="form-label small fw-semibold mb-1">Submission cycle</label>
+                        <label class="form-label small fw-semibold mb-1">Approval cycle</label>
                         <select name="month" class="form-select form-select-sm">
                             <option value="">All cycles</option>
                             @foreach($exportMonths as $m)
                             <option value="{{ $m }}">{{ $exportMonthNames[(int) $m] ?? $m }}@isset($exportMonthLabels[(int) $m]) ({{ $exportMonthLabels[(int) $m] }})@endisset</option>
                             @endforeach
                         </select>
-                        <div class="form-text small">Grouped by the <em>submission cutoff cycle</em> (each company&rsquo;s cutoff, default the 20th). A claim submitted after a month&rsquo;s cutoff counts in the next month&rsquo;s cycle — e.g. submitted 25 Jun &rarr; July.</div>
+                        <div class="form-text small">Grouped by the <em>approval cutoff cycle</em> (each company&rsquo;s cutoff, default the 20th) &mdash; the date a claim was fully approved by both Manager and HR, not when it was submitted. A claim approved after a month&rsquo;s cutoff counts in the next month&rsquo;s cycle &mdash; e.g. approved 25 Jun &rarr; July.</div>
                     </div>
                     <div class="mb-1">
                         <label class="form-label small fw-semibold mb-1">Company <span class="text-muted fw-normal">(tick one or more)</span></label>

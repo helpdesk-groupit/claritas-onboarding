@@ -37,10 +37,23 @@ class ClaimZipExportService
         return $this->companyCutoffCache[$key];
     }
 
-    /** The submission cutoff cycle [year, month] a claim falls in, using its company's cutoff. */
+    /**
+     * The approval cutoff cycle [year, month] a claim falls in, using its company's cutoff —
+     * 21st of the previous month to the 20th of this one, measured from the date the claim was
+     * fully approved (processed_at, stamped when HR approves — see hrApprove()/bulkApprove()),
+     * NOT the date it was submitted (changed 2026-09-06, reversing the 2026-09-05 submission-
+     * cycle design). A claim submitted in one cycle is often approved in a later one
+     * (corrections, rejection/resubmission loops, a manager on leave), and both HR's and
+     * Finance's monthly pack are meant to reflect what actually landed as approved spend in
+     * that 21st–20th window, not when the employee first typed the claim in.
+     *
+     * Falls back to submitted_at/created_at only for a claim with no processed_at yet — which
+     * matchingClaims() never passes in (it gates on processed_at IS NOT NULL), but the HR "all
+     * statuses" CSV export does, since its whole purpose includes claims that are not approved.
+     */
     public function claimCycle(ExpenseClaim $claim): array
     {
-        $when = $claim->submitted_at ?? $claim->created_at;
+        $when = $claim->processed_at ?? $claim->submitted_at ?? $claim->created_at;
 
         return ClaimRulesService::submissionCycle($when, $this->companyCutoffDay($claim->resolvedCompany()));
     }
@@ -87,12 +100,15 @@ class ClaimZipExportService
             $q->whereIn('company', $companies);
         }
 
+        // The coarse bound reads processed_at directly (never a COALESCE) because every row
+        // here already satisfies whereNotNull('processed_at') above — that is also the field
+        // claimCycle() keys on for a processed claim, so the two stay in exact lockstep.
         [$rangeStart, $rangeEnd] = $this->cycleFetchRange($year, $month);
         if ($rangeStart) {
-            $q->whereRaw('COALESCE(submitted_at, created_at) >= ?', [$rangeStart->toDateTimeString()]);
+            $q->where('processed_at', '>=', $rangeStart->toDateTimeString());
         }
         if ($rangeEnd) {
-            $q->whereRaw('COALESCE(submitted_at, created_at) < ?', [$rangeEnd->toDateTimeString()]);
+            $q->where('processed_at', '<', $rangeEnd->toDateTimeString());
         }
 
         return $q->orderByDesc('processed_at')->get()
@@ -109,15 +125,15 @@ class ClaimZipExportService
      * the finance report offers when it reads by cycle.
      *
      * Deliberately NOT a `DISTINCT expense_claims.year`: that column is the reporting-month
-     * stamp, a different axis entirely, and even a DISTINCT on the submission year would be
-     * wrong at the boundary — a claim submitted 28 Dec belongs to the NEXT year's January
+     * stamp, a different axis entirely, and even a DISTINCT on the approval year would be
+     * wrong at the boundary — a claim approved 28 Dec belongs to the NEXT year's January
      * cycle and would otherwise be missing from the year it is actually exported under.
      */
     public function availableCycleYears(): array
     {
         return ExpenseClaim::whereNotNull('processed_at')
             ->with('employee:id,company')
-            ->get(['id', 'company', 'employee_id', 'submitted_at', 'created_at'])
+            ->get(['id', 'company', 'employee_id', 'processed_at', 'submitted_at', 'created_at'])
             ->map(fn (ExpenseClaim $claim) => $this->claimCycle($claim)['year'])
             ->unique()->sortDesc()->values()
             ->map(fn ($year) => (int) $year)
