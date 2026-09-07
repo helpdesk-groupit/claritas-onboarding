@@ -851,6 +851,29 @@
         markCoveragePeriod(c);
         checkItemDateMonth(c);
     }
+    /**
+     * The employee corrected the date printed on the receipt.
+     *
+     * That date is what the server's month guard judges, so this is the ONLY control on the
+     * form that can clear a block caused by the scan misreading it. Correcting the Date of
+     * Expense above does not reach that guard. Stamped as hand-entered so the report never
+     * shows a typed date as one read off the document, and the Date of Expense follows it
+     * when it is still sitting outside this claim's month — the same courtesy
+     * applyCoverageDate() does, and for the same reason: leaving them contradicting each
+     * other just moves the block one field along.
+     */
+    function onPrintedDateEdited(c) {
+        c.dataset.dateManual = '1';
+        const dateEl = q(c, '.cc-i-date'), printedEl = q(c, '.cc-c-date');
+        if (dateEl && printedEl && printedEl.value) {
+            const min = dateEl.getAttribute('min'), max = dateEl.getAttribute('max');
+            const outOfMonth = min && max && (dateEl.value < min || dateEl.value > max);
+            const printedFits = min && max && printedEl.value >= min && printedEl.value <= max;
+            if ((!dateEl.value || outOfMonth) && printedFits) { dateEl.value = printedEl.value; }
+        }
+        markCoveragePeriod(c);
+        checkItemDateMonth(c);
+    }
     function filterAppr(c, query) {
         query = (query || '').trim().toLowerCase();
         const coEl = q(c,'.cc-appr-company'); const co = coEl ? coEl.value : '';
@@ -867,7 +890,9 @@
         o = o || {};
         q(c,'.cc-c-company').value = o.company || '';
         q(c,'.cc-c-itemdesc').value = o.itemdesc || '';
-        q(c,'.cc-c-date').value = o.date || '';
+        // Editable like the period below, so it is normalised to the ISO an <input type="date">
+        // needs — a stored record may carry whatever the scan wrote.
+        q(c,'.cc-c-date').value = normalizeDate(o.date) || '';
         q(c,'.cc-c-paidby').value = o.paidby || '';
         q(c,'.cc-c-total').value = (o.total !== undefined && o.total !== null && o.total !== '') ? o.total : '';
         const calc = q(c,'.cc-c-calc'), calcWrap = c.querySelector('.cc-c-calc-wrap');
@@ -884,6 +909,8 @@
         // pending "typed by hand" mark is cleared. o.period_manual re-asserts it when we are
         // restoring an item whose period WAS typed (startEdit).
         c.dataset.periodManual = o.period_manual ? '1' : '';
+        // Same provenance rule for the printed date, which is editable for the same reason.
+        c.dataset.dateManual = o.date_manual ? '1' : '';
         markCoveragePeriod(c);
     }
 
@@ -1307,6 +1334,9 @@
             // Restoring an item whose period was typed must keep saying so — otherwise editing
             // an item silently upgrades a hand-entered period to "read from the receipt".
             period_manual: ocr.period_source === 'manual',
+            // Same for a hand-corrected receipt date — re-opening the item must not silently
+            // upgrade it to "read from the receipt".
+            date_manual: ocr.date_source === 'manual',
             paidby: ocr.paid_by || '', total: (ocr.total !== undefined && ocr.total !== null ? ocr.total : ''), calc: ocr.calculation || '' };
     }
     // Lock/unlock the editable item fields + Save button (used by the "re-scan to edit" flow).
@@ -1495,6 +1525,7 @@
         // Provenance only — it changes the WORDING on the report, never whether the item is
         // accepted, so a wrong flag cannot buy anything.
         fd.append('c_period_manual', c.dataset.periodManual === '1' ? '1' : '');
+        fd.append('c_date_manual', c.dataset.dateManual === '1' ? '1' : '');
         fd.append('c_paidby', q(c,'.cc-c-paidby').value || '');
         fd.append('c_total', q(c,'.cc-c-total').value || '');
         fd.append('c_calc', q(c,'.cc-c-calc').value || '');
@@ -1881,7 +1912,8 @@
             note.style.cssText = 'background:#fffbeb;border:1px solid #fcd34d;color:#92400e;';
             note.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>This receipt is dated <strong>' + escHtml(rcpt) +
                 '</strong>, but this is a <strong>' + escHtml(claimMonth) + '</strong> claim. Each receipt must be claimed under its own month — please open or create a <strong>' +
-                escHtml(rcpt) + '</strong> claim and add it there instead.';
+                escHtml(rcpt) + '</strong> claim and add it there instead. If the scan misread the printed date, correct it in ' +
+                '<strong>Date on receipt</strong> under Receipt details.';
         } else {
             note.style.cssText = 'background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;';
             note.innerHTML = '<i class="bi bi-calendar-check me-1"></i>This is a <strong>' + escHtml(claimMonth) +
@@ -1897,6 +1929,7 @@
         if (e.target.matches('.cc-i-amount, .cc-i-gst')) { const c = cardOf(e.target); if (c) { syncTotal(c); const er = q(c,'.cc-item-error'); if (er) er.classList.add('d-none'); } }
         if (e.target.matches('.cc-i-date')) { const c = cardOf(e.target); if (c) checkItemDateMonth(c); }
         if (e.target.matches('.cc-c-period-start, .cc-c-period-end')) { const c = cardOf(e.target); if (c) onCoveragePeriodEdited(c); }
+        if (e.target.matches('.cc-c-date')) { const c = cardOf(e.target); if (c) onPrintedDateEdited(c); }
         if (e.target.matches('.cc-i-km')) { const c = cardOf(e.target); if (c) computeMileage(c); }
         if (e.target.matches('.cc-appr-search')) { const c = cardOf(e.target); if (c) { q(c,'.cc-appr-id').value = ''; filterAppr(c, e.target.value); q(c,'.cc-appr-list').classList.remove('d-none'); } }
         // Auto-save the claim header (event / project) as the user types.
@@ -1923,6 +1956,7 @@
         // A date picker fires change, not always input — bind both or a click-picked period
         // is never noticed.
         if (e.target.matches('.cc-c-period-start, .cc-c-period-end')) { const c = cardOf(e.target); if (c) onCoveragePeriodEdited(c); }
+        if (e.target.matches('.cc-c-date')) { const c = cardOf(e.target); if (c) onPrintedDateEdited(c); }
         // Approver-company switch (cross-company events): drop a now-out-of-company approver
         // and re-open the filtered list for the newly chosen company.
         if (e.target.matches('.cc-appr-company')) {

@@ -254,7 +254,15 @@
                                 <div class="fw-semibold mb-1" style="text-transform:uppercase;letter-spacing:.04em;color:#475569;">Receipt details</div>
                                 <div style="margin-bottom:2px;"><strong>Company:</strong> {{ $oc['company'] ?? '—' }}</div>
                                 <div style="margin-bottom:2px;"><strong>Item:</strong> {{ $oc['item_description'] ?? '—' }}</div>
-                                <div style="margin-bottom:2px;"><strong>Date:</strong> {{ $oc['date'] ?? '—' }}</div>
+                                {{-- The date PRINTED on the receipt. Marked when the employee
+                                     corrected it by hand, because this is the date the month
+                                     guard was judged on — an approver holding the image has to
+                                     be able to tell a correction from a machine reading. --}}
+                                <div style="margin-bottom:2px;"><strong>Date:</strong> {{ $oc['date'] ?? '—' }}
+                                    @if(($oc['date_source'] ?? null) === 'manual')
+                                    <span class="text-warning-emphasis">(entered by hand)</span>
+                                    @endif
+                                </div>
                                 {{-- The period the receipt says it pays for. Printed ONLY when the
                                      receipt states one — it is the whole explanation for a receipt
                                      dated outside the claim month (a season pass paid in advance),

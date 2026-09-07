@@ -199,7 +199,11 @@
                             <div style="font-weight:bold;text-transform:uppercase;margin-bottom:3px;color:#475569;">Receipt details</div>
                             <div><strong>Company:</strong> {{ $oc['company'] ?? '—' }}</div>
                             <div><strong>Item:</strong> {{ $oc['item_description'] ?? '—' }}</div>
-                            <div><strong>Date:</strong> {{ $oc['date'] ?? '—' }}</div>
+                            {{-- Marked when the employee corrected the printed date by hand: this
+                                 PDF is the copy of record the approver signs, and it is the date
+                                 the month guard was judged on. Both @-directives sit after a `}}`
+                                 or a `)`, never glued to a word — see the Blade note in CLAUDE.md. --}}
+                            <div><strong>Date:</strong> {{ $oc['date'] ?? '—' }}@if(($oc['date_source'] ?? null) === 'manual') (entered by hand)@endif</div>
                             {{-- Printed only when the receipt states a period it pays for — it is
                                  the whole explanation for a receipt dated outside the claim month
                                  (a season pass paid in advance), and this PDF is the copy of record

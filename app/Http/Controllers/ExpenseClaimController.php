@@ -931,6 +931,9 @@ class ExpenseClaimController extends Controller
             // figure read off the document from one a person typed. Only stamped when the
             // period survived normalisation — labelling nothing would be noise.
             'period_source' => $coverage && $this->coverageWasTyped($request) ? 'manual' : null,
+            // Same question about the printed date, which the employee may now correct when the
+            // scan misreads it. Only stamped when there IS a date, for the same reason.
+            'date_source' => trim((string) $request->input('c_date')) !== '' && $this->receiptDateWasTyped($request) ? 'manual' : null,
             'paid_by' => $request->input('c_paidby'),
             'total' => $request->input('c_total'),
             'calculation' => $request->input('c_calc'),
@@ -3842,10 +3845,16 @@ class ExpenseClaimController extends Controller
                 ."Please open or create a {$moveTo} claim and add this receipt there instead.";
         }
 
+        // The date named here is the one the SCAN read, and the scan can be wrong — a faint
+        // thermal receipt misread by a single digit puts an in-month receipt out of month with
+        // no hint that a misreading is even possible. So the message names the field that fixes
+        // it. Without this line the employee's only visible option is to file the claim under a
+        // month their receipt does not belong to.
         return "Sorry — this receipt can’t be added to this report. This report is for {$claimMonth}, "
             ."but the receipt is dated {$receiptDate->format('j M Y')}, which falls in {$receiptMonth}. "
             .'Each receipt must be claimed under a report for its own month. '
-            ."Please open or create a {$receiptMonth} claim and add this receipt there instead.";
+            ."Please open or create a {$receiptMonth} claim and add this receipt there instead — "
+            .'or, if the scan misread the printed date, correct it in “Date on receipt” under Receipt details and add it again.';
     }
 
     /**
@@ -3868,6 +3877,19 @@ class ExpenseClaimController extends Controller
     private function coverageWasTyped(Request $request): bool
     {
         return $request->boolean('c_period_manual');
+    }
+
+    /**
+     * Did the employee correct the date printed on the receipt, rather than the scan reading it?
+     *
+     * Provenance only — it never decides whether the date is accepted, so a forged flag buys
+     * nothing. Exactly the rule c_period_manual follows: what it changes is what the report
+     * SAYS about the figure, which is what lets an approver holding the receipt image tell a
+     * corrected reading from a machine-read one.
+     */
+    private function receiptDateWasTyped(Request $request): bool
+    {
+        return $request->boolean('c_date_manual');
     }
 
     /**

@@ -196,7 +196,7 @@
          period, which the employee may type or correct by hand. Sent with the item. --}}
     <div class="row g-2 mt-1">
         <div class="col-12">
-            <label class="form-label small mb-0 fw-bold"><i class="bi bi-receipt-cutoff me-1 text-info"></i>Receipt details <span class="fw-normal text-muted">(read from the attachment — for the report; only the covered period can be corrected by hand)</span></label>
+            <label class="form-label small mb-0 fw-bold"><i class="bi bi-receipt-cutoff me-1 text-info"></i>Receipt details <span class="fw-normal text-muted">(read from the attachment — for the report; the date and the covered period can be corrected by hand)</span></label>
         </div>
         <div class="col-md-3">
             <label class="form-label small mb-1">Company</label>
@@ -206,9 +206,17 @@
             <label class="form-label small mb-1">Item description</label>
             <input type="text" class="form-control form-control-sm bg-light cc-c-itemdesc" readonly placeholder="—">
         </div>
+        {{-- EDITABLE, for the same reason the covered period is. This is the date the month
+             guard actually judges (ocrReceiptDateOutOfPeriod reads c_date, NOT the Date of
+             Expense above), so when the scan misreads it the employee was hard-blocked with
+             nothing on the form able to fix it — correcting the Date of Expense does not
+             reach this guard. Reported 2026-09-07 against a thermal receipt printed
+             "04/09/26" and read as August. A typed value is stamped as entered by hand so the
+             report never passes it off as read from the document. --}}
         <div class="col-md-2">
-            <label class="form-label small mb-1">Date</label>
-            <input type="text" class="form-control form-control-sm bg-light cc-c-date" readonly placeholder="—">
+            <label class="form-label small mb-1">Date on receipt</label>
+            <input type="date" class="form-control form-control-sm cc-c-date" aria-label="Date printed on the receipt">
+            <div class="form-text small cc-c-date-hint">Correct it if the scan misread the printed date.</div>
         </div>
         <div class="col-md-3">
             <label class="form-label small mb-1">Who paid</label>

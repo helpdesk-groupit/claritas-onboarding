@@ -366,4 +366,153 @@ class ClaimReceiptMonthGuardTest extends TestCase
         $res->assertStatus(200)->assertJsonPath('ok', true);
         $this->assertDatabaseHas('expense_claim_items', ['expense_claim_id' => $claim->id, 'description' => 'June taxi']);
     }
+
+    /**
+     * ── A receipt date the SCAN got wrong ────────────────────────────────────────────────
+     *
+     * Reported 2026-09-07: a POPULAR Book Co. thermal receipt printed "Date: 04/09/26" was
+     * read as August, so a September receipt could not be added to a September claim. The
+     * employee had no way out — ocrReceiptDateOutOfPeriod() judges c_date, which was
+     * read-only, and correcting the Date of Expense does not reach that guard. The printed
+     * date is now correctable, on the same terms as the covered period: the employee may say
+     * what the receipt reads, and the report records that a person said it.
+     */
+    public function test_a_misread_receipt_date_can_be_corrected_by_hand(): void
+    {
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->draftClaim($user, $owner);
+        $category = $this->category();
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Stationery',
+            'expense_date' => '2026-06-04',
+            'c_date' => '2026-06-04',   // corrected from the scan's wrong month
+            'c_date_manual' => '1',
+            'amount' => 30.60,
+        ]);
+
+        $res->assertStatus(200)->assertJsonPath('ok', true);
+        $this->assertDatabaseHas('expense_claim_items', ['expense_claim_id' => $claim->id, 'description' => 'Stationery']);
+    }
+
+    /** The approver holds the receipt image, so they must be able to tell a correction from a reading. */
+    public function test_a_hand_corrected_receipt_date_is_recorded_as_entered_by_hand(): void
+    {
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->draftClaim($user, $owner);
+        $category = $this->category();
+
+        $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Corrected date',
+            'expense_date' => '2026-06-04',
+            'c_date' => '2026-06-04',
+            'c_date_manual' => '1',
+            'amount' => 12,
+        ])->assertStatus(200);
+
+        $item = $claim->fresh('items')->items()->where('description', 'Corrected date')->first();
+        $this->assertSame('manual', $item->ocr_details['date_source'] ?? null);
+    }
+
+    /** A date the scan read is NOT labelled as typed — the mark has to mean something. */
+    public function test_a_scanned_receipt_date_is_not_labelled_as_hand_entered(): void
+    {
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->draftClaim($user, $owner);
+        $category = $this->category();
+
+        $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Scanned date',
+            'expense_date' => '2026-06-04',
+            'c_date' => '2026-06-04',
+            'amount' => 12,
+        ])->assertStatus(200);
+
+        $item = $claim->fresh('items')->items()->where('description', 'Scanned date')->first();
+        $this->assertArrayNotHasKey('date_source', $item->ocr_details ?? []);
+    }
+
+    /**
+     * The flag is PROVENANCE, never permission. If claiming "I typed this" also skipped the
+     * month check, the guard would be bypassable from the browser by anyone who read the form.
+     */
+    public function test_claiming_a_date_was_typed_does_not_bypass_the_month_guard(): void
+    {
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->draftClaim($user, $owner);
+        $category = $this->category();
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Smuggled',
+            'expense_date' => '2026-06-15',
+            'c_date' => '2026-04-28',
+            'c_date_manual' => '1',
+            'amount' => 40,
+        ]);
+
+        $res->assertStatus(422)->assertJsonPath('ok', false);
+        $this->assertDatabaseMissing('expense_claim_items', ['expense_claim_id' => $claim->id, 'description' => 'Smuggled']);
+    }
+
+    /** A block with no route out is what made this a support ticket rather than a self-fix. */
+    public function test_the_block_message_names_the_field_that_fixes_a_misread_date(): void
+    {
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->draftClaim($user, $owner);
+        $category = $this->category();
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.inline-add-item', $claim), [
+            'expense_category_id' => $category->id,
+            'description' => 'Wrong month',
+            'expense_date' => '2026-06-15',
+            'c_date' => '2026-04-28',
+            'amount' => 40,
+        ]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('Date on receipt', $res->json('message'));
+    }
+
+    /**
+     * The fix that actually unblocked the employee.
+     *
+     * The server always accepted whatever c_date the browser sent — the block was that the
+     * field was rendered readonly, so there was no way to send a corrected one. This asserts
+     * the control exists and is editable; without it the rest of this behaviour is
+     * unreachable from the UI and the tests above pass against a form nobody can use.
+     */
+    public function test_the_printed_receipt_date_is_an_editable_control_on_the_claim_form(): void
+    {
+        $user = User::factory()->create(['role' => 'employee']);
+        $owner = Employee::factory()->withUser($user)->create();
+        $claim = $this->draftClaim($user, $owner);
+        $this->category();
+
+        // The inline editor renders only for a draft explicitly opened with ?open — on a plain
+        // load the form is empty, so without this the assertions below would measure a page
+        // that legitimately has no receipt-details panel at all.
+        $html = $this->actingAs($user)
+            ->get(route('user.claims.index', ['open' => $claim->id]))
+            ->assertStatus(200)->getContent();
+
+        $this->assertMatchesRegularExpression(
+            '/<input[^>]*type="date"[^>]*cc-c-date/',
+            $html,
+            'The receipt date is not rendered as an editable date input.'
+        );
+        $this->assertDoesNotMatchRegularExpression(
+            '/<input[^>]*cc-c-date[^>]*readonly/',
+            $html,
+            'The receipt date is still readonly — a misread date cannot be corrected.'
+        );
+    }
 }
