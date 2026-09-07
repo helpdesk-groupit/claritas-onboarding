@@ -879,10 +879,17 @@ class ClaimReceiptOcrService
      * embedded number also settles the year, so a cross-check that could have caught this
      * simply wasn't asked to. There is no code-side fallback for this: isoDate() only checks
      * that the model's reply looks like a date, it never re-derives or verifies the year
-     * against anything, and the "Date" shown in Receipt details is deliberately read-only
-     * (only the coverage-period fields are hand-correctable) — so a wrong year here cannot be
-     * fixed by editing the form, only by the model reading it correctly. Widened the
-     * cross-check to the WHOLE date, year included.
+     * against anything. Widened the cross-check to the WHOLE date, year included.
+     *
+     * The rest of that note — that a wrong date "cannot be fixed by editing the form, only by
+     * the model reading it correctly" — was true when it was written and is NOT any more: the
+     * "Date" in Receipt details became hand-correctable on 2026-09-07, on the same terms as
+     * the coverage period (stamped `date_source = manual` and printed "(entered by hand)" so
+     * the report never passes a typed date off as read from the document). That is the
+     * backstop this prompt no longer has to be perfect to avoid blocking somebody: it is the
+     * date the month guard judges, so a misreading the model cannot be talked out of is now
+     * recoverable by the employee instead of a support ticket. Keep BOTH — the cross-check
+     * stops the misreading, the editable field stops it costing anyone their claim.
      */
     protected static function dateRule(): string
     {
