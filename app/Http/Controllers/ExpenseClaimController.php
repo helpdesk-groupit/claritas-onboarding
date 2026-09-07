@@ -1655,17 +1655,39 @@ class ExpenseClaimController extends Controller
         $companies = array_values(array_filter((array) $request->input('company', []), fn ($v) => $v !== '' && $v !== null));
         $employeeIds = array_values(array_filter((array) $request->input('employee_id', [])));
 
+        // An explicit approval-date window, when the operator picked one, otherwise the cutoff
+        // cycle. Reported as a 422 with the reason rather than silently falling back to the
+        // cycle: a half-typed or reversed range that quietly exported a different period would
+        // be indistinguishable from a correct export until somebody reconciled the totals.
+        [$from, $to, $rangeError] = $this->claimDateRange($request);
+        if ($rangeError) {
+            return response()->json(['ok' => false, 'error' => $rangeError], 422);
+        }
+
         // A quick synchronous check so an empty filter fails instantly instead of showing a
         // progress bar for a job that would immediately report nothing to do.
-        $matched = $zipExportService->matchingClaims($year, $month, $companies, $employeeIds);
+        $matched = $from && $to
+            ? $zipExportService->claimsApprovedBetween($from, $to, $companies, $employeeIds)
+            : $zipExportService->matchingClaims($year, $month, $companies, $employeeIds);
+
         if ($matched->isEmpty()) {
-            return response()->json(['ok' => false, 'error' => 'No processed claims match the current filter.'], 422);
+            return response()->json([
+                'ok' => false,
+                'error' => $from && $to
+                    ? 'No claims were approved by both Manager and HR between '.$from->format('j M Y').' and '.$to->format('j M Y').'.'
+                    : 'No processed claims match the current filter.',
+            ], 422);
         }
 
         $export = ExpenseClaimZipExport::create([
             'requested_by_id' => Auth::id(),
-            'year' => $year,
-            'month' => $month,
+            // A request carries EITHER a window or a cycle, never both — storing the cycle
+            // alongside a range would leave the row describing two different periods, and the
+            // job would have to guess which the operator meant.
+            'year' => $from && $to ? null : $year,
+            'month' => $from && $to ? null : $month,
+            'from_date' => $from?->toDateString(),
+            'to_date' => $to?->toDateString(),
             'companies' => $companies ?: null,
             'employee_ids' => $employeeIds ?: null,
             'status' => ExpenseClaimZipExport::STATUS_QUEUED,
@@ -2308,14 +2330,36 @@ class ExpenseClaimController extends Controller
         // company) cutoff as a representative window (per-company cutoffs may differ slightly).
         $defaultCutoff = (int) (ExpenseClaimPolicy::forCompany()->submission_deadline_day ?? 20);
         $exportMonthLabels = [];
+        // The same windows as actual DATES, so the modal's quick-pick can fill the start/end
+        // pickers with them. Derived from the one cycleWindow() the labels use, so a preset can
+        // never fill a window that differs from the cycle it names.
+        $exportCycleWindows = [];
         foreach ($exportMonths as $m) {
             $w = ClaimRulesService::cycleWindow($selectedYear, (int) $m, $defaultCutoff);
             $exportMonthLabels[(int) $m] = $w['start']->format('j M').' – '.$w['endExclusive']->copy()->subDay()->format('j M');
+            $exportCycleWindows[(int) $m] = [
+                'from' => $w['start']->toDateString(),
+                // cycleWindow's end is EXCLUSIVE; the pickers treat their end date as inclusive,
+                // so step back one day or every preset would cover a day more than its cycle.
+                'to' => $w['endExclusive']->copy()->subDay()->toDateString(),
+            ];
         }
+
+        // What the pickers open on. The cycle currently in progress (i.e. the one today's
+        // approvals fall into) is the period HR run most often, so defaulting to it keeps the
+        // monthly pack a two-click job now that the export takes free dates.
+        // Only when the current cycle actually belongs to the year on screen — in January the
+        // live cycle is next year's, and reusing its month number here would silently offer
+        // THIS year's January window instead, which is a different period entirely.
+        $currentCycle = ClaimRulesService::submissionCycle(now(), $defaultCutoff);
+        $exportDefaultRange = $currentCycle['year'] === $selectedYear
+            ? ($exportCycleWindows[$currentCycle['month']] ?? $this->defaultRangeFor($selectedYear, $currentCycle['month']))
+            : $this->defaultRangeFor($selectedYear, null);
 
         return view('hr.claims.index', compact(
             'claims', 'stats', 'availableYears', 'selectedYear',
-            'approvedForExport', 'exportMonths', 'exportCompanies', 'exportMonthLabels'
+            'approvedForExport', 'exportMonths', 'exportCompanies', 'exportMonthLabels',
+            'exportCycleWindows', 'exportDefaultRange'
         ));
     }
 
@@ -2567,14 +2611,82 @@ class ExpenseClaimController extends Controller
     public const REPORT_BASIS_EXPENSE_MONTH = 'expense_month';
 
     /**
+     * An explicit approval-date window the operator picked (`?from=&to=`, both inclusive) —
+     * "everything Manager and HR signed off between these two dates". Selected automatically
+     * whenever both dates are present and valid, because it is the most specific period a
+     * request can carry; the 21st-to-20th cycle remains the default when they are not.
+     */
+    public const REPORT_BASIS_RANGE = 'range';
+
+    /**
      * The period axis for every claim export — the finance report, its CSV, and the HR CSV.
      * One resolver, so the three cannot come to disagree about what `?basis=` means, and an
      * unrecognised value falls back to the cycle everywhere rather than in two places out of
      * three. Reads `input()` rather than `query()` so it behaves the same whichever verb a
      * future caller uses.
      */
+    /**
+     * The operator's own approval-date window, if they picked one.
+     *
+     * Returns `[from, to, error]`. All three exports read this one helper, so "what does
+     * ?from=/?to= mean" has a single answer and a rejected range is rejected identically
+     * everywhere.
+     *
+     * Every failure is REPORTED, never silently ignored:
+     *  - one date without the other would have to invent the missing end, and inventing
+     *    "today" makes the same saved URL mean something different every time it is opened;
+     *  - a reversed range is a typo, and swapping the dates for the operator would hand them a
+     *    plausible-looking export for a period they did not ask for;
+     *  - an unparseable date is a bug or a hand-edited URL, and falling back to the cutoff
+     *    cycle would produce a correct-looking file covering the wrong window.
+     * Each of those would be discovered only by reconciling totals, which is exactly the
+     * failure this whole area of the module has been fixing.
+     */
+    private function claimDateRange(Request $request): array
+    {
+        $rawFrom = trim((string) $request->input('from'));
+        $rawTo = trim((string) $request->input('to'));
+
+        if ($rawFrom === '' && $rawTo === '') {
+            return [null, null, null];
+        }
+
+        if ($rawFrom === '' || $rawTo === '') {
+            return [null, null, 'Pick both a start date and an end date for the period.'];
+        }
+
+        try {
+            $from = Carbon::createFromFormat('Y-m-d', $rawFrom)->startOfDay();
+            $to = Carbon::createFromFormat('Y-m-d', $rawTo)->startOfDay();
+        } catch (\Throwable) {
+            return [null, null, 'The period dates could not be read. Please pick them again.'];
+        }
+
+        // createFromFormat does NOT reject an impossible date that still MATCHES the format:
+        // "2026-13-45" parses and silently rolls forward into 2027, which would export a window
+        // nobody asked for without a word. Round-tripping is the only cheap way to catch it.
+        if ($from->format('Y-m-d') !== $rawFrom || $to->format('Y-m-d') !== $rawTo) {
+            return [null, null, 'The period dates could not be read. Please pick them again.'];
+        }
+
+        if ($to->lt($from)) {
+            return [null, null, 'The end date cannot be before the start date.'];
+        }
+
+        return [$from, $to, null];
+    }
+
     private function claimReportBasis(Request $request): string
     {
+        // An explicit, valid window wins over everything: it is the most specific thing the
+        // operator can have asked for. A REJECTED range deliberately does not fall through to
+        // the cycle here — financeReports() surfaces the reason and shows nothing, rather than
+        // quietly answering for a different period than the one on screen.
+        [$from, $to] = $this->claimDateRange($request);
+        if ($from && $to) {
+            return self::REPORT_BASIS_RANGE;
+        }
+
         return $request->input('basis') === self::REPORT_BASIS_EXPENSE_MONTH
             ? self::REPORT_BASIS_EXPENSE_MONTH
             : self::REPORT_BASIS_CYCLE;
@@ -2595,6 +2707,18 @@ class ExpenseClaimController extends Controller
                 }
             }])
             ->when($category, fn ($q, $cat) => $q->whereHas('items', fn ($i) => $i->where('expense_category_id', (int) $cat)));
+
+        if ($basis === self::REPORT_BASIS_RANGE) {
+            // Same engine, same window, same inclusive end day as the ZIP built for this
+            // period — that identity is the only reason the two downloads reconcile, so this
+            // must never grow its own date arithmetic.
+            [$from, $to] = $this->claimDateRange($request);
+            $ids = app(ClaimZipExportService::class)
+                ->claimsApprovedBetween($from, $to, array_filter([$company]))
+                ->pluck('id')->all();
+
+            return $q->whereIn('id', $ids)->orderByDesc('processed_at')->get();
+        }
 
         if ($basis === self::REPORT_BASIS_CYCLE) {
             // Take the claim set straight from the engine the ZIP export runs on, rather than
@@ -2625,7 +2749,10 @@ class ExpenseClaimController extends Controller
      */
     private function claimReportPeriod(ExpenseClaim $claim, string $basis, ClaimZipExportService $zipExportService): array
     {
-        return $basis === self::REPORT_BASIS_CYCLE
+        // A range export still labels each claim with its approval CYCLE. The window decides
+        // which claims are in the file; the cycle is what a reader groups and reconciles by,
+        // and a window that spans two cycles would otherwise have no period column at all.
+        return $basis === self::REPORT_BASIS_CYCLE || $basis === self::REPORT_BASIS_RANGE
             ? $zipExportService->claimCycle($claim)
             : ['year' => (int) $claim->year, 'month' => (int) $claim->month];
     }
@@ -2639,18 +2766,22 @@ class ExpenseClaimController extends Controller
 
         $basis = $this->claimReportBasis($request);
         $zipExportService = app(ClaimZipExportService::class);
+        [$rangeFrom, $rangeTo, $rangeError] = $this->claimDateRange($request);
 
-        $availableYears = $basis === self::REPORT_BASIS_CYCLE
-            ? $zipExportService->availableCycleYears()
-            : ExpenseClaim::whereIn('status', self::FINANCE_REPORT_STATUSES)
-                ->distinct()->orderByDesc('year')->pluck('year')->map(fn ($y) => (int) $y)->all();
+        $availableYears = $basis === self::REPORT_BASIS_EXPENSE_MONTH
+            ? ExpenseClaim::whereIn('status', self::FINANCE_REPORT_STATUSES)
+                ->distinct()->orderByDesc('year')->pluck('year')->map(fn ($y) => (int) $y)->all()
+            : $zipExportService->availableCycleYears();
 
         $selectedYear = (int) $request->query('year', (int) now()->year);
         if (! empty($availableYears) && ! in_array($selectedYear, $availableYears, true)) {
             $selectedYear = $availableYears[0];
         }
 
-        $claims = $this->financeReportClaims($request, $selectedYear, $basis);
+        // A rejected window shows the reason and NO rows. Falling back to the cycle would put a
+        // different period's figures under the dates still sitting in the form — the operator
+        // would have no way to tell they were reading something other than what they asked for.
+        $claims = $rangeError ? collect() : $this->financeReportClaims($request, $selectedYear, $basis);
 
         // Flatten to one row per item, then nest Year > Month > Company > Employee.
         $rows = collect();
@@ -2682,9 +2813,51 @@ class ExpenseClaimController extends Controller
             'filterCategory' => $request->query('category'),
             'basis' => $basis,
             'basisIsCycle' => $basis === self::REPORT_BASIS_CYCLE,
+            'basisIsRange' => $basis === self::REPORT_BASIS_RANGE,
             'cycleMonthLabels' => $this->cycleMonthLabels($selectedYear),
             'unstampedClaims' => $this->unstampedApprovedClaims($basis),
+            // Echoed back as the raw strings the operator typed, so a rejected range keeps
+            // their dates in the form to correct rather than silently blanking them.
+            'filterFrom' => trim((string) $request->query('from')),
+            'filterTo' => trim((string) $request->query('to')),
+            'rangeError' => $rangeError,
+            'rangeLabel' => $rangeFrom && $rangeTo
+                ? $rangeFrom->format('j M Y').' – '.$rangeTo->format('j M Y')
+                : null,
+            // What the date pickers start on when the operator has not chosen a window: the
+            // cycle currently on screen, so the default download is the monthly pack they
+            // already ran and the range is an override rather than a new chore.
+            'defaultRange' => $this->defaultRangeFor($selectedYear, $request->query('month')),
         ]);
+    }
+
+    /**
+     * The start/end dates the pickers open on — the selected cutoff cycle's own window, or the
+     * whole year when no cycle is chosen. Keeps "just download this month's pack" a two-click
+     * job after the range picker was added, instead of making every export a date-entry task.
+     */
+    private function defaultRangeFor(int $year, $month): array
+    {
+        $cutoff = (int) (ExpenseClaimPolicy::forCompany()->submission_deadline_day ?? 20);
+
+        if ($month) {
+            $window = ClaimRulesService::cycleWindow($year, (int) $month, $cutoff);
+
+            return [
+                'from' => $window['start']->toDateString(),
+                // cycleWindow's end is EXCLUSIVE; the pickers are inclusive, so step back a day
+                // or the default would offer a window one day longer than the cycle it names.
+                'to' => $window['endExclusive']->copy()->subDay()->toDateString(),
+            ];
+        }
+
+        $first = ClaimRulesService::cycleWindow($year, 1, $cutoff);
+        $last = ClaimRulesService::cycleWindow($year, 12, $cutoff);
+
+        return [
+            'from' => $first['start']->toDateString(),
+            'to' => $last['endExclusive']->copy()->subDay()->toDateString(),
+        ];
     }
 
     /**
@@ -2738,27 +2911,47 @@ class ExpenseClaimController extends Controller
 
         $basis = $this->claimReportBasis($request);
         $zipExportService = app(ClaimZipExportService::class);
+        [$from, $to, $rangeError] = $this->claimDateRange($request);
+
+        // A rejected window must not produce a file at all. Streaming a CSV for a different
+        // period than the operator asked for is the one outcome nothing downstream can detect.
+        if ($rangeError) {
+            return back()
+                ->withInput()
+                ->with('error', $rangeError);
+        }
 
         $selectedYear = (int) $request->query('year', (int) now()->year);
         $claims = $this->financeReportClaims($request, $selectedYear, $basis);
 
+        $isRange = $basis === self::REPORT_BASIS_RANGE;
         $isCycle = $basis === self::REPORT_BASIS_CYCLE;
-        $filename = 'claim_reports_'.($isCycle ? 'cycle_' : 'expense_month_').$selectedYear.'_'.now()->format('Ymd_His').'.csv';
+
+        // The filename carries the exact window, because a range export has no other place to
+        // record what period it covers — two files downloaded minutes apart are otherwise
+        // indistinguishable once they are sitting in a folder.
+        $filename = $isRange
+            ? 'claim_reports_approved_'.$from->format('Y-m-d').'_to_'.$to->format('Y-m-d').'_'.now()->format('Ymd_His').'.csv'
+            : 'claim_reports_'.($isCycle ? 'cycle_' : 'expense_month_').$selectedYear.'_'.now()->format('Ymd_His').'.csv';
+
         $headers = [
             'Content-Type' => 'text/csv',
             'Content-Disposition' => "attachment; filename=\"{$filename}\"",
         ];
 
-        $callback = function () use ($claims, $basis, $isCycle, $zipExportService) {
+        $callback = function () use ($claims, $basis, $isCycle, $isRange, $zipExportService) {
             $file = fopen('php://output', 'w');
             // The period columns are NAMED for the basis, because "Month" alone cannot tell a
             // reader whether a row is filed by cutoff cycle or by expense month — and the two
             // put roughly a third of all claims in different buckets. Claim Number is appended
             // LAST so existing column positions are untouched; it is what lets a row be matched
             // against the PDF of the same name in the approved-PDF ZIP.
+            //
+            // A range export still labels rows by approval CYCLE (see claimReportPeriod) — the
+            // window chose the rows, the cycle groups them — so it keeps the cycle headings.
             fputcsv($file, [
-                $isCycle ? 'Cycle Year' : 'Expense Year',
-                $isCycle ? 'Cycle Month' : 'Expense Month',
+                $isCycle || $isRange ? 'Cycle Year' : 'Expense Year',
+                $isCycle || $isRange ? 'Cycle Month' : 'Expense Month',
                 'Company', 'Employee', 'GL Code', 'Category', 'Description', 'Amount (RM)',
                 'Claim Number',
             ]);

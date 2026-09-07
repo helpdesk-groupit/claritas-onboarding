@@ -86,19 +86,7 @@ class ClaimZipExportService
      */
     public function matchingClaims(?int $year, ?int $month, array $companies = [], array $employeeIds = []): Collection
     {
-        $q = ExpenseClaim::whereNotNull('processed_at')->with(['employee', 'items.category']);
-
-        $employeeIds = array_values(array_filter($employeeIds));
-        if (! empty($employeeIds)) {
-            $q->whereIn('employee_id', $employeeIds);
-        }
-
-        $companies = array_values(array_filter($companies, fn ($v) => $v !== '' && $v !== null));
-        if (! empty($companies)) {
-            // Filter by the claim's snapshot company (set at submission), so a claim stays in
-            // the company it was submitted under even after the employee moves.
-            $q->whereIn('company', $companies);
-        }
+        $q = $this->approvedClaimsQuery($companies, $employeeIds);
 
         // The coarse bound reads processed_at directly (never a COALESCE) because every row
         // here already satisfies whereNotNull('processed_at') above — that is also the field
@@ -118,6 +106,64 @@ class ClaimZipExportService
                 return (! $year || $cycle['year'] === $year) && (! $month || $cycle['month'] === $month);
             })
             ->values();
+    }
+
+    /**
+     * Every fully-approved claim whose APPROVAL DATE falls inside an explicit window — the
+     * free-date-range alternative to matchingClaims()'s cutoff cycle, and the one both HR's
+     * ZIP and Finance's CSV read when the operator picks their own start and end dates.
+     *
+     * **The end date is INCLUSIVE**, because that is the only thing a person picking
+     * "31 Aug 2026" in a date field can mean. It is implemented as a half-open
+     * `[from 00:00:00, to+1day 00:00:00)` rather than `<= to`, which is not a stylistic
+     * choice: `processed_at` is a DATETIME, so `<= '2026-08-31'` compares against
+     * 2026-08-31 00:00:00 and silently drops every claim approved during the last day of the
+     * window — the single most likely way this feature could under-report and still look
+     * plausible. Pinned by test_the_end_date_is_inclusive_of_the_whole_day.
+     *
+     * "Approved" means `processed_at IS NOT NULL`, which is stamped only by the HR approval
+     * paths and only from `manager_approved` — so it is exactly "signed off by both Manager
+     * and HR", and it is cleared again when HR reverses an approval.
+     *
+     * Either bound may be null (an open-ended window), but the callers require both: see
+     * ExpenseClaimZipExport::hasDateRange() for why a half-open request is refused there.
+     */
+    public function claimsApprovedBetween(?Carbon $from, ?Carbon $to, array $companies = [], array $employeeIds = []): Collection
+    {
+        $q = $this->approvedClaimsQuery($companies, $employeeIds);
+
+        if ($from) {
+            $q->where('processed_at', '>=', $from->copy()->startOfDay()->toDateTimeString());
+        }
+        if ($to) {
+            $q->where('processed_at', '<', $to->copy()->startOfDay()->addDay()->toDateTimeString());
+        }
+
+        return $q->orderByDesc('processed_at')->get()->values();
+    }
+
+    /**
+     * The shared base every export reads: fully-approved claims only, narrowed by the optional
+     * company and employee filters. One definition so the cycle path and the date-range path
+     * can never come to disagree about which claims are eligible in the first place.
+     */
+    private function approvedClaimsQuery(array $companies, array $employeeIds)
+    {
+        $q = ExpenseClaim::whereNotNull('processed_at')->with(['employee', 'items.category']);
+
+        $employeeIds = array_values(array_filter($employeeIds));
+        if (! empty($employeeIds)) {
+            $q->whereIn('employee_id', $employeeIds);
+        }
+
+        $companies = array_values(array_filter($companies, fn ($v) => $v !== '' && $v !== null));
+        if (! empty($companies)) {
+            // Filter by the claim's snapshot company (set at submission), so a claim stays in
+            // the company it was submitted under even after the employee moves.
+            $q->whereIn('company', $companies);
+        }
+
+        return $q;
     }
 
     /**

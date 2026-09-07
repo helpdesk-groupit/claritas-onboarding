@@ -85,8 +85,18 @@
         <i class="bi bi-shield-check me-1"></i>Only claims <strong>approved by both the Manager/PIC and HR</strong> are shown here — ready for posting into the accounting system.
         <span class="d-none d-sm-inline">Click a row to expand it.</span>
     </p>
-    <div class="alert {{ $basisIsCycle ? 'alert-success' : 'alert-warning' }} py-2 px-3 small mb-3">
-        @if($basisIsCycle)
+    @if($rangeError)
+        <div class="alert alert-danger py-2 px-3 small mb-3">
+            <i class="bi bi-exclamation-octagon me-1"></i><strong>{{ $rangeError }}</strong>
+            No figures are shown below, because answering for a different period than the dates in the form would be impossible to spot.
+        </div>
+    @endif
+
+    <div class="alert {{ $basisIsRange || $basisIsCycle ? 'alert-success' : 'alert-warning' }} py-2 px-3 small mb-3">
+        @if($basisIsRange)
+            <i class="bi bi-calendar-range me-1"></i><strong>Approved between {{ $rangeLabel }}</strong> — every claim signed off by both Manager and HR in that window, both days counted in full, whichever month it was submitted or spent in.
+            HR's <strong>Export approved PDFs (ZIP)</strong> for the same two dates contains exactly these claims, so the two downloads tally line for line. Match a CSV row to its PDF using the <strong>Claim Number</strong> column. Rows are still grouped by approval cycle below.
+        @elseif($basisIsCycle)
             <i class="bi bi-check2-circle me-1"></i><strong>Grouped by approval cycle</strong> — the 21st of the previous month to the 20th of this one, using each company's own cut-off day and the date each claim was fully approved by both Manager and HR.
             These are the same claims, in the same periods, as HR's <strong>Export approved PDFs (ZIP)</strong>, so the two downloads tally line for line. Match a CSV row to its PDF using the <strong>Claim Number</strong> column.
         @else
@@ -116,10 +126,28 @@
             <form method="GET" action="{{ route('finance.claim-reports') }}" class="row g-2 align-items-end">
                 <div class="col-12 col-md-3">
                     <label class="form-label small fw-semibold mb-1">Report by</label>
-                    <select name="basis" class="form-select form-select-sm">
+                    <select name="basis" class="form-select form-select-sm" {{ $basisIsRange ? 'disabled' : '' }}>
                         <option value="cycle" {{ $basisIsCycle ? 'selected' : '' }}>Approval cycle (21st – 20th) — matches ZIP</option>
-                        <option value="expense_month" {{ $basisIsCycle ? '' : 'selected' }}>Expense month</option>
+                        <option value="expense_month" {{ $basis === 'expense_month' ? 'selected' : '' }}>Expense month</option>
                     </select>
+                    @if($basisIsRange)
+                        {{-- Disabled rather than hidden: a control that vanishes reads as broken,
+                             and the operator needs to see WHY it does not apply right now. It is
+                             re-enabled the moment the dates are cleared. --}}
+                        <div class="form-text small">Overridden by the period dates below.</div>
+                    @endif
+                </div>
+                <div class="col-12 col-md-4">
+                    <label class="form-label small fw-semibold mb-1">Approved between <span class="text-muted fw-normal">(optional — both days included)</span></label>
+                    <div class="row g-1">
+                        <div class="col-6">
+                            <input type="date" name="from" value="{{ $filterFrom }}" class="form-control form-control-sm" aria-label="Approved from date">
+                        </div>
+                        <div class="col-6">
+                            <input type="date" name="to" value="{{ $filterTo }}" class="form-control form-control-sm" aria-label="Approved to date">
+                        </div>
+                    </div>
+                    <div class="form-text small">Fill both to report an exact window instead of a cycle. Leave blank for the cycle above.</div>
                 </div>
                 <div class="col-6 col-md-2">
                     <label class="form-label small fw-semibold mb-1">Year</label>
@@ -170,9 +198,9 @@
                     <a href="{{ route('finance.claim-reports') }}" class="btn btn-outline-secondary btn-sm" title="Reset filters"><i class="bi bi-x-lg"></i></a>
                 </div>
                 <div class="col-12">
-                    <a href="{{ route('finance.claim-reports.export', request()->query()) }}" class="btn btn-outline-success btn-sm mt-1">
+                    <button type="button" class="btn btn-outline-success btn-sm mt-1" data-bs-toggle="modal" data-bs-target="#exportCsvModal">
                         <i class="bi bi-download me-1"></i>Export CSV
-                    </a>
+                    </button>
                 </div>
             </form>
         </div>
@@ -289,5 +317,72 @@
 
 </div>
 
+{{-- ── Export CSV: pick the period covered ──
+     A GET form straight to the export route. Every non-date filter currently on screen rides
+     along as a hidden field so the file matches the page it was downloaded from; the dates are
+     the only thing this modal asks for, pre-filled from whatever period the page is showing. --}}
+<div class="modal fade" id="exportCsvModal" tabindex="-1" aria-labelledby="exportCsvTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <form method="GET" action="{{ route('finance.claim-reports.export') }}" id="exportCsvForm">
+                <div class="modal-header border-0 pb-1">
+                    <h5 class="modal-title fw-semibold" id="exportCsvTitle"><i class="bi bi-filetype-csv me-2 text-success"></i>Export CSV</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small mb-3">Exports <strong>every claim approved by both Manager and HR</strong> within the period you choose. Leave the dates as they are to export the period currently on screen.</p>
+
+                    <input type="hidden" name="company" value="{{ $filterCompany }}">
+                    <input type="hidden" name="category" value="{{ $filterCategory }}">
+                    <input type="hidden" name="year" value="{{ $selectedYear }}">
+
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold mb-1">Period covered <span class="text-muted fw-normal">(approval dates, both days included)</span></label>
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <input type="date" name="from" id="exportCsvFrom" class="form-control form-control-sm" value="{{ $filterFrom !== '' ? $filterFrom : $defaultRange['from'] }}" required aria-label="Period start date">
+                            </div>
+                            <div class="col-6">
+                                <input type="date" name="to" id="exportCsvTo" class="form-control form-control-sm" value="{{ $filterTo !== '' ? $filterTo : $defaultRange['to'] }}" required aria-label="Period end date">
+                            </div>
+                        </div>
+                        <div class="form-text small">Every claim <strong>fully approved</strong> between these two dates is included, whichever month it was submitted or spent in. HR&rsquo;s approved-PDF ZIP for the same two dates contains exactly the same claims.</div>
+                    </div>
+
+                    <div id="exportCsvError" class="alert alert-danger d-none mb-0 py-2 px-3 small"></div>
+                </div>
+                <div class="modal-footer border-0 pt-1">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-success"><i class="bi bi-download me-1"></i>Download CSV</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 @include('partials._user-manual-claimreports')
+
+@push('scripts')
+<script nonce="{{ $cspNonce ?? '' }}">
+// Catches the reversed-range typo before the round-trip. The server rejects it regardless —
+// this is a courtesy, not the guard (a disabled button is not authorization, and neither is
+// client-side validation).
+(function () {
+    var form = document.getElementById('exportCsvForm');
+    if (!form) return;
+    var from = document.getElementById('exportCsvFrom');
+    var to = document.getElementById('exportCsvTo');
+    var errorBox = document.getElementById('exportCsvError');
+
+    form.addEventListener('submit', function (e) {
+        errorBox.classList.add('d-none');
+        if (from.value && to.value && to.value < from.value) {
+            e.preventDefault();
+            errorBox.textContent = 'The end date cannot be before the start date.';
+            errorBox.classList.remove('d-none');
+        }
+    });
+})();
+</script>
+@endpush
 @endsection

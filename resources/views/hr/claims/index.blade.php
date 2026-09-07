@@ -285,16 +285,33 @@
                 @else
                 <form id="exportZipForm">
                     <input type="hidden" name="year" value="{{ $selectedYear }}">
-                    <p class="text-muted small mb-3">Bundles <strong>every processed (HR-approved)</strong> claim for the <strong>{{ $selectedYear }}</strong> approval cycle into one ZIP of PDFs — however many have been approved, whenever they were approved. Leave a filter on &ldquo;All&rdquo; to include everything.</p>
+                    <p class="text-muted small mb-3">Bundles into one ZIP of PDFs <strong>every claim approved by both Manager and HR</strong> within the period you choose &mdash; however many there are.</p>
+
                     <div class="mb-3">
-                        <label class="form-label small fw-semibold mb-1">Approval cycle</label>
-                        <select name="month" class="form-select form-select-sm">
-                            <option value="">All cycles</option>
+                        <label class="form-label small fw-semibold mb-1">Period covered <span class="text-muted fw-normal">(approval dates, both days included)</span></label>
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <input type="date" name="from" id="exportZipFrom" class="form-control form-control-sm" value="{{ $exportDefaultRange['from'] }}" aria-label="Period start date">
+                            </div>
+                            <div class="col-6">
+                                <input type="date" name="to" id="exportZipTo" class="form-control form-control-sm" value="{{ $exportDefaultRange['to'] }}" aria-label="Period end date">
+                            </div>
+                        </div>
+                        <div class="form-text small">Every claim <strong>fully approved</strong> between these two dates is included, whichever month it was submitted or spent in. Both dates count in full.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold mb-1">Quick pick <span class="text-muted fw-normal">(fills the dates above)</span></label>
+                        <select id="exportZipPreset" class="form-select form-select-sm">
+                            <option value="">Choose a standard cycle…</option>
                             @foreach($exportMonths as $m)
-                            <option value="{{ $m }}">{{ $exportMonthNames[(int) $m] ?? $m }}@isset($exportMonthLabels[(int) $m]) ({{ $exportMonthLabels[(int) $m] }})@endisset</option>
+                            @php $win = $exportCycleWindows[(int) $m] ?? null; @endphp
+                            @if($win)
+                            <option value="{{ $m }}" data-from="{{ $win['from'] }}" data-to="{{ $win['to'] }}">{{ $exportMonthNames[(int) $m] ?? $m }} ({{ $exportMonthLabels[(int) $m] ?? '' }})</option>
+                            @endif
                             @endforeach
                         </select>
-                        <div class="form-text small">Grouped by the <em>approval cutoff cycle</em> (each company&rsquo;s cutoff, default the 20th) &mdash; the date a claim was fully approved by both Manager and HR, not when it was submitted. A claim approved after a month&rsquo;s cutoff counts in the next month&rsquo;s cycle &mdash; e.g. approved 25 Jun &rarr; July.</div>
+                        <div class="form-text small">The standard <em>approval cutoff cycle</em> &mdash; 21st of the previous month to the 20th of this one (each company&rsquo;s own cutoff, default the 20th). Picking one just fills the dates; you can still edit them.</div>
                     </div>
                     <div class="mb-1">
                         <label class="form-label small fw-semibold mb-1">Company <span class="text-muted fw-normal">(tick one or more)</span></label>
@@ -440,6 +457,42 @@
             .catch(function () { /* transient network hiccup — the interval will retry */ });
     }
 
+    // ── Period pickers ──
+    // The quick-pick only FILLS the dates; it is never submitted (no name attribute), so the
+    // server always reads the two dates the operator can actually see. A preset that submitted
+    // its own month could disagree with the visible dates after an edit.
+    var fromInput = document.getElementById('exportZipFrom');
+    var toInput = document.getElementById('exportZipTo');
+    var preset = document.getElementById('exportZipPreset');
+
+    if (preset && fromInput && toInput) {
+        preset.addEventListener('change', function () {
+            var opt = preset.options[preset.selectedIndex];
+            if (!opt || !opt.dataset.from) return;
+            fromInput.value = opt.dataset.from;
+            toInput.value = opt.dataset.to;
+            hideError();
+        });
+    }
+    // Editing the dates by hand clears the preset — leaving "August" selected above a window
+    // the operator has since changed would misstate what the download covers.
+    [fromInput, toInput].forEach(function (el) {
+        if (!el) return;
+        el.addEventListener('change', function () {
+            if (preset) preset.value = '';
+            hideError();
+        });
+    });
+
+    // Mirrors the server's rule so the common typo is caught before a round-trip. The server
+    // rejects it regardless — this is a courtesy, not the guard.
+    function rangeProblem() {
+        if (!fromInput || !toInput) return null;
+        if (!fromInput.value || !toInput.value) return 'Pick both a start date and an end date for the period.';
+        if (toInput.value < fromInput.value) return 'The end date cannot be before the start date.';
+        return null;
+    }
+
     submitBtn.addEventListener('click', function () {
         if (submitBtn.dataset.state === 'ready' && submitBtn.dataset.downloadUrl) {
             window.location.href = submitBtn.dataset.downloadUrl;
@@ -448,6 +501,12 @@
 
         hideError();
         hideNotice();
+
+        var problem = rangeProblem();
+        if (problem) {
+            showError(problem);
+            return;
+        }
         submitBtn.disabled = true;
         setFieldsDisabled(true);
         progress.classList.remove('d-none');

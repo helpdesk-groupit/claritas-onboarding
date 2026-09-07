@@ -60,13 +60,19 @@ class BuildClaimZipExport implements ShouldBeUnique, ShouldQueue
         }
 
         // Fresh query, not the controller's snapshot — a claim approved after the click but
-        // before this job ran is still picked up here.
-        $matched = $service->matchingClaims($export->year, $export->month, $export->companies ?? [], $export->employee_ids ?? []);
+        // before this job ran is still picked up here. A request carries EITHER an explicit
+        // approval-date window or a cutoff cycle; the window wins when present, and both go
+        // through ClaimZipExportService so Finance's CSV of the same period matches this ZIP.
+        $matched = $export->hasDateRange()
+            ? $service->claimsApprovedBetween($export->from_date, $export->to_date, $export->companies ?? [], $export->employee_ids ?? [])
+            : $service->matchingClaims($export->year, $export->month, $export->companies ?? [], $export->employee_ids ?? []);
 
         if ($matched->isEmpty()) {
             $export->update([
                 'status' => ExpenseClaimZipExport::STATUS_FAILED,
-                'error' => 'No processed claims match the filter any more.',
+                'error' => $export->hasDateRange()
+                    ? 'No claims were approved between '.$export->rangeLabel().' any more.'
+                    : 'No processed claims match the filter any more.',
                 'total_matched' => 0,
                 'completed_at' => now(),
             ]);

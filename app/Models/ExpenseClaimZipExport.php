@@ -26,7 +26,7 @@ class ExpenseClaimZipExport extends Model
     public const DIRECTORY = 'claim_zip_exports';
 
     protected $fillable = [
-        'requested_by_id', 'year', 'month', 'companies', 'employee_ids', 'status',
+        'requested_by_id', 'year', 'month', 'from_date', 'to_date', 'companies', 'employee_ids', 'status',
         'total_matched', 'rendered_count', 'file_path', 'file_size',
         'omitted_claims', 'failed_claims', 'error', 'started_at', 'completed_at',
     ];
@@ -36,9 +36,31 @@ class ExpenseClaimZipExport extends Model
         'employee_ids' => 'array',
         'omitted_claims' => 'array',
         'failed_claims' => 'array',
+        'from_date' => 'date',
+        'to_date' => 'date',
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
     ];
+
+    /**
+     * Was this request made for an explicit approval-date window rather than a cutoff cycle?
+     *
+     * Both dates are required together — a half-open request would have to invent the missing
+     * end, and inventing "today" would make the same saved request mean something different
+     * every time it ran.
+     */
+    public function hasDateRange(): bool
+    {
+        return $this->from_date !== null && $this->to_date !== null;
+    }
+
+    /** "27 Jul 2026 – 31 Aug 2026", for the download filename and the UI. */
+    public function rangeLabel(): ?string
+    {
+        return $this->hasDateRange()
+            ? $this->from_date->format('j M Y').' – '.$this->to_date->format('j M Y')
+            : null;
+    }
 
     public function requestedBy(): BelongsTo
     {
