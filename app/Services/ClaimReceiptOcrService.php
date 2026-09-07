@@ -867,6 +867,22 @@ class ClaimReceiptOcrService
      * approver signs. The range is now REPORTED (servicePeriodRule) instead of being used to
      * overwrite the date, which is what makes the month guard able to judge the receipt on the
      * period it pays for rather than the day it was settled.
+     *
+     * A THIRD incident (2026-09-07) was not a day/month ordering mistake at all: a faded
+     * thermal-printer AEON Mid Valley receipt dated 17/08/2026, with an "Invoice No:
+     * 202608171007050261" printed right below it, came back as 17/08/2023 — day and month
+     * both correct, year wrong by three, on a scan degraded enough that even a plain-text
+     * transcription of the same receipt garbled other lines ("AEON" as "AEDN", "FLOOR" as
+     * "FL::R"). The existing invoice-number cross-check already fires on this exact receipt
+     * (its invoice number embeds "20260817"), but it was worded to confirm only the
+     * "day/month" — a model reading the year wrong had nothing telling it that the SAME
+     * embedded number also settles the year, so a cross-check that could have caught this
+     * simply wasn't asked to. There is no code-side fallback for this: isoDate() only checks
+     * that the model's reply looks like a date, it never re-derives or verifies the year
+     * against anything, and the "Date" shown in Receipt details is deliberately read-only
+     * (only the coverage-period fields are hand-correctable) — so a wrong year here cannot be
+     * fixed by editing the form, only by the model reading it correctly. Widened the
+     * cross-check to the WHOLE date, year included.
      */
     protected static function dateRule(): string
     {
@@ -886,9 +902,14 @@ class ClaimReceiptOcrService
             .'dated 30/07/2026 covering 1/08/2026 - 31/08/2026 is correct as it stands and is NOT an '
             .'error to fix. If a reference / invoice '
             .'number on the same document embeds an 8-digit date in YYYYMMDD form (e.g. an "InvNo:" '
-            .'or "Inv No" reading "20260811…"), that is the same date spelled unambiguously — use it '
-            .'to confirm the day/month you read from the numeric date, and prefer it if the two '
-            .'disagree. ';
+            .'or "Inv No" reading "20260811…", or "Invoice No: 202608171007050261" which embeds '
+            .'"20260817"), that is the same date spelled unambiguously — use it to confirm EVERY '
+            .'part of the numeric date you read, DAY, MONTH AND YEAR ALIKE, and prefer the embedded '
+            .'number if any part disagrees. This matters most on a faded, low-quality or thermal-'
+            .'printer scan, where a printed digit can be genuinely hard to read: do not assume a '
+            .'blurry date is safe just because day and month look plausible — a "6" misread as a '
+            .'"3" (or vice versa) in the YEAR is exactly the same kind of misreading as swapping day '
+            .'and month, and the embedded invoice number is there to catch it. ';
     }
 
     /**
