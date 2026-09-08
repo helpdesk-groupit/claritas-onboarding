@@ -791,6 +791,16 @@ class ClaimZipExportTest extends TestCase
         $this->assertSame(1, $response->json('parts.0.number'));
         $this->assertStringContainsString('/file/1', (string) $response->json('parts.0.url'));
         $this->assertSame($export->totalSize(), $response->json('total_size'));
+
+        // The page fetches the bytes itself so it can show progress, which means the browser
+        // never sees the Content-Disposition — the filename has to come down in the payload,
+        // or every part saves under a name the operator cannot tell apart.
+        $this->assertSame(
+            $export->partFilename(1),
+            $response->json('parts.0.filename'),
+            'Each part must carry the filename it should be saved as.'
+        );
+        $this->assertStringContainsString('part1-of-'.$export->partCount(), (string) $response->json('parts.0.filename'));
     }
 
     /**

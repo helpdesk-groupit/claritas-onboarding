@@ -345,6 +345,7 @@
                 <div id="exportZipParts" class="d-none mt-3">
                     <div class="small text-muted mb-2" id="exportZipPartsHint"></div>
                     <div id="exportZipPartsList" class="d-grid gap-2"></div>
+                    <div id="exportZipPartsDone" class="alert alert-success d-none mt-3 mb-0 py-2 px-3 small"></div>
                 </div>
                 @endif
             </div>
@@ -374,6 +375,7 @@
     var partsBox = document.getElementById('exportZipParts');
     var partsHint = document.getElementById('exportZipPartsHint');
     var partsList = document.getElementById('exportZipPartsList');
+    var partsDone = document.getElementById('exportZipPartsDone');
     var csrf = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
     var zipBase = '{{ url('/hr/claims/download-zip') }}';
     var pollTimer = null;
@@ -406,6 +408,8 @@
         partsBox.classList.add('d-none');
         partsList.textContent = '';
         partsHint.textContent = '';
+        partsDone.textContent = '';
+        partsDone.classList.add('d-none');
         setFieldsDisabled(false);
     }
 
@@ -415,27 +419,202 @@
         return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb.toFixed(1) + ' MB';
     }
 
-    // Built with createElement + addEventListener, never innerHTML with an interpolated URL:
-    // CSP blocks inline handlers here, and this project's rule is that nothing user- or
-    // server-supplied is concatenated into markup.
+    // ── Downloading the parts ────────────────────────────────────────────────
+    //
+    // Fetched here rather than left to a plain <a download>, for three reasons, in order of
+    // how much they matter:
+    //
+    //  1. A plain anchor gives NO feedback. Pressing it produced nothing an operator could
+    //     see — no bar, no message — which is indistinguishable from a dead button, and is
+    //     exactly what was reported. A 20 MB part on this link takes a while; silence for
+    //     that long reads as broken.
+    //  2. Reading the body ourselves is the only way to show progress at all: the browser's
+    //     own download of an <a href> is invisible to script.
+    //  3. It lets a dropped connection RESUME instead of starting over. That is the whole
+    //     point of the Range support on this endpoint, and this connection is known to drop
+    //     mid-transfer — measured dying between 42 and 67 MB nineteen times. Each retry
+    //     continues from the byte it reached, so a hiccup costs the remainder, not the lot.
+    //
+    // Built with createElement + addEventListener throughout: CSP blocks inline handlers, and
+    // nothing server-supplied is ever concatenated into markup.
+    var savedCount = 0;
+
     function renderParts(parts) {
         partsList.textContent = '';
+        savedCount = 0;
+
+        var totalBytes = parts.reduce(function (sum, p) { return sum + (p.size || 0); }, 0);
+
         parts.forEach(function (p) {
-            var a = document.createElement('a');
-            a.className = 'btn btn-outline-danger btn-sm text-start';
-            a.href = p.url;
-            a.setAttribute('download', '');
+            var row = document.createElement('div');
+            row.className = 'border rounded p-2';
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-outline-danger btn-sm w-100 text-start';
+
+            var icon = document.createElement('i');
+            icon.className = 'bi bi-download me-2';
             var label = 'Part ' + p.number + ' of ' + parts.length;
             if (p.claims) label += ' — ' + p.claims + ' claim' + (p.claims === 1 ? '' : 's');
             if (p.size) label += ' (' + humanSize(p.size) + ')';
-            var icon = document.createElement('i');
-            icon.className = 'bi bi-download me-2';
-            a.appendChild(icon);
-            a.appendChild(document.createTextNode(label));
-            a.addEventListener('click', function () { a.classList.add('btn-secondary'); });
-            partsList.appendChild(a);
+            btn.appendChild(icon);
+            btn.appendChild(document.createTextNode(label));
+
+            var track = document.createElement('div');
+            track.className = 'progress mt-2 d-none';
+            track.style.height = '6px';
+            var bar = document.createElement('div');
+            bar.className = 'progress-bar bg-danger';
+            bar.style.width = '0%';
+            track.appendChild(bar);
+
+            var status = document.createElement('div');
+            status.className = 'small mt-1 text-muted d-none';
+
+            row.appendChild(btn);
+            row.appendChild(track);
+            row.appendChild(status);
+            partsList.appendChild(row);
+
+            var ui = { btn: btn, bar: bar, track: track, status: status, busy: false, saved: false };
+            btn.addEventListener('click', function () { downloadPart(p, ui, parts.length, totalBytes); });
         });
+
         partsBox.classList.remove('d-none');
+    }
+
+    function downloadPart(p, ui, totalParts, totalBytes) {
+        if (ui.busy) return;
+        ui.busy = true;
+        ui.btn.disabled = true;
+        ui.track.classList.remove('d-none');
+        ui.status.classList.remove('d-none');
+
+        var chunks = [];
+        var received = 0;
+        var attempt = 0;
+        var MAX_ATTEMPTS = 5;
+
+        function say(text, pct, cls) {
+            ui.status.textContent = text;
+            ui.status.className = 'small mt-1 ' + (cls || 'text-muted');
+            if (typeof pct === 'number') ui.bar.style.width = pct + '%';
+        }
+
+        function pct() {
+            return p.size ? Math.min(99, Math.round((received / p.size) * 100)) : 0;
+        }
+
+        say('Starting…', 0);
+
+        function run() {
+            attempt++;
+            var headers = {};
+            // Continue from where the last attempt stopped.
+            if (received > 0) headers['Range'] = 'bytes=' + received + '-';
+
+            fetch(p.url, { headers: headers, credentials: 'same-origin', cache: 'no-store' })
+                .then(function (res) {
+                    // The server ignored the Range (or this is a fresh start): begin cleanly
+                    // rather than splice a full body onto bytes we already hold.
+                    if (res.status === 200 && received > 0) { chunks = []; received = 0; }
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    if (!res.body || !res.body.getReader) throw new Error('nostream');
+
+                    var reader = res.body.getReader();
+                    function pump() {
+                        return reader.read().then(function (r) {
+                            if (r.done) return done();
+                            chunks.push(r.value);
+                            received += r.value.length;
+                            say('Downloading… ' + pct() + '%  (' + humanSize(received) + ' of ' + humanSize(p.size) + ')', pct());
+                            return pump();
+                        });
+                    }
+                    return pump();
+                })
+                .catch(function (err) {
+                    if (String(err && err.message) === 'nostream') {
+                        // Very old browser with no streaming body: hand it to the browser's
+                        // own downloader. No progress, but the file still arrives.
+                        say('Downloading in the browser…', 100);
+                        window.location.href = p.url;
+                        ui.busy = false;
+                        ui.btn.disabled = false;
+                        return;
+                    }
+                    if (attempt < MAX_ATTEMPTS) {
+                        say(received > 0
+                            ? 'Connection dropped at ' + humanSize(received) + ' — resuming (attempt ' + (attempt + 1) + ' of ' + MAX_ATTEMPTS + ')…'
+                            : 'Could not start — retrying (attempt ' + (attempt + 1) + ' of ' + MAX_ATTEMPTS + ')…',
+                        pct(), 'text-warning');
+                        setTimeout(run, 1500);
+                        return;
+                    }
+                    fail(err);
+                });
+        }
+
+        function done() {
+            var blob = new Blob(chunks, { type: 'application/zip' });
+            chunks = [];
+
+            if (p.size && blob.size !== p.size) {
+                // Never hand over a short file that looks complete: a truncated ZIP opens as
+                // a corrupt archive, and the operator would only find out much later.
+                fail(new Error('got ' + blob.size + ' bytes, expected ' + p.size));
+                return;
+            }
+
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = p.filename || ('approved-claims-part' + p.number + '.zip');
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+
+            ui.btn.className = 'btn btn-success btn-sm w-100 text-start';
+            ui.btn.textContent = '';
+            var tick = document.createElement('i');
+            tick.className = 'bi bi-check2-circle me-2';
+            ui.btn.appendChild(tick);
+            ui.btn.appendChild(document.createTextNode('Part ' + p.number + ' downloaded — click to download again'));
+            say('Saved to your Downloads folder.', 100, 'text-success');
+
+            if (!ui.saved) { ui.saved = true; savedCount++; }
+            ui.busy = false;
+            ui.btn.disabled = false;
+
+            if (savedCount === totalParts) {
+                partsDone.textContent = 'All ' + totalParts + ' parts downloaded (' + humanSize(totalBytes)
+                    + ' in total). Unzip them all into the same folder — together they hold every approved claim in the period.';
+                partsDone.classList.remove('d-none');
+            }
+        }
+
+        function fail(err) {
+            say('Download failed after ' + MAX_ATTEMPTS + ' attempts (' + (err && err.message ? err.message : 'network error')
+                + '). Click to try again.', pct(), 'text-danger');
+            ui.busy = false;
+            ui.btn.disabled = false;
+
+            // A manual escape, added once and only when it is actually needed. A button that
+            // has run out of retries must never be a dead end — right-click → "Save link as"
+            // works even where the scripted download does not.
+            if (!ui.escape) {
+                ui.escape = document.createElement('a');
+                ui.escape.className = 'small d-block mt-1';
+                ui.escape.href = p.url;
+                ui.escape.setAttribute('download', p.filename || '');
+                ui.escape.textContent = 'Direct link to part ' + p.number + ' (right-click → Save link as)';
+                ui.status.parentNode.appendChild(ui.escape);
+            }
+        }
+
+        run();
     }
 
     var modalEl = document.getElementById('exportZipModal');

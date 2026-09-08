@@ -1736,6 +1736,10 @@ class ExpenseClaimController extends Controller
                 'size' => (int) ($p['size'] ?? 0),
                 'claims' => $p['claims'] ?? null,
                 'url' => route('hr.claims.download-zip.file', ['export' => $export->id, 'part' => $i + 1]),
+                // The page fetches the bytes itself to show progress, so it has to name the
+                // saved file — the Content-Disposition never reaches a blob download. Taken
+                // from the model so the naming convention lives in exactly one place.
+                'filename' => $export->partFilename($i + 1),
             ])->all()
             : [];
 
