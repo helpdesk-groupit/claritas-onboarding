@@ -216,7 +216,11 @@
         <div class="col-md-2">
             <label class="form-label small mb-1">Date on receipt</label>
             <input type="date" class="form-control form-control-sm cc-c-date" aria-label="Date printed on the receipt">
-            <div class="form-text small cc-c-date-hint">Correct it if the scan misread the printed date.</div>
+            {{-- Bold + red on purpose, not the usual muted .form-text: this is the field the month
+                 guard actually judges, an OCR misread here (wrong day, month, or YEAR — seen for
+                 real on a faded thermal receipt) is silently plausible-looking, and it used to sit
+                 in text easy to read straight past. --}}
+            <div class="form-text small cc-c-date-hint text-danger fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i>Correct it if the scan misread the printed date.</div>
         </div>
         <div class="col-md-3">
             <label class="form-label small mb-1">Who paid</label>
