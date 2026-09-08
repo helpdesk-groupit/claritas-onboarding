@@ -192,8 +192,9 @@
         </div>
     </div>
 
-    {{-- Category C — receipt details read by OCR (read-only; fill on Scan), EXCEPT the covered
-         period, which the employee may type or correct by hand. Sent with the item. --}}
+    {{-- Category C — receipt details read by OCR (read-only; fill on Scan), EXCEPT the printed
+         date, the printed total and the covered period, which the employee may type or correct
+         by hand. Those three are the ones a guard judges. Sent with the item. --}}
     <div class="row g-2 mt-1">
         <div class="col-12">
             <label class="form-label small mb-0 fw-bold"><i class="bi bi-receipt-cutoff me-1 text-info"></i>Receipt details <span class="fw-normal text-muted">(read from the attachment — for the report; the date, the total and the covered period can be corrected by hand)</span></label>
@@ -256,7 +257,9 @@
         <div class="col-md-3">
             <label class="form-label small mb-1">Total paid (RM)</label>
             <input type="text" inputmode="decimal" class="form-control form-control-sm cc-c-total" aria-label="Total printed on the receipt" placeholder="—">
-            <div class="form-text small cc-c-total-hint">Correct it if the scan misread the printed total.</div>
+            {{-- Bold + red for the same reason the date hint above is: this is the other field a
+                 guard actually judges, and a misread total is just as plausible-looking. --}}
+            <div class="form-text small cc-c-total-hint text-danger fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i>Correct it if the scan misread the printed total.</div>
         </div>
         <div class="col-12 cc-c-calc-wrap d-none">
             <label class="form-label small mb-1">Mileage calculation</label>

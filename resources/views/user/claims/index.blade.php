@@ -1895,7 +1895,19 @@
                 fd.append('c_period_start', tr.dataset.cPeriodStart || '');
                 fd.append('c_period_end', tr.dataset.cPeriodEnd || '');
                 fd.append('c_paidby', tr.dataset.cPaidby || '');
-                fd.append('c_total', tr.dataset.cTotal || '');
+                // This row's Amount IS its reading of the receipt total — cTotal is set from
+                // it.amount when the row is built, so the two start equal. When the reviewer
+                // corrects the amount they are correcting that reading, and the ceiling has to
+                // follow: leaving the scan's figure behind makes overClaimError() refuse the
+                // corrected amount and point at a "Total paid" field this table does not have.
+                // That is precisely the confirm-table case — a flagged total/sum mismatch is
+                // what routed them here. A total the scan never read is NOT invented.
+                const scannedTotal = tr.dataset.cTotal || '';
+                const editedTotal = (scannedTotal !== '' && amt !== '' && Number(amt) !== Number(scannedTotal)) ? amt : scannedTotal;
+                fd.append('c_total', editedTotal);
+                // Provenance, exactly as on the main form: only set when the figure sent is no
+                // longer the one the scan produced.
+                fd.append('c_total_manual', editedTotal !== scannedTotal ? '1' : '');
                 fd.append('c_calc', '');
                 // A genuine multi-item scan shares one image across several rows — skip dedup so
                 // row 2+ don't false-positive against row 1's identical file hash. A single-item
