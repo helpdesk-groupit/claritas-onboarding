@@ -1311,8 +1311,8 @@
                         syncTotal(c);
                     }
                     if (okDate) date.value = chosenDate;
-                    // Be honest when the scan found nothing at all — the two "auto-filled" messages
-                    // below were shown even when every field came back empty/null, which read as a
+                    // Be honest when the scan found nothing at all — the "auto-filled" message
+                    // below was shown even when every field came back empty/null, which read as a
                     // silent no-op (nothing on screen changes, yet the hint claims success). Prefer
                     // the AI's own reason (blurry, cropped, several receipts overlapping, wrong
                     // document type, …) over a generic line — it tells the user what to actually fix.
@@ -1320,17 +1320,22 @@
                     // caught the "amount or date missing" case and diverted to the confirm popup,
                     // so this path only ever reaches a genuine auto-fill success message. It's kept
                     // (rather than assumed away) as a defensive fallback in case that guard is ever
-                    // loosened. Every branch below is a "go check what I auto-filled" message, so it
-                    // always gets the boxed 'ok' treatment — this is exactly the message that used
-                    // to sit in easy-to-miss muted text.
+                    // loosened.
                     const gotSomething = !!(d.category_id || d.amount || d.vendor || d.item_description || d.paid_by || okDate);
-                    setHint(hint, !gotSomething
+                    // A confident full read (category + amount + date all captured, no coverage
+                    // note to surface) no longer shows a banner — the auto-filled fields are visible
+                    // right there on the form, so the badge was telling the user something they could
+                    // already see. The partial-read, coverage-period and failure messages still need
+                    // one, since those describe something NOT otherwise visible on the form.
+                    const confidentFullRead = gotSomething && okDate && !coverDate;
+                    const hintMsg = !gotSomething
                         ? (d.issue || 'Couldn’t make out anything useful on this file — enter the details manually, or try a clearer photo/screenshot.')
                         : coverDate
                             ? '✨ This receipt covers ' + formatCoverage(d.period_start, d.period_end) + ' — the date of expense is set to the start of that period. Now add the description.'
-                            : okDate
-                                ? '✨ Category, amount & date auto-filled from the receipt — now add the description.'
-                                : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.', gotSomething ? 'ok' : true);
+                            : confidentFullRead
+                                ? ''
+                                : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.';
+                    setHint(hint, hintMsg, confidentFullRead ? false : (gotSomething ? 'ok' : true));
                     // Capture Category C (read-only receipt details) into the fields below.
                     setC(c, { company: d.vendor, itemdesc: d.item_description, date: fixedSingleDate,
                         period_start: d.period_start, period_end: d.period_end, paidby: d.paid_by, total: d.amount });
