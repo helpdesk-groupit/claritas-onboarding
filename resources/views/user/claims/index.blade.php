@@ -386,9 +386,9 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <div class="alert alert-warning d-flex align-items-start gap-2 py-2 px-3 small mb-2">
-                    <i class="bi bi-stars mt-1"></i>
-                    <div>The AI read these transactions from your upload. <strong>Check &amp; edit every line</strong> if needed, then tick the ones to add. Each line keeps its source image as proof.</div>
+                <div class="alert alert-warning d-flex align-items-start gap-2 py-2 px-3 small mb-2" id="mrLeadAlert">
+                    <i class="bi bi-stars mt-1" id="mrLeadIcon"></i>
+                    <div id="mrLeadMsg">The AI read these transactions from your upload. <strong>Check &amp; edit every line</strong> if needed, then tick the ones to add. Each line keeps its source image as proof.</div>
                 </div>
                 <div class="alert alert-info d-none align-items-start gap-2 py-2 px-3 small mb-2" id="mrTrunc">
                     <i class="bi bi-exclamation-triangle mt-1"></i>
@@ -1223,22 +1223,8 @@
                     bits.push('Route ' + route);
                     // (Expense Description & Date are NOT auto-filled — the user enters them.)
                 } else {
-                    // ── Receipt — CATEGORY, AMOUNT and (the receipt's own) DATE auto-fill.
-                    // The user types the Expense Description; the OCR's reading of company /
-                    // date / etc. is also captured separately as read-only Category C, below.
-                    if (d.category_id) { cat.value = String(d.category_id); cat.dispatchEvent(new Event('change', { bubbles: true })); }
-                    if (d.amount && !amount.readOnly) {
-                        // Split SST out of the grand total when the receipt shows it: "Amount (w/o SST)"
-                        // holds the net, the SST field the tax, and the total stays the receipt total.
-                        const total = parseFloat(d.amount);
-                        const tax = (d.gst && !gst.readOnly) ? parseFloat(d.gst) : 0;
-                        if (tax > 0 && tax < total) { amount.value = (total - tax).toFixed(2); gst.value = tax.toFixed(2); }
-                        else { amount.value = total.toFixed(2); }
-                        syncTotal(c);
-                    }
-                    // The receipt's printed date IS the date of expense — auto-fill the
-                    // (editable) Date of Expense so the month guard checks the real receipt
-                    // date, not a manual default. The user can still adjust it if OCR misread.
+                    // ── Receipt — work out the DATE first (needed either way), then decide
+                    // between a CONFIDENT auto-fill and asking the user to CONFIRM.
                     // correctSwappedDate() catches a day/month swap the AI still made despite
                     // the prompt's rule, when the un-swapped reading falls outside this claim's
                     // own month and the swap resolves it — see its definition for the full guard.
@@ -1251,6 +1237,52 @@
                     const coverDate = coverageDateInMonth(d.period_start, d.period_end, date.getAttribute('min'), date.getAttribute('max'));
                     const chosenDate = coverDate || fixedSingleDate;
                     const okDate = chosenDate && /^\d{4}-\d{2}-\d{2}$/.test(chosenDate);
+
+                    // The AI flagged this receipt as unclear (blurry/cropped/overlapping/…), or
+                    // couldn't confidently read the amount or the date — the two fields every
+                    // capped/monthly rule downstream relies on. Rather than silently leave gaps
+                    // or auto-fill a guess nobody is asked to check, ask the employee to CONFIRM
+                    // & correct every captured field, using the exact same editable review table
+                    // a multi-receipt scan uses (openMultiReview with a single row). Skipped while
+                    // editing an existing item — that path already unlocks the fields inline and
+                    // asks for a review before Save, so it isn't left without a confirmation step.
+                    if (!c.dataset.editingItem && (d.issue || !d.amount || !okDate)) {
+                        const missing = [];
+                        if (!d.amount) missing.push('amount');
+                        if (!okDate) missing.push('date');
+                        const reason = d.issue || ('We couldn’t confidently read the ' + missing.join(' and ') + ' on this receipt.');
+                        const origFile = (q(c,'.cc-i-file').files[0]) || scanFile;
+                        setHint(hint, 'Please review the details below before adding this receipt.', false);
+                        openMultiReview(c, [{
+                            vendor: d.vendor || null,
+                            item_description: d.item_description || null,
+                            date: d.date || null,
+                            period_start: d.period_start || null,
+                            period_end: d.period_end || null,
+                            paid_by: d.paid_by || null,
+                            amount: (d.amount !== undefined ? d.amount : null),
+                            category_id: d.category_id || null,
+                            highlighted: false,
+                            non_claimable: false,
+                            transaction_type: null,
+                            file_index: 0,
+                        }], [origFile], false, { confirmOnly: true, reason: reason });
+                        return;
+                    }
+
+                    // ── Confident read — CATEGORY, AMOUNT and (the receipt's own) DATE auto-fill.
+                    // The user types the Expense Description; the OCR's reading of company /
+                    // date / etc. is also captured separately as read-only Category C, below.
+                    if (d.category_id) { cat.value = String(d.category_id); cat.dispatchEvent(new Event('change', { bubbles: true })); }
+                    if (d.amount && !amount.readOnly) {
+                        // Split SST out of the grand total when the receipt shows it: "Amount (w/o SST)"
+                        // holds the net, the SST field the tax, and the total stays the receipt total.
+                        const total = parseFloat(d.amount);
+                        const tax = (d.gst && !gst.readOnly) ? parseFloat(d.gst) : 0;
+                        if (tax > 0 && tax < total) { amount.value = (total - tax).toFixed(2); gst.value = tax.toFixed(2); }
+                        else { amount.value = total.toFixed(2); }
+                        syncTotal(c);
+                    }
                     if (okDate) date.value = chosenDate;
                     // Be honest when the scan found nothing at all — the two "auto-filled" messages
                     // below were shown even when every field came back empty/null, which read as a
@@ -1613,9 +1645,17 @@
     }
 
     // ── Multi-receipt review (one image split into many lines, or several files) ──
-    let reviewCard = null, reviewFiles = [];
-    function openMultiReview(c, items, files, truncated) {
+    // reviewIsBatch: true for a genuine multi-item scan, where the SAME uploaded image
+    // legitimately backs several different rows (a statement, several receipts in one photo)
+    // — the per-receipt duplicate checks must be SKIPPED there, or rows 2+ would false-positive
+    // against row 1's identical file hash. false for a single low-confidence receipt routed
+    // here for CONFIRMATION only: exactly one row, one file, so it must go through the same
+    // duplicate-expense / duplicate-receipt checks a normal single Add-to-list would.
+    let reviewCard = null, reviewFiles = [], reviewIsBatch = true;
+    function openMultiReview(c, items, files, truncated, opts) {
+        opts = opts || {};
         reviewCard = c;
+        reviewIsBatch = ! opts.confirmOnly;
         reviewFiles = Array.isArray(files) ? files : (files ? [files] : []);
         const body = document.getElementById('multiReviewBody');
         const sel = q(c, '.cc-i-cat');
@@ -1682,13 +1722,36 @@
             // field the user keys in manually).
             if (it.category_id) tr.querySelector('.mr-cat').value = String(it.category_id);
         });
-        // Legend explains the pre-selection so it isn't a surprise.
+        // Title / lead message / Add button — a single low-confidence receipt asking for
+        // CONFIRMATION reads very differently from a multi-receipt scan: it's not "several
+        // transactions found", it's "please check this one over before it's added".
+        const title = document.getElementById('multiReviewTitle');
+        const leadAlert = document.getElementById('mrLeadAlert');
+        const leadIcon = document.getElementById('mrLeadIcon');
+        const leadMsg = document.getElementById('mrLeadMsg');
+        const addBtn = document.getElementById('mrAddAll');
         const legend = document.getElementById('mrLegend');
-        if (legend) {
-            const pick = anyHighlighted
-                ? 'We pre-selected the <span class="badge bg-warning text-dark">highlighted</span> rows. Tick others if you also want them.'
-                : 'All rows are selected except <span class="badge bg-secondary">reload / top-up / fee</span> lines. Adjust as needed.';
-            legend.innerHTML = '<i class="bi bi-info-circle me-1"></i>' + pick + ' Details are pre-filled from the attachment — <strong>edit anything that\'s wrong</strong>, then tick the rows to add.';
+        if (opts.confirmOnly) {
+            if (title) title.innerHTML = '<i class="bi bi-patch-question me-2 text-warning"></i>Please confirm this receipt';
+            if (leadAlert) { leadAlert.classList.remove('alert-warning'); leadAlert.classList.add('alert-info'); }
+            if (leadIcon) { leadIcon.classList.remove('bi-stars'); leadIcon.classList.add('bi-question-circle'); }
+            if (leadMsg) leadMsg.innerHTML = escHtml(opts.reason || 'We couldn’t confidently read every detail on this receipt.')
+                + ' <strong>Check every field below and correct anything that\'s wrong</strong>, then confirm to add it.';
+            if (addBtn) addBtn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Confirm & add';
+            if (legend) legend.innerHTML = '';
+        } else {
+            if (title) title.innerHTML = '<i class="bi bi-images me-2 text-primary"></i>Multiple receipts found';
+            if (leadAlert) { leadAlert.classList.remove('alert-info'); leadAlert.classList.add('alert-warning'); }
+            if (leadIcon) { leadIcon.classList.remove('bi-question-circle'); leadIcon.classList.add('bi-stars'); }
+            if (leadMsg) leadMsg.innerHTML = 'The AI read these transactions from your upload. <strong>Check &amp; edit every line</strong> if needed, then tick the ones to add. Each line keeps its source image as proof.';
+            if (addBtn) addBtn.innerHTML = '<i class="bi bi-plus-circle me-1"></i>Add selected';
+            // Legend explains the pre-selection so it isn't a surprise.
+            if (legend) {
+                const pick = anyHighlighted
+                    ? 'We pre-selected the <span class="badge bg-warning text-dark">highlighted</span> rows. Tick others if you also want them.'
+                    : 'All rows are selected except <span class="badge bg-secondary">reload / top-up / fee</span> lines. Adjust as needed.';
+                legend.innerHTML = '<i class="bi bi-info-circle me-1"></i>' + pick + ' Details are pre-filled from the attachment — <strong>edit anything that\'s wrong</strong>, then tick the rows to add.';
+            }
         }
         // Truncation warning — never drop rows silently.
         const trunc = document.getElementById('mrTrunc');
@@ -1761,7 +1824,11 @@
                 fd.append('c_paidby', tr.dataset.cPaidby || '');
                 fd.append('c_total', tr.dataset.cTotal || '');
                 fd.append('c_calc', '');
-                fd.append('batch', '1'); // a shared image may back several lines — skip dedup
+                // A genuine multi-item scan shares one image across several rows — skip dedup so
+                // row 2+ don't false-positive against row 1's identical file hash. A single-item
+                // CONFIRMATION row is not a batch: it must go through the same duplicate checks a
+                // normal single Add-to-list submission would.
+                if (reviewIsBatch) fd.append('batch', '1');
                 const f = reviewFiles[parseInt(tr.dataset.mrFile || '0', 10)] || reviewFiles[0];
                 if (f) fd.append('receipt', f);
                 return fetch(addUrl, { method: 'POST', headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' }, body: fd })
