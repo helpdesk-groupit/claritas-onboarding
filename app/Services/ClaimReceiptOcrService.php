@@ -342,7 +342,17 @@ class ClaimReceiptOcrService
         $receiptTotal = isset($json['receipt_total']) && is_numeric($json['receipt_total']) ? round(abs((float) $json['receipt_total']), 2) : null;
         $anyHighlighted = (bool) array_filter($items, fn ($it) => ! empty($it['highlighted']));
         if ($isSingleReceipt && count($items) > 1 && ! $anyHighlighted) {
-            $items = [self::collapseSingleReceiptItems($items, $receiptTotal)];
+            [$collapsed, $mismatchNote] = self::collapseSingleReceiptItems($items, $receiptTotal);
+            $items = [$collapsed];
+            // receipt_total and the summed rows are two INDEPENDENT reads of the same document —
+            // collapseSingleReceiptItems trusts receipt_total over the sum (the rows are the
+            // unreliable one on a discounted receipt), but a large gap between them means at
+            // least one of the two readings is wrong, not necessarily the sum. Surface it as the
+            // document's "issue" so the claimant is routed to the confirm/review table instead of
+            // an instant, unverified auto-fill — never overwrites an issue the model already gave.
+            if ($mismatchNote !== null && $issue === null) {
+                $issue = $mismatchNote;
+            }
         }
 
         // Flag (don't hide) when a long statement hit the ceiling, so the UI can warn
@@ -1165,12 +1175,32 @@ class ClaimReceiptOcrService
      * rows summed to the PRE-discount gross, not the actual total), so trusting their sum would
      * just relocate the bug into the total instead of fixing it. Summing is only the fallback
      * for when receipt_total itself came back null.
+     *
+     * Returns [merged item, mismatch note|null]. receipt_total and the row sum are two
+     * INDEPENDENT reads of the same document, so a real gap between them (beyond ordinary
+     * rounding) means at least one of the two is wrong — caught live 2026-09-08 on an AEON Big
+     * receipt whose two items genuinely summed to RM19.66 while the model's separate read of the
+     * printed TOTAL line came back RM13.03, a vision misread of the total digits with nothing on
+     * the receipt to explain the shortfall. That was trusted silently because receipt_total wins
+     * the merge above by design. The note is NOT a rejection — a real discount (sum > total) or
+     * an added service charge/tax (total > sum) can produce a gap this size too — it only asks
+     * the caller to route the claimant to the confirm/review table instead of an instant,
+     * unverified auto-fill, so a wrong figure never reaches the claim without a human glance.
      */
     protected static function collapseSingleReceiptItems(array $items, ?float $receiptTotal): array
     {
         $first = $items[0];
         $sum = round(array_sum(array_map(fn ($it) => (float) ($it['amount'] ?? 0), $items)), 2);
         $taxSum = round(array_sum(array_map(fn ($it) => (float) ($it['tax_amount'] ?? 0), $items)), 2);
+
+        // More than a couple of cents apart is beyond anything ordinary rounding explains.
+        $mismatchNote = ($receiptTotal !== null && abs($receiptTotal - $sum) > 0.02)
+            ? sprintf(
+                'The total I read (RM%s) doesn’t match what the individual items add up to (RM%s) — please check the amount against the receipt.',
+                number_format($receiptTotal, 2),
+                number_format($sum, 2)
+            )
+            : null;
 
         // A short list of what was on the receipt, for the read-only "Category C" panel only —
         // the user's own Expense Description field is never auto-filled from a receipt scan.
@@ -1192,7 +1222,7 @@ class ClaimReceiptOcrService
             }
         }
 
-        return [
+        return [[
             'amount' => $receiptTotal ?? $sum,
             'tax_amount' => $taxSum > 0 ? $taxSum : null,
             'date' => $first['date'] ?? null,
@@ -1211,7 +1241,7 @@ class ClaimReceiptOcrService
             'email_subject' => $first['email_subject'] ?? null,
             'bill_to' => $first['bill_to'] ?? null,
             'account_email' => $first['account_email'] ?? null,
-        ];
+        ], $mismatchNote];
     }
 
     /** Normalise the map/route fields from a (possibly partial) source array. */
