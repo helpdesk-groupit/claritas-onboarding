@@ -101,12 +101,13 @@ class BuildClaimZipExport implements ShouldBeUnique, ShouldQueue
 
             return;
         }
-        $zipPath = rtrim(sys_get_temp_dir(), '/\\').DIRECTORY_SEPARATOR.'claims-'.bin2hex(random_bytes(8)).'.zip';
-
-        $zip = new \ZipArchive;
-        if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+        // The parts are built in their own scratch directory, separate from the one holding the
+        // rendered PDFs, so both can be swept independently and neither can pick up the other's
+        // files when it is cleared.
+        $zipDir = rtrim(sys_get_temp_dir(), '/\\').DIRECTORY_SEPARATOR.'claim-zip-parts-'.bin2hex(random_bytes(8));
+        if (! @mkdir($zipDir, 0700, true) && ! is_dir($zipDir)) {
             $service->deleteTempDir($tmpDir);
-            Log::error('Claim ZIP export: could not open archive', ['zip' => $zipPath, 'export_id' => $export->id]);
+            Log::error('Claim ZIP export: could not create the archive folder', ['dir' => $zipDir, 'export_id' => $export->id]);
             $export->update([
                 'status' => ExpenseClaimZipExport::STATUS_FAILED,
                 'error' => 'Could not start the ZIP file on the server.',
@@ -117,22 +118,25 @@ class BuildClaimZipExport implements ShouldBeUnique, ShouldQueue
         }
 
         try {
-            $result = $service->renderZip($claims, $zip, $tmpDir, function (int $count) use ($export) {
-                $export->update(['rendered_count' => $count]);
-            });
+            // Zero or negative means "never split" — a deliberate escape hatch back to the
+            // single-archive behaviour, and unambiguous in a way a silent floor would not be.
+            $maxPartBytes = (int) config('claims.zip_export.max_part_bytes', 25 * 1024 * 1024);
 
-            if ($notes = $service->exportNotes($matched->count(), count($result['used']), $omitted, $result['failed'], $cap)) {
-                $zip->addFromString('_EXPORT-NOTES.txt', $notes);
-            }
-            $zip->close();
+            $result = $service->renderZipParts(
+                $claims,
+                $tmpDir,
+                $zipDir,
+                $maxPartBytes > 0 ? $maxPartBytes : PHP_INT_MAX,
+                function (int $count) use ($export) {
+                    $export->update(['rendered_count' => $count]);
+                }
+            );
+
+            $notes = $service->exportNotes($matched->count(), count($result['used']), $omitted, $result['failed'], $cap);
+            $result['parts'] = $service->finalizeParts($result['parts'], $notes);
         } catch (\Throwable $e) {
-            try {
-                $zip->close();
-            } catch (\Throwable) {
-                // Already broken — discarding either way.
-            }
             $service->deleteTempDir($tmpDir);
-            @unlink($zipPath);
+            $service->deleteTempDir($zipDir);
             report($e);
             $export->update([
                 'status' => ExpenseClaimZipExport::STATUS_FAILED,
@@ -145,8 +149,8 @@ class BuildClaimZipExport implements ShouldBeUnique, ShouldQueue
 
         $service->deleteTempDir($tmpDir);
 
-        if (empty($result['used'])) {
-            @unlink($zipPath);
+        if (empty($result['used']) || empty($result['parts'])) {
+            $service->deleteTempDir($zipDir);
             $export->update([
                 'status' => ExpenseClaimZipExport::STATUS_FAILED,
                 'error' => 'None of the matching claims could be rendered to PDF. Please contact IT.',
@@ -157,50 +161,72 @@ class BuildClaimZipExport implements ShouldBeUnique, ShouldQueue
             return;
         }
 
-        $destination = ExpenseClaimZipExport::DIRECTORY.'/'.$export->id.'.zip';
         Storage::disk('local')->makeDirectory(ExpenseClaimZipExport::DIRECTORY);
         $this->allowWebServerToReadDownload(Storage::disk('local')->path(ExpenseClaimZipExport::DIRECTORY), 0750);
 
-        // STREAMED into place, never read whole. `file_get_contents()` here held the entire
-        // finished archive in one string — and this is precisely the archive that was observed
-        // live at ~217 MiB, which is what forced downloadZipExport() to stop using fpassthru()
-        // and read the file back in fixed 1 MB chunks instead. The same file, on the same box,
-        // was still being slurped in full one step earlier. That is not free even in the
-        // worker: raisePdfMemoryFloor() lifts this process to config('claims.pdf_memory_limit')
-        // (512M by default), so a couple more cycles' growth turns a successful export into a
-        // fatal allocation at the very last step, after every PDF has already been rendered.
-        // Peak memory is now bounded by the copy buffer regardless of archive size — the same
-        // rule renderZip() already follows when building it.
-        $handle = fopen($zipPath, 'rb');
-        if ($handle === false) {
-            $service->deleteTempDir($tmpDir);
-            @unlink($zipPath);
-            Log::error('Claim ZIP export: could not reopen the built archive', ['zip' => $zipPath, 'export_id' => $export->id]);
-            $export->update([
-                'status' => ExpenseClaimZipExport::STATUS_FAILED,
-                'error' => 'Could not read the finished ZIP file on the server.',
-                'completed_at' => now(),
-            ]);
+        // A single-part export keeps the `{id}.zip` name it has always had, so nothing that
+        // predates the split — stored rows, the prune sweep, the download route — sees any
+        // change at all in the ordinary case.
+        $multi = count($result['parts']) > 1;
+        $stored = [];
 
-            return;
+        foreach ($result['parts'] as $i => $part) {
+            $number = $i + 1;
+            $destination = ExpenseClaimZipExport::DIRECTORY.'/'.$export->id.($multi ? '-part'.$number : '').'.zip';
+
+            // STREAMED into place, never read whole. `file_get_contents()` here held the entire
+            // finished archive in one string — and this is precisely the archive that was
+            // observed live at ~217 MiB, which is what forced downloadZipExport() off
+            // fpassthru() onto fixed 1 MB chunks. The same file, on the same box, was still
+            // being slurped in full one step earlier. That is not free even in the worker:
+            // raisePdfMemoryFloor() lifts this process to config('claims.pdf_memory_limit')
+            // (512M by default), so a couple more cycles' growth would turn a successful export
+            // into a fatal allocation at the very last step, after every PDF had been rendered.
+            // Peak memory is bounded by the copy buffer regardless of archive size — the same
+            // rule renderZipParts() already follows when building it.
+            $handle = fopen($part['path'], 'rb');
+            if ($handle === false) {
+                $service->deleteTempDir($zipDir);
+                foreach ($stored as $done) {
+                    Storage::disk('local')->delete($done['path']);
+                }
+                Log::error('Claim ZIP export: could not reopen a built archive', ['zip' => $part['path'], 'export_id' => $export->id]);
+                $export->update([
+                    'status' => ExpenseClaimZipExport::STATUS_FAILED,
+                    'error' => 'Could not read the finished ZIP file on the server.',
+                    'completed_at' => now(),
+                ]);
+
+                return;
+            }
+
+            Storage::disk('local')->writeStream($destination, $handle);
+
+            // Flysystem's local adapter copies the stream but does not close the source, so
+            // this is ours to close — guarded because a future adapter that DOES close it would
+            // make an unconditional fclose() a TypeError on an already-closed resource.
+            if (is_resource($handle)) {
+                fclose($handle);
+            }
+
+            $this->allowWebServerToReadDownload(Storage::disk('local')->path($destination), 0640);
+
+            $stored[] = [
+                'path' => $destination,
+                'size' => Storage::disk('local')->size($destination),
+                'claims' => $part['claims'],
+            ];
         }
 
-        Storage::disk('local')->writeStream($destination, $handle);
-
-        // Flysystem's local adapter copies the stream but does not close the source, so this
-        // is ours to close — guarded because a future adapter that DOES close it would make
-        // an unconditional fclose() a TypeError on an already-closed resource.
-        if (is_resource($handle)) {
-            fclose($handle);
-        }
-
-        $this->allowWebServerToReadDownload(Storage::disk('local')->path($destination), 0640);
-        @unlink($zipPath);
+        $service->deleteTempDir($zipDir);
 
         $export->update([
             'status' => ExpenseClaimZipExport::STATUS_READY,
-            'file_path' => $destination,
-            'file_size' => Storage::disk('local')->size($destination),
+            'parts' => $stored,
+            // Materialised cache of part one, so every reader that predates the split keeps
+            // working unchanged. partList() is the source of truth.
+            'file_path' => $stored[0]['path'],
+            'file_size' => $stored[0]['size'],
             'omitted_claims' => $omitted->isNotEmpty()
                 ? $omitted->map(fn ($c) => ($c->claim_number ?: 'Claim #'.$c->id).' — '.($c->employee?->full_name ?? 'unknown employee'))->values()->all()
                 : null,

@@ -197,6 +197,20 @@ return [
     'zip_export' => [
         'max_claims' => (int) env('CLAIMS_ZIP_MAX_CLAIMS', 2000),
         'job_timeout' => (int) env('CLAIMS_ZIP_JOB_TIMEOUT', 1800),
+        // Largest a single downloadable archive may be. Over this the export is split into
+        // parts (ExpenseClaimZipExport::partList()).
+        //
+        // 25 MB is not a round number picked for tidiness — it is set against measured
+        // production failures. On 2026-09-08 HR could not download the export in nineteen
+        // attempts; every one died between 42 and 67 MB, while a 250 MB probe at 20 MB/s and a
+        // 140 MB probe at 1 MB/s both completed through the identical chain. So it is the
+        // SIZE of a single transfer that their connection cannot survive, not its speed, and
+        // 25 MB leaves ~40% headroom under the lowest observed failure.
+        //
+        // Raise it only against evidence that larger transfers now arrive; lower it if the
+        // failure band ever moves down. A claim whose own PDF exceeds this still gets a part
+        // to itself — a document is never split.
+        'max_part_bytes' => (int) env('CLAIMS_ZIP_MAX_PART_BYTES', 25 * 1024 * 1024),
         // How long a finished export (ready or failed) and its stored archive are kept
         // before claims:prune-zip-exports discards them.
         'retention_hours' => (int) env('CLAIMS_ZIP_RETENTION_HOURS', 48),

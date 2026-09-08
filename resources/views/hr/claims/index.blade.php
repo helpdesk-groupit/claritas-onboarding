@@ -337,6 +337,15 @@
                 </div>
                 <div id="exportZipError" class="alert alert-danger d-none mt-3 mb-0 py-2 px-3 small"></div>
                 <div id="exportZipNotice" class="alert alert-warning d-none mt-3 mb-0 py-2 px-3 small"></div>
+                {{-- A big export is delivered as several smaller files, because one large
+                     transfer could not be made to arrive (see ExpenseClaimZipExport). They are
+                     listed rather than downloaded automatically: browsers block a burst of
+                     automatic downloads, and each part has to be seen to be chased if it
+                     fails. Stays hidden for a single-part export, which behaves as before. --}}
+                <div id="exportZipParts" class="d-none mt-3">
+                    <div class="small text-muted mb-2" id="exportZipPartsHint"></div>
+                    <div id="exportZipPartsList" class="d-grid gap-2"></div>
+                </div>
                 @endif
             </div>
             <div class="modal-footer border-0 pt-1">
@@ -362,6 +371,9 @@
     var progressBar = document.getElementById('exportZipProgressBar');
     var errorBox = document.getElementById('exportZipError');
     var noticeBox = document.getElementById('exportZipNotice');
+    var partsBox = document.getElementById('exportZipParts');
+    var partsHint = document.getElementById('exportZipPartsHint');
+    var partsList = document.getElementById('exportZipPartsList');
     var csrf = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
     var zipBase = '{{ url('/hr/claims/download-zip') }}';
     var pollTimer = null;
@@ -391,7 +403,39 @@
         delete submitBtn.dataset.downloadUrl;
         progress.classList.add('d-none');
         progressBar.style.width = '0%';
+        partsBox.classList.add('d-none');
+        partsList.textContent = '';
+        partsHint.textContent = '';
         setFieldsDisabled(false);
+    }
+
+    function humanSize(bytes) {
+        if (!bytes) return '';
+        var mb = bytes / 1048576;
+        return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb.toFixed(1) + ' MB';
+    }
+
+    // Built with createElement + addEventListener, never innerHTML with an interpolated URL:
+    // CSP blocks inline handlers here, and this project's rule is that nothing user- or
+    // server-supplied is concatenated into markup.
+    function renderParts(parts) {
+        partsList.textContent = '';
+        parts.forEach(function (p) {
+            var a = document.createElement('a');
+            a.className = 'btn btn-outline-danger btn-sm text-start';
+            a.href = p.url;
+            a.setAttribute('download', '');
+            var label = 'Part ' + p.number + ' of ' + parts.length;
+            if (p.claims) label += ' — ' + p.claims + ' claim' + (p.claims === 1 ? '' : 's');
+            if (p.size) label += ' (' + humanSize(p.size) + ')';
+            var icon = document.createElement('i');
+            icon.className = 'bi bi-download me-2';
+            a.appendChild(icon);
+            a.appendChild(document.createTextNode(label));
+            a.addEventListener('click', function () { a.classList.add('btn-secondary'); });
+            partsList.appendChild(a);
+        });
+        partsBox.classList.remove('d-none');
     }
 
     var modalEl = document.getElementById('exportZipModal');
@@ -431,6 +475,24 @@
             if (notes.length) {
                 noticeBox.textContent = notes.join(' ');
                 noticeBox.classList.remove('d-none');
+            }
+
+            // Several parts are LISTED, never auto-downloaded: browsers block a burst of
+            // automatic downloads, and each part has to be visible so a failed one can be
+            // retried on its own. A single part keeps the original behaviour exactly.
+            if (data.part_count > 1) {
+                partsHint.textContent = 'Your export is split into ' + data.part_count
+                    + ' files (' + humanSize(data.total_size) + ' in total), because one download this large '
+                    + 'does not complete reliably. Download each part, then unzip them all into the same folder.';
+                renderParts(data.parts || []);
+                submitBtn.innerHTML = '<i class="bi bi-check2 me-1"></i>Export ready — ' + data.part_count + ' parts below';
+                // Inert rather than a second way to download: left clickable it would carry
+                // the "ready" state and quietly start a NEW export, re-rendering every claim.
+                // Reopening the modal resets it for a fresh run.
+                delete submitBtn.dataset.state;
+                delete submitBtn.dataset.downloadUrl;
+                submitBtn.disabled = true;
+                return;
             }
 
             if (!autoDownloaded) {

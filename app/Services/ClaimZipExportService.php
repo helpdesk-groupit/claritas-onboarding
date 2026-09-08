@@ -211,10 +211,62 @@ class ClaimZipExportService
      *
      * Returns ['used' => ['Name.pdf' => true, ...], 'failed' => ['EC-... — Employee', ...]].
      */
-    public function renderZip(Collection $claims, \ZipArchive $zip, string $tmpDir, ?callable $onProgress = null): array
+    /**
+     * Render every claim to PDF and pack them into as FEW archives as possible without any one
+     * archive exceeding $maxPartBytes.
+     *
+     * Splitting exists because a single large download could not be made to arrive. After the
+     * archive was already halved by font subsetting (227.7 MiB → 127.5 MiB) HR still failed
+     * nineteen times, every attempt dying between 42 and 67 MB — while a 250 MB probe at
+     * 20 MB/s and a 140 MB probe at 1 MB/s both completed through the identical chain. The
+     * transfer that fails is the one that lasts; parts that finish inside that band do not.
+     *
+     * A claim is NEVER split across parts. Half a PDF is not a smaller PDF, it is a broken
+     * one, and this archive is the approved copy of record for somebody's expenses — so the
+     * cap is a target that a single oversized claim is allowed to exceed, alone in its own
+     * part, rather than a limit enforced by cutting a document in half.
+     *
+     * Packed by the PDFs' own byte sizes rather than the growing archive's, because
+     * ZipArchive writes nothing measurable until close(). That errs the safe way: PDFs barely
+     * compress (measured 245 MB → 228 MB, ~7%), so the finished part comes in at or under the
+     * estimate, never over.
+     *
+     * Peak memory stays flat in the number of claims for the same reason it always did — each
+     * PDF is written to $tmpDir and added by path, never held.
+     *
+     * @return array{used: array<string, true>, failed: array<int, string>, parts: array<int, array{path: string, size: int, claims: int}>}
+     */
+    public function renderZipParts(Collection $claims, string $tmpDir, string $zipDir, int $maxPartBytes, ?callable $onProgress = null): array
     {
         $used = [];
         $failed = [];
+        $parts = [];
+
+        $zip = null;
+        $partPath = null;
+        $partIndex = 0;
+        $partBytes = 0;
+        $partClaims = 0;
+
+        $openPart = function () use (&$zip, &$partPath, &$partIndex, &$partBytes, &$partClaims, $zipDir) {
+            $partIndex++;
+            $partPath = $zipDir.DIRECTORY_SEPARATOR.'part-'.$partIndex.'.zip';
+            $zip = new \ZipArchive;
+            if ($zip->open($partPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+                throw new \RuntimeException('Could not start ZIP part '.$partIndex.' at '.$partPath);
+            }
+            $partBytes = 0;
+            $partClaims = 0;
+        };
+
+        $closePart = function () use (&$zip, &$partPath, &$parts, &$partClaims) {
+            if ($zip === null) {
+                return;
+            }
+            $zip->close();
+            $parts[] = ['path' => $partPath, 'size' => (int) (@filesize($partPath) ?: 0), 'claims' => $partClaims];
+            $zip = null;
+        };
 
         foreach ($claims as $index => $claim) {
             $name = $claim->pdfFilename();
@@ -245,14 +297,98 @@ class ClaimZipExportService
                 continue;
             }
 
+            $size = (int) (@filesize($pdfPath) ?: 0);
+
+            // Roll over only when the current part already holds something: an empty part must
+            // always accept the next claim, or a single claim larger than the cap would loop
+            // forever looking for a part it fits in.
+            if ($zip !== null && $partClaims > 0 && $partBytes + $size > $maxPartBytes) {
+                $closePart();
+            }
+            if ($zip === null) {
+                $openPart();
+            }
+
             $used[$unique] = true;
             $zip->addFile($pdfPath, $unique);
+            $partBytes += $size;
+            $partClaims++;
+
             if ($onProgress) {
                 $onProgress($index + 1);
             }
         }
 
-        return ['used' => $used, 'failed' => $failed];
+        $closePart();
+
+        return ['used' => $used, 'failed' => $failed, 'parts' => $parts];
+    }
+
+    /**
+     * Reopen the finished archives to write what could only be known once they were all built:
+     * how many parts there turned out to be, and which claims failed to render.
+     *
+     * Done as a second pass rather than inline because both facts depend on the whole run —
+     * "part 2 of 5" cannot be written while it is still possibly part 2 of 2.
+     *
+     * `_PART-INFO.txt` is added ONLY when there is more than one part, so a single-part export
+     * stays byte-for-byte the shape it has always been; `_EXPORT-NOTES.txt` keeps its existing
+     * meaning and its existing home in part one. Sizes are re-read afterwards, since both
+     * additions change them and the stored size is what the download reports.
+     *
+     * @param  array<int, array{path: string, size: int, claims: int}>  $parts
+     * @return array<int, array{path: string, size: int, claims: int}>
+     */
+    public function finalizeParts(array $parts, ?string $notes): array
+    {
+        $total = count($parts);
+        if ($total === 0) {
+            return $parts;
+        }
+
+        foreach ($parts as $i => $part) {
+            $number = $i + 1;
+            $add = [];
+
+            if ($total > 1) {
+                $add['_PART-INFO.txt'] = implode(PHP_EOL, [
+                    'Claim PDF export — part '.$number.' of '.$total,
+                    'Claims in this part: '.$part['claims'],
+                    '',
+                    'The export is split into '.$total.' files because a single archive this large',
+                    'could not be downloaded reliably. Each part is a normal ZIP; unzip them all',
+                    'into the same folder to get the complete set.',
+                    '',
+                    $number === 1
+                        ? 'Anything left out of the export is listed in _EXPORT-NOTES.txt in this part.'
+                        : 'Anything left out of the export is listed in _EXPORT-NOTES.txt in part 1.',
+                    '',
+                ]);
+            }
+
+            if ($number === 1 && $notes !== null) {
+                $add['_EXPORT-NOTES.txt'] = $notes;
+            }
+
+            if ($add === []) {
+                continue;
+            }
+
+            $zip = new \ZipArchive;
+            if ($zip->open($part['path']) !== true) {
+                // The archive is already written and downloadable; losing its manifest is not
+                // worth failing an export that otherwise succeeded.
+                continue;
+            }
+            foreach ($add as $entry => $body) {
+                $zip->addFromString($entry, $body);
+            }
+            $zip->close();
+
+            $parts[$i]['size'] = (int) (@filesize($part['path']) ?: $part['size']);
+        }
+
+        return $parts;
     }
 
     /**

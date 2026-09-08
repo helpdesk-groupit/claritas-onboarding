@@ -1728,6 +1728,17 @@ class ExpenseClaimController extends Controller
     {
         $this->authorizeViewClaims();
 
+        // Parts are listed even when there is only one, so the page has a single shape to
+        // render rather than two branches that can disagree about what is downloadable.
+        $parts = $export->isReady()
+            ? collect($export->partList())->values()->map(fn ($p, $i) => [
+                'number' => $i + 1,
+                'size' => (int) ($p['size'] ?? 0),
+                'claims' => $p['claims'] ?? null,
+                'url' => route('hr.claims.download-zip.file', ['export' => $export->id, 'part' => $i + 1]),
+            ])->all()
+            : [];
+
         return response()->json([
             'status' => $export->status,
             'total_matched' => $export->total_matched,
@@ -1738,6 +1749,9 @@ class ExpenseClaimController extends Controller
             'failed_claims' => $export->failed_claims,
             'omitted_claims' => $export->omitted_claims,
             'file_size' => $export->file_size,
+            'total_size' => $export->isReady() ? $export->totalSize() : null,
+            'part_count' => count($parts),
+            'parts' => $parts,
             'download_url' => $export->isReady() ? route('hr.claims.download-zip.file', $export) : null,
         ]);
     }
@@ -1794,11 +1808,18 @@ class ExpenseClaimController extends Controller
      * closing a buffer this code doesn't own — harmless, but correctly flagged "risky". The
      * live pool's non-flushing implicit buffer does not exist in the CLI test SAPI anyway.
      */
-    public function downloadZipExport(ExpenseClaimZipExport $export)
+    public function downloadZipExport(ExpenseClaimZipExport $export, ?string $part = null)
     {
         $this->authorizeViewClaims();
 
-        if (! $export->isReady() || ! $export->file_path || ! Storage::disk('local')->exists($export->file_path)) {
+        // A large export is split into parts, because a single transfer that big could not be
+        // made to arrive (see ExpenseClaimZipExport::partList()). Part 1 is the default so the
+        // original one-argument URL — which is what the page's own JS and any bookmark still
+        // use — keeps meaning what it always did for a single-part export.
+        $number = max(1, (int) $part);
+        $entry = $export->partAt($number);
+
+        if (! $export->isReady() || ! $entry || empty($entry['path']) || ! Storage::disk('local')->exists($entry['path'])) {
             abort(404, 'This export is not ready, failed, or has already expired.');
         }
 
@@ -1808,8 +1829,8 @@ class ExpenseClaimController extends Controller
             }
         }
 
-        $absolutePath = Storage::disk('local')->path($export->file_path);
-        $filename = 'approved-claims-'.$export->created_at->format('Y-m-d').'.zip';
+        $absolutePath = Storage::disk('local')->path($entry['path']);
+        $filename = $export->partFilename($number);
 
         $response = new BinaryFileResponse(
             $absolutePath,
@@ -1839,7 +1860,10 @@ class ExpenseClaimController extends Controller
         // would be ~14,600 write syscalls for an archive this size.
         $response->setChunkSize(1024 * 1024);
 
-        $response->setEtag(sha1($export->id.'|'.filesize($absolutePath).'|'.filemtime($absolutePath)));
+        // Part number included so two parts of one export can never collide on a validator —
+        // an If-Range that matched the wrong part would splice two different archives together
+        // into a file that looks downloaded and is not a readable ZIP.
+        $response->setEtag(sha1($export->id.'|'.$number.'|'.filesize($absolutePath).'|'.filemtime($absolutePath)));
 
         return $response;
     }

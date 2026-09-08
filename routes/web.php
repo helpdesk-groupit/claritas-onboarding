@@ -661,7 +661,11 @@ Route::middleware(['auth', \App\Http\Middleware\EnforceSingleSession::class, \Ap
     Route::post('/hr/claims/download-zip', [ExpenseClaimController::class, 'requestZipExport'])
         ->middleware('throttle:6,1')->name('hr.claims.download-zip');
     Route::get('/hr/claims/download-zip/{export}/status', [ExpenseClaimController::class, 'zipExportStatus'])->name('hr.claims.download-zip.status');
-    Route::get('/hr/claims/download-zip/{export}/file', [ExpenseClaimController::class, 'downloadZipExport'])->name('hr.claims.download-zip.file');
+    // {part} is optional and defaults to 1, so the original one-argument URL — still emitted by
+    // the page's own JS and living in bookmarks — keeps working unchanged. A large export is
+    // split into several parts; see ExpenseClaimZipExport::partList().
+    Route::get('/hr/claims/download-zip/{export}/file/{part?}', [ExpenseClaimController::class, 'downloadZipExport'])
+        ->whereNumber('part')->name('hr.claims.download-zip.file');
     Route::get('/hr/claims/categories', [ExpenseClaimController::class, 'categories'])->name('hr.claims.categories');
     Route::post('/hr/claims/categories', [ExpenseClaimController::class, 'storeCategory'])->name('hr.claims.categories.store');
     Route::put('/hr/claims/categories/{category}', [ExpenseClaimController::class, 'updateCategory'])->name('hr.claims.categories.update');

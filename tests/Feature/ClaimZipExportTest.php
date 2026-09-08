@@ -563,6 +563,236 @@ class ClaimZipExportTest extends TestCase
         $this->assertNull($response->headers->get('Content-Range'));
     }
 
+    // ── Splitting a large export into parts ─────────────────────────────────
+    //
+    // Why this exists, measured on production 2026-09-08: after the download was made
+    // resumable AND the archive halved by font subsetting (227.7 MiB → 127.5 MiB), HR still
+    // could not get it. Nineteen attempts across four exports, every one dying between 42 and
+    // 67 MB — and by the last export the failures had tightened to 61.7–63.8 MB. Meanwhile a
+    // 250 MB probe at 20 MB/s and a 140 MB probe at 1 MB/s both completed in full through the
+    // identical chain, so it is the SIZE of a single transfer their connection cannot survive,
+    // not its speed. Parts that finish well inside that band are the one fix that needs
+    // neither their network to hold nor anyone to press Resume.
+
+    /** Read a stored part straight off the disk. */
+    private function entriesOf(string $path): array
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'zip-part-');
+        file_put_contents($tmp, Storage::disk('local')->get($path));
+
+        $zip = new \ZipArchive;
+        $this->assertTrue($zip->open($tmp) === true, "Part {$path} is not a readable ZIP archive.");
+
+        $names = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $names[] = $zip->getNameIndex($i);
+        }
+        $zip->close();
+        @unlink($tmp);
+
+        return $names;
+    }
+
+    public function test_a_large_export_is_split_into_parts_and_no_claim_is_cut_in_half(): void
+    {
+        $cat = $this->category();
+        foreach (['Alice', 'Bob', 'Carol', 'Dave', 'Erin', 'Frank'] as $name) {
+            $this->processedClaim($cat, $name);
+        }
+
+        // Far below one claim's worth of PDF, so the packer is forced to roll over repeatedly.
+        config(['claims.zip_export.max_part_bytes' => 50 * 1024]);
+
+        $export = $this->requestAndRun($this->hrManager());
+        $this->assertSame(ExpenseClaimZipExport::STATUS_READY, $export->status);
+        $this->assertGreaterThan(1, $export->partCount(), 'An export well over the cap should have been split.');
+
+        $pdfs = [];
+        foreach ($export->partList() as $part) {
+            $names = $this->entriesOf($part['path']);
+            $this->assertNotEmpty($names, 'Every part must carry at least one claim.');
+            foreach ($names as $n) {
+                if (str_ends_with($n, '.pdf')) {
+                    $pdfs[] = $n;
+                }
+            }
+        }
+
+        // A claim lands in exactly one part — never duplicated, never dropped, never split.
+        $this->assertCount(6, $pdfs, 'Every claim must appear across the parts exactly once.');
+        $this->assertSame(count($pdfs), count(array_unique($pdfs)), 'A claim was written into more than one part.');
+    }
+
+    /**
+     * A single claim bigger than the cap must still be exported — in a part of its own. Half a
+     * PDF is not a smaller PDF, it is a broken one, and this archive is the approved copy of
+     * record. The cap is a target, not a licence to cut a document in half; an empty part must
+     * also always accept the next claim, or an oversized one would loop forever looking for a
+     * part it fits in.
+     */
+    public function test_a_claim_larger_than_the_cap_gets_a_part_to_itself_rather_than_being_split(): void
+    {
+        $cat = $this->category();
+        $this->processedClaim($cat, 'Alice Approved');
+        $this->processedClaim($cat, 'Bob Approved');
+
+        config(['claims.zip_export.max_part_bytes' => 1]); // no claim can possibly fit
+
+        $export = $this->requestAndRun($this->hrManager());
+
+        $this->assertSame(ExpenseClaimZipExport::STATUS_READY, $export->status);
+        $this->assertSame(2, $export->partCount(), 'One claim per part when no claim fits the cap.');
+        foreach ($export->partList() as $part) {
+            $this->assertCount(1, array_filter($this->entriesOf($part['path']), fn ($n) => str_ends_with($n, '.pdf')));
+        }
+    }
+
+    public function test_every_part_downloads_on_its_own_url(): void
+    {
+        $cat = $this->category();
+        foreach (['Alice', 'Bob', 'Carol', 'Dave'] as $name) {
+            $this->processedClaim($cat, $name);
+        }
+        config(['claims.zip_export.max_part_bytes' => 50 * 1024]);
+
+        $export = $this->requestAndRun($this->hrManager());
+        $this->assertGreaterThan(1, $export->partCount());
+
+        foreach ($export->partList() as $i => $part) {
+            $number = $i + 1;
+            $response = $this->actingAs($this->hrManager())->get(
+                route('hr.claims.download-zip.file', ['export' => $export->id, 'part' => $number])
+            );
+
+            $response->assertStatus(200);
+            $response->assertHeader('Content-Length', (string) Storage::disk('local')->size($part['path']));
+            $response->assertHeader('Accept-Ranges', 'bytes');
+            $this->assertStringContainsString(
+                'part'.$number.'-of-'.$export->partCount(),
+                (string) $response->headers->get('Content-Disposition'),
+                'Several files landing in one Downloads folder must say which part they are.'
+            );
+        }
+    }
+
+    /** The URL the page's own JS and any bookmark already use must keep working. */
+    public function test_the_original_part_less_url_still_serves_the_first_part(): void
+    {
+        $cat = $this->category();
+        foreach (['Alice', 'Bob', 'Carol'] as $name) {
+            $this->processedClaim($cat, $name);
+        }
+        config(['claims.zip_export.max_part_bytes' => 50 * 1024]);
+
+        $export = $this->requestAndRun($this->hrManager());
+        $this->assertGreaterThan(1, $export->partCount());
+
+        $response = $this->actingAs($this->hrManager())->get(route('hr.claims.download-zip.file', $export));
+        $response->assertStatus(200);
+        $response->assertHeader('Content-Length', (string) $export->partList()[0]['size']);
+    }
+
+    public function test_a_part_that_does_not_exist_is_refused(): void
+    {
+        $cat = $this->category();
+        $this->processedClaim($cat, 'Alice Approved');
+        $export = $this->requestAndRun($this->hrManager());
+
+        $this->actingAs($this->hrManager())
+            ->get(route('hr.claims.download-zip.file', ['export' => $export->id, 'part' => 99]))
+            ->assertStatus(404);
+    }
+
+    /**
+     * Pruning reads partList(), not file_path — that column only ever names part one, so a
+     * multi-part export swept through it would leave every other part orphaned on disk with no
+     * row left pointing at it, i.e. undeletable by anything but hand.
+     */
+    public function test_pruning_a_split_export_deletes_every_part(): void
+    {
+        $cat = $this->category();
+        foreach (['Alice', 'Bob', 'Carol', 'Dave'] as $name) {
+            $this->processedClaim($cat, $name);
+        }
+        config(['claims.zip_export.max_part_bytes' => 50 * 1024]);
+
+        $export = $this->requestAndRun($this->hrManager());
+        $paths = array_column($export->partList(), 'path');
+        $this->assertGreaterThan(1, count($paths));
+        foreach ($paths as $p) {
+            $this->assertTrue(Storage::disk('local')->exists($p));
+        }
+
+        $export->update(['completed_at' => now()->subHours(72)]);
+        $this->artisan('claims:prune-zip-exports')->assertExitCode(0);
+
+        foreach ($paths as $p) {
+            $this->assertFalse(Storage::disk('local')->exists($p), "Part {$p} was left behind by the sweep.");
+        }
+        $this->assertDatabaseMissing('expense_claim_zip_exports', ['id' => $export->id]);
+    }
+
+    /**
+     * Each part says which part it is, so somebody holding four files can tell whether they
+     * have them all. Deliberately absent from a single-part export, which keeps the shape it
+     * has always had — the same reasoning as _EXPORT-NOTES.txt only appearing when something
+     * was actually left out.
+     */
+    public function test_parts_carry_a_manifest_and_a_single_part_export_does_not(): void
+    {
+        $cat = $this->category();
+        foreach (['Alice', 'Bob', 'Carol'] as $name) {
+            $this->processedClaim($cat, $name);
+        }
+
+        config(['claims.zip_export.max_part_bytes' => 50 * 1024]);
+        $split = $this->requestAndRun($this->hrManager());
+        $this->assertGreaterThan(1, $split->partCount());
+        foreach ($split->partList() as $part) {
+            $this->assertContains('_PART-INFO.txt', $this->entriesOf($part['path']));
+        }
+
+        config(['claims.zip_export.max_part_bytes' => 500 * 1024 * 1024]);
+        $whole = $this->requestAndRun($this->hrManager());
+        $this->assertSame(1, $whole->partCount());
+        $this->assertNotContains('_PART-INFO.txt', $this->entriesOf($whole->partList()[0]['path']));
+    }
+
+    /** The escape hatch back to one archive, for an environment where splitting isn't wanted. */
+    public function test_splitting_can_be_switched_off_entirely(): void
+    {
+        $cat = $this->category();
+        foreach (['Alice', 'Bob', 'Carol'] as $name) {
+            $this->processedClaim($cat, $name);
+        }
+        config(['claims.zip_export.max_part_bytes' => 0]);
+
+        $export = $this->requestAndRun($this->hrManager());
+
+        $this->assertSame(ExpenseClaimZipExport::STATUS_READY, $export->status);
+        $this->assertSame(1, $export->partCount(), 'A zero cap must mean never split, not split at zero bytes.');
+        $this->assertCount(3, array_filter($this->entriesOf($export->partList()[0]['path']), fn ($n) => str_ends_with($n, '.pdf')));
+    }
+
+    public function test_the_status_endpoint_lists_every_part_with_its_own_url(): void
+    {
+        $cat = $this->category();
+        foreach (['Alice', 'Bob', 'Carol'] as $name) {
+            $this->processedClaim($cat, $name);
+        }
+        config(['claims.zip_export.max_part_bytes' => 50 * 1024]);
+
+        $export = $this->requestAndRun($this->hrManager());
+        $response = $this->actingAs($this->hrManager())->getJson(route('hr.claims.download-zip.status', $export));
+
+        $response->assertStatus(200);
+        $this->assertSame($export->partCount(), $response->json('part_count'));
+        $this->assertCount($export->partCount(), $response->json('parts'));
+        $this->assertSame(1, $response->json('parts.0.number'));
+        $this->assertStringContainsString('/file/1', (string) $response->json('parts.0.url'));
+        $this->assertSame($export->totalSize(), $response->json('total_size'));
+    }
+
     /**
      * This archive is every approved claimant's receipts, and it travels over a public CDN.
      * BinaryFileResponse's constructor defaults `public` to TRUE, which would emit
