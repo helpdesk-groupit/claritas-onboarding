@@ -375,4 +375,44 @@ class ClaimPdfDownloadTest extends TestCase
             ini_set('memory_limit', (string) $original);
         }
     }
+
+    /**
+     * Every claim PDF used to carry two COMPLETE DejaVu faces. The blade sets
+     * `font-family: DejaVu Sans` on `*` and uses `font-style: italic` in several places, and
+     * barryvdh/laravel-dompdf ships `enable_font_subsetting => false` (dompdf's OWN default is
+     * true) while this project publishes no config/dompdf.php — so it inherited the off.
+     *
+     * That was the entire fixed floor of the document, and it is measured, not guessed: the
+     * smallest of the 96 entries in production export #9 was 1.22 MiB, and the same report
+     * renders at 1,271,118 bytes unsubsetted against 27,065 subsetted. Across that one export
+     * it is ~113 MB of duplicated, unused glyph tables inside a 227.7 MiB archive that HR
+     * could not get down at all.
+     *
+     * Asserted as an upper bound rather than an exact size — the real figure moves with the
+     * claim's content, and what must never come back is a whole font face.
+     */
+    public function test_a_claim_pdf_does_not_embed_whole_font_faces(): void
+    {
+        $claim = $this->approvedClaim();
+
+        $response = $this->actingAs($this->hrManager())->get(route('user.claims.pdf', $claim));
+        $response->assertStatus(200);
+        $bytes = $this->pdfBytes($response);
+
+        $this->assertStringStartsWith('%PDF', $bytes);
+        $this->assertLessThan(
+            600_000,
+            strlen($bytes),
+            'A receipt-less claim form this large means a full font face is being embedded again.'
+        );
+
+        // Still a real, readable document — a smaller file that no longer parses, or whose
+        // text can no longer be extracted or searched, would be a worse outcome than the size.
+        $this->assertGreaterThanOrEqual(1, $this->pageCount($bytes));
+        $this->assertStringContainsString(
+            '/ToUnicode',
+            $bytes,
+            'Without a ToUnicode CMap the subsetted text stops being extractable or searchable.'
+        );
+    }
 }

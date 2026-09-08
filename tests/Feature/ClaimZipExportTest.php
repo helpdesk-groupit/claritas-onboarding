@@ -124,9 +124,10 @@ class ClaimZipExportTest extends TestCase
     /**
      * Open a downloaded ZIP response and return [entryName => contents].
      *
-     * Storage::disk('local')->download() (used by downloadZipExport()) returns a
-     * StreamedResponse, not a BinaryFileResponse — there is no file path to read off disk, so
-     * the content has to be captured by actually sending it into a buffer.
+     * Deliberately captured by actually SENDING the response rather than by reading
+     * $response->baseResponse->getFile() off disk: sending is the path production takes, so
+     * this also exercises the chunked write loop and the offset/length that a Range request
+     * sets. Reading the file directly would pass even if sendContent() emitted nothing.
      */
     private function readZip($response): array
     {
@@ -460,6 +461,125 @@ class ClaimZipExportTest extends TestCase
         $this->actingAs($this->hrManager())
             ->get(route('hr.claims.download-zip.file', $export))
             ->assertStatus(404);
+    }
+
+    // ── Resumability ────────────────────────────────────────────────────────
+    //
+    // The failure this exists to prevent, measured on production 2026-09-08: export #9 was
+    // 227.7 MiB and HR could not get it down in seventeen consecutive attempts across two
+    // exports. Every one ended part-way (nginx logged 200 with 61–64 MiB of body sent;
+    // cloudflared logged "stream canceled by remote"; the browser reported
+    // ERR_HTTP2_PING_FAILED) and NONE of them could pick up where the last left off, because
+    // the response advertised no ranges and carried no validator. A 250 MB probe pushed
+    // through the identical origin chain completed fine, twice — the size was survivable, the
+    // restart-from-zero was not.
+
+    /** A dropped transfer must be able to continue where it stopped, not start again. */
+    public function test_an_interrupted_download_can_resume_where_it_stopped(): void
+    {
+        $cat = $this->category();
+        $this->processedClaim($cat, 'Alice Approved');
+        $this->processedClaim($cat, 'Bob Approved');
+
+        $export = $this->requestAndRun($this->hrManager());
+        $full = Storage::disk('local')->get($export->file_path);
+        $total = strlen($full);
+        $this->assertGreaterThan(2048, $total, 'Need an archive big enough to split meaningfully.');
+
+        // Pretend the connection died here, exactly as production's did.
+        $cutoff = intdiv($total, 3);
+
+        $resumed = $this->actingAs($this->hrManager())->get(
+            route('hr.claims.download-zip.file', $export),
+            ['Range' => 'bytes='.$cutoff.'-']
+        );
+
+        $resumed->assertStatus(206);
+        $resumed->assertHeader('Content-Range', 'bytes '.$cutoff.'-'.($total - 1).'/'.$total);
+        $resumed->assertHeader('Content-Length', (string) ($total - $cutoff));
+
+        ob_start();
+        $resumed->baseResponse->sendContent();
+        $tail = (string) ob_get_clean();
+
+        $this->assertSame(substr($full, $cutoff), $tail, 'The resumed range is not the tail of the archive.');
+
+        // The point of the exercise: the two halves reassemble into the real archive, so a
+        // browser that resumes ends up with a working ZIP rather than a plausible-looking
+        // corrupt one.
+        $rebuilt = substr($full, 0, $cutoff).$tail;
+        $this->assertSame($full, $rebuilt);
+
+        $tmp = tempnam(sys_get_temp_dir(), 'zip-resume-');
+        file_put_contents($tmp, $rebuilt);
+        $zip = new \ZipArchive;
+        $this->assertTrue($zip->open($tmp) === true, 'The reassembled download is not a readable ZIP.');
+        $this->assertSame(2, $zip->numFiles);
+        $zip->close();
+        @unlink($tmp);
+    }
+
+    /**
+     * The browser only attempts a resume when it is told ranges are on offer, and it only
+     * SPLICES onto what it already has when the validator still matches. Without both, a
+     * dropped 227 MiB transfer has no option but to start from byte 0 — which is the whole
+     * defect.
+     */
+    public function test_the_download_advertises_ranges_and_a_validator_to_resume_against(): void
+    {
+        $cat = $this->category();
+        $this->processedClaim($cat, 'Alice Approved');
+        $export = $this->requestAndRun($this->hrManager());
+
+        $response = $this->actingAs($this->hrManager())->get(route('hr.claims.download-zip.file', $export));
+
+        $response->assertStatus(200);
+        $response->assertHeader('Accept-Ranges', 'bytes');
+        $this->assertNotNull($response->headers->get('ETag'), 'No ETag — If-Range has nothing to validate a resume against.');
+        $this->assertNotNull($response->headers->get('Last-Modified'));
+        $response->assertHeader('Content-Length', (string) Storage::disk('local')->size($export->file_path));
+    }
+
+    /**
+     * A validator that no longer matches must produce the WHOLE file, never a 206 spliced onto
+     * bytes from a different archive. Re-running an export rewrites the same path, so this is
+     * a real sequence, not a contrived one — and silently stitching two different archives
+     * together would hand HR a corrupt ZIP that still looked like a successful download.
+     */
+    public function test_a_stale_validator_restarts_the_download_instead_of_splicing(): void
+    {
+        $cat = $this->category();
+        $this->processedClaim($cat, 'Alice Approved');
+        $export = $this->requestAndRun($this->hrManager());
+        $total = Storage::disk('local')->size($export->file_path);
+
+        $response = $this->actingAs($this->hrManager())->get(
+            route('hr.claims.download-zip.file', $export),
+            ['Range' => 'bytes=100-', 'If-Range' => '"not-the-etag-we-issued"']
+        );
+
+        $response->assertStatus(200);
+        $response->assertHeader('Content-Length', (string) $total);
+        $this->assertNull($response->headers->get('Content-Range'));
+    }
+
+    /**
+     * This archive is every approved claimant's receipts, and it travels over a public CDN.
+     * BinaryFileResponse's constructor defaults `public` to TRUE, which would emit
+     * `Cache-Control: public` and entitle a shared cache to store it and serve it back
+     * without the authorization check in downloadZipExport() ever running again.
+     */
+    public function test_the_archive_is_never_offered_to_a_shared_cache(): void
+    {
+        $cat = $this->category();
+        $this->processedClaim($cat, 'Alice Approved');
+        $export = $this->requestAndRun($this->hrManager());
+
+        $response = $this->actingAs($this->hrManager())->get(route('hr.claims.download-zip.file', $export));
+
+        $cacheControl = (string) $response->headers->get('Cache-Control');
+        $this->assertStringContainsString('private', $cacheControl);
+        $this->assertStringNotContainsString('public', $cacheControl);
     }
 
     // ── The HR Claims page itself ───────────────────────────────────────────

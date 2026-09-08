@@ -32,7 +32,9 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\HeaderUtils;
+use Symfony\Component\HttpFoundation\ResponseHeaderBag;
 
 class ExpenseClaimController extends Controller
 {
@@ -1741,34 +1743,56 @@ class ExpenseClaimController extends Controller
     }
 
     /**
-     * Streams the finished archive once BuildClaimZipExport has marked it ready.
+     * Serves the finished archive — RESUMABLY. The resumability is the whole point.
      *
-     * NOT Storage::disk('local')->download() — its fpassthru() was observed live fatally
-     * exhausting the 128M PHP-FPM pool's memory_limit on a real ~217 MiB export ("Allowed
-     * memory size exhausted, tried to allocate <the file's exact size> bytes"). Cause: this
-     * pool's php.ini sets output_buffering=4096, which starts PHP script execution already
-     * wrapped in an implicit output buffer — under this FastCGI pool that buffer was not
-     * auto-flushing at its configured chunk size, so it silently accumulated the ENTIRE
-     * response before ever reaching Apache. Draining any such buffer here, before the
-     * response is even constructed, removes it from the pipeline entirely; the stream
-     * callback below then reads and flushes the file by hand in fixed 1 MB chunks, so peak
-     * memory stays bounded by the chunk size regardless of how large a future export grows —
-     * the same "never hold the whole thing in memory" rule ClaimZipExportService::renderZip()
-     * already follows when building the archive in the first place.
+     * Measured on production 2026-09-08: export #9 was 227.7 MiB (96 claims, mean 2.55 MiB
+     * each) and HR could not get it down. Seventeen consecutive attempts across two exports,
+     * every one of them ending part-way — nginx logged HTTP 200 with a $body_bytes_sent of
+     * only 61–64 MiB each time, cloudflared logged "stream canceled by remote", and the
+     * browser reported ERR_HTTP2_PING_FAILED (its HTTP/2 connection had gone dead). PHP,
+     * Apache and nginx all logged no error whatsoever.
      *
-     * Deliberately done HERE and not inside the stream callback: the callback runs whenever
-     * sendContent() is invoked, which in tests is inside ClaimZipExportTest::readZip()'s own
-     * ob_start() wrapper — draining buffers from inside the callback would tear down that
-     * capture buffer too and the test would read back empty content. Draining up front, before
-     * any response object exists, only ever touches a buffer that predates this method (i.e.
-     * php.ini's implicit one), never one a caller opens afterwards to capture the output.
+     * The origin was never at fault, and this was proven rather than assumed: a 250 MB probe
+     * pushed through the identical chain — the same 1 MB read/echo/flush loop this method
+     * used to run, PHP-FPM → Apache → nginx → cloudflared → Cloudflare → client — completed
+     * in full, twice, at 20 MB/s. What differed was that a dropped transfer of the probe
+     * could be resumed and a dropped transfer of the export could not: the old
+     * response()->stream() advertised no Accept-Ranges, carried no validator, and ignored a
+     * Range: request, so every drop restarted from byte 0. At 227.7 MiB and growing (it was
+     * ~217 MiB five days earlier) that is a download with no way to finish, which is exactly
+     * what seventeen attempts and zero files look like.
      *
-     * Skipped under the test runner: PHPUnit wraps each test in its own output buffer for
-     * output capture, which is likewise "there before this method runs" and gets caught by
-     * the same drain, closing a buffer this code doesn't own — harmless (assertions still
-     * pass, real bytes still land in readZip()'s buffer) but PHPUnit correctly flags it
-     * "risky". Nothing this fix exists for (the live 128M pool's non-flushing implicit
-     * buffer) is present in the CLI test SAPI anyway, so there is nothing to drain there.
+     * BinaryFileResponse answers Range/If-Range with 206 Partial Content, so an interrupted
+     * download continues from where it stopped instead of starting again — that is what turns
+     * a flaky link from a permanent failure into a pause. The ETag and Last-Modified are not
+     * decoration: If-Range validates the resume against them, and without a validator the
+     * browser must re-fetch the whole file.
+     *
+     * The ETag is built from the row id + byte size + mtime rather than Symfony's
+     * setAutoEtag(), which hashes the entire file — a resumed download issues several
+     * requests and each would re-read 227 MiB off the array to answer. The archive is written
+     * exactly once by BuildClaimZipExport and never mutated afterwards, so that triple is a
+     * strong validator at no cost.
+     *
+     * The output-buffer drain below is UNCHANGED and still load-bearing. This pool's php.ini
+     * sets output_buffering=4096, which starts every script already wrapped in an implicit
+     * output buffer that was observed not auto-flushing under this FastCGI pool — it silently
+     * accumulated the entire response before it ever reached Apache, and killed a real export
+     * with "Allowed memory size of 134217728 bytes exhausted (tried to allocate 227790848
+     * bytes)" (in the Apache error log, 2026-09-04). BinaryFileResponse::sendContent() writes
+     * to php://output and does NOT flush per chunk, so it is every bit as exposed to that
+     * buffer as the fpassthru() that originally hit it. Draining first removes the buffer
+     * from the pipeline entirely, after which each chunked fwrite() goes straight to the SAPI
+     * and peak memory is bounded by setChunkSize() no matter how large a future export grows.
+     *
+     * Deliberately done HERE rather than at send time: this only ever closes a buffer that
+     * predates the method (php.ini's implicit one), never one a caller opens afterwards to
+     * capture the output — which is what ClaimZipExportTest::readZip() does.
+     *
+     * Skipped under the test runner: PHPUnit wraps each test in its own output buffer, which
+     * is likewise "there before this method runs" and would be caught by the same drain,
+     * closing a buffer this code doesn't own — harmless, but correctly flagged "risky". The
+     * live pool's non-flushing implicit buffer does not exist in the CLI test SAPI anyway.
      */
     public function downloadZipExport(ExpenseClaimZipExport $export)
     {
@@ -1787,20 +1811,37 @@ class ExpenseClaimController extends Controller
         $absolutePath = Storage::disk('local')->path($export->file_path);
         $filename = 'approved-claims-'.$export->created_at->format('Y-m-d').'.zip';
 
-        return response()->stream(function () use ($absolutePath) {
-            $stream = fopen($absolutePath, 'rb');
-            while (! feof($stream)) {
-                echo fread($stream, 1024 * 1024);
-                flush();
-            }
-            fclose($stream);
-        }, 200, [
-            'Content-Type' => 'application/zip',
-            'Content-Length' => (string) Storage::disk('local')->size($export->file_path),
-            'Content-Disposition' => HeaderUtils::makeDisposition(
-                'attachment', $filename, str_replace('%', '', Str::ascii($filename))
-            ),
-        ]);
+        $response = new BinaryFileResponse(
+            $absolutePath,
+            200,
+            ['Content-Type' => 'application/zip'],
+            // NOT public. BinaryFileResponse's constructor defaults this to true, which emits
+            // `Cache-Control: public` — and this archive is every approved claimant's receipts
+            // travelling over a public CDN. A shared cache would be entitled to store it and
+            // hand it back without the auth check above ever running again.
+            public: false,
+            // Set by hand below: setAutoEtag() hashes the whole file, and a resumed download
+            // asks more than once.
+            autoEtag: false,
+            // One half of what If-Range validates a resume against.
+            autoLastModified: true,
+        );
+
+        $response->setPrivate();
+
+        $response->setContentDisposition(
+            ResponseHeaderBag::DISPOSITION_ATTACHMENT,
+            $filename,
+            str_replace('%', '', Str::ascii($filename))
+        );
+
+        // Matches the 1 MB the hand-rolled loop used. Symfony's own default is 16 KB, which
+        // would be ~14,600 write syscalls for an archive this size.
+        $response->setChunkSize(1024 * 1024);
+
+        $response->setEtag(sha1($export->id.'|'.filesize($absolutePath).'|'.filemtime($absolutePath)));
+
+        return $response;
     }
 
     /**

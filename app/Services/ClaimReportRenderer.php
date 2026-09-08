@@ -44,7 +44,32 @@ class ClaimReportRenderer
             'company' => $company,
             'items' => $items,
             'appendix' => $appendix,
-        ])->setPaper('a4')->output();
+        ])
+            // Embed only the glyphs the report actually uses, instead of two complete DejaVu
+            // faces (the blade sets `font-family: DejaVu Sans` on `*` and uses `font-style:
+            // italic` in several places, so dompdf embeds the regular AND the oblique in full).
+            //
+            // This is dompdf's OWN default; barryvdh/laravel-dompdf's shipped config turns it
+            // off, and this project publishes no config/dompdf.php, so it inherited the off.
+            // The cost was the entire fixed floor of every claim PDF: measured on the same
+            // font stack, one representative report renders at 1,271,118 bytes unsubsetted and
+            // 27,065 subsetted — and 1.21 MiB is exactly the 1.22 MiB smallest entry in
+            // production export #9, i.e. the floor WAS the font data. Across that export's 96
+            // claims it is ~113 MB of duplicated, unused glyph tables in a 227.7 MiB archive.
+            //
+            // Verified before enabling, not assumed: the text-drawing operators are emitted at
+            // identical coordinates either way (same content-stream coordinate hash), the
+            // /ToUnicode CMap is still written so the text stays searchable and extractable,
+            // and the result still imports cleanly through FPDI — which matters because
+            // self::merge() below re-imports this very document when a claim carries PDF
+            // attachments.
+            //
+            // Scoped to the claim report on purpose. The AARF, the e-waste report and the
+            // strategist/usage PDFs render through their own call sites and are deliberately
+            // left exactly as they are; making this global belongs in a published
+            // config/dompdf.php, as its own change, with its own verification.
+            ->setOption('enable_font_subsetting', true)
+            ->setPaper('a4')->output();
 
         $documents = array_filter($appendix, fn ($d) => $d['appendable']);
 
