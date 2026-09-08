@@ -1,7 +1,7 @@
 {{-- Unified "Settings" sidebar section. Each tab keeps its OWN role gate. Included in the
      Superadmin branch and the System-Admin (HR) branch so a System Admin sees the tabs their
      role allows. Order: System Overview · Role Management · System Logic · Cross Ticket Settings
-     · User – Company Setting · Account Management. --}}
+     · User – Company Setting · E-Waste Approvers · Claude API · Changelog · Account Management. --}}
 @php
     $u = Auth::user();
     $sSuper  = $u->isSuperadmin();                        // superadmin-only tabs
@@ -62,6 +62,14 @@
 <div class="nav-item">
     <a href="{{ route('superadmin.claude-api.index') }}" class="nav-link {{ request()->routeIs('superadmin.claude-api.*') ? 'active' : '' }}">
         <i class="bi bi-robot"></i> Claude API
+    </a>
+</div>
+@endif
+
+@if($sSuper)
+<div class="nav-item">
+    <a href="{{ route('superadmin.changelog.index') }}" class="nav-link {{ request()->routeIs('superadmin.changelog.*') ? 'active' : '' }}">
+        <i class="bi bi-clock-history"></i> Changelog
     </a>
 </div>
 @endif
