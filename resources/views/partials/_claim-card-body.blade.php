@@ -196,7 +196,7 @@
          period, which the employee may type or correct by hand. Sent with the item. --}}
     <div class="row g-2 mt-1">
         <div class="col-12">
-            <label class="form-label small mb-0 fw-bold"><i class="bi bi-receipt-cutoff me-1 text-info"></i>Receipt details <span class="fw-normal text-muted">(read from the attachment — for the report; the date and the covered period can be corrected by hand)</span></label>
+            <label class="form-label small mb-0 fw-bold"><i class="bi bi-receipt-cutoff me-1 text-info"></i>Receipt details <span class="fw-normal text-muted">(read from the attachment — for the report; the date, the total and the covered period can be corrected by hand)</span></label>
         </div>
         <div class="col-md-3">
             <label class="form-label small mb-1">Company</label>
@@ -241,9 +241,18 @@
             </div>
             <div class="form-text small cc-c-period-hint">Only for a receipt that pays for a period (season pass, subscription). Fill both dates if the scan didn’t read them.</div>
         </div>
+        {{-- EDITABLE, for exactly the reason the printed date above is. This figure is the
+             CEILING the over-claim guard judges (overClaimError reads c_total), and on a capped
+             category it IS the claimed amount — so a misread here either hard-blocks a genuine
+             claim or silently short-pays one, and nothing on the form could correct it.
+             Reported 2026-09-08 against an AEON BIG receipt printed "TOTAL 19.65" and read as
+             13.03. A typed value is stamped as entered by hand so the report never passes it
+             off as read from the document — which matters more here than anywhere else in this
+             panel, because the approver is being asked to sign off money against the image. --}}
         <div class="col-md-3">
             <label class="form-label small mb-1">Total paid (RM)</label>
-            <input type="text" class="form-control form-control-sm bg-light cc-c-total" readonly placeholder="—">
+            <input type="text" inputmode="decimal" class="form-control form-control-sm cc-c-total" aria-label="Total printed on the receipt" placeholder="—">
+            <div class="form-text small cc-c-total-hint">Correct it if the scan misread the printed total.</div>
         </div>
         <div class="col-12 cc-c-calc-wrap d-none">
             <label class="form-label small mb-1">Mileage calculation</label>

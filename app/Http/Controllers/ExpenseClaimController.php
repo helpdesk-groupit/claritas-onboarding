@@ -315,6 +315,13 @@ class ExpenseClaimController extends Controller
             return response()->json(['ok' => false, 'message' => $coverageError, 'errors' => ['c_period_start' => $coverageError]], 422);
         }
 
+        // Likewise a hand-corrected receipt total: an unreadable one is explained rather than
+        // ignored, or the employee's correction is dropped and they are re-blocked against the
+        // very figure they were fixing.
+        if ($totalError = $this->receiptTotalInputError($request)) {
+            return response()->json(['ok' => false, 'message' => $totalError, 'errors' => ['c_total' => $totalError]], 422);
+        }
+
         // Date is per item (each receipt keeps its own date); falls back to the claim's
         // event date, then today. Project/client + approver are inherited from the claim.
         $expenseDate = ! empty($validated['expense_date'])
@@ -592,6 +599,11 @@ class ExpenseClaimController extends Controller
             return response()->json(['ok' => false, 'message' => $coverageError, 'errors' => ['c_period_start' => $coverageError]], 422);
         }
 
+        // Same for a hand-corrected receipt total — see inlineAddItem().
+        if ($totalError = $this->receiptTotalInputError($request)) {
+            return response()->json(['ok' => false, 'message' => $totalError, 'errors' => ['c_total' => $totalError]], 422);
+        }
+
         $expenseDate = ! empty($validated['expense_date'])
             ? Carbon::parse($validated['expense_date'])
             : ($claim->event_date ? $claim->event_date->copy() : now());
@@ -848,7 +860,12 @@ class ExpenseClaimController extends Controller
             return null; // nothing read off the receipt to compare against.
         }
         if (round($amount + $gst, 2) > round((float) $receiptTotal, 2) + 0.001) {
-            return 'You can’t claim more than the receipt total of RM '.number_format((float) $receiptTotal, 2).'. Lower the amount and try again.';
+            // Name the field that clears this. When the scan misreads the total the block has no
+            // other way out — lowering the amount to a figure the receipt does not carry is
+            // under-claiming, not a correction. Mirrors outOfMonthMessage() naming "Date on
+            // receipt" for the same class of misread.
+            return 'You can’t claim more than the receipt total of RM '.number_format((float) $receiptTotal, 2)
+                .'. Lower the amount — or, if the scan misread the receipt, correct “Total paid” under Receipt details.';
         }
 
         return null;
@@ -936,6 +953,11 @@ class ExpenseClaimController extends Controller
             'date_source' => trim((string) $request->input('c_date')) !== '' && $this->receiptDateWasTyped($request) ? 'manual' : null,
             'paid_by' => $request->input('c_paidby'),
             'total' => $request->input('c_total'),
+            // ...and about the printed total, which the employee may now correct when the scan
+            // misreads it. This is the figure the over-claim guard let the item through on, so
+            // an approver comparing the report against the image must be able to see that a
+            // person authored it. Only stamped when there IS a total, as above.
+            'total_source' => trim((string) $request->input('c_total')) !== '' && $this->receiptTotalWasTyped($request) ? 'manual' : null,
             'calculation' => $request->input('c_calc'),
             'km' => $request->input('c_km'),
             'vehicle' => $request->input('c_vehicle'),
@@ -4083,6 +4105,52 @@ class ExpenseClaimController extends Controller
     private function receiptDateWasTyped(Request $request): bool
     {
         return $request->boolean('c_date_manual');
+    }
+
+    /**
+     * Did the employee correct the total printed on the receipt, rather than the scan reading it?
+     *
+     * Provenance only, on the same terms as c_date_manual — it never decides whether the total
+     * is accepted, so a forged flag buys nothing. What it changes is what the report SAYS about
+     * the figure, and here that matters more than anywhere else in Category C: the total is the
+     * ceiling this claim was let through on, and on a capped category it IS the claimed amount,
+     * so the approver holding the receipt image has to be able to tell a correction from a
+     * machine reading before they sign.
+     */
+    private function receiptTotalWasTyped(Request $request): bool
+    {
+        return $request->boolean('c_total_manual');
+    }
+
+    /**
+     * A HAND-ENTERED receipt total that can't be believed, as a message the employee can act on.
+     *
+     * Only fires for a typed total — same shape as coverageInputError(), and for the same
+     * reason. A figure the SCAN produced is left alone: overClaimError() already ignores a
+     * non-numeric one, because OCR must never block a claim. A figure a PERSON just typed is
+     * different: silently ignoring "RM19.65" or "19,65" would drop the correction they made,
+     * re-block them against the misread total with a message about the amount, and — for a
+     * capped category, where this figure becomes the claimed amount — file a claim whose report
+     * prints "Total paid: RM 0.00" against a receipt that plainly reads otherwise.
+     *
+     * Deliberately strict rather than clever: guessing that "19,65" means 19.65 rather than
+     * 1965 is exactly the kind of silent re-interpretation this module refuses everywhere else.
+     */
+    private function receiptTotalInputError(Request $request): ?string
+    {
+        if (! $this->receiptTotalWasTyped($request)) {
+            return null;
+        }
+
+        $raw = trim((string) $request->input('c_total'));
+        if ($raw === '') {
+            return null; // cleared the field again — no ceiling claimed, nothing to complain about
+        }
+        if (! is_numeric($raw) || (float) $raw <= 0) {
+            return 'Enter the receipt total as a plain number, e.g. 19.65 — without “RM”, spaces or a comma.';
+        }
+
+        return null;
     }
 
     /**

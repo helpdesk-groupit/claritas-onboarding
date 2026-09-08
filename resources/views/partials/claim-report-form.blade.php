@@ -275,7 +275,16 @@
                                 </div>
                                 @endif
                                 <div style="margin-bottom:2px;"><strong>Who paid:</strong> {{ $oc['paid_by'] ?? '—' }}</div>
-                                <div><strong>Total paid:</strong> {{ isset($oc['total']) && $oc['total'] !== '' ? 'RM '.number_format((float) $oc['total'], 2) : '—' }}</div>
+                                {{-- The total PRINTED on the receipt. Marked when the employee
+                                     corrected it by hand: this is the ceiling the over-claim
+                                     guard let the line through on, and on a capped category it
+                                     is the claimed amount itself, so the approver comparing this
+                                     against the image has to know a person authored it. --}}
+                                <div><strong>Total paid:</strong> {{ isset($oc['total']) && $oc['total'] !== '' ? 'RM '.number_format((float) $oc['total'], 2) : '—' }}
+                                    @if(($oc['total_source'] ?? null) === 'manual')
+                                    <span class="text-warning-emphasis">(entered by hand)</span>
+                                    @endif
+                                </div>
                                 @if(! empty($oc['calculation']))
                                 <div style="margin-top:3px;"><strong>Calculation:</strong> {{ $oc['calculation'] }}</div>
                                 @endif

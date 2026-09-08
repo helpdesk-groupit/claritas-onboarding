@@ -220,20 +220,29 @@
             </div>
 
             <div class="um-frow">
-                <span class="um-flabel"><i class="bi bi-receipt-cutoff" style="color:#0dcaf0;"></i> Receipt details <span style="font-weight:400;color:#64748b;">(read from the attachment — for the report)</span></span>
+                <span class="um-flabel"><i class="bi bi-receipt-cutoff" style="color:#0dcaf0;"></i> Receipt details <span style="font-weight:400;color:#64748b;">(read from the attachment — for the report; the date, the total and the covered period can be corrected by hand)</span></span>
             </div>
             <div class="um-frow c3"><span class="um-flabel">Company</span><div class="um-fmock is-ro">Company A Café</div></div>
             <div class="um-frow c4"><span class="um-flabel">Item description</span><div class="um-fmock is-ro">Refreshments &amp; drinks</div></div>
-            <div class="um-frow c2"><span class="um-flabel">Date</span><div class="um-fmock is-ro">12 Jul 2026</div></div>
+            <div class="um-frow c2">
+                <span class="um-flabel">Date on receipt</span>
+                <div class="um-fmock">12-07-2026 <i class="bi bi-calendar3 um-caret"></i></div>
+                <div class="um-fhelp">Correct it if the scan misread the printed date.</div>
+            </div>
             <div class="um-frow c3"><span class="um-flabel">Who paid</span><div class="um-fmock is-ro">Aisha Rahman</div></div>
-            <div class="um-frow c3"><span class="um-flabel">Total paid (RM)</span><div class="um-fmock is-ro">196.50</div></div>
+            <div class="um-frow c3">
+                <span class="um-flabel">Total paid (RM)</span>
+                <div class="um-fmock">196.50</div>
+                <div class="um-fhelp">Correct it if the scan misread the printed total.</div>
+            </div>
 
             <div class="um-frow" style="display:flex;gap:6px;">
                 <span class="um-btn um-btn-green" style="padding:5px 12px;"><i class="bi bi-plus-circle"></i> Add to list</span>
                 <span class="um-btn um-btn-grey" style="padding:5px 12px;"><i class="bi bi-eraser"></i> Clear</span>
             </div>
         </div>
-        <div class="um-mockup-caption">The <strong>Add expense item</strong> form. The greyed-out <strong>Receipt details</strong> fill themselves in when you press <strong>Scan</strong> — they're read-only and go onto the report.</div>
+        <div class="um-mockup-caption">The <strong>Add expense item</strong> form. The <strong>Receipt details</strong> fill themselves in when you press <strong>Scan</strong>, and go onto the report. Most are greyed out, but <strong>Date on receipt</strong>, <strong>Total paid</strong> and <strong>Covers (period paid for)</strong> can be typed over when the scan reads them wrong — the report then notes that you entered them by hand, so your approver can check them against the receipt image.</div>
+        <p class="mt-2"><strong>If you can’t add the item because “you can’t claim more than the receipt”</strong> — check <strong>Total paid</strong>. The scan sometimes misreads a total (a faint thermal print, a rounding line, a phone number picked up as a figure). Type what the receipt actually says and the item will go through. Don’t lower your amount to match a wrong reading — that pays you less than you spent.</p>
     </div>
 
     <p class="mt-3"><strong>Mileage row</strong> — this extra row only appears when you pick the Petrol/mileage category:</p>

@@ -737,7 +737,11 @@
                 ? '<i class="bi bi-x-octagon-fill me-1"></i><strong>You can’t claim more than the calculated mileage</strong> — you’re claiming <strong>RM ' + fmt(claimed) +
                     '</strong> but the mileage works out to <strong>RM ' + fmt(reference) + '</strong>. Lower the amount to <strong>RM ' + fmt(reference) + '</strong> or less to add this item.'
                 : '<i class="bi bi-x-octagon-fill me-1"></i><strong>You can’t claim more than the receipt</strong> — you’re claiming <strong>RM ' + fmt(claimed) +
-                    '</strong> but the receipt only shows <strong>RM ' + fmt(reference) + '</strong>. Lower the amount to <strong>RM ' + fmt(reference) + '</strong> or less to add this item.';
+                    '</strong> but the receipt only shows <strong>RM ' + fmt(reference) + '</strong>. Lower the amount to <strong>RM ' + fmt(reference) +
+                    // A misread total made this a block with no way out: lowering the amount to a
+                    // figure the receipt does not carry is under-claiming, not a fix. Name the
+                    // field that corrects it, exactly as the wrong-month notice names its own.
+                    '</strong> or less to add this item — or, if the scan misread the receipt, correct <strong>Total paid</strong> under Receipt details.';
             return true;
         }
         if (Math.abs(diff) <= 0.01) return hide();   // exact match or ≤1 cent under — all good
@@ -874,6 +878,24 @@
         markCoveragePeriod(c);
         checkItemDateMonth(c);
     }
+    /**
+     * The employee corrected the total printed on the receipt.
+     *
+     * That total is the ceiling the over-claim guard judges, so this is the ONLY control on the
+     * form that can clear a block caused by the scan misreading it — lowering the amount to the
+     * misread figure is not a fix, it is under-claiming. On a CAPPED category the same figure is
+     * the claimed amount itself, so the derived amount is re-taken from it; leaving that behind
+     * would turn a corrected total into a silently short-paid claim, which is the failure this
+     * change exists to remove. Stamped as hand-entered so the report never shows a typed total
+     * as one read off the document.
+     */
+    function onPrintedTotalEdited(c) {
+        c.dataset.totalManual = '1';
+        // refreshCappedAmount() re-derives min(receipt, remaining) and calls syncTotal (hence
+        // applyReceiptCheck) itself; it returns false for a non-capped category, which still
+        // needs the counter-check re-run so the red banner clears as the figure is corrected.
+        if (!refreshCappedAmount(c)) applyReceiptCheck(c);
+    }
     function filterAppr(c, query) {
         query = (query || '').trim().toLowerCase();
         const coEl = q(c,'.cc-appr-company'); const co = coEl ? coEl.value : '';
@@ -894,6 +916,9 @@
         // needs — a stored record may carry whatever the scan wrote.
         q(c,'.cc-c-date').value = normalizeDate(o.date) || '';
         q(c,'.cc-c-paidby').value = o.paidby || '';
+        // Editable like the printed date and the covered period, so setC only ever writes what
+        // it was given — a blank stays reachable, which is the state the employee needs it in
+        // when the scan read no total at all.
         q(c,'.cc-c-total').value = (o.total !== undefined && o.total !== null && o.total !== '') ? o.total : '';
         const calc = q(c,'.cc-c-calc'), calcWrap = c.querySelector('.cc-c-calc-wrap');
         if (calc) calc.value = o.calc || '';
@@ -909,8 +934,10 @@
         // pending "typed by hand" mark is cleared. o.period_manual re-asserts it when we are
         // restoring an item whose period WAS typed (startEdit).
         c.dataset.periodManual = o.period_manual ? '1' : '';
-        // Same provenance rule for the printed date, which is editable for the same reason.
+        // Same provenance rule for the printed date and the printed total, both editable for
+        // the same reason.
         c.dataset.dateManual = o.date_manual ? '1' : '';
+        c.dataset.totalManual = o.total_manual ? '1' : '';
         markCoveragePeriod(c);
     }
 
@@ -968,7 +995,10 @@
         if (calcWrap) calcWrap.classList.toggle('d-none', !calc);
         // No "Total paid" for mileage — a maps screenshot has no paid amount; the
         // calculation above is the figure. (Receipt details only show what was read.)
+        // The provenance mark goes with it: a "corrected by hand" stamp left standing over a
+        // now-blank field would claim someone typed a total this item does not carry.
         q(c,'.cc-c-total').value = '';
+        c.dataset.totalManual = '';
     }
     // Petrol/mileage claims must be read from ONE route screenshot per trip — a single
     // image combining several unrelated routes (or several files picked at once) has
@@ -1337,6 +1367,9 @@
             // Same for a hand-corrected receipt date — re-opening the item must not silently
             // upgrade it to "read from the receipt".
             date_manual: ocr.date_source === 'manual',
+            // ...and for a hand-corrected receipt total, where the upgrade would be worse: the
+            // report would then present a figure a person typed as one read off the document.
+            total_manual: ocr.total_source === 'manual',
             paidby: ocr.paid_by || '', total: (ocr.total !== undefined && ocr.total !== null ? ocr.total : ''), calc: ocr.calculation || '' };
     }
     // Lock/unlock the editable item fields + Save button (used by the "re-scan to edit" flow).
@@ -1497,7 +1530,7 @@
             const fmt = n => Number(n).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
             showErr(err, isMileage
                 ? 'Can’t add — the amount is more than the calculated mileage' + (reference > 0 ? ' (RM ' + fmt(reference) + ')' : '') + '. Lower it to the calculated amount or less, then click Add to list.'
-                : 'Can’t add — the amount is more than the receipt' + (reference > 0 ? ' (RM ' + fmt(reference) + ')' : '') + '. Lower it to the receipt total or less, then click Add to list.');
+                : 'Can’t add — the amount is more than the receipt' + (reference > 0 ? ' (RM ' + fmt(reference) + ')' : '') + '. Lower it to the receipt total or less — or correct Total paid under Receipt details if the scan misread it — then click Add to list.');
             amount.focus();
             return;
         }
@@ -1526,6 +1559,7 @@
         // accepted, so a wrong flag cannot buy anything.
         fd.append('c_period_manual', c.dataset.periodManual === '1' ? '1' : '');
         fd.append('c_date_manual', c.dataset.dateManual === '1' ? '1' : '');
+        fd.append('c_total_manual', c.dataset.totalManual === '1' ? '1' : '');
         fd.append('c_paidby', q(c,'.cc-c-paidby').value || '');
         fd.append('c_total', q(c,'.cc-c-total').value || '');
         fd.append('c_calc', q(c,'.cc-c-calc').value || '');
@@ -1930,6 +1964,7 @@
         if (e.target.matches('.cc-i-date')) { const c = cardOf(e.target); if (c) checkItemDateMonth(c); }
         if (e.target.matches('.cc-c-period-start, .cc-c-period-end')) { const c = cardOf(e.target); if (c) onCoveragePeriodEdited(c); }
         if (e.target.matches('.cc-c-date')) { const c = cardOf(e.target); if (c) onPrintedDateEdited(c); }
+        if (e.target.matches('.cc-c-total')) { const c = cardOf(e.target); if (c) onPrintedTotalEdited(c); }
         if (e.target.matches('.cc-i-km')) { const c = cardOf(e.target); if (c) computeMileage(c); }
         if (e.target.matches('.cc-appr-search')) { const c = cardOf(e.target); if (c) { q(c,'.cc-appr-id').value = ''; filterAppr(c, e.target.value); q(c,'.cc-appr-list').classList.remove('d-none'); } }
         // Auto-save the claim header (event / project) as the user types.
@@ -1957,6 +1992,7 @@
         // is never noticed.
         if (e.target.matches('.cc-c-period-start, .cc-c-period-end')) { const c = cardOf(e.target); if (c) onCoveragePeriodEdited(c); }
         if (e.target.matches('.cc-c-date')) { const c = cardOf(e.target); if (c) onPrintedDateEdited(c); }
+        if (e.target.matches('.cc-c-total')) { const c = cardOf(e.target); if (c) onPrintedTotalEdited(c); }
         // Approver-company switch (cross-company events): drop a now-out-of-company approver
         // and re-open the filtered list for the newly chosen company.
         if (e.target.matches('.cc-appr-company')) {

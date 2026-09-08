@@ -212,7 +212,13 @@
                             <div><strong>Covers:</strong> {{ fmt_date($oc['period_start']) }} - {{ fmt_date($oc['period_end']) }}@if(($oc['period_source'] ?? null) === 'manual') (entered by hand)@endif</div>
                             @endif
                             <div><strong>Who paid:</strong> {{ $oc['paid_by'] ?? '—' }}</div>
-                            <div><strong>Total paid:</strong> {{ isset($oc['total']) && $oc['total'] !== '' ? 'RM '.number_format((float) $oc['total'], 2) : '—' }}</div>
+                            {{-- Marked when the employee corrected the printed total by hand: this
+                                 PDF is the copy of record the approver signs, and this is the
+                                 ceiling the over-claim guard let the line through on (on a capped
+                                 category, the claimed amount itself). Both @-directives sit after
+                                 a `}}` or a `)`, never glued to a word — see the Blade note in
+                                 CLAUDE.md. --}}
+                            <div><strong>Total paid:</strong> {{ isset($oc['total']) && $oc['total'] !== '' ? 'RM '.number_format((float) $oc['total'], 2) : '—' }}@if(($oc['total_source'] ?? null) === 'manual') (entered by hand)@endif</div>
                             @if(! empty($oc['calculation']))<div style="margin-top:2px;"><strong>Calculation:</strong> {{ $oc['calculation'] }}</div>@endif
                             @endif
                         </td>
