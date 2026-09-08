@@ -438,10 +438,12 @@
     // Built with createElement + addEventListener throughout: CSP blocks inline handlers, and
     // nothing server-supplied is ever concatenated into markup.
     var savedCount = 0;
+    var partUis = [];
 
     function renderParts(parts) {
         partsList.textContent = '';
         savedCount = 0;
+        partUis = [];
 
         var totalBytes = parts.reduce(function (sum, p) { return sum + (p.size || 0); }, 0);
 
@@ -478,14 +480,20 @@
             partsList.appendChild(row);
 
             var ui = { btn: btn, bar: bar, track: track, status: status, busy: false, saved: false };
+            partUis.push({ p: p, ui: ui, total: parts.length, totalBytes: totalBytes });
             btn.addEventListener('click', function () { downloadPart(p, ui, parts.length, totalBytes); });
         });
 
         partsBox.classList.remove('d-none');
     }
 
+    // Returns a promise so the "Download all parts" button can run them one after another.
+    // Sequentially, never in parallel: six concurrent transfers would compete for the same
+    // fragile link, which is the condition this whole feature exists to avoid.
     function downloadPart(p, ui, totalParts, totalBytes) {
-        if (ui.busy) return;
+        if (ui.busy) return Promise.resolve();
+        var settle = {};
+        var promise = new Promise(function (res, rej) { settle.res = res; settle.rej = rej; });
         ui.busy = true;
         ui.btn.disabled = true;
         ui.track.classList.remove('d-none');
@@ -542,6 +550,7 @@
                         window.location.href = p.url;
                         ui.busy = false;
                         ui.btn.disabled = false;
+                        settle.res();
                         return;
                     }
                     if (attempt < MAX_ATTEMPTS) {
@@ -593,6 +602,7 @@
                     + ' in total). Unzip them all into the same folder — together they hold every approved claim in the period.';
                 partsDone.classList.remove('d-none');
             }
+            settle.res();
         }
 
         function fail(err) {
@@ -612,9 +622,34 @@
                 ui.escape.textContent = 'Direct link to part ' + p.number + ' (right-click → Save link as)';
                 ui.status.parentNode.appendChild(ui.escape);
             }
+            settle.rej(err);
         }
 
         run();
+
+        return promise;
+    }
+
+    /**
+     * Fetch every outstanding part, one after another.
+     *
+     * A failure does NOT stop the batch — the remaining parts are still worth having, and the
+     * one that failed keeps its own error and retry button. Stopping would turn one bad part
+     * into five missing ones.
+     */
+    function downloadAllParts() {
+        var i = 0;
+        function next() {
+            if (i >= partUis.length) {
+                submitBtn.disabled = false;
+
+                return;
+            }
+            var e = partUis[i++];
+            if (e.ui.saved) { next(); return; }
+            downloadPart(e.p, e.ui, e.total, e.totalBytes).then(next, next);
+        }
+        next();
     }
 
     var modalEl = document.getElementById('exportZipModal');
@@ -664,13 +699,17 @@
                     + ' files (' + humanSize(data.total_size) + ' in total), because one download this large '
                     + 'does not complete reliably. Download each part, then unzip them all into the same folder.';
                 renderParts(data.parts || []);
-                submitBtn.innerHTML = '<i class="bi bi-check2 me-1"></i>Export ready — ' + data.part_count + ' parts below';
-                // Inert rather than a second way to download: left clickable it would carry
-                // the "ready" state and quietly start a NEW export, re-rendering every claim.
-                // Reopening the modal resets it for a fresh run.
-                delete submitBtn.dataset.state;
+                // This button DOES the obvious thing, because it is the one an operator
+                // reaches for: it is where "Download ZIP" has always been, and it is the
+                // biggest, reddest control on the dialog. It was previously left inert with
+                // the label "N parts below" — which was doubly wrong. The parts render in the
+                // modal BODY, i.e. above this footer, so the label pointed the wrong way; and
+                // a prominent button that deliberately does nothing when pressed is
+                // indistinguishable from a broken one. That is exactly what was reported.
+                submitBtn.innerHTML = '<i class="bi bi-download me-1"></i>Download all ' + data.part_count + ' parts';
+                submitBtn.dataset.state = 'parts';
                 delete submitBtn.dataset.downloadUrl;
-                submitBtn.disabled = true;
+                submitBtn.disabled = false;
                 return;
             }
 
@@ -735,6 +774,13 @@
     }
 
     submitBtn.addEventListener('click', function () {
+        // A split export: fetch every part in turn rather than starting a new export.
+        if (submitBtn.dataset.state === 'parts') {
+            submitBtn.disabled = true;
+            downloadAllParts();
+            return;
+        }
+
         if (submitBtn.dataset.state === 'ready' && submitBtn.dataset.downloadUrl) {
             window.location.href = submitBtn.dataset.downloadUrl;
             return;
