@@ -560,6 +560,25 @@
     .cc-chevron { color: #94a3b8; transition: transform .2s ease; }
     .claim-card-head[aria-expanded="false"] .cc-chevron { transform: rotate(-90deg); }
     .cc-body { padding: .9rem; border-top: 1px solid #eef2f7; background: #f8fafc; }
+
+    /* ── Scan hint, HIGHLIGHTED state — an OCR result the employee needs to actually notice
+          and check (auto-filled fields, "review before saving") was previously plain muted
+          text sitting quietly next to the Scan button and was easy to miss entirely. This
+          turns it into its own full-width, boxed, animated banner so it can't be scrolled
+          past unnoticed. Plain progress text ("Scanning…") and errors (already red) are
+          untouched — only the "look at what I found" class of message gets this treatment. ── */
+    .cc-scan-hint.cc-hint-highlight {
+        display: block; width: 100%; flex-basis: 100%;
+        margin-top: .5rem; padding: .6rem .85rem;
+        background: #eff6ff; border: 1px solid #93c5fd; border-radius: 10px;
+        color: #1e3a8a; font-weight: 600; line-height: 1.4;
+        box-shadow: 0 2px 8px rgba(37,99,235,.15);
+        animation: cc-hint-pop .3s ease;
+    }
+    @keyframes cc-hint-pop {
+        0% { transform: scale(.97); opacity: 0; }
+        100% { transform: scale(1); opacity: 1; }
+    }
 </style>
 @endpush
 
@@ -674,7 +693,7 @@
                 if (d && d.ok && d.km) {
                     q(c,'.cc-i-km').value = d.km;
                     computeMileage(c);
-                    setHint(hint, '≈ Estimated ' + d.km + ' km (maps estimate — may differ from Google; edit the km if you know the exact figure).', false);
+                    setHint(hint, '≈ Estimated ' + d.km + ' km (maps estimate — may differ from Google; edit the km if you know the exact figure).', 'ok');
                 } else if (d && d.enabled === false) {
                     setHint(hint, 'Auto-distance is off — enter the km manually.', false);
                 } else {
@@ -687,16 +706,24 @@
     const cardOf = (el) => el.closest('[data-claim-card]');
     const q = (c, sel) => c.querySelector(sel);
     const showErr = (el, msg) => { el.textContent = msg; el.classList.remove('d-none'); };
-    // Scan status text (.cc-scan-hint) covers everything from "Scanning…" to a hard failure in
-    // the same muted-gray span, so a "couldn't read this, please act" message read no differently
-    // from routine progress/success text and was easy to miss. problem=true switches it to a
-    // visible red so the ones that need the user to actually do something stand out.
-    const setHint = (el, text, problem) => {
+    // Scan status text (.cc-scan-hint) covers everything from "Scanning…" to a hard failure to
+    // "here's what got auto-filled, go check it" — those used to render in the same quiet muted
+    // span and were easy to miss entirely (an employee could add an item without ever noticing
+    // the amount/date/category came from an unverified OCR read). Three states now:
+    //  - state === true (or 'error')  → red, for a real failure the user must act on.
+    //  - state === 'ok'               → a boxed, coloured, full-width banner (.cc-hint-highlight)
+    //                                    for "I changed/filled something — please check it".
+    //  - falsy / omitted               → quiet muted text, for pure progress ("Scanning…") and
+    //                                    the empty-string reset.
+    const setHint = (el, text, state) => {
         if (!el) return;
         el.textContent = text || '';
-        el.classList.toggle('text-danger', !!problem);
-        el.classList.toggle('fw-semibold', !!problem);
-        el.classList.toggle('text-muted', !problem);
+        const isError = state === true || state === 'error';
+        const isHighlight = state === 'ok';
+        el.classList.toggle('text-danger', isError);
+        el.classList.toggle('fw-semibold', isError);
+        el.classList.toggle('text-muted', !isError && !isHighlight);
+        el.classList.toggle('cc-hint-highlight', isHighlight);
     };
 
     function syncTotal(c) {
@@ -1047,7 +1074,7 @@
                 btn.disabled = false;
                 if (!d || d.enabled === false) { setHint(hint, 'OCR is off — enter details manually.', false); return; }
                 if (!d.ok || !Array.isArray(d.items) || !d.items.length) { setHint(hint, 'Couldn’t read those pages — try adding them one at a time, or screenshot just the rows you need.', true); return; }
-                setHint(hint, '✨ Found ' + d.items.length + ' transactions — review and add them.' + (extraNote ? ' ' + extraNote : ''), false);
+                setHint(hint, '✨ Found ' + d.items.length + ' transactions — review and add them.' + (extraNote ? ' ' + extraNote : ''), 'ok');
                 openMultiReview(c, d.items, files, d.truncated);
             })
             .catch(() => { btn.disabled = false; setHint(hint, 'Scan failed — try again, or screenshot just the rows you need.', true); });
@@ -1183,10 +1210,10 @@
                     if (c.dataset.editingItem) {
                         setEditLock(c, false);
                         const att = q(c,'.cc-edit-att'); if (att) att.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>New receipt scanned — it will replace the previous attachment.</span>';
-                        setHint(hint, 'Read several lines on this receipt — kept the current details; adjust if needed, then Save.', false);
+                        setHint(hint, 'Read several lines on this receipt — kept the current details; adjust if needed, then Save.', 'ok');
                         return;
                     }
-                    setHint(hint, '✨ Found ' + d.items.length + ' transactions — review and add them.', false);
+                    setHint(hint, '✨ Found ' + d.items.length + ' transactions — review and add them.', 'ok');
                     // Attach the ORIGINAL uploaded file (e.g. the PDF), not the rasterised scan image.
                     const origFile = (q(c,'.cc-i-file').files[0]) || scanFile;
                     openMultiReview(c, d.items, [origFile], d.truncated);
@@ -1212,7 +1239,7 @@
                         // The map already shows Google's exact distance — use it (most accurate).
                         q(c,'.cc-i-km').value = parseFloat(d.distance_km);
                         computeMileage(c);
-                        setHint(hint, '✨ Distance read from the map — pick the vehicle, then enter the description & date.', false);
+                        setHint(hint, '✨ Distance read from the map — pick the vehicle, then enter the description & date.', 'ok');
                         bits.push(parseFloat(d.distance_km) + ' km (from the map)');
                     } else {
                         // No km on the screenshot → best-effort estimate from the route via ORS.
@@ -1252,7 +1279,7 @@
                         if (!okDate) missing.push('date');
                         const reason = d.issue || ('We couldn’t confidently read the ' + missing.join(' and ') + ' on this receipt.');
                         const origFile = (q(c,'.cc-i-file').files[0]) || scanFile;
-                        setHint(hint, 'Please review the details below before adding this receipt.', false);
+                        setHint(hint, 'Please review the details below before adding this receipt.', 'ok');
                         openMultiReview(c, [{
                             vendor: d.vendor || null,
                             item_description: d.item_description || null,
@@ -1289,6 +1316,13 @@
                     // silent no-op (nothing on screen changes, yet the hint claims success). Prefer
                     // the AI's own reason (blurry, cropped, several receipts overlapping, wrong
                     // document type, …) over a generic line — it tells the user what to actually fix.
+                    // gotSomething is always true here — the low-confidence branch above already
+                    // caught the "amount or date missing" case and diverted to the confirm popup,
+                    // so this path only ever reaches a genuine auto-fill success message. It's kept
+                    // (rather than assumed away) as a defensive fallback in case that guard is ever
+                    // loosened. Every branch below is a "go check what I auto-filled" message, so it
+                    // always gets the boxed 'ok' treatment — this is exactly the message that used
+                    // to sit in easy-to-miss muted text.
                     const gotSomething = !!(d.category_id || d.amount || d.vendor || d.item_description || d.paid_by || okDate);
                     setHint(hint, !gotSomething
                         ? (d.issue || 'Couldn’t make out anything useful on this file — enter the details manually, or try a clearer photo/screenshot.')
@@ -1296,7 +1330,7 @@
                             ? '✨ This receipt covers ' + formatCoverage(d.period_start, d.period_end) + ' — the date of expense is set to the start of that period. Now add the description.'
                             : okDate
                                 ? '✨ Category, amount & date auto-filled from the receipt — now add the description.'
-                                : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.', !gotSomething);
+                                : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.', gotSomething ? 'ok' : true);
                     // Capture Category C (read-only receipt details) into the fields below.
                     setC(c, { company: d.vendor, itemdesc: d.item_description, date: fixedSingleDate,
                         period_start: d.period_start, period_end: d.period_end, paidby: d.paid_by, total: d.amount });
@@ -1313,7 +1347,7 @@
                 if (c.dataset.editingItem) {
                     setEditLock(c, false);
                     const att = q(c,'.cc-edit-att'); if (att) att.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>New receipt scanned — it will replace the previous attachment.</span>';
-                    setHint(hint, '✨ Re-scanned — review the details, then Save changes.', false);
+                    setHint(hint, '✨ Re-scanned — review the details, then Save changes.', 'ok');
                 }
             })
             .catch(() => { btn.disabled = false; setHint(hint, 'Scan failed — enter details manually.', true); });
@@ -1601,7 +1635,7 @@
                     appendRow(c, d.item);
                 }
                 updateTotals(c, d.claim_total, d.item_count);
-                if (d.cap_note) { setHint(q(c,'.cc-scan-hint'), d.cap_note, false); }
+                if (d.cap_note) { setHint(q(c,'.cc-scan-hint'), d.cap_note, 'ok'); }
                 resetEntry(c);
             })
             .catch(() => { btn.disabled = false; showErr(err, 'Could not save the item — try again.'); });
