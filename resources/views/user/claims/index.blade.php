@@ -386,9 +386,9 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <div class="alert alert-warning d-flex align-items-start gap-2 py-2 px-3 small mb-2">
-                    <i class="bi bi-stars mt-1"></i>
-                    <div>The AI read these transactions from your upload. <strong>Check &amp; edit every line</strong> if needed, then tick the ones to add. Each line keeps its source image as proof.</div>
+                <div class="alert alert-warning d-flex align-items-start gap-2 py-2 px-3 small mb-2" id="mrLeadAlert">
+                    <i class="bi bi-stars mt-1" id="mrLeadIcon"></i>
+                    <div id="mrLeadMsg">The AI read these transactions from your upload. <strong>Check &amp; edit every line</strong> if needed, then tick the ones to add. Each line keeps its source image as proof.</div>
                 </div>
                 <div class="alert alert-info d-none align-items-start gap-2 py-2 px-3 small mb-2" id="mrTrunc">
                     <i class="bi bi-exclamation-triangle mt-1"></i>
@@ -560,6 +560,25 @@
     .cc-chevron { color: #94a3b8; transition: transform .2s ease; }
     .claim-card-head[aria-expanded="false"] .cc-chevron { transform: rotate(-90deg); }
     .cc-body { padding: .9rem; border-top: 1px solid #eef2f7; background: #f8fafc; }
+
+    /* ── Scan hint, HIGHLIGHTED state — an OCR result the employee needs to actually notice
+          and check (auto-filled fields, "review before saving") was previously plain muted
+          text sitting quietly next to the Scan button and was easy to miss entirely. This
+          turns it into its own full-width, boxed, animated banner so it can't be scrolled
+          past unnoticed. Plain progress text ("Scanning…") and errors (already red) are
+          untouched — only the "look at what I found" class of message gets this treatment. ── */
+    .cc-scan-hint.cc-hint-highlight {
+        display: block; width: 100%; flex-basis: 100%;
+        margin-top: .5rem; padding: .6rem .85rem;
+        background: #eff6ff; border: 1px solid #93c5fd; border-radius: 10px;
+        color: #1e3a8a; font-weight: 600; line-height: 1.4;
+        box-shadow: 0 2px 8px rgba(37,99,235,.15);
+        animation: cc-hint-pop .3s ease;
+    }
+    @keyframes cc-hint-pop {
+        0% { transform: scale(.97); opacity: 0; }
+        100% { transform: scale(1); opacity: 1; }
+    }
 </style>
 @endpush
 
@@ -674,7 +693,7 @@
                 if (d && d.ok && d.km) {
                     q(c,'.cc-i-km').value = d.km;
                     computeMileage(c);
-                    setHint(hint, '≈ Estimated ' + d.km + ' km (maps estimate — may differ from Google; edit the km if you know the exact figure).', false);
+                    setHint(hint, '≈ Estimated ' + d.km + ' km (maps estimate — may differ from Google; edit the km if you know the exact figure).', 'ok');
                 } else if (d && d.enabled === false) {
                     setHint(hint, 'Auto-distance is off — enter the km manually.', false);
                 } else {
@@ -687,16 +706,24 @@
     const cardOf = (el) => el.closest('[data-claim-card]');
     const q = (c, sel) => c.querySelector(sel);
     const showErr = (el, msg) => { el.textContent = msg; el.classList.remove('d-none'); };
-    // Scan status text (.cc-scan-hint) covers everything from "Scanning…" to a hard failure in
-    // the same muted-gray span, so a "couldn't read this, please act" message read no differently
-    // from routine progress/success text and was easy to miss. problem=true switches it to a
-    // visible red so the ones that need the user to actually do something stand out.
-    const setHint = (el, text, problem) => {
+    // Scan status text (.cc-scan-hint) covers everything from "Scanning…" to a hard failure to
+    // "here's what got auto-filled, go check it" — those used to render in the same quiet muted
+    // span and were easy to miss entirely (an employee could add an item without ever noticing
+    // the amount/date/category came from an unverified OCR read). Three states now:
+    //  - state === true (or 'error')  → red, for a real failure the user must act on.
+    //  - state === 'ok'               → a boxed, coloured, full-width banner (.cc-hint-highlight)
+    //                                    for "I changed/filled something — please check it".
+    //  - falsy / omitted               → quiet muted text, for pure progress ("Scanning…") and
+    //                                    the empty-string reset.
+    const setHint = (el, text, state) => {
         if (!el) return;
         el.textContent = text || '';
-        el.classList.toggle('text-danger', !!problem);
-        el.classList.toggle('fw-semibold', !!problem);
-        el.classList.toggle('text-muted', !problem);
+        const isError = state === true || state === 'error';
+        const isHighlight = state === 'ok';
+        el.classList.toggle('text-danger', isError);
+        el.classList.toggle('fw-semibold', isError);
+        el.classList.toggle('text-muted', !isError && !isHighlight);
+        el.classList.toggle('cc-hint-highlight', isHighlight);
     };
 
     function syncTotal(c) {
@@ -1077,7 +1104,7 @@
                 btn.disabled = false;
                 if (!d || d.enabled === false) { setHint(hint, 'OCR is off — enter details manually.', false); return; }
                 if (!d.ok || !Array.isArray(d.items) || !d.items.length) { setHint(hint, 'Couldn’t read those pages — try adding them one at a time, or screenshot just the rows you need.', true); return; }
-                setHint(hint, '✨ Found ' + d.items.length + ' transactions — review and add them.' + (extraNote ? ' ' + extraNote : ''), false);
+                setHint(hint, '✨ Found ' + d.items.length + ' transactions — review and add them.' + (extraNote ? ' ' + extraNote : ''), 'ok');
                 openMultiReview(c, d.items, files, d.truncated);
             })
             .catch(() => { btn.disabled = false; setHint(hint, 'Scan failed — try again, or screenshot just the rows you need.', true); });
@@ -1213,10 +1240,10 @@
                     if (c.dataset.editingItem) {
                         setEditLock(c, false);
                         const att = q(c,'.cc-edit-att'); if (att) att.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>New receipt scanned — it will replace the previous attachment.</span>';
-                        setHint(hint, 'Read several lines on this receipt — kept the current details; adjust if needed, then Save.', false);
+                        setHint(hint, 'Read several lines on this receipt — kept the current details; adjust if needed, then Save.', 'ok');
                         return;
                     }
-                    setHint(hint, '✨ Found ' + d.items.length + ' transactions — review and add them.', false);
+                    setHint(hint, '✨ Found ' + d.items.length + ' transactions — review and add them.', 'ok');
                     // Attach the ORIGINAL uploaded file (e.g. the PDF), not the rasterised scan image.
                     const origFile = (q(c,'.cc-i-file').files[0]) || scanFile;
                     openMultiReview(c, d.items, [origFile], d.truncated);
@@ -1242,7 +1269,7 @@
                         // The map already shows Google's exact distance — use it (most accurate).
                         q(c,'.cc-i-km').value = parseFloat(d.distance_km);
                         computeMileage(c);
-                        setHint(hint, '✨ Distance read from the map — pick the vehicle, then enter the description & date.', false);
+                        setHint(hint, '✨ Distance read from the map — pick the vehicle, then enter the description & date.', 'ok');
                         bits.push(parseFloat(d.distance_km) + ' km (from the map)');
                     } else {
                         // No km on the screenshot → best-effort estimate from the route via ORS.
@@ -1253,22 +1280,8 @@
                     bits.push('Route ' + route);
                     // (Expense Description & Date are NOT auto-filled — the user enters them.)
                 } else {
-                    // ── Receipt — CATEGORY, AMOUNT and (the receipt's own) DATE auto-fill.
-                    // The user types the Expense Description; the OCR's reading of company /
-                    // date / etc. is also captured separately as read-only Category C, below.
-                    if (d.category_id) { cat.value = String(d.category_id); cat.dispatchEvent(new Event('change', { bubbles: true })); }
-                    if (d.amount && !amount.readOnly) {
-                        // Split SST out of the grand total when the receipt shows it: "Amount (w/o SST)"
-                        // holds the net, the SST field the tax, and the total stays the receipt total.
-                        const total = parseFloat(d.amount);
-                        const tax = (d.gst && !gst.readOnly) ? parseFloat(d.gst) : 0;
-                        if (tax > 0 && tax < total) { amount.value = (total - tax).toFixed(2); gst.value = tax.toFixed(2); }
-                        else { amount.value = total.toFixed(2); }
-                        syncTotal(c);
-                    }
-                    // The receipt's printed date IS the date of expense — auto-fill the
-                    // (editable) Date of Expense so the month guard checks the real receipt
-                    // date, not a manual default. The user can still adjust it if OCR misread.
+                    // ── Receipt — work out the DATE first (needed either way), then decide
+                    // between a CONFIDENT auto-fill and asking the user to CONFIRM.
                     // correctSwappedDate() catches a day/month swap the AI still made despite
                     // the prompt's rule, when the un-swapped reading falls outside this claim's
                     // own month and the swap resolves it — see its definition for the full guard.
@@ -1281,20 +1294,78 @@
                     const coverDate = coverageDateInMonth(d.period_start, d.period_end, date.getAttribute('min'), date.getAttribute('max'));
                     const chosenDate = coverDate || fixedSingleDate;
                     const okDate = chosenDate && /^\d{4}-\d{2}-\d{2}$/.test(chosenDate);
+
+                    // The AI flagged this receipt as unclear (blurry/cropped/overlapping/…), or
+                    // couldn't confidently read the amount or the date — the two fields every
+                    // capped/monthly rule downstream relies on. Rather than silently leave gaps
+                    // or auto-fill a guess nobody is asked to check, ask the employee to CONFIRM
+                    // & correct every captured field, using the exact same editable review table
+                    // a multi-receipt scan uses (openMultiReview with a single row). Skipped while
+                    // editing an existing item — that path already unlocks the fields inline and
+                    // asks for a review before Save, so it isn't left without a confirmation step.
+                    if (!c.dataset.editingItem && (d.issue || !d.amount || !okDate)) {
+                        const missing = [];
+                        if (!d.amount) missing.push('amount');
+                        if (!okDate) missing.push('date');
+                        const reason = d.issue || ('We couldn’t confidently read the ' + missing.join(' and ') + ' on this receipt.');
+                        const origFile = (q(c,'.cc-i-file').files[0]) || scanFile;
+                        setHint(hint, 'Please review the details below before adding this receipt.', 'ok');
+                        openMultiReview(c, [{
+                            vendor: d.vendor || null,
+                            item_description: d.item_description || null,
+                            date: d.date || null,
+                            period_start: d.period_start || null,
+                            period_end: d.period_end || null,
+                            paid_by: d.paid_by || null,
+                            amount: (d.amount !== undefined ? d.amount : null),
+                            category_id: d.category_id || null,
+                            highlighted: false,
+                            non_claimable: false,
+                            transaction_type: null,
+                            file_index: 0,
+                        }], [origFile], false, { confirmOnly: true, reason: reason });
+                        return;
+                    }
+
+                    // ── Confident read — CATEGORY, AMOUNT and (the receipt's own) DATE auto-fill.
+                    // The user types the Expense Description; the OCR's reading of company /
+                    // date / etc. is also captured separately as read-only Category C, below.
+                    if (d.category_id) { cat.value = String(d.category_id); cat.dispatchEvent(new Event('change', { bubbles: true })); }
+                    if (d.amount && !amount.readOnly) {
+                        // Split SST out of the grand total when the receipt shows it: "Amount (w/o SST)"
+                        // holds the net, the SST field the tax, and the total stays the receipt total.
+                        const total = parseFloat(d.amount);
+                        const tax = (d.gst && !gst.readOnly) ? parseFloat(d.gst) : 0;
+                        if (tax > 0 && tax < total) { amount.value = (total - tax).toFixed(2); gst.value = tax.toFixed(2); }
+                        else { amount.value = total.toFixed(2); }
+                        syncTotal(c);
+                    }
                     if (okDate) date.value = chosenDate;
-                    // Be honest when the scan found nothing at all — the two "auto-filled" messages
-                    // below were shown even when every field came back empty/null, which read as a
+                    // Be honest when the scan found nothing at all — the "auto-filled" message
+                    // below was shown even when every field came back empty/null, which read as a
                     // silent no-op (nothing on screen changes, yet the hint claims success). Prefer
                     // the AI's own reason (blurry, cropped, several receipts overlapping, wrong
                     // document type, …) over a generic line — it tells the user what to actually fix.
+                    // gotSomething is always true here — the low-confidence branch above already
+                    // caught the "amount or date missing" case and diverted to the confirm popup,
+                    // so this path only ever reaches a genuine auto-fill success message. It's kept
+                    // (rather than assumed away) as a defensive fallback in case that guard is ever
+                    // loosened.
                     const gotSomething = !!(d.category_id || d.amount || d.vendor || d.item_description || d.paid_by || okDate);
-                    setHint(hint, !gotSomething
+                    // A confident full read (category + amount + date all captured, no coverage
+                    // note to surface) no longer shows a banner — the auto-filled fields are visible
+                    // right there on the form, so the badge was telling the user something they could
+                    // already see. The partial-read, coverage-period and failure messages still need
+                    // one, since those describe something NOT otherwise visible on the form.
+                    const confidentFullRead = gotSomething && okDate && !coverDate;
+                    const hintMsg = !gotSomething
                         ? (d.issue || 'Couldn’t make out anything useful on this file — enter the details manually, or try a clearer photo/screenshot.')
                         : coverDate
                             ? '✨ This receipt covers ' + formatCoverage(d.period_start, d.period_end) + ' — the date of expense is set to the start of that period. Now add the description.'
-                            : okDate
-                                ? '✨ Category, amount & date auto-filled from the receipt — now add the description.'
-                                : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.', !gotSomething);
+                            : confidentFullRead
+                                ? ''
+                                : '✨ Category & amount auto-filled, receipt details captured below — now enter the description & date.';
+                    setHint(hint, hintMsg, confidentFullRead ? false : (gotSomething ? 'ok' : true));
                     // Capture Category C (read-only receipt details) into the fields below.
                     setC(c, { company: d.vendor, itemdesc: d.item_description, date: fixedSingleDate,
                         period_start: d.period_start, period_end: d.period_end, paidby: d.paid_by, total: d.amount });
@@ -1311,7 +1382,7 @@
                 if (c.dataset.editingItem) {
                     setEditLock(c, false);
                     const att = q(c,'.cc-edit-att'); if (att) att.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>New receipt scanned — it will replace the previous attachment.</span>';
-                    setHint(hint, '✨ Re-scanned — review the details, then Save changes.', false);
+                    setHint(hint, '✨ Re-scanned — review the details, then Save changes.', 'ok');
                 }
             })
             .catch(() => { btn.disabled = false; setHint(hint, 'Scan failed — enter details manually.', true); });
@@ -1603,7 +1674,7 @@
                     appendRow(c, d.item);
                 }
                 updateTotals(c, d.claim_total, d.item_count);
-                if (d.cap_note) { setHint(q(c,'.cc-scan-hint'), d.cap_note, false); }
+                if (d.cap_note) { setHint(q(c,'.cc-scan-hint'), d.cap_note, 'ok'); }
                 resetEntry(c);
             })
             .catch(() => { btn.disabled = false; showErr(err, 'Could not save the item — try again.'); });
@@ -1647,9 +1718,17 @@
     }
 
     // ── Multi-receipt review (one image split into many lines, or several files) ──
-    let reviewCard = null, reviewFiles = [];
-    function openMultiReview(c, items, files, truncated) {
+    // reviewIsBatch: true for a genuine multi-item scan, where the SAME uploaded image
+    // legitimately backs several different rows (a statement, several receipts in one photo)
+    // — the per-receipt duplicate checks must be SKIPPED there, or rows 2+ would false-positive
+    // against row 1's identical file hash. false for a single low-confidence receipt routed
+    // here for CONFIRMATION only: exactly one row, one file, so it must go through the same
+    // duplicate-expense / duplicate-receipt checks a normal single Add-to-list would.
+    let reviewCard = null, reviewFiles = [], reviewIsBatch = true;
+    function openMultiReview(c, items, files, truncated, opts) {
+        opts = opts || {};
         reviewCard = c;
+        reviewIsBatch = ! opts.confirmOnly;
         reviewFiles = Array.isArray(files) ? files : (files ? [files] : []);
         const body = document.getElementById('multiReviewBody');
         const sel = q(c, '.cc-i-cat');
@@ -1716,13 +1795,36 @@
             // field the user keys in manually).
             if (it.category_id) tr.querySelector('.mr-cat').value = String(it.category_id);
         });
-        // Legend explains the pre-selection so it isn't a surprise.
+        // Title / lead message / Add button — a single low-confidence receipt asking for
+        // CONFIRMATION reads very differently from a multi-receipt scan: it's not "several
+        // transactions found", it's "please check this one over before it's added".
+        const title = document.getElementById('multiReviewTitle');
+        const leadAlert = document.getElementById('mrLeadAlert');
+        const leadIcon = document.getElementById('mrLeadIcon');
+        const leadMsg = document.getElementById('mrLeadMsg');
+        const addBtn = document.getElementById('mrAddAll');
         const legend = document.getElementById('mrLegend');
-        if (legend) {
-            const pick = anyHighlighted
-                ? 'We pre-selected the <span class="badge bg-warning text-dark">highlighted</span> rows. Tick others if you also want them.'
-                : 'All rows are selected except <span class="badge bg-secondary">reload / top-up / fee</span> lines. Adjust as needed.';
-            legend.innerHTML = '<i class="bi bi-info-circle me-1"></i>' + pick + ' Details are pre-filled from the attachment — <strong>edit anything that\'s wrong</strong>, then tick the rows to add.';
+        if (opts.confirmOnly) {
+            if (title) title.innerHTML = '<i class="bi bi-patch-question me-2 text-warning"></i>Please confirm this receipt';
+            if (leadAlert) { leadAlert.classList.remove('alert-warning'); leadAlert.classList.add('alert-info'); }
+            if (leadIcon) { leadIcon.classList.remove('bi-stars'); leadIcon.classList.add('bi-question-circle'); }
+            if (leadMsg) leadMsg.innerHTML = escHtml(opts.reason || 'We couldn’t confidently read every detail on this receipt.')
+                + ' <strong>Check every field below and correct anything that\'s wrong</strong>, then confirm to add it.';
+            if (addBtn) addBtn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Confirm & add';
+            if (legend) legend.innerHTML = '';
+        } else {
+            if (title) title.innerHTML = '<i class="bi bi-images me-2 text-primary"></i>Multiple receipts found';
+            if (leadAlert) { leadAlert.classList.remove('alert-info'); leadAlert.classList.add('alert-warning'); }
+            if (leadIcon) { leadIcon.classList.remove('bi-question-circle'); leadIcon.classList.add('bi-stars'); }
+            if (leadMsg) leadMsg.innerHTML = 'The AI read these transactions from your upload. <strong>Check &amp; edit every line</strong> if needed, then tick the ones to add. Each line keeps its source image as proof.';
+            if (addBtn) addBtn.innerHTML = '<i class="bi bi-plus-circle me-1"></i>Add selected';
+            // Legend explains the pre-selection so it isn't a surprise.
+            if (legend) {
+                const pick = anyHighlighted
+                    ? 'We pre-selected the <span class="badge bg-warning text-dark">highlighted</span> rows. Tick others if you also want them.'
+                    : 'All rows are selected except <span class="badge bg-secondary">reload / top-up / fee</span> lines. Adjust as needed.';
+                legend.innerHTML = '<i class="bi bi-info-circle me-1"></i>' + pick + ' Details are pre-filled from the attachment — <strong>edit anything that\'s wrong</strong>, then tick the rows to add.';
+            }
         }
         // Truncation warning — never drop rows silently.
         const trunc = document.getElementById('mrTrunc');
@@ -1795,7 +1897,11 @@
                 fd.append('c_paidby', tr.dataset.cPaidby || '');
                 fd.append('c_total', tr.dataset.cTotal || '');
                 fd.append('c_calc', '');
-                fd.append('batch', '1'); // a shared image may back several lines — skip dedup
+                // A genuine multi-item scan shares one image across several rows — skip dedup so
+                // row 2+ don't false-positive against row 1's identical file hash. A single-item
+                // CONFIRMATION row is not a batch: it must go through the same duplicate checks a
+                // normal single Add-to-list submission would.
+                if (reviewIsBatch) fd.append('batch', '1');
                 const f = reviewFiles[parseInt(tr.dataset.mrFile || '0', 10)] || reviewFiles[0];
                 if (f) fd.append('receipt', f);
                 return fetch(addUrl, { method: 'POST', headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' }, body: fd })

@@ -536,6 +536,15 @@ class User extends Authenticatable
     }
 
     /**
+     * Settings → Portal Changelog. Strictly superadmin (not system_admin) — the operator's
+     * explicit decision when this page was built, unlike most other Settings tabs.
+     */
+    public function canManageChangelog(): bool
+    {
+        return $this->isSuperadmin();
+    }
+
+    /**
      * May the user open the Decommissioning page? The existing reports set
      * (superadmin/hr_manager/system_admin) widened with it_manager + Finance — plus anybody
      * NAMED as a management approver.
