@@ -9,6 +9,14 @@ class UserPermission extends Model
     protected $fillable = ['user_id', 'resource', 'access_level'];
 
     /**
+     * fieldMap() is a pure literal with no config or DB reads, and the Manage
+     * Access modal asks levelsFor() once per rendered row (~250 of them), so
+     * rebuilding the array each time is pure waste. Callers get a copy, so the
+     * cache cannot be mutated from outside.
+     */
+    private static ?array $fieldMapCache = null;
+
+    /**
      * Every level the Manage Access UI can offer, in render order.
      * '' is not stored — it means "no override row", i.e. fall back to the
      * employee's role-based permissions. The other four are the
@@ -33,6 +41,8 @@ class UserPermission extends Model
      *       'sections' => [
      *           section_key => [
      *               'label'  => string,
+     *               'levels' => optional subset, narrowing the module's for this
+     *                           section AND its fields (see 'announcements'),
      *               'fields' => [ field_key => label, ... ],
      *           ],
      *       ],
@@ -44,7 +54,7 @@ class UserPermission extends Model
      */
     public static function fieldMap(): array
     {
-        return [
+        return self::$fieldMapCache ??= [
             'onboarding' => [
                 'label' => 'Onboarding',
                 'icon' => 'bi-person-plus',
@@ -276,6 +286,52 @@ class UserPermission extends Model
              * The override is read by User::canAccessKolPortal(), which both the
              * sidebar and KolPortalRedirectController go through.
              */
+            /*
+             * News & Announcements (the HR-side composer at /hr/announcements —
+             * NOT the dashboard widget, which stays open to every employee; see
+             * User::canViewAnnouncements()).
+             *
+             * 'Edit Only' is deliberately absent from the module: it would mean
+             * "may change but may not read", and this is a listing you have to
+             * open before you can act on anything in it. Same reasoning as
+             * kol_management's narrower set, applied to a different gap.
+             *
+             * Two sections with deliberately different level sets:
+             *   'compose' — the form's own fields, where Full / View Only / No
+             *               Access each mean something (editable / read-only /
+             *               hidden), so it inherits the module's set.
+             *   'actions' — capabilities, which are held or not held. 'View
+             *               Only' on "Delete" has nothing to mean, so it is not
+             *               offered rather than rendered as a choice the server
+             *               would refuse.
+             */
+            'announcements' => [
+                'label' => 'Announcements',
+                'icon' => 'bi-megaphone',
+                'levels' => ['', 'full', 'view', 'none'],
+                'sections' => [
+                    'compose' => [
+                        'label' => 'Announcement Form',
+                        'fields' => [
+                            'title' => 'Title',
+                            'body' => 'Message',
+                            'companies' => 'Target Companies',
+                            'attachments' => 'Attachments',
+                        ],
+                    ],
+                    'actions' => [
+                        'label' => 'Actions',
+                        'levels' => ['', 'full', 'none'],
+                        'fields' => [
+                            'publish' => 'Publish a New Announcement',
+                            'edit' => 'Edit a Published Announcement',
+                            'delete' => 'Delete an Announcement',
+                            'others' => "See & Manage Colleagues' Announcements",
+                        ],
+                    ],
+                ],
+            ],
+
             'kol_management' => [
                 'label' => 'KOL Management',
                 'icon' => 'bi-megaphone',
@@ -306,14 +362,27 @@ class UserPermission extends Model
     }
 
     /**
-     * The levels selectable for one resource. Declared per module and inherited
-     * by its sections and fields, so a module that only supports grant/deny
-     * cannot be handed a 'view'/'edit' row by a crafted POST.
+     * The levels selectable for one resource — the MOST SPECIFIC declaration
+     * that covers it, section before module. A section that narrows the set
+     * narrows it for its fields too, since a field cannot mean more than the
+     * section it lives in.
+     *
+     * This is what stops a module (or section) that only supports grant/deny
+     * being handed a 'view'/'edit' row by a crafted POST, and it is the same
+     * method the Manage Access modal renders each row's columns from — so the
+     * UI can never offer a level the server would refuse.
      */
     public static function levelsFor(string $resource): array
     {
-        $moduleKey = explode('.', $resource)[0];
+        $parts = explode('.', $resource);
+        $module = static::fieldMap()[$parts[0]] ?? null;
 
-        return static::fieldMap()[$moduleKey]['levels'] ?? self::ACCESS_LEVELS;
+        if ($module === null) {
+            return self::ACCESS_LEVELS;
+        }
+
+        $section = isset($parts[1]) ? ($module['sections'][$parts[1]] ?? null) : null;
+
+        return $section['levels'] ?? $module['levels'] ?? self::ACCESS_LEVELS;
     }
 }

@@ -4,6 +4,19 @@
 
 @section('content')
 
+@php
+    // Per-field gates from Role Management → Manage Access → Announcements →
+    // Announcement Form. A field the user may not edit is not rendered as an
+    // input at all, and the controller never reads it from the request either.
+    $u          = Auth::user();
+    $editBody   = $u->canEditAnnouncementField('body');
+    $seeBody    = $u->canSeeAnnouncementField('body');
+    $editCos    = $u->canEditAnnouncementField('companies');
+    $seeCos     = $u->canSeeAnnouncementField('companies');
+    $editFiles  = $u->canEditAnnouncementField('attachments');
+    $ownCompany = trim((string) ($u->employee?->company ?? ''));
+@endphp
+
 <div class="d-flex align-items-center gap-2 mb-3">
     <a href="{{ route('announcements.index') }}" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-arrow-left me-1"></i>Back
@@ -37,8 +50,10 @@
                 </div>
 
                 {{-- Body --}}
+                @if($seeBody)
                 <div class="col-12">
                     <label class="form-label fw-semibold">Message <span class="text-muted fw-normal small">(max 1000 characters)</span></label>
+                    @if($editBody)
                     <textarea name="body" id="createBodyField" rows="5" maxlength="1000"
                               class="form-control @error('body') is-invalid @enderror"
                               placeholder="Write your announcement here...">{{ old('body') }}</textarea>
@@ -47,11 +62,23 @@
                         <span class="form-text">Supports line breaks. Employees will receive this as an email notification.</span>
                         <span id="createBodyCounter" class="form-text text-end" style="flex-shrink:0;">{{ strlen(old('body','')) }}/1000</span>
                     </div>
+                    @else
+                    <textarea class="form-control bg-light" rows="3" disabled
+                              placeholder="You have view-only access to this field — the announcement will be published without a message."></textarea>
+                    @endif
                 </div>
+                @endif
 
-                {{-- Target Companies --}}
+                {{-- Target Companies.
+                     The audience note below renders even when the field is set to
+                     No Access: withholding the PICKER is a permission, but being
+                     told the reach of a send you are about to make is not — this
+                     is the one place the resolved audience is stated, and hiding
+                     it would let somebody broadcast without knowing to whom. --}}
+                @if($seeCos || ! $editCos)
                 <div class="col-12">
                     <label class="form-label fw-semibold">Target Companies</label>
+                    @if($editCos)
                     <div class="form-text mb-2">Leave all unchecked to send to <strong>all companies</strong>.</div>
                     @if($companies->isEmpty())
                         <div class="text-muted small">No companies registered yet.</div>
@@ -67,9 +94,20 @@
                         @endforeach
                     </div>
                     @endif
+                    @else
+                    {{-- Audience is decided for them — state which, so it is never a
+                         surprise. Mirrors AnnouncementController::resolveCompanies(). --}}
+                    <div class="alert alert-light border mb-0 py-2 px-3 small">
+                        <i class="bi bi-lock me-1"></i>
+                        You cannot choose the audience. This announcement will be sent to
+                        <strong>{{ $ownCompany !== '' ? $ownCompany : 'all companies' }}</strong>.
+                    </div>
+                    @endif
                 </div>
+                @endif
 
                 {{-- Attachments --}}
+                @if($editFiles)
                 <div class="col-12">
                     <label class="form-label fw-semibold">Attachments <span class="text-muted fw-normal small">(optional — PDF or image, max 10 MB each, up to 10 files)</span></label>
 
@@ -96,6 +134,7 @@
                     {{-- Hidden inputs to carry selected files --}}
                     <div id="attachHiddenInputs"></div>
                 </div>
+                @endif
 
             </div>
         </div>
@@ -179,14 +218,24 @@ function handleAttachDrop(e) {
     renderAttachPreviews(e.dataTransfer.files);
 }
 
-// Bind event listeners (CSP nonce-compatible — no inline handlers)
+// Bind event listeners (CSP nonce-compatible — no inline handlers).
+// Every lookup is guarded: a field withheld on Manage Access is not rendered at
+// all, and an unguarded getElementById would throw here and take the rest of
+// the bindings down with it.
 var dz = document.getElementById('attachDropzone');
-dz.addEventListener('click', function() { document.getElementById('attachInput').click(); });
-dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.style.borderColor = '#2563eb'; });
-dz.addEventListener('dragleave', function() { dz.style.borderColor = '#cbd5e1'; });
-dz.addEventListener('drop', handleAttachDrop);
-document.getElementById('attachInput').addEventListener('change', function() { renderAttachPreviews(this.files); });
-document.getElementById('createBodyField').addEventListener('input', function() { updateCounter('createBodyField', 'createBodyCounter'); });
+var attachInput = document.getElementById('attachInput');
+if (dz && attachInput) {
+    dz.addEventListener('click', function() { attachInput.click(); });
+    dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.style.borderColor = '#2563eb'; });
+    dz.addEventListener('dragleave', function() { dz.style.borderColor = '#cbd5e1'; });
+    dz.addEventListener('drop', handleAttachDrop);
+    attachInput.addEventListener('change', function() { renderAttachPreviews(this.files); });
+}
+
+var bodyField = document.getElementById('createBodyField');
+if (bodyField) {
+    bodyField.addEventListener('input', function() { updateCounter('createBodyField', 'createBodyCounter'); });
+}
 </script>
 
 @endsection

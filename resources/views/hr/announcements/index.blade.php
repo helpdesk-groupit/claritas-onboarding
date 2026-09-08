@@ -4,10 +4,38 @@
 
 @section('content')
 
+@php
+    // Every control on this page is gated by the same helpers the controller
+    // refuses on, so a hidden button is never the only thing standing between
+    // a withheld capability and the action.
+    $u             = Auth::user();
+    $canPublish    = $u->canPublishAnnouncement();
+    $publishGrant  = $u->canDoAnnouncementAction('publish');
+    $canEdit       = $u->canDoAnnouncementAction('edit');
+    $canDelete  = $u->canDoAnnouncementAction('delete');
+    $canOthers  = $u->canManageOthersAnnouncements();
+@endphp
+
 <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+    @if($canPublish)
     <a href="{{ route('announcements.create') }}" class="btn btn-sm btn-primary">
         <i class="bi bi-plus-lg me-1"></i>New Announcement
     </a>
+    @elseif($publishGrant)
+        {{-- Holds the Publish capability but cannot edit the Title, which is
+             required — so the form could never be submitted. Saying so beats a
+             button that dead-ends on a validation error they cannot clear. --}}
+        <span class="text-muted small">
+            <i class="bi bi-info-circle me-1"></i>
+            Publishing is unavailable because you do not have edit access to the announcement Title.
+        </span>
+    @endif
+
+    @if($canOthers)
+        <span class="badge bg-light text-secondary border ms-auto">
+            <i class="bi bi-people me-1"></i>Showing announcements from all authors
+        </span>
+    @endif
 </div>
 
 <div class="card">
@@ -42,21 +70,39 @@
                                 @endif
                             </div>
                         </div>
+                        @php
+                            // An author may always act on their own; reaching a
+                            // colleague's needs the explicit grant. Mirrors
+                            // AnnouncementController::authorizeOwner().
+                            $isMine  = $a->created_by === Auth::id();
+                            $canActOn = $isMine || $canOthers;
+                        @endphp
                         <div class="d-flex align-items-center gap-2 flex-shrink-0">
                             <span class="text-muted" style="font-size:12px;">
                                 {{ $a->created_at->format('d/m/Y, h:i A') }}
                             </span>
+                            @if($canEdit && $canActOn)
                             <a href="{{ route('announcements.edit', $a) }}"
                                class="btn btn-outline-warning btn-sm" style="padding:2px 8px;" title="Edit">
                                 <i class="bi bi-pencil" style="font-size:12px;"></i>
                             </a>
+                            @endif
+                            @if($canDelete && $canActOn)
+                            {{-- js-confirm, not onsubmit="confirm(...)": CSP blocks inline
+                                 handlers, so the native confirm never ran and this
+                                 destructive action submitted unchallenged. --}}
                             <form action="{{ route('announcements.destroy', $a) }}" method="POST"
-                                  onsubmit="return confirm('Delete this announcement?')">
+                                  class="js-confirm"
+                                  data-confirm-title="Delete announcement"
+                                  data-confirm="Delete &quot;{{ $a->title }}&quot;? This cannot be undone."
+                                  data-confirm-ok="Delete"
+                                  data-confirm-variant="danger">
                                 @csrf @method('DELETE')
                                 <button class="btn btn-outline-danger btn-sm" style="padding:2px 8px;" title="Delete">
                                     <i class="bi bi-trash" style="font-size:12px;"></i>
                                 </button>
                             </form>
+                            @endif
                         </div>
                     </div>
 
@@ -75,7 +121,7 @@
                     @endif
 
                     <div class="text-muted mt-1" style="font-size:11px;">
-                        Posted by {{ $a->creator?->employee?->full_name ?? $a->creator?->name ?? '—' }}
+                        Posted by {{ $a->creator?->employee?->full_name ?? $a->creator?->name ?? '—' }}@if($canOthers && $isMine) <span class="text-primary">(you)</span>@endif
                     </div>
                 </div>
             </div>
@@ -85,7 +131,9 @@
             <div style="width:56px;height:56px;background:#f1f5f9;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;">
                 <i class="bi bi-megaphone" style="font-size:26px;color:#94a3b8;"></i>
             </div>
-            <div class="text-muted">No announcements yet. <a href="{{ route('announcements.create') }}">Create one</a>.</div>
+            <div class="text-muted">
+                No announcements yet.@if($canPublish) <a href="{{ route('announcements.create') }}">Create one</a>.@endif
+            </div>
         </div>
         @endforelse
     </div>
@@ -95,5 +143,7 @@
     </div>
     @endif
 </div>
+
+@include('partials.confirm-modal')
 
 @endsection

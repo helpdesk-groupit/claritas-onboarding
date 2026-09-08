@@ -409,6 +409,150 @@ class User extends Authenticatable
         return in_array($p, ['full', 'edit']);
     }
 
+    /**
+     * The most specific override that applies to a resource, walking from the
+     * field up to the module: `a.b.c` → `a.b` → `a`. Null when the user carries
+     * no row at any level, which is what hands the decision back to their role.
+     *
+     * The relation is eager-loaded on first use because one page asks this once
+     * per gated control; without it a form with a dozen gated fields would cost
+     * three queries each.
+     */
+    public function effectivePermission(string $resource): ?string
+    {
+        $this->loadMissing('permissions');
+
+        $parts = explode('.', $resource);
+
+        for ($depth = count($parts); $depth >= 1; $depth--) {
+            $level = $this->customPermission(implode('.', array_slice($parts, 0, $depth)));
+            if ($level !== null) {
+                return $level;
+            }
+        }
+
+        return null;
+    }
+
+    // ── Announcements (Role Management → Manage Access → "Announcements") ──
+
+    /**
+     * Who reaches the Announcements composer when NO override is set.
+     *
+     * This is the rule the module shipped with — it was written out by hand in
+     * AnnouncementController and again in each of the sidebar's four role
+     * branches, which is exactly how a nav link and a route come to disagree.
+     * It is stated once here so an override can be layered over it.
+     */
+    public function hasRoleBasedAnnouncementAccess(): bool
+    {
+        return $this->isHrManager()
+            || $this->isSuperadmin()
+            || $this->isSystemAdmin()
+            || $this->isItManager()
+            || $this->employee?->work_role === 'manager';
+    }
+
+    /**
+     * The effective level for the Announcements module, or for one row inside
+     * it ('compose.title', 'actions.delete', …).
+     *
+     * Every row inherits the module level unless it carries an override of its
+     * own, so leaving the whole module on Default keeps the behaviour the
+     * module shipped with. The ONE exception is documented on
+     * canManageOthersAnnouncements().
+     *
+     * NOTE this governs the HR-side composer only. The dashboard announcements
+     * widget and its feed stay open to every employee: 'No Access' here means
+     * "may not publish announcements", never "may not be told things".
+     */
+    public function announcementAccess(string $row = ''): string
+    {
+        $level = $this->effectivePermission('announcements'.($row === '' ? '' : ".{$row}"));
+
+        if ($level !== null) {
+            return $level;
+        }
+
+        return $this->hasRoleBasedAnnouncementAccess() ? 'full' : 'none';
+    }
+
+    public function canViewAnnouncements(): bool
+    {
+        return $this->announcementAccess() !== 'none';
+    }
+
+    /**
+     * A capability row under announcements.actions.* — publish / edit / delete.
+     *
+     * The module gate is applied FIRST and cannot be overridden from below: 'No
+     * Access' on the page has to mean the routes refuse, or a narrower grant
+     * would let somebody publish into a module they cannot open.
+     */
+    public function canDoAnnouncementAction(string $action): bool
+    {
+        if (! $this->canViewAnnouncements()) {
+            return false;
+        }
+
+        return in_array($this->announcementAccess("actions.{$action}"), ['full', 'edit'], true);
+    }
+
+    /**
+     * May the user publish a NEW announcement?
+     *
+     * The action grant is not sufficient on its own: `title` is required, so
+     * somebody holding the grant while `compose.title` is View Only would reach
+     * a form they could never submit. Withholding the button is the honest
+     * outcome; the listing says why it is missing.
+     */
+    public function canPublishAnnouncement(): bool
+    {
+        return $this->canDoAnnouncementAction('publish')
+            && $this->canEditAnnouncementField('title');
+    }
+
+    /** 'none' → hidden; 'view' → read-only; 'full'/'edit' → editable. */
+    public function announcementFieldAccess(string $field): string
+    {
+        return $this->canViewAnnouncements()
+            ? $this->announcementAccess("compose.{$field}")
+            : 'none';
+    }
+
+    public function canSeeAnnouncementField(string $field): bool
+    {
+        return $this->announcementFieldAccess($field) !== 'none';
+    }
+
+    public function canEditAnnouncementField(string $field): bool
+    {
+        return in_array($this->announcementFieldAccess($field), ['full', 'edit'], true);
+    }
+
+    /**
+     * May the user see — and act on — announcements somebody ELSE published?
+     *
+     * Deliberately the ONE row that does not inherit the module level. Every
+     * other row inherits, so that leaving the module on Default preserves what
+     * the module shipped with; but this page has always shown each author their
+     * own announcements only, so an inherited 'full' would silently open every
+     * HR manager's listing onto their colleagues' the moment this shipped. It
+     * has to be granted per person, on purpose.
+     */
+    public function canManageOthersAnnouncements(): bool
+    {
+        if (! $this->canViewAnnouncements()) {
+            return false;
+        }
+
+        return in_array(
+            $this->customPermission('announcements.actions.others'),
+            ['full', 'edit'],
+            true
+        );
+    }
+
     // ── Accounting Module ──────────────────────────────────────────────
 
     public function isFinanceManager(): bool

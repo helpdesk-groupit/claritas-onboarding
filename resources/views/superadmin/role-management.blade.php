@@ -24,6 +24,12 @@ foreach ($fieldMap as $mKey => $mod) {
 // Flatten for By Section tab (section-level). Modules with no sections are
 // page-level only and are skipped here and on the By Field tab, rather than
 // rendering an accordion that opens onto an empty table.
+//
+// Levels are resolved PER ROW through UserPermission::levelsFor(), not once per
+// module — a section may narrow the module's set for itself and its fields (see
+// 'announcements.actions', which is grant-or-withhold). Reading the same method
+// the server whitelists against is what stops the table offering a choice the
+// save would silently drop.
 $sections = [];
 foreach ($fieldMap as $mKey => $mod) {
     if (empty($mod['sections'])) {
@@ -32,11 +38,14 @@ foreach ($fieldMap as $mKey => $mod) {
     $sections[$mKey] = [
         'label'    => $mod['label'],
         'icon'     => $mod['icon'],
-        'levels'   => $mod['levels'] ?? $allLevels,
         'sections' => [],
     ];
     foreach ($mod['sections'] as $sKey => $sec) {
-        $sections[$mKey]['sections']["{$mKey}.{$sKey}"] = $sec['label'];
+        $resource = "{$mKey}.{$sKey}";
+        $sections[$mKey]['sections'][$resource] = [
+            'label'  => $sec['label'],
+            'levels' => \App\Models\UserPermission::levelsFor($resource),
+        ];
     }
 }
 
@@ -270,12 +279,22 @@ $fieldModules = array_filter($fieldMap, fn ($mod) => ! empty($mod['sections']));
                                         @endforeach
                                     </tbody>
                                 </table>
-                                <p class="text-muted small mb-0">
+                                <p class="text-muted small mb-2">
                                     <i class="bi bi-info-circle me-1"></i>
                                     <strong>KOL Management</strong> opens the KOL Management Portal, a separate
                                     system, so it is grant-or-withhold only. Granting it shows the sidebar link and
                                     lets that person sign in there; the KOL Portal still decides what they may do
                                     once inside.
+                                </p>
+                                <p class="text-muted small mb-0">
+                                    <i class="bi bi-info-circle me-1"></i>
+                                    <strong>Announcements</strong> governs who may publish company announcements.
+                                    <em>View Only</em> gives a read-only listing; <em>Edit Only</em> does not apply,
+                                    since the listing must be opened before anything in it can be changed. Use
+                                    <strong>By Section</strong> and <strong>By Field</strong> to withhold single
+                                    controls — for example Publish, Delete, or Target Companies. It does
+                                    <strong>not</strong> affect the dashboard announcements widget: every employee
+                                    keeps receiving announcements addressed to them.
                                 </p>
                             </div>
 
@@ -307,12 +326,12 @@ $fieldModules = array_filter($fieldMap, fn ($mod) => ! empty($mod['sections']));
                                                         </tr>
                                                     </thead>
                                                     <tbody>
-                                                        @foreach($mod['sections'] as $sResource => $sLabel)
+                                                        @foreach($mod['sections'] as $sResource => $sec)
                                                         <tr>
-                                                            <td>{{ $sLabel }}</td>
+                                                            <td>{{ $sec['label'] }}</td>
                                                             @foreach($allLevels as $val)
                                                             <td class="text-center">
-                                                                @if(in_array($val, $mod['levels'], true))
+                                                                @if(in_array($val, $sec['levels'], true))
                                                                 <input type="radio" class="form-check-input perm-radio"
                                                                        name="permissions[{{ $sResource }}]"
                                                                        value="{{ $val }}"
@@ -352,7 +371,14 @@ $fieldModules = array_filter($fieldMap, fn ($mod) => ! empty($mod['sections']));
                                                 {{-- Nested accordion: one per section --}}
                                                 <div class="accordion accordion-flush" id="fld-sec-accordion-{{ $mKey }}">
                                                     @foreach($mod['sections'] as $sKey => $sec)
-                                                    @php $sResource = "{$mKey}.{$sKey}"; @endphp
+                                                    @php
+                                                        $sResource = "{$mKey}.{$sKey}";
+                                                        // Fields inherit their SECTION's level set, not the
+                                                        // module's — a field cannot mean more than the section
+                                                        // it lives in, and levelsFor() is what the save
+                                                        // whitelists against.
+                                                        $sLevels = \App\Models\UserPermission::levelsFor($sResource);
+                                                    @endphp
                                                     <div class="accordion-item border-0 border-bottom">
                                                         <h2 class="accordion-header">
                                                             <button class="accordion-button collapsed py-2 ps-4 bg-light"
@@ -382,7 +408,7 @@ $fieldModules = array_filter($fieldMap, fn ($mod) => ! empty($mod['sections']));
                                                                             <td class="ps-4">{{ $fLabel }}</td>
                                                                             @foreach($allLevels as $val)
                                                                             <td class="text-center">
-                                                                                @if(in_array($val, $mod['levels'] ?? $allLevels, true))
+                                                                                @if(in_array($val, $sLevels, true))
                                                                                 <input type="radio" class="form-check-input perm-radio"
                                                                                        name="permissions[{{ $fResource }}]"
                                                                                        value="{{ $val }}"

@@ -211,12 +211,16 @@
                 <i class="bi bi-people"></i> Employee Listing
             </a>
         </div>
+        {{-- Announcements — one gate (Role Management → Manage Access → Announcements),
+             read identically by all four role branches below and by the controller. --}}
+        @if(Auth::user()->canViewAnnouncements())
         <div class="nav-item">
             <a href="{{ route('announcements.index') }}"
                class="nav-link {{ request()->routeIs('announcements.*') ? 'active' : '' }}">
                 <i class="bi bi-megaphone"></i> Announcements
             </a>
         </div>
+        @endif
 
         {{-- ── HRM Modules ── --}}
         <div class="sidebar-section">HRM Modules</div>
@@ -457,8 +461,9 @@
         </div>
         @endif
 
-        {{-- Announcements — HR Manager + Superadmin + System Admin + IT Manager + Manager --}}
-        @if(Auth::user()->isHrManager() || Auth::user()->isSuperadmin() || Auth::user()->isSystemAdmin() || Auth::user()->isItManager() || Auth::user()->employee?->work_role === 'manager')
+        {{-- Announcements — HR Manager + Superadmin + System Admin + IT Manager + Manager
+             by default, overridable per user on Role Management → Manage Access. --}}
+        @if(Auth::user()->canViewAnnouncements())
         <div class="nav-item">
             <a href="{{ route('announcements.index') }}"
                class="nav-link {{ request()->routeIs('announcements.*') ? 'active' : '' }}">
@@ -619,7 +624,7 @@
         </div>
         {{-- Task Management + Automation moved to the Management section. --}}
 
-        @if(Auth::user()->isItManager())
+        @if(Auth::user()->canViewAnnouncements())
         <div class="nav-item">
             <a href="{{ route('announcements.index') }}"
                class="nav-link {{ request()->routeIs('announcements.*') ? 'active' : '' }}">
@@ -693,7 +698,7 @@
                 <i class="bi bi-house"></i> Dashboard
             </a>
         </div>
-        @if(Auth::user()->employee?->work_role === 'manager')
+        @if(Auth::user()->canViewAnnouncements())
         <div class="nav-item">
             <a href="{{ route('announcements.index') }}"
                class="nav-link {{ request()->routeIs('announcements.*') ? 'active' : '' }}">

@@ -4,6 +4,22 @@
 
 @section('content')
 
+@php
+    // Per-field gates from Role Management → Manage Access → Announcements →
+    // Announcement Form. On an edit, "View Only" is genuinely meaningful: the
+    // current value is shown but cannot be changed, and the controller keeps
+    // the stored value whatever the request carries.
+    $u         = Auth::user();
+    $editTitle = $u->canEditAnnouncementField('title');
+    $seeTitle  = $u->canSeeAnnouncementField('title');
+    $editBody  = $u->canEditAnnouncementField('body');
+    $seeBody   = $u->canSeeAnnouncementField('body');
+    $editCos   = $u->canEditAnnouncementField('companies');
+    $seeCos    = $u->canSeeAnnouncementField('companies');
+    $editFiles = $u->canEditAnnouncementField('attachments');
+    $seeFiles  = $u->canSeeAnnouncementField('attachments');
+@endphp
+
 <div class="d-flex align-items-center gap-2 mb-3">
     <a href="{{ route('announcements.index') }}" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-arrow-left me-1"></i>Back
@@ -28,33 +44,47 @@
             <div class="row g-3">
 
                 {{-- Title --}}
+                @if($seeTitle)
                 <div class="col-12">
-                    <label class="form-label fw-semibold">Title <span class="text-danger">*</span></label>
-                    <input type="text" name="title"
-                           class="form-control @error('title') is-invalid @enderror"
-                           value="{{ old('title', $announcement->title) }}" required>
+                    <label class="form-label fw-semibold">Title @if($editTitle)<span class="text-danger">*</span>@endif</label>
+                    <input type="text" @if($editTitle) name="title" required @else disabled @endif
+                           class="form-control @if(! $editTitle) bg-light @endif @error('title') is-invalid @enderror"
+                           value="{{ old('title', $announcement->title) }}">
                     @error('title')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                    @unless($editTitle)
+                    <div class="form-text"><i class="bi bi-lock me-1"></i>View only — you cannot change the title.</div>
+                    @endunless
                 </div>
+                @endif
 
                 {{-- Body --}}
+                @if($seeBody)
                 <div class="col-12">
                     <label class="form-label fw-semibold">Message <span class="text-muted fw-normal small">(max 1000 characters)</span></label>
+                    @if($editBody)
                     <textarea name="body" id="editBodyField" rows="5" maxlength="1000"
                               class="form-control @error('body') is-invalid @enderror">{{ old('body', $announcement->body) }}</textarea>
                     @error('body')<div class="invalid-feedback">{{ $message }}</div>@enderror
                     <div class="d-flex justify-content-end mt-1">
                         <span id="editBodyCounter" class="form-text">{{ strlen(old('body', $announcement->body ?? '')) }}/1000</span>
                     </div>
+                    @else
+                    <textarea class="form-control bg-light" rows="5" disabled>{{ $announcement->body }}</textarea>
+                    <div class="form-text"><i class="bi bi-lock me-1"></i>View only — you cannot change the message.</div>
+                    @endif
                 </div>
+                @endif
 
                 {{-- Target Companies --}}
+                @if($seeCos)
                 <div class="col-12">
                     <label class="form-label fw-semibold">Target Companies</label>
+                    @php $selectedCompanies = old('companies', $announcement->companies ?? []); @endphp
+                    @if($editCos)
                     <div class="form-text mb-2">Leave all unchecked to send to <strong>all companies</strong>.</div>
                     @if($companies->isEmpty())
                         <div class="text-muted small">No companies registered yet.</div>
                     @else
-                    @php $selectedCompanies = old('companies', $announcement->companies ?? []); @endphp
                     <div class="border rounded p-3 d-flex flex-wrap gap-3" style="max-height:180px;overflow-y:auto;">
                         @foreach($companies as $c)
                         <div class="form-check mb-0">
@@ -66,10 +96,23 @@
                         @endforeach
                     </div>
                     @endif
+                    @else
+                    {{-- Read-only: the stored audience is kept exactly as it is, so a
+                         body correction can never silently change who was told. --}}
+                    <div class="d-flex flex-wrap gap-1">
+                        @forelse($announcement->companies ?? [] as $c)
+                            <span class="badge bg-primary" style="font-size:11px;">{{ $c }}</span>
+                        @empty
+                            <span class="badge bg-secondary" style="font-size:11px;">All Companies</span>
+                        @endforelse
+                    </div>
+                    <div class="form-text"><i class="bi bi-lock me-1"></i>View only — the audience will not change.</div>
+                    @endif
                 </div>
+                @endif
 
                 {{-- Existing Attachments --}}
-                @if(!empty($announcement->attachment_paths))
+                @if($seeFiles && !empty($announcement->attachment_paths))
                 <div class="col-12">
                     <label class="form-label fw-semibold">Current Attachments</label>
                     <div class="d-flex flex-wrap gap-2" id="existingAttachList">
@@ -82,20 +125,27 @@
                                class="text-truncate text-decoration-none text-dark flex-fill" style="max-width:180px;" title="{{ basename($path) }}">
                                 Attachment {{ $i + 1 }}
                             </a>
+                            @if($editFiles)
                             {{-- Hidden keep input — disabled = removed --}}
                             <input type="hidden" name="keep_attachments[]" value="{{ $path }}"
                                    id="keepInput_{{ $i }}">
                             <button type="button" class="btn btn-sm btn-link text-danger p-0 ms-1 remove-existing-btn"
                                     style="font-size:14px;line-height:1;"
                                     data-index="{{ $i }}" title="Remove">&times;</button>
+                            @endif
                         </div>
                         @endforeach
                     </div>
+                    @if($editFiles)
                     <div class="form-text">Click &times; to remove an existing attachment.</div>
+                    @else
+                    <div class="form-text"><i class="bi bi-lock me-1"></i>View only — attachments will not change.</div>
+                    @endif
                 </div>
                 @endif
 
                 {{-- New Attachments --}}
+                @if($editFiles)
                 <div class="col-12">
                     <label class="form-label fw-semibold">Add New Attachments <span class="text-muted fw-normal small">(PDF or image, max 10 MB each, up to 10 total)</span></label>
 
@@ -116,6 +166,7 @@
 
                     <div id="attachPreviewList" class="mt-2 d-flex flex-wrap gap-2"></div>
                 </div>
+                @endif
 
             </div>
         </div>
@@ -205,14 +256,25 @@ function handleAttachDrop(e) {
     renderAttachPreviews(e.dataTransfer.files);
 }
 
-// Bind event listeners (CSP nonce-compatible)
+// Bind event listeners (CSP nonce-compatible).
+// Every lookup is guarded: a field withheld on Manage Access is not rendered at
+// all, and an unguarded getElementById would throw here and take the rest of
+// the bindings down with it.
 var dz = document.getElementById('attachDropzone');
-dz.addEventListener('click', function() { document.getElementById('attachInput').click(); });
-dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.style.borderColor = '#2563eb'; });
-dz.addEventListener('dragleave', function() { dz.style.borderColor = '#cbd5e1'; });
-dz.addEventListener('drop', handleAttachDrop);
-document.getElementById('attachInput').addEventListener('change', function() { renderAttachPreviews(this.files); });
-document.getElementById('editBodyField').addEventListener('input', function() { updateCounter('editBodyField', 'editBodyCounter'); });
+var attachInput = document.getElementById('attachInput');
+if (dz && attachInput) {
+    dz.addEventListener('click', function() { attachInput.click(); });
+    dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.style.borderColor = '#2563eb'; });
+    dz.addEventListener('dragleave', function() { dz.style.borderColor = '#cbd5e1'; });
+    dz.addEventListener('drop', handleAttachDrop);
+    attachInput.addEventListener('change', function() { renderAttachPreviews(this.files); });
+}
+
+var bodyField = document.getElementById('editBodyField');
+if (bodyField) {
+    bodyField.addEventListener('input', function() { updateCounter('editBodyField', 'editBodyCounter'); });
+}
+
 document.querySelectorAll('.remove-existing-btn').forEach(function(btn) {
     btn.addEventListener('click', function() { removeExisting(parseInt(this.dataset.index)); });
 });
