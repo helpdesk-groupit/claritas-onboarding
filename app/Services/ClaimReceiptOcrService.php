@@ -353,6 +353,23 @@ class ClaimReceiptOcrService
             if ($mismatchNote !== null && $issue === null) {
                 $issue = $mismatchNote;
             }
+        } elseif ($isSingleReceipt && count($items) === 1 && $receiptTotal !== null) {
+            // The model can also read a plain single-line receipt straight into ONE item
+            // without ever going through the multi-row split collapseSingleReceiptItems folds —
+            // in which case the branch above never runs and receipt_total is simply never
+            // consulted against anything. Cross-check the two readings here too, the same way:
+            // receipt_total is a SEPARATE field the model fills independently of the item's own
+            // "amount", so a real gap between them is still a signal worth a human glance, even
+            // though there is no discount/PRE-discount-gross explanation available for a single
+            // line (unlike the multi-row case, a mismatch here has no innocent explanation).
+            $itemAmount = round((float) ($items[0]['amount'] ?? 0), 2);
+            if (abs($receiptTotal - $itemAmount) > 0.02 && $issue === null) {
+                $issue = sprintf(
+                    'The total I read (RM%s) doesn’t match the item amount I read (RM%s) — please check the amount against the receipt.',
+                    number_format($receiptTotal, 2),
+                    number_format($itemAmount, 2)
+                );
+            }
         }
 
         // Flag (don't hide) when a long statement hit the ceiling, so the UI can warn

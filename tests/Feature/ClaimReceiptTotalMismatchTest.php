@@ -175,4 +175,78 @@ class ClaimReceiptTotalMismatchTest extends TestCase
         $this->assertEquals(19.66, $res->json('amount'));
         $this->assertNull($res->json('issue'));
     }
+
+    /**
+     * The real shape that slipped through live: the model read the whole AEON receipt as ONE
+     * item (not two rows to collapse), so the >1-item branch above never ran and receipt_total
+     * was never consulted against anything. This is the elseif branch that closes that gap.
+     */
+    public function test_a_single_item_whose_amount_disagrees_with_receipt_total_is_flagged(): void
+    {
+        $user = $this->actingEmployee();
+        $this->fakeVision([
+            'map' => null, 'map_multi_routes' => false,
+            'items' => [
+                ['amount' => 13.03, 'date' => '2026-08-19', 'vendor' => 'AEON BIG', 'item_description' => 'Groceries', 'category' => null, 'tax_amount' => 0],
+            ],
+            'account_holder' => null, 'issuer' => null, 'issue' => null,
+            'is_single_receipt' => true, 'receipt_total' => 19.65,
+        ]);
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.scan-receipt'), [
+            'receipt' => UploadedFile::fake()->image('aeon.jpg'),
+        ]);
+
+        $res->assertStatus(200)->assertJsonPath('ok', true)->assertJsonPath('multi', false);
+        // The item's own amount is still what fills the field (this branch never touched the
+        // merge, only the flag) — the review table is where the employee corrects it.
+        $this->assertEquals(13.03, $res->json('amount'));
+        $issue = (string) $res->json('issue');
+        $this->assertStringContainsString('13.03', $issue);
+        $this->assertStringContainsString('19.65', $issue);
+    }
+
+    /** A single item whose amount matches receipt_total (the ordinary case) is not flagged. */
+    public function test_a_single_item_matching_receipt_total_is_not_flagged(): void
+    {
+        $user = $this->actingEmployee();
+        $this->fakeVision([
+            'map' => null, 'map_multi_routes' => false,
+            'items' => [
+                ['amount' => 19.65, 'date' => '2026-08-19', 'vendor' => 'AEON BIG', 'item_description' => 'Groceries', 'category' => null, 'tax_amount' => 0],
+            ],
+            'account_holder' => null, 'issuer' => null, 'issue' => null,
+            'is_single_receipt' => true, 'receipt_total' => 19.65,
+        ]);
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.scan-receipt'), [
+            'receipt' => UploadedFile::fake()->image('aeon.jpg'),
+        ]);
+
+        $res->assertStatus(200)->assertJsonPath('ok', true);
+        $this->assertEquals(19.65, $res->json('amount'));
+        $this->assertNull($res->json('issue'));
+    }
+
+    /** is_single_receipt = false with one item (e.g. a genuinely single-row statement) is untouched — no receipt_total field applies there. */
+    public function test_a_single_item_from_a_non_single_receipt_reply_is_not_cross_checked(): void
+    {
+        $user = $this->actingEmployee();
+        $this->fakeVision([
+            'map' => null, 'map_multi_routes' => false,
+            'items' => [
+                ['amount' => 13.03, 'date' => '2026-08-19', 'vendor' => 'AEON BIG', 'item_description' => 'Groceries', 'category' => null, 'tax_amount' => 0],
+            ],
+            'account_holder' => null, 'issuer' => null, 'issue' => null,
+            'is_single_receipt' => false, 'receipt_total' => 19.65,
+        ]);
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.scan-receipt'), [
+            'receipt' => UploadedFile::fake()->image('aeon.jpg'),
+        ]);
+
+        $res->assertStatus(200)->assertJsonPath('ok', true);
+        $this->assertEquals(13.03, $res->json('amount'));
+        $this->assertNull($res->json('issue'));
+    }
 }
