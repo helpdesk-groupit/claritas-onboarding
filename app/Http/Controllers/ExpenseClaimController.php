@@ -1688,6 +1688,21 @@ class ExpenseClaimController extends Controller
             return response()->json(['ok' => false, 'error' => $rangeError], 422);
         }
 
+        // A request carrying NEITHER a window NOR a cycle has no period at all, and that is not
+        // the same thing as asking for everything. matchingClaims() applies no date bound
+        // whatsoever when $year is null (cycleFetchRange returns [null, null] and the cycle
+        // filter short-circuits), so such a request quietly exported every approved claim in
+        // the database — which is precisely how a period the operator DID pick, dropped in
+        // transit, produced a plausible-looking export for the wrong period instead of an
+        // error they could see. Refused for the same reason claimDateRange() refuses a
+        // half-typed range: a wrong export is only ever discovered by reconciling totals.
+        if (! ($from && $to) && ! $year) {
+            return response()->json([
+                'ok' => false,
+                'error' => 'Pick the period to export — either a start and end date, or a standard cycle.',
+            ], 422);
+        }
+
         // A quick synchronous check so an empty filter fails instantly instead of showing a
         // progress bar for a job that would immediately report nothing to do.
         $matched = $from && $to

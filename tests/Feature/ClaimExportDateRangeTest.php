@@ -13,6 +13,7 @@ use App\Services\ClaimZipExportService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 /**
@@ -233,6 +234,113 @@ class ClaimExportDateRangeTest extends TestCase
         $this->assertSame(8, (int) $export->month);
     }
 
+    // ── The archive itself is scoped, not just the request ────────────────
+
+    /** Every PDF actually inside a rendered export part, by entry name. */
+    private function entriesOf(ExpenseClaimZipExport $export): array
+    {
+        $names = [];
+
+        foreach ($export->partList() as $part) {
+            $tmp = tempnam(sys_get_temp_dir(), 'zip-scope-');
+            file_put_contents($tmp, Storage::disk('local')->get($part['path']));
+
+            $zip = new \ZipArchive;
+            $this->assertTrue($zip->open($tmp) === true, "Part {$part['path']} is not a readable ZIP archive.");
+            for ($i = 0; $i < $zip->numFiles; $i++) {
+                $names[] = $zip->getNameIndex($i);
+            }
+            $zip->close();
+            @unlink($tmp);
+        }
+
+        return $names;
+    }
+
+    /**
+     * Does the finished archive hold a PDF for this claim?
+     *
+     * Matched on the CLAIMANT'S NAME, because that is what pdfFilename() actually builds the
+     * entry name from — the claim number never appears in it. Each fixture below gives its
+     * claimant a distinct name for exactly this reason.
+     */
+    private function archiveCovers(array $entries, ExpenseClaim $claim): bool
+    {
+        $name = $claim->employee->full_name;
+
+        return (bool) array_filter($entries, fn ($n) => str_contains($n, $name));
+    }
+
+    /**
+     * The end-to-end guarantee the operator actually cares about: what lands in the ZIP is
+     * bounded by the window, not merely what the request row says it asked for.
+     *
+     * Every other window test here stops at the request or asks the service directly. This one
+     * runs the real job and opens the real archive, because the reported failure was precisely
+     * a disagreement between the period on screen and the claims in the file — 1–8 Sep coming
+     * back as 96 claims. A test that never opens the ZIP cannot see that.
+     */
+    public function test_the_rendered_archive_holds_only_the_claims_approved_inside_the_window(): void
+    {
+        $cat = $this->category();
+        $firstDay = $this->approvedAt($cat, 'First Day', '2026-09-01 00:05:00');
+        $middle = $this->approvedAt($cat, 'Middle', '2026-09-04 13:00:00');
+        $lastDay = $this->approvedAt($cat, 'Last Day', '2026-09-08 23:50:00');
+        $dayBefore = $this->approvedAt($cat, 'Day Before', '2026-08-31 23:50:00');
+        $dayAfter = $this->approvedAt($cat, 'Day After', '2026-09-09 00:05:00');
+
+        $response = $this->actingAs($this->hrUser())
+            ->postJson(route('hr.claims.download-zip'), ['year' => 2026, 'from' => '2026-09-01', 'to' => '2026-09-08']);
+        $response->assertOk()->assertJson(['ok' => true, 'total_matched' => 3]);
+
+        $export = ExpenseClaimZipExport::findOrFail($response->json('export_id'));
+        (new BuildClaimZipExport($export->id))->handle(new ClaimZipExportService);
+        $export->refresh();
+
+        $this->assertSame(ExpenseClaimZipExport::STATUS_READY, $export->status);
+        $this->assertSame(3, (int) $export->rendered_count);
+
+        $entries = $this->entriesOf($export);
+        $this->assertTrue($this->archiveCovers($entries, $firstDay), 'the first day of the window must be included in full');
+        $this->assertTrue($this->archiveCovers($entries, $middle));
+        $this->assertTrue($this->archiveCovers($entries, $lastDay), 'the last day of the window must be included in full');
+        $this->assertFalse($this->archiveCovers($entries, $dayBefore), 'a claim approved before the window must not be in the archive');
+        $this->assertFalse($this->archiveCovers($entries, $dayAfter), 'a claim approved after the window must not be in the archive');
+
+        // The posted year must not widen the window it was sent alongside — the modal always
+        // posts its hidden year, so a range that fell back to the cycle would silently return
+        // the whole year and look like a working export.
+        $this->assertNull($export->year);
+        $this->assertCount(3, array_filter($entries, fn ($n) => str_ends_with($n, '.pdf')));
+    }
+
+    /**
+     * The mirror: with no window the cycle still bounds the archive. Both selectable periods
+     * scope the file, so neither path can quietly become "everything".
+     */
+    public function test_the_rendered_archive_holds_only_the_selected_cycle_when_no_window_is_given(): void
+    {
+        $cat = $this->category();
+        // The August cycle runs 21 Jul – 20 Aug, so these straddle both of its edges.
+        $inCycle = $this->approvedAt($cat, 'In Cycle', '2026-08-05 09:00:00');
+        $beforeCycle = $this->approvedAt($cat, 'Before Cycle', '2026-07-20 09:00:00');
+        $afterCycle = $this->approvedAt($cat, 'After Cycle', '2026-08-25 09:00:00');
+
+        $response = $this->actingAs($this->hrUser())
+            ->postJson(route('hr.claims.download-zip'), ['year' => 2026, 'month' => 8]);
+        $response->assertOk()->assertJson(['ok' => true, 'total_matched' => 1]);
+
+        $export = ExpenseClaimZipExport::findOrFail($response->json('export_id'));
+        (new BuildClaimZipExport($export->id))->handle(new ClaimZipExportService);
+        $export->refresh();
+
+        $entries = $this->entriesOf($export->refresh());
+        $this->assertTrue($this->archiveCovers($entries, $inCycle));
+        $this->assertFalse($this->archiveCovers($entries, $beforeCycle), 'the cycle must not reach back into the previous one');
+        $this->assertFalse($this->archiveCovers($entries, $afterCycle), 'the cycle must not reach forward into the next one');
+        $this->assertCount(1, array_filter($entries, fn ($n) => str_ends_with($n, '.pdf')));
+    }
+
     // ── Rejected windows are reported, never quietly re-interpreted ───────
 
     public function test_a_reversed_window_is_refused_rather_than_swapped(): void
@@ -248,6 +356,39 @@ class ClaimExportDateRangeTest extends TestCase
 
         Queue::assertNothingPushed();
         $this->assertSame(0, ExpenseClaimZipExport::count(), 'a refused request must not leave an export row behind');
+    }
+
+    /**
+     * A request with NO period at all — no window and no cycle — is refused, not answered with
+     * the entire history.
+     *
+     * This is the failure that was reported live on 2026-09-09: HR picked 1–8 Sep, ticked one
+     * company, and got 96 claims. The modal built its POST body AFTER disabling the form to
+     * lock it, and a disabled control is skipped by the form data set construction algorithm —
+     * so the body arrived EMPTY: no dates, no company, not even the hidden year. The dates
+     * dropping out was the bug; what made it a wrong export instead of a visible error was
+     * this endpoint, because matchingClaims() applies no date bound whatsoever when $year is
+     * null (cycleFetchRange returns [null, null] and the per-claim cycle filter short-circuits
+     * on `! $year`). "No period" therefore meant "every approved claim ever", which is
+     * indistinguishable from a correct export until somebody reconciles the totals.
+     *
+     * The two claims below sit years apart on purpose: without the guard this request answers
+     * `total_matched => 2` and queues a job to render both.
+     */
+    public function test_a_request_naming_no_period_at_all_is_refused_rather_than_exporting_everything(): void
+    {
+        Queue::fake();
+        $cat = $this->category();
+        $this->approvedAt($cat, 'Long Ago', '2024-02-11 09:00:00');
+        $this->approvedAt($cat, 'Recently', '2026-09-05 09:00:00');
+
+        $this->actingAs($this->hrUser())
+            ->post(route('hr.claims.download-zip'), [])
+            ->assertStatus(422)
+            ->assertJson(['ok' => false, 'error' => 'Pick the period to export — either a start and end date, or a standard cycle.']);
+
+        Queue::assertNothingPushed();
+        $this->assertSame(0, ExpenseClaimZipExport::count(), 'a periodless request must not leave an export row behind');
     }
 
     public function test_half_a_window_is_refused_rather_than_completed_for_the_operator(): void

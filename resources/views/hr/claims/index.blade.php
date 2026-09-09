@@ -794,6 +794,14 @@
             showError(problem);
             return;
         }
+        // Read the form BEFORE locking it, and never the other way round. A DISABLED control is
+        // skipped by the form data set construction algorithm, so building the body after
+        // setFieldsDisabled(true) posts an EMPTY one — no dates, no company, not even the
+        // hidden year. The server read that as "no period at all" and answered with every
+        // approved claim in the database: a 1–8 Sep window came back as 96 claims, with the
+        // company tick ignored too. The two lines look independent and are not.
+        var payload = new URLSearchParams(new FormData(form));
+
         submitBtn.disabled = true;
         setFieldsDisabled(true);
         progress.classList.remove('d-none');
@@ -803,7 +811,7 @@
         fetch(zipBase, {
             method: 'POST',
             headers: { 'X-CSRF-TOKEN': csrf, 'Accept': 'application/json' },
-            body: new URLSearchParams(new FormData(form))
+            body: payload
         })
         .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
         .then(function (res) {
