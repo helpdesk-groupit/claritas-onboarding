@@ -1696,10 +1696,17 @@ class ExpenseClaimController extends Controller
         // transit, produced a plausible-looking export for the wrong period instead of an
         // error they could see. Refused for the same reason claimDateRange() refuses a
         // half-typed range: a wrong export is only ever discovered by reconciling totals.
+        // The message names a STALE PAGE, not a missing choice, because that is the only way a
+        // real operator reaches this. The modal always posts its hidden `year` — that input is
+        // never disabled by any path — so a request from a current page cannot arrive with no
+        // period at all. Arriving with nothing means the body was empty, which in practice
+        // means the browser is still running a pre-deploy copy of the page (the form is locked
+        // before it is read there, so nothing is submitted). Telling that operator to "pick a
+        // period" points at two date fields they can see already filled in.
         if (! ($from && $to) && ! $year) {
             return response()->json([
                 'ok' => false,
-                'error' => 'Pick the period to export — either a start and end date, or a standard cycle.',
+                'error' => 'The export form sent no period at all — this usually means your page is out of date. Please reload the page and try again.',
             ], 422);
         }
 
@@ -2432,21 +2439,20 @@ class ExpenseClaimController extends Controller
         $exportMonths = $inYear->pluck('cycle.month')->unique()->sort()->values();
         $exportCompanies = $inYear->pluck('company')->filter()->unique()->sort()->values();
 
-        // Human labels for the month dropdown, e.g. "21 Jun – 20 Jul", using the default (null-
-        // company) cutoff as a representative window (per-company cutoffs may differ slightly).
+        // Each cycle's window as actual DATES, used ONLY to open the pickers on the cycle in
+        // progress below. These are no longer handed to the view: the modal's quick-pick
+        // dropdown was removed on 2026-09-09 (operators set it AND the dates, then could not
+        // tell which the download obeyed), and the month labels that dressed its options went
+        // with it. Using the default (null-company) cutoff as a representative window —
+        // per-company cutoffs may differ slightly.
         $defaultCutoff = (int) (ExpenseClaimPolicy::forCompany()->submission_deadline_day ?? 20);
-        $exportMonthLabels = [];
-        // The same windows as actual DATES, so the modal's quick-pick can fill the start/end
-        // pickers with them. Derived from the one cycleWindow() the labels use, so a preset can
-        // never fill a window that differs from the cycle it names.
         $exportCycleWindows = [];
         foreach ($exportMonths as $m) {
             $w = ClaimRulesService::cycleWindow($selectedYear, (int) $m, $defaultCutoff);
-            $exportMonthLabels[(int) $m] = $w['start']->format('j M').' – '.$w['endExclusive']->copy()->subDay()->format('j M');
             $exportCycleWindows[(int) $m] = [
                 'from' => $w['start']->toDateString(),
                 // cycleWindow's end is EXCLUSIVE; the pickers treat their end date as inclusive,
-                // so step back one day or every preset would cover a day more than its cycle.
+                // so step back one day or the default would cover a day more than its cycle.
                 'to' => $w['endExclusive']->copy()->subDay()->toDateString(),
             ];
         }
@@ -2464,8 +2470,7 @@ class ExpenseClaimController extends Controller
 
         return view('hr.claims.index', compact(
             'claims', 'stats', 'availableYears', 'selectedYear',
-            'approvedForExport', 'exportMonths', 'exportCompanies', 'exportMonthLabels',
-            'exportCycleWindows', 'exportDefaultRange'
+            'approvedForExport', 'exportCompanies', 'exportDefaultRange'
         ));
     }
 

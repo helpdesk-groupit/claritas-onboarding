@@ -266,12 +266,9 @@
      Rendering happens in a background job (BuildClaimZipExport) so it can never truncate a
      large cycle the way a request-bound render used to — see CLAUDE.md's eClaim PDF/export
      notes. This form kicks the job off, then #exportZipProgress polls until it's ready. --}}
-@php
-    // $approvedForExport / $exportMonths / $exportCompanies come from the controller and are
-    // scoped by APPROVAL date (when HR approved the claim, processed_at), not the reporting
-    // month stamp and not the submission date.
-    $exportMonthNames = [1=>'January',2=>'February',3=>'March',4=>'April',5=>'May',6=>'June',7=>'July',8=>'August',9=>'September',10=>'October',11=>'November',12=>'December'];
-@endphp
+{{-- $approvedForExport / $exportCompanies / $exportDefaultRange come from the controller and
+     are scoped by APPROVAL date (when HR approved the claim, processed_at), not the reporting
+     month stamp and not the submission date. --}}
 <div class="modal fade" id="exportZipModal" tabindex="-1" aria-labelledby="exportZipTitle" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content border-0 shadow">
@@ -283,8 +280,21 @@
                 @if($approvedForExport->isEmpty())
                     <div class="alert alert-warning mb-0 py-2 px-3"><i class="bi bi-info-circle me-1"></i>No processed (HR-approved) claims in the {{ $selectedYear }} approval cycles yet.</div>
                 @else
+                {{-- ONE way to name a period: the two dates. The "Quick pick" cycle dropdown
+                     that used to sit below them was removed on 2026-09-09 — operators read the
+                     two controls as a pair and set BOTH, then could not tell which one the
+                     download had actually obeyed. The dropdown only ever FILLED these dates, so
+                     nothing was lost by deleting it: the fields still open on the cycle in
+                     progress, which is the two-click monthly pack it existed to provide.
+
+                     The hidden `year` went with it. It was the cycle fallback, and with no
+                     cycle control left it could only ever act as a SILENT one — a request whose
+                     dates went missing would have exported the whole year instead of reporting
+                     it, which is the exact failure this modal was just fixed for. Now the dates
+                     are the only period this form can carry, so their absence is always an
+                     error somebody is told about. The server still accepts year/month for the
+                     API and for the tests that pin the cycle path. --}}
                 <form id="exportZipForm">
-                    <input type="hidden" name="year" value="{{ $selectedYear }}">
                     <p class="text-muted small mb-3">Bundles into one ZIP of PDFs <strong>every claim approved by both Manager and HR</strong> within the period you choose &mdash; however many there are.</p>
 
                     <div class="mb-3">
@@ -298,21 +308,9 @@
                             </div>
                         </div>
                         <div class="form-text small">Every claim <strong>fully approved</strong> between these two dates is included, whichever month it was submitted or spent in. Both dates count in full.</div>
+                        <div class="form-text small">Opens on the cutoff cycle in progress (21st of last month to the 20th of this one). Change the dates for any other period.</div>
                     </div>
 
-                    <div class="mb-3">
-                        <label class="form-label small fw-semibold mb-1">Quick pick <span class="text-muted fw-normal">(fills the dates above)</span></label>
-                        <select id="exportZipPreset" class="form-select form-select-sm">
-                            <option value="">Choose a standard cycle…</option>
-                            @foreach($exportMonths as $m)
-                            @php $win = $exportCycleWindows[(int) $m] ?? null; @endphp
-                            @if($win)
-                            <option value="{{ $m }}" data-from="{{ $win['from'] }}" data-to="{{ $win['to'] }}">{{ $exportMonthNames[(int) $m] ?? $m }} ({{ $exportMonthLabels[(int) $m] ?? '' }})</option>
-                            @endif
-                            @endforeach
-                        </select>
-                        <div class="form-text small">The standard <em>approval cutoff cycle</em> &mdash; 21st of the previous month to the 20th of this one (each company&rsquo;s own cutoff, default the 20th). Picking one just fills the dates; you can still edit them.</div>
-                    </div>
                     <div class="mb-1">
                         <label class="form-label small fw-semibold mb-1">Company <span class="text-muted fw-normal">(tick one or more)</span></label>
                         <div class="border rounded p-2" style="max-height:150px;overflow-y:auto;">
@@ -738,30 +736,15 @@
     }
 
     // ── Period pickers ──
-    // The quick-pick only FILLS the dates; it is never submitted (no name attribute), so the
-    // server always reads the two dates the operator can actually see. A preset that submitted
-    // its own month could disagree with the visible dates after an edit.
+    // These two dates are the ONLY period this form carries. The cycle quick-pick that used to
+    // fill them was removed (see the modal markup for why), so there is no second control that
+    // can disagree with what the operator can see.
     var fromInput = document.getElementById('exportZipFrom');
     var toInput = document.getElementById('exportZipTo');
-    var preset = document.getElementById('exportZipPreset');
 
-    if (preset && fromInput && toInput) {
-        preset.addEventListener('change', function () {
-            var opt = preset.options[preset.selectedIndex];
-            if (!opt || !opt.dataset.from) return;
-            fromInput.value = opt.dataset.from;
-            toInput.value = opt.dataset.to;
-            hideError();
-        });
-    }
-    // Editing the dates by hand clears the preset — leaving "August" selected above a window
-    // the operator has since changed would misstate what the download covers.
     [fromInput, toInput].forEach(function (el) {
         if (!el) return;
-        el.addEventListener('change', function () {
-            if (preset) preset.value = '';
-            hideError();
-        });
+        el.addEventListener('change', hideError);
     });
 
     // Mirrors the server's rule so the common typo is caught before a round-trip. The server

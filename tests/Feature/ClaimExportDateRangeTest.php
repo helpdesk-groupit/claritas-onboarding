@@ -315,6 +315,47 @@ class ClaimExportDateRangeTest extends TestCase
     }
 
     /**
+     * The exact shape the BROWSER posts — form-urlencoded, with the hidden year riding
+     * alongside the dates and the company as a `company[]` array — rather than the JSON every
+     * other test here sends.
+     *
+     * The modal submits `new URLSearchParams(new FormData(form))`, which is urlencoded, not
+     * JSON. Until now nothing proved that shape parses and scopes on the way in: the field
+     * that broke was dropped in the browser, so production had never once delivered a
+     * populated body through this endpoint, and a suite that only ever posts JSON cannot tell
+     * "the server reads this correctly" from "the server never sees it".
+     */
+    public function test_the_browsers_own_form_encoded_shape_scopes_to_the_window_and_the_company(): void
+    {
+        Queue::fake();
+        $cat = $this->category();
+        $wanted = $this->approvedAt($cat, 'Enlinea In', '2026-09-04 10:00:00', 100.0, 'Enlinea Sdn. Bhd.');
+        $this->approvedAt($cat, 'Other Company In', '2026-09-04 10:00:00', 100.0, 'Claritas Asia Sdn. Bhd.');
+        $this->approvedAt($cat, 'Enlinea Out', '2026-09-20 10:00:00', 100.0, 'Enlinea Sdn. Bhd.');
+
+        // ->post() sends application/x-www-form-urlencoded, exactly as the modal's fetch does.
+        $response = $this->actingAs($this->hrUser())->post(route('hr.claims.download-zip'), [
+            'year' => 2026,
+            'from' => '2026-09-01',
+            'to' => '2026-09-08',
+            'company' => ['Enlinea Sdn. Bhd.'],
+        ]);
+
+        $response->assertOk()->assertJson(['ok' => true, 'total_matched' => 1]);
+
+        $export = ExpenseClaimZipExport::findOrFail($response->json('export_id'));
+        $this->assertSame(['Enlinea Sdn. Bhd.'], $export->companies, 'the company[] array must survive urlencoding');
+        $this->assertSame('2026-09-01', $export->from_date->toDateString());
+        $this->assertSame('2026-09-08', $export->to_date->toDateString());
+        $this->assertNull($export->year, 'the window must win over the hidden year posted beside it');
+
+        $matched = app(ClaimZipExportService::class)
+            ->claimsApprovedBetween($export->from_date, $export->to_date, $export->companies)
+            ->pluck('claim_number')->all();
+        $this->assertSame([$wanted->claim_number], $matched);
+    }
+
+    /**
      * The mirror: with no window the cycle still bounds the archive. Both selectable periods
      * scope the file, so neither path can quietly become "everything".
      */
@@ -385,7 +426,7 @@ class ClaimExportDateRangeTest extends TestCase
         $this->actingAs($this->hrUser())
             ->post(route('hr.claims.download-zip'), [])
             ->assertStatus(422)
-            ->assertJson(['ok' => false, 'error' => 'Pick the period to export — either a start and end date, or a standard cycle.']);
+            ->assertJson(['ok' => false, 'error' => 'The export form sent no period at all — this usually means your page is out of date. Please reload the page and try again.']);
 
         Queue::assertNothingPushed();
         $this->assertSame(0, ExpenseClaimZipExport::count(), 'a periodless request must not leave an export row behind');
@@ -476,6 +517,38 @@ class ClaimExportDateRangeTest extends TestCase
             ->assertSee('id="exportZipFrom"', false)
             ->assertSee('id="exportZipTo"', false)
             ->assertSee('Period covered');
+    }
+
+    /**
+     * The dates are the ONLY period control on the export modal (2026-09-09).
+     *
+     * A "Quick pick" cycle dropdown sat below them and only ever FILLED them, but operators
+     * read the two controls as a pair and set both, then could not say which the download had
+     * obeyed. The hidden `year` went with it: with no cycle control left it could only act as a
+     * SILENT fallback, and a request whose dates went missing would have exported the whole
+     * year instead of saying so — the very failure this modal was just fixed for.
+     *
+     * The year assertion is sliced to the export form on purpose: the page carries its own
+     * year FILTER, so asserting on the whole response would pass on that instead.
+     */
+    public function test_the_export_modal_carries_no_cycle_control_beside_the_dates(): void
+    {
+        $cat = $this->category();
+        $this->approvedAt($cat, 'Someone', '2026-08-15 09:00:00');
+
+        $html = $this->actingAs($this->hrUser())
+            ->get(route('hr.claims.index', ['year' => 2026]))
+            ->assertOk()
+            ->assertDontSee('id="exportZipPreset"', false)
+            ->getContent();
+
+        $start = strpos($html, 'id="exportZipForm"');
+        $this->assertNotFalse($start, 'guard: the export form must be on the page for this to mean anything');
+        $form = substr($html, $start, strpos($html, '</form>', $start) - $start);
+
+        $this->assertStringContainsString('name="from"', $form);
+        $this->assertStringContainsString('name="to"', $form);
+        $this->assertStringNotContainsString('name="year"', $form, 'the export form must carry no silent cycle fallback');
     }
 
     public function test_the_finance_csv_button_opens_a_period_picker(): void
