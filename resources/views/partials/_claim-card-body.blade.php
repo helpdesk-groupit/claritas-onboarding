@@ -120,8 +120,18 @@
     <div class="row g-2 mt-1">
         <div class="col-12">
             <label class="form-label small mb-1"><i class="bi bi-paperclip me-1"></i>Upload attachment @if($ocrEnabled)<span class="text-muted cc-upload-hint">— upload one or more files, then Scan to auto-fill. One image with several receipts, or several files at once, opens a review list. Tip: for a long statement, highlight or screenshot just the rows you’re claiming.</span>@endif</label>
-            <div class="small mt-1 mb-1 py-2 px-2 rounded d-none cc-mileage-upload-note" style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;">
-                <i class="bi bi-exclamation-triangle me-1"></i>Please upload <strong>one route screenshot per trip</strong> — don’t combine multiple routes into a single image. Made several trips? Add this one first, then upload and add each further trip separately.
+            {{-- One screenshot per TRIP — which is not the same thing as one screenshot per pair of
+                 addresses, and the earlier wording ("don't combine multiple routes into a single
+                 image") was read as the latter. Reported 2026-09-10 by an employee whose single
+                 Google Maps route ran office → errand → home under one search box, one route line
+                 and one 44.0 km total: nothing about that needs splitting, and being told to split
+                 it would have had them claim the same journey as two items. Say the common case
+                 FIRST and in the affirmative, and keep the caveat to what it actually covers — two
+                 genuinely separate journeys pasted into one picture. Informational styling, not the
+                 amber warning triangle it used to carry: for almost everyone this note is now
+                 reassurance, and dressing reassurance as a warning is how the notion spread. --}}
+            <div class="small mt-1 mb-1 py-2 px-2 rounded d-none cc-mileage-upload-note" style="background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;">
+                <i class="bi bi-signpost-2 me-1"></i>One screenshot per <strong>trip</strong> — and a trip may have as many stops as you like. A single route running from where you started, through every stop, to where you finished is <strong>one item</strong>, claimed on the total distance the map shows for the whole journey. Only add a second item when you made a genuinely separate trip, each with its own route and its own distance.
             </div>
             <div class="d-flex gap-2 flex-wrap align-items-center">
                 <input type="file" class="form-control form-control-sm cc-i-file" accept=".jpg,.jpeg,.png,.pdf" multiple style="max-width:340px;">
@@ -194,7 +204,9 @@
 
     {{-- Category C — receipt details read by OCR (read-only; fill on Scan), EXCEPT the printed
          date, the printed total and the covered period, which the employee may type or correct
-         by hand. Those three are the ones a guard judges. Sent with the item. --}}
+         by hand. Those three are the ones a guard judges. Sent with the item.
+         On a MILEAGE item this same field carries the ROUTE rather than a receipt line, and it is
+         unlocked by applyMileageUploadMode() — see the note on the field itself. --}}
     <div class="row g-2 mt-1">
         <div class="col-12">
             <label class="form-label small mb-0 fw-bold"><i class="bi bi-receipt-cutoff me-1 text-info"></i>Receipt details <span class="fw-normal text-muted">(read from the attachment — for the report; the date, the total and the covered period can be corrected by hand)</span></label>
@@ -203,9 +215,18 @@
             <label class="form-label small mb-1">Company</label>
             <input type="text" class="form-control form-control-sm bg-light cc-c-company" readonly placeholder="—">
         </div>
+        {{-- Stays read-only for a receipt — there it is what the document says, and the report has
+             to keep saying it. On MILEAGE it is a different fact: the route being claimed, which is
+             what an approver reads the km against, and which the scan can under-read (a three-stop
+             journey came back naming only its first two stops). It is already freely editable on
+             partials/claim-item-edit once the item exists, so leaving the add form locked only
+             meant filing the wrong route and then correcting it — no provenance stamp here for the
+             same reason that edit form carries none: one path stamping and the other not is worse
+             than neither. The route is a label, not a guard input; the distance is. --}}
         <div class="col-md-4">
             <label class="form-label small mb-1">Item description</label>
-            <input type="text" class="form-control form-control-sm bg-light cc-c-itemdesc" readonly placeholder="—">
+            <input type="text" maxlength="255" class="form-control form-control-sm bg-light cc-c-itemdesc" readonly placeholder="—">
+            <div class="form-text small d-none cc-c-itemdesc-hint"><i class="bi bi-pencil me-1"></i>The route read from the map. Correct it if a stop is missing — write it start to finish, e.g. Office → Client → Home.</div>
         </div>
         {{-- EDITABLE, for the same reason the covered period is. This is the date the month
              guard actually judges (ocrReceiptDateOutOfPeriod reads c_date, NOT the Date of

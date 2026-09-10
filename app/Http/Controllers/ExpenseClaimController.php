@@ -939,9 +939,21 @@ class ExpenseClaimController extends Controller
         // receipt dated outside the month was accepted into it.
         $coverage = $this->receiptCoverage($request);
 
+        $itemDescription = $request->input('c_itemdesc');
+        if (is_string($itemDescription)) {
+            $itemDescription = mb_substr($itemDescription, 0, 255);
+        }
+
         $details = array_filter([
             'company' => $request->input('c_company'),
-            'item_description' => $request->input('c_itemdesc'),
+            // Bounded, because on a MILEAGE item this one is now a field people actually type
+            // into (it carries the route) rather than a value only the scan ever wrote. 255 is
+            // what the scan itself clips item_description to and what mileage_destination is
+            // clamped to off this same input, so nothing a real read produces is truncated —
+            // it only stops an unbounded paste landing in a JSON column every report renders.
+            // `readonly` never bound this: it is a client-side courtesy, and the field has
+            // always been POST-able. The other c_* details keep their existing handling.
+            'item_description' => $itemDescription,
             'date' => $request->input('c_date'),
             'period_start' => $coverage ? $coverage[0]->toDateString() : null,
             'period_end' => $coverage ? $coverage[1]->toDateString() : null,
@@ -3704,10 +3716,17 @@ class ExpenseClaimController extends Controller
             // to auto-fill a combined/guessed distance (a real bug: two unrelated one-way trips
             // read as one longer multi-stop journey). Ask the user to upload one screenshot per
             // trip instead; this flows through the existing "!d.ok → show d.message" handling.
+            //
+            // The message names what the model actually flagged — two SEPARATE directions panels,
+            // each with its own distance — rather than "more than one route", which an employee
+            // whose one journey merely had a stop in the middle reads as a verdict on their
+            // perfectly ordinary screenshot. It also says outright that a multi-stop route is not
+            // this case, because when the flag is wrong that sentence is the only thing on screen
+            // able to tell them so.
             if (! empty($m['multi_routes'])) {
                 return response()->json([
                     'enabled' => true, 'ok' => false,
-                    'message' => 'This image looks like it holds more than one route/trip. Upload one route screenshot at a time — add this trip, then upload and add each further trip as its own item.',
+                    'message' => 'This image looks like it holds two separate journeys, each with its own route and its own distance. Upload one screenshot per trip — add this trip, then upload and add the other one as its own item. (A single route that simply passes through several stops is one trip: if that is what this is, enter the distance and the route by hand.)',
                 ]);
             }
 

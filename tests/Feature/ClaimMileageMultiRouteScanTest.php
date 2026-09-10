@@ -4,18 +4,28 @@ namespace Tests\Feature;
 
 use App\Models\Employee;
 use App\Models\User;
+use App\Services\ClaimReceiptOcrService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * A mileage/Petrol screenshot has been misread when the uploaded image is actually a
- * collage of two unrelated routes (e.g. two separate Google Maps directions panels
- * pasted into one screenshot) — the model folded both distances into one route_stops
- * reading, silently overstating one trip and dropping the other. The map prompt now
- * asks the model to flag that case (map_multi_routes) instead of merging it, and the
- * controller refuses to auto-fill when it does, asking for one screenshot per trip.
+ * How many TRIPS is this image? The two ways of getting that wrong are opposite, and both
+ * cost the employee money, so they are pinned together here.
+ *
+ * TOO FEW: the uploaded image is really a collage of two unrelated routes (two separate Google
+ * Maps directions panels pasted into one screenshot) and the model folds both distances into
+ * one route_stops reading — silently overstating one trip and dropping the other. The map
+ * prompt asks the model to flag that case (map_multi_routes) instead of merging it, and the
+ * controller refuses to auto-fill when it does.
+ *
+ * TOO MANY: one genuine journey through several stops gets read, or described to the employee,
+ * as though it were several trips. Reported 2026-09-10 — a single route office → errand → home
+ * came back ending at the middle stop, and the form's own note told the employee to submit the
+ * rest separately. A trip is a journey, not a pair of addresses: it runs from the first field
+ * to the last however many stops sit between them, and it is ONE claim item on the ONE total
+ * the map prints for it.
  */
 class ClaimMileageMultiRouteScanTest extends TestCase
 {
@@ -38,7 +48,7 @@ class ClaimMileageMultiRouteScanTest extends TestCase
     private function forgetClaudeMemo(): void
     {
         foreach (['claudeMemo' => null, 'claudeMemoLoaded' => false] as $prop => $value) {
-            $p = new \ReflectionProperty(\App\Services\ClaimReceiptOcrService::class, $prop);
+            $p = new \ReflectionProperty(ClaimReceiptOcrService::class, $prop);
             $p->setAccessible(true);
             $p->setValue(null, $value);
         }
@@ -89,7 +99,7 @@ class ClaimMileageMultiRouteScanTest extends TestCase
         ]);
 
         $res->assertStatus(200)->assertJsonPath('ok', false);
-        $this->assertStringContainsString('more than one route', (string) $res->json('message'));
+        $this->assertStringContainsString('two separate journeys', (string) $res->json('message'));
         // Never surface a combined/guessed distance for a flagged collage.
         $this->assertNull($res->json('distance_km'));
     }
@@ -112,7 +122,7 @@ class ClaimMileageMultiRouteScanTest extends TestCase
         ]);
 
         $res->assertStatus(200)->assertJsonPath('ok', false);
-        $this->assertStringContainsString('more than one route', (string) $res->json('message'));
+        $this->assertStringContainsString('two separate journeys', (string) $res->json('message'));
     }
 
     public function test_an_unreadable_receipt_surfaces_the_models_own_reason(): void
@@ -131,6 +141,132 @@ class ClaimMileageMultiRouteScanTest extends TestCase
 
         $res->assertStatus(200)->assertJsonPath('ok', true);
         $this->assertSame('The photo is too blurry to read the amount or date clearly.', $res->json('issue'));
+    }
+
+    /**
+     * The refusal is the ONE thing on screen when the collage flag fires, so it has to be able to
+     * tell a wrongly-flagged multi-stop trip what to do. The old wording ("more than one route")
+     * was read by an employee whose single journey merely passed through a stop as a verdict on
+     * their perfectly ordinary screenshot.
+     */
+    public function test_the_refusal_says_a_multi_stop_route_is_not_this_case(): void
+    {
+        $user = $this->actingEmployee();
+        $this->fakeVision([
+            'map' => ['map_multi_routes' => true],
+            'items' => [], 'account_holder' => null, 'issuer' => null,
+            'is_single_receipt' => false, 'receipt_total' => null,
+        ]);
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.scan-receipt'), [
+            'receipt' => UploadedFile::fake()->image('collage.jpg'),
+        ]);
+
+        $msg = (string) $res->json('message');
+        $this->assertStringContainsString('one screenshot per trip', $msg);
+        $this->assertStringContainsString('several stops is one trip', $msg);
+    }
+
+    /**
+     * THE REPORTED BUG (2026-09-10). One Google Maps panel, one search box, one route line, one
+     * 44.0 km total, three address fields: Enlinea → Menara Tan & Tan → home at USJ 6. The reply
+     * listed all three stops in order and then named the MIDDLE one as route_to, so the trip read
+     * as ending where the employee had only stopped off — the leg home silently dropped off a
+     * claim whose distance covers it, and the employee was told to submit the rest separately.
+     *
+     * route_from/route_to and route_stops are three separately-answered fields; the ordered list
+     * is the one that had to look at every field, so it decides the endpoints. Mutation check:
+     * delete the derivation in normalizeMap() and this fails on route_to.
+     */
+    public function test_a_three_stop_trip_ends_at_its_final_destination(): void
+    {
+        $user = $this->actingEmployee();
+        $this->fakeVision([
+            'map' => [
+                'map_multi_routes' => false,
+                'distance_km' => 44.0,
+                'route_from' => 'Enlinea Sdn Bhd',
+                'route_to' => 'Menara Tan & Tan', // the middle stop — the misread being corrected
+                'route_stops' => ['Enlinea Sdn Bhd', 'Menara Tan & Tan', 'USJ 6'],
+            ],
+            'items' => [], 'account_holder' => null, 'issuer' => null,
+            'is_single_receipt' => false, 'receipt_total' => null,
+        ]);
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.scan-receipt'), [
+            'receipt' => UploadedFile::fake()->image('one-trip-three-stops.jpg'),
+        ]);
+
+        $res->assertStatus(200)->assertJsonPath('ok', true);
+        $this->assertSame('Enlinea Sdn Bhd', $res->json('route_from'));
+        $this->assertSame('USJ 6', $res->json('route_to'));
+        $this->assertSame(['Enlinea Sdn Bhd', 'Menara Tan & Tan', 'USJ 6'], $res->json('route_stops'));
+        // One trip, one distance: the map's own total already covers every leg, so it is passed
+        // through whole — never split per leg, never re-derived, never refused for having stops.
+        $this->assertEquals(44.0, $res->json('distance_km'));
+    }
+
+    /**
+     * One address is not a route. A single-entry list must not be dressed up as one — deriving
+     * endpoints from it would report a trip that starts and ends in the same place, which is a
+     * real journey shape (there-and-back) and so would not look wrong to anybody.
+     */
+    public function test_a_single_address_is_not_treated_as_a_stop_list(): void
+    {
+        $user = $this->actingEmployee();
+        $this->fakeVision([
+            'map' => [
+                'map_multi_routes' => false,
+                'distance_km' => 12.3,
+                'route_from' => 'Jaya One', 'route_to' => 'Suria KLCC',
+                'route_stops' => ['Suria KLCC'],
+            ],
+            'items' => [], 'account_holder' => null, 'issuer' => null,
+            'is_single_receipt' => false, 'receipt_total' => null,
+        ]);
+
+        $res = $this->actingAs($user)->postJson(route('user.claims.scan-receipt'), [
+            'receipt' => UploadedFile::fake()->image('two-point.jpg'),
+        ]);
+
+        $res->assertStatus(200)->assertJsonPath('ok', true);
+        $this->assertNull($res->json('route_stops'));
+        $this->assertSame('Jaya One', $res->json('route_from'));
+        $this->assertSame('Suria KLCC', $res->json('route_to'));
+    }
+
+    /**
+     * The prompt is where a SHORT read gets fixed — normalizeMap() can only stop a reply
+     * contradicting itself, not put back a field the model never looked at. Assert against the
+     * request actually sent, so a rule that stops reaching the model fails here rather than
+     * quietly costing employees the last leg of their journeys.
+     */
+    public function test_the_map_prompt_asks_for_every_stop_and_one_total(): void
+    {
+        $user = $this->actingEmployee();
+        $this->fakeVision([
+            'map' => null, 'items' => [], 'account_holder' => null, 'issuer' => null,
+            'is_single_receipt' => false, 'receipt_total' => null,
+        ]);
+
+        $this->actingAs($user)->postJson(route('user.claims.scan-receipt'), [
+            'receipt' => UploadedFile::fake()->image('anything.jpg'),
+        ]);
+
+        Http::assertSent(function ($request) {
+            $sent = (string) $request->body();
+            // Read every field, and the LAST one is where the trip ended.
+            $this->assertStringContainsString('READ EVERY ONE', $sent);
+            $this->assertStringContainsString('NEVER an intermediate stop', $sent);
+            $this->assertStringContainsString('do NOT drop the last leg', $sent);
+            // One trip, one total — never a per-leg figure and never a split.
+            $this->assertStringContainsString('ALREADY covers every leg', $sent);
+            $this->assertStringContainsString('multi-stop route as more than one trip', $sent);
+            // …and having several stops is never by itself grounds to call it two trips.
+            $this->assertStringContainsString('is ONE trip: answer false', $sent);
+
+            return true;
+        });
     }
 
     public function test_a_genuine_multi_stop_trip_still_auto_fills(): void

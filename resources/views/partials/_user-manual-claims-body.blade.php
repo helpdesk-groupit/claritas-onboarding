@@ -350,7 +350,8 @@
         <div><span class="um-fname">Vehicle <span class="text-danger">*</span></span><span class="um-fdesc">Car or Motorcycle — each has its own rate per km.</span></div>
         <div><span class="um-fname">Distance (km) <span class="text-danger">*</span></span><span class="um-fdesc">How far. <strong>Calculate distance</strong> works it out for you.</span></div>
     </div>
-    <p style="font-size:13px;color:#475569;">The amount is worked out as <strong>distance × vehicle rate</strong> — you can't type it yourself. State the route (From → To). <strong>No receipt needed</strong> — the distance is the proof. Toll and parking are <em>separate</em> lines.</p>
+    <p style="font-size:13px;color:#475569;">The amount is worked out as <strong>distance × vehicle rate</strong> — you can't type it yourself. State the route the whole way through — <em>From → any stops → To</em>. <strong>No receipt needed</strong> — the distance is the proof. Toll and parking are <em>separate</em> lines.</p>
+    <p style="font-size:13px;color:#475569;"><strong>One trip with several stops is one item.</strong> If you drove office → client → home, that is a single journey: upload the one Google Maps screenshot showing all three, and claim the total distance it gives for the whole route. You only add a second item for a genuinely separate trip. The route is read off the screenshot into <em>Receipt details → Item description</em>, and on a mileage claim you can <strong>edit it</strong> there — do that if the scan missed a stop, then press <strong>Calculate distance</strong> or type the km from the map.</p>
 
     <p class="mt-3"><strong>Extra hours</strong> — pick the <strong>914(b)-000: Transportation</strong> category.</p>
     <p style="font-size:13px;color:#475569;">

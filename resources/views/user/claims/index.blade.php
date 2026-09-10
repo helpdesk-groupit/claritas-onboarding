@@ -1033,22 +1033,35 @@
         q(c,'.cc-c-total').value = '';
         c.dataset.totalManual = '';
     }
-    // Petrol/mileage claims must be read from ONE route screenshot per trip — a single
-    // image combining several unrelated routes (or several files picked at once) has
-    // been misread as one longer trip (route_stops summed across unrelated legs). Other
-    // categories keep the multi-file/multi-receipt batch-scan feature untouched.
+    // Petrol/mileage claims are read from ONE screenshot per TRIP — one journey, however many
+    // stops it has. What must not be combined is two SEPARATE trips (or several files picked at
+    // once): those have been misread as one longer route, with route_stops summed across legs
+    // that were never driven back to back. A single route through several waypoints is not that
+    // case and is claimed as one item. Other categories keep the multi-file/multi-receipt
+    // batch-scan feature untouched.
     function applyMileageUploadMode(c, isMileage) {
         const file = q(c,'.cc-i-file'); if (!file) return;
         const note = c.querySelector('.cc-mileage-upload-note');
         const hint = c.querySelector('.cc-upload-hint');
         if (note) note.classList.toggle('d-none', !isMileage);
         if (hint) hint.classList.toggle('d-none', isMileage);
+        // On mileage this field holds the ROUTE, not a receipt line, and the employee must be able
+        // to put a dropped stop back before the item is filed — the km is judged against it, and
+        // "Calculate distance" below measures whatever it says. Read-only everywhere else.
+        const idesc = q(c,'.cc-c-itemdesc');
+        if (idesc) {
+            idesc.readOnly = !isMileage;
+            idesc.classList.toggle('bg-light', !isMileage);
+            idesc.placeholder = isMileage ? 'Start → stop → destination' : '—';
+        }
+        const ihint = c.querySelector('.cc-c-itemdesc-hint');
+        if (ihint) ihint.classList.toggle('d-none', !isMileage);
         if (isMileage) {
             file.removeAttribute('multiple');
             if (file.files.length > 1) {
                 file.value = '';
                 const err = q(c,'.cc-item-error');
-                if (err) showErr(err, 'Petrol/mileage claims take one route screenshot at a time — the extra files were cleared. Re-select just the one for this trip.');
+                if (err) showErr(err, 'Petrol/mileage claims take one screenshot per trip — the extra files were cleared. Re-select just the one route for this trip (stops along the way are fine).');
             }
         } else {
             file.setAttribute('multiple', 'multiple');
@@ -1608,7 +1621,7 @@
         const isMileage = opt && opt.dataset.mileage === '1';
         const fixed = opt && opt.dataset.rateType === 'fixed';
         if (isMileage) {
-            if (file.files.length > 1) return showErr(err, 'Petrol/mileage claims take one route screenshot at a time — remove the extra files and add each trip as its own item.');
+            if (file.files.length > 1) return showErr(err, 'Petrol/mileage claims take one screenshot per trip — remove the extra files and add each separate trip as its own item. One route with several stops is a single trip and stays one item.');
             if (!(parseFloat(q(c,'.cc-i-km').value) > 0)) return showErr(err, 'Enter the distance (km) for the mileage claim.');
             // Amount is editable for mileage now — it must still be a positive figure.
             if (!(parseFloat(amount.value) > 0)) return showErr(err, 'Enter the amount for the mileage claim.');

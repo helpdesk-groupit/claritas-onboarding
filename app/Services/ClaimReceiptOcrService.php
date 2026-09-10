@@ -6,6 +6,8 @@ use App\Models\Accounting\AccountingSetting;
 use App\Models\ClaudeApiSetting;
 use App\Models\User;
 use App\Notifications\AiScannerUnavailableNotification;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -954,11 +956,11 @@ class ClaimReceiptOcrService
      */
     protected static function isRetryable(\Throwable $e, array $retryableStatuses, bool $retryTimeouts): bool
     {
-        if ($e instanceof \Illuminate\Http\Client\ConnectionException) {
+        if ($e instanceof ConnectionException) {
             return $retryTimeouts || ! self::isReadTimeout($e);
         }
 
-        return $e instanceof \Illuminate\Http\Client\RequestException
+        return $e instanceof RequestException
             && in_array($e->response?->status(), $retryableStatuses, true);
     }
 
@@ -1006,11 +1008,11 @@ class ClaimReceiptOcrService
 
         try {
             $retry = function (\Throwable $e) {
-                if ($e instanceof \Illuminate\Http\Client\ConnectionException) {
+                if ($e instanceof ConnectionException) {
                     return true;
                 }
 
-                return $e instanceof \Illuminate\Http\Client\RequestException
+                return $e instanceof RequestException
                     && in_array($e->response?->status(), [500, 502, 503, 529], true);
             };
 
@@ -1397,7 +1399,13 @@ class ClaimReceiptOcrService
     protected static function distanceRule(): string
     {
         return '"distance_km" (ONLY if this is a map/route screenshot AND a clear total trip-distance '
-            .'label like "34.3 km" or "18 km" is actually printed — return that number. If the '
+            .'label like "34.3 km" or "18 km" is actually printed — return that number. On a route with '
+            .'SEVERAL STOPS the figure printed beside the travel time ALREADY covers every leg, from the '
+            .'FIRST address field to the LAST: return that ONE total exactly as printed. Never return a '
+            .'single leg\'s figure in its place, never add legs together yourself, and never treat a '
+            .'multi-stop route as more than one trip. Read it from the SELECTED / highlighted driving '
+            .'route — not from an alternative-route row underneath it, and not from another travel-mode '
+            .'tab (transit, walking, cycling) at the top. If the '
             .'distance is hidden, blurred, cropped, or not clearly shown, return null. Do NOT guess '
             .'or infer it, and do NOT read it from road numbers (E37, AH2), exit/junction numbers, '
             .'durations ("1 hr 2 min"), or any other figure on the map), ';
@@ -1407,14 +1415,18 @@ class ClaimReceiptOcrService
     {
         return '"route_from" (the ORIGIN — on a Google Maps directions screenshot this is the TOP/FIRST '
             .'address field, marked with a circle "○" icon, where the trip STARTS; or null), '
-            .'"route_to" (the DESTINATION — the BOTTOM/LAST address field, marked with a map-pin "📍" '
-            .'icon, where the trip ENDS; or null), '
-            .'"route_stops" (a map/route screenshot can list MORE THAN TWO stops — return an ARRAY of '
-            .'ALL the stop addresses in order, top to bottom from the directions panel, including '
-            .'every intermediate waypoint and the final destination even if it repeats the origin; '
-            .'e.g. ["Motherhood Jaya One", "IOI City Mall", "Motherhood Jaya One"] for a there-and-back '
-            .'trip. Use short landmark names. null when there are only two stops or it is a receipt). '
-            .'distance_km MUST be the TOTAL distance of the whole multi-stop route as shown on the map. '
+            .'"route_to" (the DESTINATION — the VERY LAST address field in the panel, the BOTTOM one, '
+            .'marked with a map-pin "📍" icon, where the trip ENDS; or null. When the panel lists THREE '
+            .'OR MORE address fields, route_to is the LAST of them — NEVER the second one and NEVER an '
+            .'intermediate stop, even when that middle place looks like the main purpose of the trip), '
+            .'"route_stops" (a directions panel can list MORE THAN TWO address fields — READ EVERY ONE '
+            .'of them and return an ARRAY of ALL the stop addresses in order, top to bottom, including '
+            .'every intermediate waypoint AND the final destination, even when the last one repeats the '
+            .'origin; e.g. ["Motherhood Jaya One", "IOI City Mall", "Motherhood Jaya One"] for a '
+            .'there-and-back trip, or ["Enlinea", "Menara Tan & Tan", "USJ 6"] for an office → errand → '
+            .'home run. Do NOT stop reading after the second field and do NOT drop the last leg. Return '
+            .'null ONLY when the panel genuinely has just two address fields, or it is a receipt). '
+            .'Extra stops added with "Add destination" / "+" are waypoints of ONE journey, never separate trips. '
             .'For route_from, route_to and route_stops return the SHORT, recognisable landmark name only — the '
             .'building, mall, or area name that a map search would find (e.g. "Suria KLCC", '
             .'"Mid Valley Megamall", "Sunway Pyramid") — NOT the full printed street address with '
@@ -1449,7 +1461,12 @@ class ClaimReceiptOcrService
             .'distance/duration label, for two DIFFERENT unrelated trips — such as one panel headed "To HRDF" '
             .'and a separate panel headed "To Jaya One". false for an ORDINARY single route, even one with '
             .'several waypoints/stops listed under ONE search box and ONE continuous route line — that is a '
-            .'legitimate multi-stop trip (e.g. Home → Office → Client → Home) and must stay false. When '
+            .'legitimate multi-stop trip (e.g. Home → Office → Client → Home) and must stay false. THREE, '
+            .'FOUR or more address fields stacked one under another in ONE panel, with ONE highlighted route '
+            .'line and ONE distance/duration summary, is ONE trip: answer false and read it as a single '
+            .'journey from the first field to the last. The NUMBER of address fields is never by itself a '
+            .'reason to answer true — what makes it true is two or more SEPARATE panels, each with its own '
+            .'search fields and its OWN distance/duration summary. When '
             .'map_multi_routes is true, set distance_km, route_from, route_to and route_stops ALL to null inside '
             .'"map" — do NOT add, merge, or guess a combined distance across the separate routes; leave "issue" '
             .'null in this case, since map_multi_routes already says why nothing was filled in. ';
@@ -1578,11 +1595,42 @@ class ClaimReceiptOcrService
         // A flagged collage carries no usable single distance/route — force these null even
         // if the model still populated them despite the prompt's instruction not to, so a
         // combined reading can never reach the form under the multi_routes flag.
+        $stops = $multiRoutes ? null : self::clipList($src['route_stops'] ?? null);
+
+        // One address is not a route. A single-entry list would otherwise travel in the reply
+        // looking like a stop list while every reader (the form's `length >= 2` test included)
+        // silently falls back to route_from/route_to — so say plainly that there is no list.
+        if ($stops !== null && count($stops) < 2) {
+            $stops = null;
+        }
+
+        $from = $multiRoutes ? null : self::clip($src['route_from'] ?? null, 120);
+        $to = $multiRoutes ? null : self::clip($src['route_to'] ?? null, 120);
+
+        // A JOURNEY ENDS AT ITS LAST STOP. route_from/route_to and route_stops are three
+        // separately-answered fields, and they have come back disagreeing about where the trip
+        // finished: a three-field panel (Enlinea → Menara Tan & Tan → USJ 6) read as ending at
+        // the MIDDLE stop, dropping the leg home from a claim whose km covers it. Where the
+        // model listed the panel in order, that ordered list is the authoritative read — the
+        // one answer that had to look at every field — so the endpoints are DERIVED from it and
+        // the two can never contradict each other again.
+        //
+        // The list wins outright; a route_to naming somewhere absent from it is dropped, not
+        // appended. Appending would put a place on the claim form that may not be on the
+        // screenshot the approver checks it against, and the distance is read off the map's own
+        // total either way — so a dropped name mislabels a leg, while an invented one fabricates
+        // evidence. The prompt is where a short read gets fixed; this only stops the reply
+        // contradicting itself.
+        if ($stops !== null) {
+            $from = $stops[0];
+            $to = $stops[count($stops) - 1];
+        }
+
         return [
             'distance_km' => (! $multiRoutes && isset($src['distance_km']) && is_numeric($src['distance_km'])) ? round((float) $src['distance_km'], 1) : null,
-            'route_from' => $multiRoutes ? null : self::clip($src['route_from'] ?? null, 120),
-            'route_to' => $multiRoutes ? null : self::clip($src['route_to'] ?? null, 120),
-            'route_stops' => $multiRoutes ? null : self::clipList($src['route_stops'] ?? null),
+            'route_from' => $from,
+            'route_to' => $to,
+            'route_stops' => $stops,
             'multi_routes' => $multiRoutes,
         ];
     }
