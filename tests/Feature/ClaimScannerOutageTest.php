@@ -294,6 +294,10 @@ class ClaimScannerOutageTest extends TestCase
         $detail = (string) (ClaimReceiptOcrService::currentOutage()['detail'] ?? '');
         $this->assertStringNotContainsString('sk-EXAMPLE-not-a-real-key', $detail);
         $this->assertStringContainsString('redacted', $detail);
+        // ...without eating the prose around it. Redacting "API key provided" leaves an admin
+        // reading "API key-[redacted]: …" and wondering what else was hidden from them.
+        $this->assertStringContainsString('Incorrect API key provided', $detail);
+        $this->assertStringContainsString('Check your key.', $detail);
     }
 
     public function test_a_rate_limit_is_treated_as_transient_rather_than_an_incident(): void

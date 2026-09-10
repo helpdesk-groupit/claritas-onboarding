@@ -354,7 +354,14 @@ class ClaimReceiptOcrService
             return $message;
         }
 
-        return preg_replace('/\b(sk|pk|key|Bearer)[-_ ][A-Za-z0-9_\-]{6,}/i', '$1-[redacted]', $message);
+        // The separator matters: "key" followed by a SPACE is ordinary prose ("Incorrect API
+        // key provided: …") and swallowing it turns a readable admin message into "API
+        // key-[redacted]: …", which reads as though something else had been hidden. Only a
+        // hyphen/underscore-joined token is credential-shaped; "Bearer" is the one case that
+        // genuinely takes a space.
+        $message = preg_replace('/\b(sk|pk|key|token|secret)[-_][A-Za-z0-9_\-]{6,}/i', '$1-[redacted]', $message);
+
+        return preg_replace('/\bBearer\s+[A-Za-z0-9_\-.]{10,}/i', 'Bearer [redacted]', $message);
     }
 
     /**
