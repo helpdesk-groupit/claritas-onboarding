@@ -13,13 +13,54 @@
         </div>
     </div>
 
-    {{-- Current status --}}
-    @php $active = $setting->isActive(); $hasKey = (bool) $setting->getRawKey(); @endphp
+    {{-- Current status.
+
+         "Active" is a statement about the SETTINGS (a key is saved and switched on), which is
+         not the same thing as the scanner working — and while the Anthropic balance was empty
+         from 2026-09-09 this banner sat green through 36 consecutive refused calls. So a live
+         outage overrides it: the settings being right is no comfort when every call is being
+         turned away. --}}
+    @php
+        $active = $setting->isActive();
+        $hasKey = (bool) $setting->getRawKey();
+        $outage = $ocrOutage ?? null;
+    @endphp
+    @if($outage)
+        <div class="alert alert-danger d-flex align-items-start gap-2 py-2">
+            <i class="bi bi-exclamation-octagon-fill mt-1"></i>
+            <div class="small">
+                <strong>AI scanning is failing right now.</strong>
+                Receipt scans, e-waste quotation reading and vendor document reading are all falling
+                back to manual entry until this is cleared.
+                @if(!empty($outage['detail']))
+                    {{-- Built as a plain string rather than gluing @if onto "said": Blade only
+                         treats @ as a directive when it is NOT preceded by a word character, so
+                         `said@if(...)` compiles through as literal text and leaves the @endif
+                         unbalanced — a ViewException at render, which view:cache does not catch.
+                         See CLAUDE.md; this is the fourth time it has bitten. --}}
+                    @php
+                        $providerSaid = !empty($outage['status'])
+                            ? 'The provider said (HTTP '.$outage['status'].'):'
+                            : 'The provider said:';
+                    @endphp
+                    <div class="mt-1">
+                        {{ $providerSaid }}
+                        <em>{{ $outage['detail'] }}</em>
+                    </div>
+                @endif
+                <div class="mt-1 text-muted">
+                    First seen {{ fmt_datetime($outage['at'] ?? null) }}.
+                    Fix the cause (usually topping up the Anthropic balance or replacing the key),
+                    then press <strong>Test</strong> below — a successful test clears this immediately.
+                </div>
+            </div>
+        </div>
+    @endif
     <div class="alert d-flex align-items-center gap-2 py-2 {{ $active ? 'alert-success' : ($hasKey ? 'alert-warning' : 'alert-secondary') }}">
         <i class="bi {{ $active ? 'bi-check-circle-fill' : ($hasKey ? 'bi-pause-circle-fill' : 'bi-slash-circle') }}"></i>
         <div class="small">
             @if($active)
-                <strong>OCR is active</strong> — receipts are scanned with <strong>{{ $setting->modelLabel() }}</strong>.
+                <strong>OCR is switched on</strong> — receipts are scanned with <strong>{{ $setting->modelLabel() }}</strong>.
             @elseif($hasKey)
                 <strong>A key is saved, but OCR is switched off.</strong> Turn it on below to start scanning.
             @else

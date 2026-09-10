@@ -51,6 +51,12 @@ class ClaudeApiSettingController extends Controller
 
         return view('superadmin.claude-api', array_merge([
             'setting' => $setting,
+            // Is the provider refusing us RIGHT NOW? This page is where an admin comes to fix
+            // billing or rotate a key, so it is where the outage has to be visible. Without it
+            // the only evidence lives in laravel.log — which is exactly how an exhausted
+            // balance ran for three days (2026-09-09 onward) with every claim scan failing and
+            // nobody aware until an employee reported it as an OCR quality problem.
+            'ocrOutage' => ClaimReceiptOcrService::currentOutage(),
             'models' => ClaudeApiSetting::MODELS,
             'periods' => self::PERIODS,
             'period' => $period,
@@ -448,6 +454,15 @@ class ClaudeApiSettingController extends Controller
             return response()->json(['ok' => false, 'message' => 'Enter an API key first, then test.']);
         }
 
-        return response()->json(ClaimReceiptOcrService::testAnthropicKey($key, $data['model']));
+        $result = ClaimReceiptOcrService::testAnthropicKey($key, $data['model']);
+
+        // A working key is the operator saying "I've fixed it" — let the scanner try again at
+        // once instead of sitting behind the outage breaker until its TTL runs out. Testing is
+        // the natural action after topping up credit, so this is where the all-clear belongs.
+        if ($result['ok'] ?? false) {
+            ClaimReceiptOcrService::clearOutage();
+        }
+
+        return response()->json($result);
     }
 }

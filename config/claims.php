@@ -134,6 +134,34 @@ return [
         // Output token budget for the multi-item scan; must be generous enough to fit
         // max_items objects of JSON. ~100 tokens/row is a safe rule of thumb.
         'max_tokens' => (int) env('CLAIMS_OCR_MAX_TOKENS', 4096),
+
+        /*
+         * How long the scanner stops calling a provider that is REFUSING it.
+         *
+         * Only a refusal trips this — an exhausted balance, a rejected key, a model the
+         * key may not use. Those repeat for every caller until a human acts, so re-asking
+         * buys nothing: on 2026-09-09 the Anthropic balance ran out and production made 36
+         * identical doomed calls, nine of them inside five seconds because one employee
+         * kept re-clicking Scan (the form was telling them their receipt was the problem).
+         * A 5xx or a timeout does NOT trip it — a blip must never disable the scanner for
+         * everyone.
+         *
+         * Deliberately short, and deliberately held in the cache rather than a settings
+         * column, so a topped-up account heals itself within minutes with nobody having to
+         * remember to clear a flag. A successful "Test" on the Claude API page clears it at
+         * once. Set to 0/1 to make the breaker effectively a single skipped call.
+         */
+        'outage_ttl_minutes' => (int) env('CLAIMS_OCR_OUTAGE_TTL_MINUTES', 5),
+
+        /*
+         * How long before the same ongoing outage bell-notifies admins again.
+         *
+         * One alert per outage, not one per failed scan. The alert is what was missing
+         * entirely when the balance ran out: the provider's reason was logged on every
+         * failure, and a log nobody reads is not a notification — so three days passed
+         * before anyone knew, and then only via a user reporting it as an OCR quality bug.
+         */
+        'outage_alert_hours' => (int) env('CLAIMS_OCR_OUTAGE_ALERT_HOURS', 6),
     ],
 
     /*

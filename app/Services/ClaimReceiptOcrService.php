@@ -4,8 +4,12 @@ namespace App\Services;
 
 use App\Models\Accounting\AccountingSetting;
 use App\Models\ClaudeApiSetting;
+use App\Models\User;
+use App\Notifications\AiScannerUnavailableNotification;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
 
 /**
  * Reads a claim receipt with AI vision and returns {amount, date, vendor, …} to
@@ -25,10 +29,50 @@ use Illuminate\Support\Facades\Log;
  */
 class ClaimReceiptOcrService
 {
+    /**
+     * The scanner never got an answer, and a human has to act before it will.
+     *
+     * Billing/credit exhausted, a rejected key, a model the key may not use. Retrying
+     * changes nothing, so this is the one kind that trips the outage breaker below and
+     * tells an admin.
+     */
+    public const FAIL_REFUSED = 'refused';
+
+    /**
+     * The scanner never got an answer, but the next try might succeed — a 5xx, a
+     * rate-limit, a read timeout, a connection that dropped. Nothing to escalate.
+     */
+    public const FAIL_UNAVAILABLE = 'unavailable';
+
+    /** A 200 that carried no usable JSON. Our side still, but not the provider refusing. */
+    public const FAIL_BAD_REPLY = 'bad_reply';
+
+    /** Cache key holding the current outage (see recordFailure()). */
+    private const OUTAGE_KEY = 'claims:ocr:outage';
+
     /** Per-request memo of the Claude API setting (avoids re-querying on every call). */
     protected static ?ClaudeApiSetting $claudeMemo = null;
 
     protected static bool $claudeMemoLoaded = false;
+
+    /**
+     * Why the last call in THIS request failed — or null if it didn't.
+     *
+     * The whole point of this class is that it fails OPEN: every failure path returns
+     * null and the claimant types the details in. That is still true. What was missing
+     * is that a null told the caller NOTHING about whose fault it was, so the UI said
+     * "Couldn't read it — enter details manually" for a receipt the scanner never even
+     * looked at. That reads as a judgement on the photo, and it is what made three days
+     * of an exhausted Anthropic balance (2026-09-09 onward, 36 consecutive 400s in
+     * laravel.log) get reported as "the OCR can't read clear receipts" — the one
+     * conclusion the evidence on screen supported, and the wrong one.
+     *
+     * So: null return value unchanged, reason recorded alongside. A caller that wants to
+     * say something honest reads it; every existing caller keeps failing open untouched.
+     *
+     * @var array{kind:string,status:?int,detail:?string,provider:?string}|null
+     */
+    protected static ?array $lastFailure = null;
 
     /**
      * The superadmin "Claude API" setting when it is ACTIVE (switched on + key set),
@@ -89,6 +133,228 @@ class ClaimReceiptOcrService
         }
 
         return (bool) self::apiKey($company);
+    }
+
+    /**
+     * Why the last call in this request failed, when it failed on OUR side of the line.
+     *
+     * @return array{kind:string,status:?int,detail:?string,provider:?string}|null
+     */
+    public static function lastFailure(): ?array
+    {
+        return self::$lastFailure;
+    }
+
+    /** Start a fresh read — a stale reason from an earlier call must never describe this one. */
+    public static function forgetLastFailure(): void
+    {
+        self::$lastFailure = null;
+    }
+
+    /**
+     * What to tell the person holding the receipt.
+     *
+     * Deliberately says nothing about billing, keys or quotas: that is the company's
+     * business, not the claimant's, and naming it would leak account state to every
+     * employee. What they need is the two facts they can act on — the scanner is down,
+     * and their receipt is fine — because the instruction differs completely from the
+     * one a genuinely unreadable photo gets. Re-photographing a perfectly good receipt
+     * is exactly what the old wording sent people off to do.
+     */
+    public static function unavailableMessage(?array $failure = null): string
+    {
+        $failure ??= self::$lastFailure;
+        $kind = $failure['kind'] ?? self::FAIL_UNAVAILABLE;
+
+        // Covers both "a 200 carrying unusable JSON" and "the provider rejected this one
+        // request". Deliberately neutral: we genuinely do not know whether the file was
+        // awkward or the reply was, so it neither blames the receipt nor promises it is fine.
+        if ($kind === self::FAIL_BAD_REPLY) {
+            return 'The receipt scanner couldn’t process this file. Please enter the details below, '
+                .'or try scanning once more.';
+        }
+
+        if ($kind === self::FAIL_REFUSED) {
+            return 'The receipt scanner is unavailable right now — this is a problem on our side, not with '
+                .'your receipt, and IT has been told. Please enter the details below; there is no need to '
+                .'re-photograph anything.';
+        }
+
+        return 'The receipt scanner didn’t respond just now — nothing is wrong with your receipt. '
+            .'Please enter the details below, or try scanning again in a moment.';
+    }
+
+    /**
+     * The outage the breaker is currently holding, or null.
+     *
+     * @return array{kind:string,status:?int,detail:?string,provider:?string,at:string}|null
+     */
+    public static function currentOutage(): ?array
+    {
+        try {
+            $outage = Cache::get(self::OUTAGE_KEY);
+        } catch (\Throwable $e) {
+            return null; // no cache store is not an outage
+        }
+
+        return is_array($outage) ? $outage : null;
+    }
+
+    /**
+     * Let the scanner try again immediately.
+     *
+     * Called when the superadmin's "Test" on the Claude API page succeeds — that is the
+     * natural "I've topped it up, go" action, and without it a fixed account would still
+     * sit behind the breaker until the TTL ran out. Also clears the alert throttle, so
+     * the NEXT outage is announced rather than swallowed as a repeat of this one.
+     */
+    public static function clearOutage(): void
+    {
+        try {
+            Cache::forget(self::OUTAGE_KEY);
+            Cache::forget(self::OUTAGE_KEY.':alerted');
+        } catch (\Throwable $e) {
+            // A cache we can't clear is not worth failing a key test over.
+        }
+    }
+
+    /**
+     * Record why a call failed, and — for a refusal — stop making the same doomed call.
+     *
+     * The breaker is deliberately narrow. Only FAIL_REFUSED trips it, because only a
+     * refusal is certain to keep happening: an exhausted balance or a rejected key
+     * refuses every caller, every time, until somebody acts. A 5xx or a timeout is a
+     * blip, and disabling the scanner for everyone over one blip would be a far worse
+     * bug than the one being fixed here.
+     *
+     * The TTL is short (minutes) and there is no persistence: the moment credit is
+     * topped up the scanner heals itself without anyone remembering to clear a flag.
+     * That self-healing is the reason this is a cache entry and not a settings column.
+     */
+    protected static function recordFailure(string $kind, ?int $status, ?string $detail, ?string $provider): void
+    {
+        self::$lastFailure = [
+            'kind' => $kind,
+            'status' => $status,
+            'detail' => $detail !== null ? mb_substr($detail, 0, 300) : null,
+            'provider' => $provider,
+        ];
+
+        if ($kind !== self::FAIL_REFUSED) {
+            return;
+        }
+
+        $minutes = max(1, (int) config('claims.ocr.outage_ttl_minutes', 5));
+        $outage = self::$lastFailure + ['at' => now()->toDateTimeString()];
+
+        try {
+            Cache::put(self::OUTAGE_KEY, $outage, now()->addMinutes($minutes));
+            // Announce an outage ONCE, not once per failed scan. Nine scans landed in five
+            // seconds on 2026-09-09 (one employee re-clicking Scan, believing the receipt was
+            // the problem) — nine identical bells would be noise an admin learns to dismiss,
+            // which is the same as not sending them.
+            $fresh = Cache::add(self::OUTAGE_KEY.':alerted', true, now()->addHours(
+                max(1, (int) config('claims.ocr.outage_alert_hours', 6))
+            ));
+        } catch (\Throwable $e) {
+            return; // no cache store — the failure is still logged and reported to the user
+        }
+
+        if ($fresh) {
+            self::alertAdmins($outage);
+        }
+    }
+
+    /**
+     * Tell somebody who can actually fix it.
+     *
+     * This is the half that was missing entirely. The provider's refusal was logged
+     * correctly all along — and a log nobody reads is not a notification. Nothing on
+     * any screen said the scanner was down, so the outage surfaced only as a user
+     * complaint days later, misdescribed as a quality problem.
+     *
+     * Best-effort by construction: a notification that throws must never turn a scan
+     * that already failed open into a 500.
+     */
+    protected static function alertAdmins(array $outage): void
+    {
+        try {
+            $admins = User::query()
+                ->whereIn('role', ['superadmin', 'system_admin'])
+                ->where('is_active', true)
+                ->get();
+
+            if ($admins->isNotEmpty()) {
+                Notification::send($admins, new AiScannerUnavailableNotification($outage));
+            }
+        } catch (\Throwable $e) {
+            Log::warning('AI scanner outage alert failed', ['error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Which side of the line did this failure fall on?
+     *
+     * Only an ACCOUNT-LEVEL refusal may be FAIL_REFUSED, because that is the only kind
+     * that trips the breaker — and the breaker disables scanning for every employee.
+     * "Any 4xx" is far too wide a net for that: providers also answer 400 for problems
+     * with THIS ONE REQUEST, an image they could not decode being the obvious one. Under
+     * a status-only rule an employee uploading one malformed photo would take the scanner
+     * down company-wide for five minutes and bell-notify an admin about a billing problem
+     * that does not exist — a self-inflicted denial of service reachable by any user with
+     * an upload box. So the account-level cases are named explicitly and everything else
+     * is treated as this-request-only.
+     *
+     * 429 sits with the transient failures on purpose: a rate limit clears on its own,
+     * and escalating ordinary busy-ness to a notified incident is how alerts become noise.
+     */
+    protected static function classifyFailure(int $status, ?string $type, ?string $message): string
+    {
+        if ($status === 429 || $status >= 500) {
+            return self::FAIL_UNAVAILABLE;
+        }
+
+        // The key itself, the permissions on it, or the model grant — all fixed by an
+        // admin, none of them anything to do with the document being scanned.
+        if (in_array($status, [401, 403, 404], true)) {
+            return self::FAIL_REFUSED;
+        }
+        if (in_array($type, ['authentication_error', 'permission_error', 'not_found_error', 'billing_error'], true)) {
+            return self::FAIL_REFUSED;
+        }
+
+        // Anthropic reports an exhausted balance as a plain invalid_request_error whose
+        // MESSAGE is the only thing distinguishing it from a rejected payload — hence
+        // matching on the wording. This is the exact production failure of 2026-09-09.
+        $text = mb_strtolower((string) $message);
+        foreach (['credit balance', 'billing', 'quota', 'insufficient_quota', 'payment', 'spending limit'] as $needle) {
+            if (str_contains($text, $needle)) {
+                return self::FAIL_REFUSED;
+            }
+        }
+
+        // Any other 4xx describes this one request, not the account. Fail this scan open
+        // and leave everyone else's scanner alone.
+        return self::FAIL_BAD_REPLY;
+    }
+
+    /**
+     * Keep anything key-shaped out of what we store and show.
+     *
+     * The provider's message is persisted (cache + the notifications table) and rendered
+     * on the settings page. Anthropic does not echo credentials, but OpenAI-compatible
+     * providers answer a bad key with "Incorrect API key provided: sk-abc…", and a
+     * partially-masked secret is still a secret fragment sitting in a database row. The
+     * audience is superadmin-only either way; this is belt-and-braces on a value that
+     * comes from outside and gets written down.
+     */
+    protected static function redactSecrets(?string $message): ?string
+    {
+        if ($message === null || $message === '') {
+            return $message;
+        }
+
+        return preg_replace('/\b(sk|pk|key|Bearer)[-_ ][A-Za-z0-9_\-]{6,}/i', '$1-[redacted]', $message);
     }
 
     /**
@@ -493,6 +759,21 @@ class ClaimReceiptOcrService
             = self::resolveProvider($company);
 
         $stopReason = null;
+        self::$lastFailure = null;
+
+        // Already known to be refusing → don't spend another round trip (and another
+        // billable-if-it-worked request) discovering the same thing. The caller gets the
+        // same null it would have got anyway, just instantly and with the reason intact.
+        if ($outage = self::currentOutage()) {
+            self::$lastFailure = [
+                'kind' => $outage['kind'] ?? self::FAIL_REFUSED,
+                'status' => $outage['status'] ?? null,
+                'detail' => $outage['detail'] ?? null,
+                'provider' => $outage['provider'] ?? $provider,
+            ];
+
+            return ['json' => null, 'stop_reason' => null];
+        }
 
         try {
             $base64 = base64_encode(file_get_contents($absolutePath));
@@ -600,6 +881,19 @@ class ClaimReceiptOcrService
                     'body' => mb_substr((string) $resp->body(), 0, 300),
                 ]);
 
+                // The provider's own words, kept for the admin surfaces only. Anthropic
+                // answers an exhausted balance with a 400 whose message names it exactly
+                // ("Your credit balance is too low…"), so the person who can fix it gets
+                // told what to fix rather than a bare status code.
+                $errorType = $resp->json('error.type');
+                $errorMessage = $resp->json('error.message') ?: mb_substr((string) $resp->body(), 0, 300);
+                self::recordFailure(
+                    self::classifyFailure($resp->status(), is_string($errorType) ? $errorType : null, $errorMessage),
+                    $resp->status(),
+                    self::redactSecrets($errorMessage),
+                    $provider
+                );
+
                 return ['json' => null, 'stop_reason' => $stopReason];
             }
             // A 200 with no usable text is NOT the same as "the document has no total", but both
@@ -614,12 +908,16 @@ class ClaimReceiptOcrService
                     'stop_reason' => $stopReason,
                     'max_tokens' => $maxTokens,
                 ]);
+                self::recordFailure(self::FAIL_BAD_REPLY, $resp->status(), 'stop_reason: '.($stopReason ?: 'none'), $provider);
 
                 return ['json' => null, 'stop_reason' => $stopReason];
             }
 
             $content = trim(preg_replace('/```(?:json)?|```/', '', $content));
             $json = json_decode($content, true);
+            if (! is_array($json)) {
+                self::recordFailure(self::FAIL_BAD_REPLY, $resp->status(), 'reply was not JSON', $provider);
+            }
 
             return [
                 'json' => is_array($json) ? $json : null,
@@ -627,6 +925,9 @@ class ClaimReceiptOcrService
             ];
         } catch (\Throwable $e) {
             Log::warning('Claim receipt OCR failed', ['error' => $e->getMessage()]);
+            // A timeout or a dropped connection is transient by nature — it must not trip
+            // the breaker, and it must not tell the claimant their receipt is at fault.
+            self::recordFailure(self::FAIL_UNAVAILABLE, null, $e->getMessage(), $provider);
 
             return ['json' => null, 'stop_reason' => $stopReason];
         }

@@ -216,7 +216,11 @@
              report never passes it off as read from the document. --}}
         <div class="col-md-2">
             <label class="form-label small mb-1">Date on receipt</label>
-            <input type="date" class="form-control form-control-sm cc-c-date" aria-label="Date printed on the receipt">
+            {{-- autocomplete="off" for the same reason as "Total paid" below — this is the other
+                 editable, unnamed field a guard judges (ocrReceiptDateOutOfPeriod reads c_date),
+                 so a browser-supplied value here would stamp c_date_manual and bounce the item
+                 over a date the employee never entered. --}}
+            <input type="date" autocomplete="off" class="form-control form-control-sm cc-c-date" aria-label="Date printed on the receipt">
             {{-- Bold + red on purpose, not the usual muted .form-text: this is the field the month
                  guard actually judges, an OCR misread here (wrong day, month, or YEAR — seen for
                  real on a faded thermal receipt) is silently plausible-looking, and it used to sit
@@ -240,9 +244,9 @@
         <div class="col-md-4 cc-c-period-wrap">
             <label class="form-label small mb-1">Covers (period paid for) <span class="text-muted fw-normal">— optional</span></label>
             <div class="d-flex gap-1 align-items-center">
-                <input type="date" class="form-control form-control-sm cc-c-period-start" aria-label="Period covered — start">
+                <input type="date" autocomplete="off" class="form-control form-control-sm cc-c-period-start" aria-label="Period covered — start">
                 <span class="text-muted small">to</span>
-                <input type="date" class="form-control form-control-sm cc-c-period-end" aria-label="Period covered — end">
+                <input type="date" autocomplete="off" class="form-control form-control-sm cc-c-period-end" aria-label="Period covered — end">
             </div>
             <div class="form-text small cc-c-period-hint">Only for a receipt that pays for a period (season pass, subscription). Fill both dates if the scan didn’t read them.</div>
         </div>
@@ -256,7 +260,15 @@
              panel, because the approver is being asked to sign off money against the image. --}}
         <div class="col-md-3">
             <label class="form-label small mb-1">Total paid (RM)</label>
-            <input type="text" inputmode="decimal" class="form-control form-control-sm cc-c-total" aria-label="Total printed on the receipt" placeholder="—">
+            {{-- autocomplete="off" is load-bearing, not boilerplate. This input carries no
+                 `name`, so Chrome guesses what it is from the label and the neighbours — and
+                 on 2026-09-10 it guessed EMAIL and filled a claimant's own address into
+                 "Total paid (RM)". That is not cosmetic: autofill fires an `input` event, so
+                 onPrintedTotalEdited() stamps the field as hand-entered, and the server's
+                 receiptTotalInputError() then REFUSES the item with "enter the receipt total
+                 as a plain number" — blocking a claim over a value nobody typed, on a field
+                 the employee never touched. --}}
+            <input type="text" inputmode="decimal" autocomplete="off" class="form-control form-control-sm cc-c-total" aria-label="Total printed on the receipt" placeholder="—">
             {{-- Bold + red for the same reason the date hint above is: this is the other field a
                  guard actually judges, and a misread total is just as plausible-looking. --}}
             <div class="form-text small cc-c-total-hint text-danger fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i>Correct it if the scan misread the printed total.</div>

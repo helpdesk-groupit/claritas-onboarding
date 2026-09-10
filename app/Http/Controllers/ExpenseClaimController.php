@@ -3639,12 +3639,19 @@ class ExpenseClaimController extends Controller
         if ($request->hasFile('receipt_files')) {
             $allItems = [];
             $truncated = false;
+            // Which file (if any) failed because the SCANNER couldn't run, as opposed to
+            // holding nothing claimable. Without this, a batch that failed entirely on a
+            // provider outage came back `ok:false` with no reason at all — the same silent
+            // "Couldn't read it" the single-file path used to give.
+            $scanFailure = null;
             foreach (array_values($request->file('receipt_files')) as $idx => $f) {
                 if (! $f) {
                     continue;
                 }
                 $sub = ClaimReceiptOcrService::scanDocument($f->getRealPath(), $f->getMimeType(), $company, $catList);
                 if ($sub === null) {
+                    $scanFailure ??= ClaimReceiptOcrService::lastFailure();
+
                     continue;
                 }
                 $truncated = $truncated || ! empty($sub['truncated']);
@@ -3653,6 +3660,13 @@ class ExpenseClaimController extends Controller
                     $row['file_index'] = $idx;
                     $allItems[] = $row;
                 }
+            }
+
+            // Anything read at all is still a success — a batch where one file is a blank
+            // photo shouldn't be reported as an outage. Only a batch that produced NOTHING
+            // and hit a scanner failure gets the unavailable message.
+            if (! $allItems && $scanFailure) {
+                return $this->scannerUnavailableResponse($scanFailure);
             }
 
             return response()->json([
@@ -3670,8 +3684,13 @@ class ExpenseClaimController extends Controller
         }
         $doc = ClaimReceiptOcrService::scanDocument($file->getRealPath(), $file->getMimeType(), $company, $catList);
 
+        // A null here NEVER means "this receipt is unreadable" — the model saying that comes
+        // back as a successful read carrying an `issue` (see below). It means the scan never
+        // produced an answer: the provider refused, timed out, or replied with nonsense. Say
+        // so, rather than handing back a bare ok:false the form renders as "Couldn't read it
+        // — enter details manually", which blames the photo for our outage.
         if ($doc === null) {
-            return response()->json(['enabled' => true, 'ok' => false]);
+            return $this->scannerUnavailableResponse(ClaimReceiptOcrService::lastFailure());
         }
 
         // ── Map / route screenshot → single mileage response (the JS map branch reads
@@ -3734,6 +3753,29 @@ class ExpenseClaimController extends Controller
         return response()->json([
             'enabled' => true, 'ok' => true, 'multi' => true, 'items' => $items,
             'truncated' => (bool) ($doc['truncated'] ?? false),
+        ]);
+    }
+
+    /**
+     * The scan didn't run — say that, and say it isn't the claimant's receipt.
+     *
+     * `unavailable: true` is what lets the form drop the "try a clearer photo/screenshot"
+     * advice it gives a genuinely bad image. Sending someone off to re-photograph a
+     * receipt the scanner never looked at wastes their time and hides the real fault:
+     * three days of an exhausted API balance were reported as an OCR quality problem
+     * precisely because the screen kept blaming the receipt.
+     *
+     * The provider's own words (billing state, key errors) are deliberately NOT in the
+     * payload — they go to admins via the bell and the Claude API page. An employee
+     * filing a lunch receipt has no business reading the company's billing status.
+     */
+    private function scannerUnavailableResponse(?array $failure)
+    {
+        return response()->json([
+            'enabled' => true,
+            'ok' => false,
+            'unavailable' => true,
+            'message' => ClaimReceiptOcrService::unavailableMessage($failure),
         ]);
     }
 

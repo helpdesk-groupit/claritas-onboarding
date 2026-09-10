@@ -720,9 +720,15 @@
         el.textContent = text || '';
         const isError = state === true || state === 'error';
         const isHighlight = state === 'ok';
+        // 'warn' — something went wrong on OUR side and the employee has to work around it.
+        // Deliberately not red: red on this hint has always meant "your input is the problem",
+        // and rendering a scanner outage that way is what sent people off re-photographing
+        // perfectly good receipts. Amber still draws the eye without assigning blame.
+        const isWarn = state === 'warn';
         el.classList.toggle('text-danger', isError);
-        el.classList.toggle('fw-semibold', isError);
-        el.classList.toggle('text-muted', !isError && !isHighlight);
+        el.classList.toggle('text-warning-emphasis', isWarn);
+        el.classList.toggle('fw-semibold', isError || isWarn);
+        el.classList.toggle('text-muted', !isError && !isHighlight && !isWarn);
         el.classList.toggle('cc-hint-highlight', isHighlight);
     };
 
@@ -1103,6 +1109,9 @@
             .then(r => r.json()).then(d => {
                 btn.disabled = false;
                 if (!d || d.enabled === false) { setHint(hint, 'OCR is off — enter details manually.', false); return; }
+                // The scanner never ran (see scanSingle's note) — splitting the pages up or
+                // screenshotting fewer rows cannot help, so don't send anyone off doing it.
+                if (d.unavailable) { setHint(hint, d.message || 'The receipt scanner is unavailable right now — please enter the details below.', 'warn'); return; }
                 if (!d.ok || !Array.isArray(d.items) || !d.items.length) { setHint(hint, 'Couldn’t read those pages — try adding them one at a time, or screenshot just the rows you need.', true); return; }
                 setHint(hint, '✨ Found ' + d.items.length + ' transactions — review and add them.' + (extraNote ? ' ' + extraNote : ''), 'ok');
                 openMultiReview(c, d.items, files, d.truncated);
@@ -1232,7 +1241,20 @@
             .then(r => r.json()).then(d => {
                 btn.disabled = false;
                 if (!d || d.enabled === false) { setHint(hint, 'OCR is off — enter details manually.', false); return; }
-                if (!d.ok) { setHint(hint, (d && d.message) ? d.message : 'Couldn’t read it — enter details manually.', true); return; }
+                // ok:false NEVER means "this receipt is unreadable" — a model that read the
+                // document and couldn't make it out comes back ok:TRUE carrying an `issue`,
+                // and is handled further down by popping up what it did read for the employee
+                // to confirm. ok:false means the scan never produced an answer at all (the
+                // provider refused, timed out, or replied with nonsense), so there is nothing
+                // read to show and nothing wrong with the receipt. Amber, not red: this is our
+                // fault, and the old red "Couldn't read it" had people re-photographing
+                // perfectly good receipts for three days while the API balance sat empty.
+                if (!d.ok) {
+                    setHint(hint, (d && d.message) ? d.message
+                        : 'The receipt scanner didn’t respond just now — nothing is wrong with your receipt. Please enter the details below.',
+                        d.unavailable ? 'warn' : true);
+                    return;
+                }
                 // One image holding several receipts / a dated statement → review table.
                 // When editing a single item, a re-scan must be one receipt — but if it still
                 // reads as several lines, unlock the fields anyway so the user isn't stuck.
@@ -1385,7 +1407,9 @@
                     setHint(hint, '✨ Re-scanned — review the details, then Save changes.', 'ok');
                 }
             })
-            .catch(() => { btn.disabled = false; setHint(hint, 'Scan failed — enter details manually.', true); });
+            // The request itself never came back (network dropped, the server 500'd). Same rule
+            // as ok:false above — the receipt was never judged, so don't imply it was.
+            .catch(() => { btn.disabled = false; setHint(hint, 'The scan couldn’t be completed — nothing is wrong with your receipt. Please enter the details below, or try again in a moment.', 'warn'); });
     }
 
     function fillRow(tr, item) {
