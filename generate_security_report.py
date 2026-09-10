@@ -897,9 +897,9 @@ add_finding(
     'Production mail service credentials (username and app password) are stored in plaintext in the '
     '.env file. While .env is excluded from version control, these credentials are visible to anyone '
     'with server access and are exposed through debug error pages when APP_DEBUG=true.',
-    'File: .env — Lines 18-21:\n'
-    '  MAIL_USERNAME=nuren.ai@nurengroup.com\n'
-    '  MAIL_PASSWORD=jbxxpulrkxyzxkep',
+    'File: .env — the MAIL_* block:\n'
+    '  MAIL_USERNAME=<mail account>\n'
+    '  MAIL_PASSWORD=<app password, redacted>',
     'Compromised mail credentials allow an attacker to:\n'
     '• Send phishing emails as the company\n'
     '• Intercept password reset emails\n'
