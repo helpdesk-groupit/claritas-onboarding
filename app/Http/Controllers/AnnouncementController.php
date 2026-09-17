@@ -213,7 +213,7 @@ class AnnouncementController extends Controller
         }
 
         if ($user->canEditAnnouncementField('body')) {
-            $rules['body'] = 'nullable|string|max:1000';
+            $rules['body'] = 'nullable|string|max:'.Announcement::BODY_MAX_LENGTH;
         }
 
         if ($user->canEditAnnouncementField('companies')) {

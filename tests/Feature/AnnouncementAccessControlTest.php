@@ -309,6 +309,37 @@ class AnnouncementAccessControlTest extends TestCase
     }
 
     /**
+     * The message limit lives in ONE place (Announcement::BODY_MAX_LENGTH), read
+     * by the rule, the textarea's maxlength and the counter. The drift that
+     * matters is silent in both directions: a maxlength below the rule stops the
+     * operator pasting a message the server would have stored, and one above it
+     * lets them write past the limit only to be bounced on save.
+     */
+    public function test_the_message_limit_is_the_same_on_the_form_as_it_is_on_the_save(): void
+    {
+        $employee = $this->staff('hr_manager');
+        $max = Announcement::BODY_MAX_LENGTH;
+
+        $this->actingAs($employee->user)->get(route('announcements.create'))
+            ->assertOk()
+            ->assertSee('maxlength="'.$max.'"', false);
+
+        $this->actingAs($employee->user)->post(route('announcements.store'), [
+            'title' => 'Public Holiday Notice',
+            'body' => str_repeat('a', $max),
+        ])->assertRedirect(route('announcements.index'));
+
+        $this->assertSame($max, mb_strlen(Announcement::firstOrFail()->body));
+
+        $this->actingAs($employee->user)->post(route('announcements.store'), [
+            'title' => 'One character too long',
+            'body' => str_repeat('a', $max + 1),
+        ])->assertSessionHasErrors('body');
+
+        $this->assertSame(1, Announcement::count(), 'The over-long message must not have been stored.');
+    }
+
+    /**
      * `title` is required, so somebody holding the Publish grant while the Title
      * is View Only would reach a form they could never submit.
      */

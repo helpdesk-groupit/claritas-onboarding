@@ -48,7 +48,11 @@
                 {{-- Body + attachments — open for latest, collapsed for older ones --}}
                 <div @if(!$isLatest) class="collapse" id="{{ $bodyId }}" @endif>
                     @if($ann->body)
-                    <div class="mt-1" style="font-size:13px;line-height:1.6;color:#475569;white-space:pre-line;">{{ $ann->body }}</div>
+                    {{-- The newest announcement is rendered open, so a long message would
+                         otherwise push the rest of the dashboard off the screen. The cap is
+                         above what a short notice occupies, so anything that fitted before
+                         the message limit was raised still renders exactly as it did. --}}
+                    <div class="mt-1" style="font-size:13px;line-height:1.6;color:#475569;white-space:pre-line;max-height:320px;overflow-y:auto;">{{ $ann->body }}</div>
                     @endif
 
                     {{-- Attachments — images inline, PDFs as styled link --}}

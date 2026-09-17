@@ -18,6 +18,7 @@
     $seeCos    = $u->canSeeAnnouncementField('companies');
     $editFiles = $u->canEditAnnouncementField('attachments');
     $seeFiles  = $u->canSeeAnnouncementField('attachments');
+    $bodyMax   = \App\Models\Announcement::BODY_MAX_LENGTH;
 @endphp
 
 <div class="d-flex align-items-center gap-2 mb-3">
@@ -60,13 +61,14 @@
                 {{-- Body --}}
                 @if($seeBody)
                 <div class="col-12">
-                    <label class="form-label fw-semibold">Message <span class="text-muted fw-normal small">(max 1000 characters)</span></label>
+                    <label class="form-label fw-semibold">Message <span class="text-muted fw-normal small">(max {{ number_format($bodyMax) }} characters)</span></label>
                     @if($editBody)
-                    <textarea name="body" id="editBodyField" rows="5" maxlength="1000"
+                    <textarea name="body" id="editBodyField" rows="5" maxlength="{{ $bodyMax }}"
                               class="form-control @error('body') is-invalid @enderror">{{ old('body', $announcement->body) }}</textarea>
                     @error('body')<div class="invalid-feedback">{{ $message }}</div>@enderror
                     <div class="d-flex justify-content-end mt-1">
-                        <span id="editBodyCounter" class="form-text">{{ strlen(old('body', $announcement->body ?? '')) }}/1000</span>
+                        <span id="editBodyCounter" class="form-text"
+                              data-max="{{ $bodyMax }}">{{ mb_strlen(old('body', $announcement->body ?? '')) }}/{{ $bodyMax }}</span>
                     </div>
                     @else
                     <textarea class="form-control bg-light" rows="5" disabled>{{ $announcement->body }}</textarea>
@@ -194,9 +196,14 @@ function updateCounter(fieldId, counterId) {
     var field = document.getElementById(fieldId);
     var counter = document.getElementById(counterId);
     if (!field || !counter) return;
+    // The limit is read off the counter's own data-max (written from
+    // Announcement::BODY_MAX_LENGTH) rather than repeated here, so raising it
+    // is one edit and the warning colour scales with it instead of going red
+    // at a threshold left behind by an older limit.
+    var max = parseInt(counter.dataset.max, 10) || 0;
     var len = field.value.length;
-    counter.textContent = len + '/1000';
-    counter.style.color = len >= 480 ? '#ef4444' : '#94a3b8';
+    counter.textContent = len + '/' + max;
+    counter.style.color = (max && len >= max * 0.9) ? '#ef4444' : '#94a3b8';
 }
 document.addEventListener('DOMContentLoaded', function() {
     updateCounter('editBodyField', 'editBodyCounter');

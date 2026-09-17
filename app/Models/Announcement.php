@@ -7,6 +7,16 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Announcement extends Model
 {
+    /**
+     * Maximum message length, in CHARACTERS — the single source for the
+     * validation rule, the textarea's maxlength and the on-screen counter, so
+     * the three can never disagree about when a message is too long.
+     *
+     * `body` is a MySQL TEXT column (65,535 BYTES), so this leaves room even
+     * for a message written entirely in 4-byte characters.
+     */
+    public const BODY_MAX_LENGTH = 10000;
+
     protected $fillable = [
         'title',
         'body',
